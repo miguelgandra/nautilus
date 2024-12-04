@@ -1,0 +1,25 @@
+Package: nautilus
+Title: High-Resolution Archival Tag Data Analysis
+Version: 0.1.0
+Authors@R: 
+    person("Miguel", "Gandra", , "m3gandra@gmail.com", role = c("aut", "cre"),
+           comment = c(ORCID = "0000-0003-1506-5141"))
+Description: Provides tools for processing and analysing high-resolution archival tag datasets. Includes functionality for handling depth, temperature, 3-axis acceleration, 3-axis magnetometer, and 3-axis gyroscope data. Additional features for integrating and analysing video data from onboard cameras.
+License: GPL (>= 3)
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.2
+Imports:
+	utils,
+	stats,
+	methods,
+	graphics,
+	grDevices,
+	magick,
+	tesseract,
+	changepoint
+URL: https://github.com/miguelgandra/nautilus
+BugReports: https://github.com/miguelgandra/nautilus/issues
+
+
+
