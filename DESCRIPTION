@@ -15,9 +15,11 @@ Imports:
 	methods,
 	graphics,
 	grDevices,
+	dplyr,
 	magick,
 	tesseract,
-	changepoint
+	changepoint,
+	zoo
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 

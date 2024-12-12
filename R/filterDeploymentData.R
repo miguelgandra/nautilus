@@ -47,9 +47,26 @@ filterDeploymentData <- function(data,
   # initial checks #############################################################
   ##############################################################################
 
-
-
   id <- unique(data[[id.col]])
+
+  # split PSAT positions for plotting
+  if(!is.na(psat.data)){
+    fastloc_pos <- psat.data[psat.data$type=="FastGPS",]
+    user_pos <- psat.data[psat.data$type=="User",]
+  }
+
+
+  ##############################################################################
+  # add temporal buffer for changepoint analysis ###############################
+  ##############################################################################
+
+  # add 1 hour of 0-depth data before the first and after the last datetime
+  before_df <- data.frame("ID"=id, "datetime"=seq(min(data[[datetime.col]])-3600, to=min(data[[datetime.col]])-1, by="1 sec"), depth=0)
+  after_df <- data.frame("ID"=id, "datetime"=seq(max(data[[datetime.col]])+1, to=max(data[[datetime.col]])+3600, by="1 sec"), depth=0)
+
+  # merge buffers with the original dataset
+  data <- dplyr::bind_rows(before_df, data, after_df)
+  data <- data[order(data[[datetime.col]]),]
 
 
   ##############################################################################
@@ -123,9 +140,6 @@ filterDeploymentData <- function(data,
     lines(x=data[[datetime.col]][popup_index:nrow(data)], y=data[[depth.col]][popup_index:nrow(data)], col="red1", lwd=0.8)
     box()
     if(!is.na(psat.data)){
-      # split PSAT positions for plotting
-      fastloc_pos <- psat.data[psat.data$type=="FastGPS",]
-      user_pos <- psat.data[psat.data$type=="User",]
       points(x=fastloc_pos[[datetime.col]], y=rep(par("usr")[4], nrow(fastloc_pos)), pch=16, col="blue", cex=0.8, xpd=T)
       points(x=user_pos[[datetime.col]], y=rep(par("usr")[4], nrow(user_pos)), pch=17, col="green2", cex=0.8, xpd=T)
       legend("bottomright", legend=c("Fastloc GPS", "User"), pch=c(16,17), col=c("blue","green2"),
@@ -141,7 +155,7 @@ filterDeploymentData <- function(data,
     lines(x=data[[datetime.col]][1:deploy_index], y=data$ax[1:deploy_index], col="red1", lwd=0.8)
     lines(x=data[[datetime.col]][popup_index:nrow(data)], y=data$ax[popup_index:nrow(data)], col="red1", lwd=0.8)
     box()
-    if(!is.na(psat.files[i])){
+    if(!is.na(psat.data)){
       points(x=fastloc_pos[[datetime.col]], y=rep(par("usr")[4], nrow(fastloc_pos)), pch=16, col="blue", cex=0.8, xpd=T)
       points(x=user_pos[[datetime.col]], y=rep(par("usr")[4], nrow(user_pos)), pch=17, col="green2", cex=0.8, xpd=T)
     }
@@ -155,7 +169,7 @@ filterDeploymentData <- function(data,
     lines(x=data[[datetime.col]][1:deploy_index], y=data$pitch[1:deploy_index], col="red1", lwd=0.8)
     lines(x=data[[datetime.col]][popup_index:nrow(data)], y=data$pitch[popup_index:nrow(data)], col="red1", lwd=0.8)
     box()
-    if(!is.na(psat.files[i])){
+    if(!is.na(psat.data)){
       points(x=fastloc_pos[[datetime.col]], y=rep(par("usr")[4], nrow(fastloc_pos)), pch=16, col="blue", cex=0.8, xpd=T)
       points(x=user_pos[[datetime.col]], y=rep(par("usr")[4], nrow(user_pos)), pch=17, col="green2", cex=0.8, xpd=T)
     }
