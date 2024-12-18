@@ -8,18 +8,23 @@ Description: Provides tools for processing and analysing high-resolution archiva
 License: GPL (>= 3)
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2
+RoxygenNote: 7.3.2	
 Imports:
 	utils,
 	stats,
 	methods,
 	graphics,
 	grDevices,
+	data.table,
 	dplyr,
+	plyr,
+	lubridate,
 	magick,
 	tesseract,
 	changepoint,
-	zoo
+	zoo,
+	crayon,
+	oce
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 

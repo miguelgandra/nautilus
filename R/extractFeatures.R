@@ -16,12 +16,13 @@
 #' @param datetime.col A character string specifying the column in `data` containing datetime information.
 #' @param response.col (Optional) A character string specifying the column in `data` containing response or annotated labels (e.g., feeding events).
 #' It must be binary (i.e., containing values 0 or 1).
-
+#'
 #' @return A data frame containing the calculated features. If `aggregate = TRUE`, the output will have fewer rows,
 #' with one row per window. If `aggregate = FALSE`, the output retains the original number of rows, with
 #' calculated metrics for each window. If a `datetime` column exists in the input data, it will be adjusted to match
 #' the window aggregation, and the corresponding timestamp will be retained or adjusted based on the window size.
 #' The response column, if specified, will also be aggregated or retained according to the same rules.
+#' @export
 
 
 extractFeatures <- function(data,

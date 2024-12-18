@@ -8,11 +8,12 @@ checkTimeGaps(
   data,
   datetime.col = "datetime",
   pre.deploy.threshold = 0.2,
-  post.deploy.threshold = 0.8
+  post.deploy.threshold = 0.8,
+  verbose = TRUE
 )
 }
 \arguments{
-\item{data}{A data frame containing a column with datetime information. The column should be of class \code{POSIXt}}
+\item{data}{A data frame or data table containing a column with datetime information. The column should be of class POSIXt.}
 
 \item{datetime.col}{A character string specifying the name of the column containing the datetime values. Default is \code{"datetime"}.}
 
@@ -21,11 +22,11 @@ Data before this percentage will be considered as pre-deployment. Default is 0.2
 
 \item{post.deploy.threshold}{A numeric value between 0 and 1, indicating the threshold (as a percentage) for the end of the deployment period.
 Data after this percentage will be considered as post-deployment. Default is 0.8 (80\%).}
+
+\item{verbose}{Logical. If TRUE, the function will print detailed processing
+information. Defaults to TRUE.}
 }
 \value{
-A data frame (\code{data}) with rows before or after the detected temporal discontinuities removed, based on the thresholds specified.
-If the gap is detected within the specified range (before or after the deployment), the corresponding data will be retained.
-
 A data frame (\code{data}) with rows before or after the detected temporal discontinuities removed.
 }
 \description{

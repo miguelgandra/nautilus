@@ -4,29 +4,51 @@
 \alias{reencodeVideos}
 \title{Reencode MOV Videos to HEVC Format}
 \usage{
-reencodeVideos(mov.directory, output.directory = mov.directory)
+reencodeVideos(
+  mov.directory,
+  output.directory = mov.directory,
+  crf = 28,
+  overwrite = "ask"
+)
 }
 \arguments{
 \item{mov.directory}{A string specifying the path to the directory containing \code{.mov} files to re-encode.}
 
-\item{output.directory}{A string specifying the path to the directory where re-encoded \code{.mp4} files will be saved. Defaults to the same as \code{mov_directory}.}
+\item{output.directory}{A string specifying the path to the directory where re-encoded \code{.mp4} files will be saved.
+Defaults to the same as \code{mov.directory}.}
+
+\item{crf}{A numeric value for the Constant Rate Factor (CRF), which controls the quality and file size of the output video.
+The CRF range is from 0 to 51, where:
+\itemize{
+\item A value of 0 represents lossless encoding, resulting in the highest quality but the largest file size.
+\item A value of 28 is considered a good balance between quality and compression for most use cases. This is the default value.
+\item A higher value (closer to 51) will result in lower quality and smaller file sizes.
+}}
+
+\item{overwrite}{A string that controls the behavior when output files already exist. Can be one of the following:
+\itemize{
+\item \code{ask}: Prompt the user for each file whether to overwrite it (default).
+\item \code{TRUE}: Automatically overwrite existing files.
+\item \code{FALSE}: Skip re-encoding for existing files.
+}}
 }
 \value{
 Prints progress and time statistics to the console. The re-encoded videos are saved in the specified output directory.
 }
 \description{
-This function re-encodes all \code{.mov} video files in a specified input directory to HEVC (H.265) format
-using hardware acceleration (\code{hevc_videotoolbox}). The re-encoded videos are saved
-as \code{.mp4} files in the specified output directory or the input directory by default.
+This function re-encodes all \code{.mov} video files in a specified input directory to HEVC (H.265) format.
+By default, it uses hardware acceleration (\code{hevc_videotoolbox}) for faster encoding, but if hardware acceleration
+is unavailable, the function will fall back to software encoding using \code{libx265}, which may take longer.
+The re-encoded videos are saved as \code{.mp4} files in the specified output directory, or in the input directory by default.
+Users can specify a Constant Rate Factor (\code{crf}) to control the balance between video quality and file size.
+Additionally, the \code{overwrite} parameter determines whether to overwrite existing output files, skip them, or prompt the user.
 }
 \details{
+The re-encoding is done using the \code{ffmpeg} tool with the following options:
 \itemize{
-\item The re-encoding is done using the \code{ffmpeg} tool with the following options:
-\itemize{
-\item Video codec: \code{hevc_videotoolbox} for hardware-accelerated encoding
-\item Constant rate factor (\code{crf}) of 28 for a balance of quality and compression
-\item Preset: \code{fast} for faster encoding speed
+\item Video codec: \code{hevc_videotoolbox} for hardware-accelerated encoding (if available) or \code{libx265} for software encoding.
+\item Constant rate factor (\code{crf}) set by user or default (28) for a balance of quality and compression.
+\item Preset: \code{fast} for faster encoding speed.
 \item No audio (\code{-an}).
-}
 }
 }

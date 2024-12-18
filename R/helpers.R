@@ -14,6 +14,7 @@
 #' @import stats
 #' @import graphics
 #' @import grDevices
+#' @import data.table
 NULL
 
 

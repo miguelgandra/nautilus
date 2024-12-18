@@ -6,24 +6,35 @@
 \usage{
 annotateData(
   data,
-  event.data,
-  column.name = "event",
-  datetime.col = "datetime"
+  annotations,
+  event.name = "event",
+  id.col = "ID",
+  datetime.col = "datetime",
+  start.col = "start",
+  end.col = "end"
 )
 }
 \arguments{
 \item{data}{A data frame containing the original dataset with a \code{datetime} column.}
 
-\item{event.data}{A data frame containing the start and end times of events/behaviors (in \code{POSIXct} format).}
+\item{annotations}{A data frame containing the start and end times of events/behaviors (columns specified by \code{start.col} and \code{end.col})
+and an individual ID column (specified by \code{id.col}).}
 
-\item{column.name}{A character string specifying the name for the new binary column.}
+\item{event.name}{A character string specifying the name for the new binary column.}
+
+\item{id.col}{A character string specifying the name of the column in both \code{data} and \code{annotations} containing animal IDs.}
 
 \item{datetime.col}{A character string specifying the name of the column in \code{data} containing the datetime values.}
+
+\item{start.col}{A character string specifying the name of the column in \code{annotations} containing event start times.}
+
+\item{end.col}{A character string specifying the name of the column in \code{annotations} containing event end times.}
 }
 \value{
 A data frame with an additional binary column indicating whether each row falls within the specified event/behavior.
 }
 \description{
-This function takes an original dataset and a data frame with event start and end times, then creates a new binary column
-in the dataset, which marks rows that fall within the specified event or behavior periods as \code{1}, and others as \code{0}.
+This function takes an original dataset and a data frame with event start and end times, along with individual IDs,
+then creates a new binary column in the dataset which marks rows that fall within the specified event or behavior
+periods as \code{1} and others as \code{0}.
 }

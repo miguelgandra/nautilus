@@ -6,43 +6,47 @@
 \usage{
 filterDeploymentData(
   data,
-  first.datetime,
-  last.datetime,
-  psat.data = NULL,
   depth.threshold = 3.5,
   variance.threshold = 6,
   max.changepoints = 6,
   id.col = "ID",
   datetime.col = "datetime",
   depth.col = "depth",
-  plot.vars = c("ax", "pitch"),
+  plot.metrics = c("pitch", "sway"),
+  plot.metrics.labels = NULL,
   plot = TRUE
 )
 }
 \arguments{
-\item{data}{A data frame containing the dataset, including a column for 'depth' and 'datetime'.}
+\item{data}{A data frame containing the processed dataset of each animal, as each one of the elements of the list
+returned by the \link{processTagData} function. It should include a column for 'depth' and 'datetime'.}
 
-\item{first.datetime}{A datetime object indicating the start of the first deployment period.}
+\item{depth.threshold}{A numeric value specifying the minimum mean depth to classify a segment as part of
+the deployment period (default is 3.5).}
 
-\item{last.datetime}{A datetime object indicating the end of the last deployment period.}
+\item{variance.threshold}{A numeric value specifying the minimum variance in depth measurements to classify
+a segment as part of the deployment period. Segments with variance below this value are considered spurious (default is 6).}
 
-\item{psat.data}{An optional data frame containing PSAT data for additional plotting (default is NULL).}
-
-\item{depth.threshold}{A numeric value for the threshold depth to distinguish deployment periods (default is 3.5).}
-
-\item{variance.threshold}{A numeric value for the threshold variance to distinguish deployment periods (default is 6).}
-
-\item{max.changepoints}{An integer specifying the maximum number of changepoints to detect (default is 6).}
+\item{max.changepoints}{An integer specifying the maximum number of changepoints to detect (default is 6).
+This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function.}
 
 \item{id.col}{A string representing the column name for the ID field (default is "ID").}
 
-\item{datetime.col}{A string representing the column name for the datetime field (default is "datetime").}
+\item{datetime.col}{A string specifying the name of the column that contains timestamps for each observation.
+This column must be in "POSIXct" format for proper processing (default is "datetime").}
 
-\item{depth.col}{A string representing the column name for the depth field (default is "depth").}
+\item{depth.col}{A string specifying the name of the column that contains depth measurements. Depth data is
+used for detecting deployment periods (default is "depth").}
 
-\item{plot.vars}{A character vector specifying the variables to plot, such as acceleration ("ax") or pitch (default is c("ax", "pitch")).}
+\item{plot.metrics}{A character vector of column names indicating additional metrics (e.g., acceleration or pitch)
+to include in the visualization. These metrics are plotted alongside the depth data to aid in visually reviewing
+the deployment period assignments (default is \code{c("pitch", "sway")}).}
 
-\item{plot}{A boolean value indicating whether to generate the plot (default is TRUE).}
+\item{plot.metrics.labels}{A character vector specifying custom titles for the metrics plotted in the output.
+If set to NULL, the column names provided in \code{plot.metrics} will be used as labels (default is NULL).}
+
+\item{plot}{A boolean indicating whether to generate diagnostic plots showing depth and the specified metrics
+during deployment periods. This visualization helps to validate the identified periods (default is TRUE).}
 }
 \value{
 A filtered data frame containing the deployment period between the detected attachment and popup times.
@@ -56,4 +60,7 @@ and post-deployment phases based on the specified datetime range.
 The function uses a binary segmentation method (\code{cpt.meanvar}) to detect changes in depth and variance,
 and it allows users to specify the maximum number of changepoints detected. The function also provides options
 to visualize the data with custom plot options.
+}
+\seealso{
+\link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
 }

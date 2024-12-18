@@ -34,6 +34,14 @@ You can install the development version of **nautilus** from GitHub with:
 devtools::install_github("miguelgandra/nautilus")
 ```
 
+## Tutorial Scripts
+
+Two tutorial scripts are available to help you get started:
+- Tutorial 01: Import, process, and analyze archival tag data.
+- Tutorial 02: Reencode .MOV video files to HEVC format and retrieve video metadata.
+Both tutorials can be found in the tutorials/ directory of the package.
+
+
 ## Documentation
 
 For detailed information on how to use nautilus, please refer to the package documentation.
