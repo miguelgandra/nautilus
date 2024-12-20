@@ -113,7 +113,7 @@ checkVerticalSpeed <- function(data,
 
     # else, throw error
     if(length(pre_deploy_outliers)==0 & length(post_deploy_outliers)==0){
-      cat(sprintf("Vertical speed outliers detected, but not removed. Check warnings.\n", discarded_rows, discarded_percentage))
+      cat("Vertical speed outliers detected, but not removed. Check warnings.\n")
       id <- unique(data[[id.col]])
       warning(paste(id, "-", length(outlier_indices), "vertical speed",
                     ifelse(length(outlier_indices) == 1, "outlier", "outliers"),
