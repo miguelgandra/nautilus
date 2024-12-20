@@ -11,6 +11,7 @@
 #' defined pre-deployment and post-deployment periods.
 #'
 #' @param data A data frame or data table containing depth data (from a single animal).
+#' @param id.col A string representing the column name for the ID field (default is "ID").
 #' @param depth.col A character string specifying the name of the column containing the depth values. Default is `"depth"`.
 #' @param vertical.speed.threshold A numeric value specifying the threshold for vertical speed outliers (in m/s).
 #' @param pre.deploy.threshold A numeric value between 0 and 1, indicating the threshold (as a percentage) for the start of the deployment period.
@@ -22,6 +23,7 @@
 #' @export
 
 checkVerticalSpeed <- function(data,
+                               id.col = "ID",
                                depth.col = "depth",
                                vertical.speed.threshold,
                                sampling.rate,
@@ -44,6 +46,11 @@ checkVerticalSpeed <- function(data,
   # convert data.table to data.frame for processing
   if (inherits(data, "data.table")) {
     data <- as.data.frame(data)
+  }
+
+  # check if id.col exists in the data
+  if (!(id.col %in% colnames(data))) {
+    stop(paste0("The specified ID column (", id.col, ") does not exist in the data."), call. = FALSE)
   }
 
   # check if depth.col exists in the data
@@ -106,8 +113,9 @@ checkVerticalSpeed <- function(data,
 
     # else, throw error
     if(length(pre_deploy_outliers)==0 & length(post_deploy_outliers)==0){
-      cat("\n")
-      warning(paste(length(outlier_indices), "vertical speed",
+      cat(sprintf("Vertical speed outliers detected, but not removed. Check warnings.\n", discarded_rows, discarded_percentage))
+      id <- unique(data[[id.col]])
+      warning(paste(id, "-", length(outlier_indices), "vertical speed",
                     ifelse(length(outlier_indices) == 1, "outlier", "outliers"),
                     "detected (>", vertical.speed.threshold, "m/s) in the middle of the data range.",
                     "No rows were discarded. Please review the data to assess its validity."), call. = FALSE)

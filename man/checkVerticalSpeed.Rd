@@ -6,6 +6,7 @@
 \usage{
 checkVerticalSpeed(
   data,
+  id.col = "ID",
   depth.col = "depth",
   vertical.speed.threshold,
   sampling.rate,
@@ -16,6 +17,8 @@ checkVerticalSpeed(
 }
 \arguments{
 \item{data}{A data frame or data table containing depth data (from a single animal).}
+
+\item{id.col}{A string representing the column name for the ID field (default is "ID").}
 
 \item{depth.col}{A character string specifying the name of the column containing the depth values. Default is \code{"depth"}.}
 
