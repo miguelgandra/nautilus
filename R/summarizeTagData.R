@@ -50,7 +50,6 @@ summarizeTagData <- function(data,
   }
 
 
-
   ##############################################################################
   # Generate summary ###########################################################
   ##############################################################################
@@ -58,11 +57,17 @@ summarizeTagData <- function(data,
   # initialize the summary list
   summary_list <- list()
 
+  # initialize progress bar
+  pb <- txtProgressBar(min=1, max=length(data), initial=0, style=3)
+
   # iterate over each individual's data
   for (i in 1:length(data)) {
 
     # extract individual data
     data_individual <- data[[i]]
+
+    # skip iteration if individual data is missing
+    if(is.null(unlist(data_individual)) || (is.data.frame(data_individual) && nrow(data_individual) == 0)) next
 
     # get temporal statistics
     id <- unique(data_individual[[id.col]])  # Assuming each individual has a unique ID
@@ -72,8 +77,8 @@ summarizeTagData <- function(data,
     data_end <- ifelse("last.datetime" %in% names(attributes(data_individual)), attributes(data_individual)$last.datetime, deploy_end)
     start_date <- strftime(deploy_start, "%d/%b/%Y %H:%M", tz="UTC")
     end_date <- strftime(deploy_end, "%d/%b/%Y %H:%M", tz="UTC")
-    total_duration <-  sprintf("%.1f", difftime(data_end, data_start, units="hours"))
-    deploy_duration <- sprintf("%.1f", difftime(deploy_end, deploy_start, units="hours"))
+    total_duration <-  sprintf("%.2f", difftime(data_end, data_start, units="hours"))
+    deploy_duration <- sprintf("%.2f", difftime(deploy_end, deploy_start, units="hours"))
 
     # get maximum depth and temperature range
     max_depth <- round(max(data_individual$depth, na.rm = TRUE))
@@ -89,9 +94,9 @@ summarizeTagData <- function(data,
     # create a row for each individual
     summary_list[[i]] <- data.frame(
       "ID" = id,
-      "Total duration (h)" = total_duration,
       "Deploy start" = start_date,
       "Deploy end" = end_date,
+      "Total duration (h)" = total_duration,
       "Deploy duration (h)" = deploy_duration,
       "Sampling freq (Hz)" = sampling_freq,
       "Magnetic declination" = declination_deg,
@@ -101,16 +106,22 @@ summarizeTagData <- function(data,
       "User Locs"=user_positions,
       check.names = FALSE
     )
+
+    # update progress bar
+    setTxtProgressBar(pb, i)
   }
 
   ##############################################################################
   # Return results #############################################################
   ##############################################################################
 
-  # Combine the list of summaries into a single data frame
+  # close progress bar
+  close(pb)
+
+  # combine the list of summaries into a single data frame
   summary_table <- do.call(rbind, summary_list)
 
-  # Return summary table
+  # return summary table
   return(summary_table)
 
 }

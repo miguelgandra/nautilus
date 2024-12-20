@@ -79,6 +79,15 @@ animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 # Configure IMU Axes Mapping ###################################################
 ################################################################################
 
+# Configure the axes mapping for IMU (Inertial Measurement Unit) data.
+# It specifies how raw sensor axes (accelerometer, magnetometer, gyroscope) are
+# mapped for different tags, so they match the NED (North-East-Down) coordinate system.
+# The "tag" column in the configuration should match the tags included in the ID metadata.
+# Accelerometer axes: ax, ay, and az.
+# Magnetometer axes: mx, my, and mz.
+# Gyroscope axes: gx, gy, and gz.
+
+
 # Specify file containing IMU (Inertial Measurement Unit) axes configuration
 axes_config_file <- "./axes_configuration.csv"
 
@@ -109,16 +118,23 @@ if(!file.exists(axes_config_file)){
 # Define the folder containing tag data
 data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FALSE)
 
-# Select specific folders within the source data folder (if needed)
-data_folders <- data_folders[24:25]
+# Select/exclude specific folders within the source data folder (if needed)
+#data_folders <- data_folders[-c(11,26)]
 
 # Process tag data using the "processTagData" function from the "nautilus" package
 data_list <- processTagData(data.folders = data_folders,
                             id.metadata = animal_metadata,
+                            id.col = "ID",
+                            tag.col = "tag",
                             lon.col = "deploy_lon",
                             lat.col = "deploy_lat",
                             tagdate.col = "deploy_date",
                             axis.mapping = axes_config,
+                            dba.window = 3,
+                            smoothing.window = 5,
+                            burst.quantiles = c(0.95, 0.99),
+                            downsample.to = 1,
+                            vertical.speed.threshold = 3,
                             verbose = TRUE)
 
 
@@ -126,50 +142,61 @@ data_list <- processTagData(data.folders = data_folders,
 # Filter out pre- and post-deployment data #####################################
 ################################################################################
 
-# Create an empty list to store plots for each dataset
-plot_list <- vector("list", length=length(data_list))
+# Filter tag data to exclude pre- and post-deployment periods based on
+# depth and variance thresholds. Generate and save diagnostic plots
+# for each filtered dataset.
 
-# Loop through each animal dataset in the 'data_list'
-for(i in 1:length(data_list)){
-  # Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
-  data_list[[i]] <- filterDeploymentData(data = data_list[[i]],
-                                         depth.threshold = 3.5,
-                                         variance.threshold = 6,
-                                         max.changepoints = 6,
-                                         plot.metrics = c("pitch", "sway"),
-                                         plot.metrics.labels = c("Pitch (degrees)", "Sway (m/s)"))
-  # Capture the current plot for later export
-  plot_list[[i]] <- recordPlot()
-}
+
+# Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
+filter_results <- filterDeploymentData(data = data_list,
+                                       depth.threshold = 3.5,
+                                       variance.threshold = 6,
+                                       max.changepoints = 6,
+                                       plot.metrics = c("pitch", "heave"),
+                                       plot.metrics.labels = c("Pitch (\u00BA)", "Heave (m/s)"),
+                                       display.plots = FALSE,
+                                       save.plots = TRUE)
+
+# Extract the filtered data from the results
+filtered_list <- filter_results$filtered_data
 
 # Save the recorded plots to a PDF file for reviewing the filtered data.
-plot_list <- plot_list[!sapply(plot_list,is.null)]
-pdf("./filtered_deployments.pdf", width = 8, height = 5.5)
-for(i in 1:length(plot_list)){
-  replayPlot(plot_list[[i]], reloadPkgs = FALSE)
+pdf("./plots/filtered_deployments.pdf", width = 8, height = 5.5)
+for(i in 1:length(filter_results$plots)){
+  replayPlot(filter_results$plots[[i]], reloadPkgs = FALSE)
 }
 dev.off()
 
 
+
 ################################################################################
-# Save processed data to CSV ###################################################
+# Save processed data ##########################################################
 ################################################################################
 
 # Specify the directory where the CSV files will be saved
-output_directory <- "./processed_data/"
+output_directory <- "./data processed/"
 
 # Create the output directory if it doesn't exist
 if(!dir.exists(output_directory)){
   dir.create(output_directory)
 }
 
-# Loop through each animal dataset and save the filtered data as CSV
-for(i in 1:length(data_list)){
+# Loop through each animal dataset and save the processed data in RDS format (more storage-efficient)
+# This also keeps the attributes associated with each dataset (required for the summarizeTagData() function)
+for(i in 1:length(filtered_list)){
   # Construct the output filename
-  output_file <- paste0(output_directory, names(data_list)[i], "_processed.csv")
-  # Write the processed data to CSV
-  write.csv(data_list[[i]], file = output_file, row.names = FALSE)
- }
+  output_file <- paste0(output_directory, names(filtered_list)[i], "_processed.rds")
+  # Save the combined list as an RDS file
+  saveRDS(filtered_list[[i]], file=output_file)
+}
+
+# Alternatively, save the filtered data as CSV for interoperability
+#for(i in 1:length(data_list)){
+#  # Construct the output filename
+#  output_file <- paste0(output_directory, names(data_list)[i], "_processed.csv")
+#  # Write the processed data to CSV
+#  write.csv(data_list[[i]], file = output_file, row.names = FALSE)
+# }
 
 
 ################################################################################
@@ -181,7 +208,7 @@ for(i in 1:length(data_list)){
 # sampling frequency, and GPS positions (Fastloc and user-defined) based on the provided data.
 
 # Call the summarizeTagData function to generate the summary statistics for the data.
-summary <- summarizeTagData(data_list)
+summary <- summarizeTagData(filtered_list)
 
 # Print the summary table
 print(summary)

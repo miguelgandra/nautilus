@@ -55,6 +55,9 @@ checkTimeGaps <- function(data,
   # Check for temporal discontinuities between measurements ####################
   ##############################################################################
 
+  # provide feedback to the user if verbose mode is enabled
+  if (verbose) cat("Checking for temporal gaps in the data...\n")
+
   # calculate time difference between consecutive datetimes in seconds
   data$time_diff <- c(NA, diff(as.numeric(data[[datetime.col]])))
 

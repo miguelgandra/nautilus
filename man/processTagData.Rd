@@ -19,7 +19,8 @@ processTagData(
   smoothing.window = 5,
   burst.quantiles = c(0.95, 0.99),
   downsample.to = 1,
-  verbose = FALSE
+  vertical.speed.threshold = NULL,
+  verbose = TRUE
 )
 }
 \arguments{
@@ -66,7 +67,12 @@ Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th pe
 \item{downsample.to}{Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 Use NULL to retain the original resolution. Defaults to 1.}
 
-\item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to FALSE.}
+\item{vertical.speed.threshold}{Numeric. A threshold value for vertical displacement speed (in meters per second).
+If the calculated vertical speed exceeds this value, the corresponding rows will be removed from the dataset.
+This threshold is useful for removing data points where vertical speed may be artificially high due to occasional sensor malfunctioning or noise.
+Default is \code{NULL}, which means no filtering will be applied based on vertical speed.}
+
+\item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
 }
 \value{
 A list where each element contains the processed sensor data for an individual folder.

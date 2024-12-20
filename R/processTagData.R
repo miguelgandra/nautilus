@@ -45,7 +45,11 @@
 #' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
 #' @param downsample.to Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 #' Use NULL to retain the original resolution. Defaults to 1.
-#' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to FALSE.
+#' @param vertical.speed.threshold Numeric. A threshold value for vertical displacement speed (in meters per second).
+#' If the calculated vertical speed exceeds this value, the corresponding rows will be removed from the dataset.
+#' This threshold is useful for removing data points where vertical speed may be artificially high due to occasional sensor malfunctioning or noise.
+#' Default is `NULL`, which means no filtering will be applied based on vertical speed.
+#' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.
 #'
 #' @details
 #' The following key metrics are automatically calculated:
@@ -93,12 +97,16 @@ processTagData <- function(data.folders,
                            smoothing.window = 5,
                            burst.quantiles = c(0.95, 0.99),
                            downsample.to = 1,
-                           verbose = FALSE) {
+                           vertical.speed.threshold = NULL,
+                           verbose = TRUE) {
 
 
   ##############################################################################
   # Initial checks #############################################################
   ##############################################################################
+
+  # measure running time
+  start.time <- Sys.time()
 
   # validate data.folders argument
   if(!is.character(data.folders)) stop("`data.folders` must be a character vector.", call. = FALSE)
@@ -208,8 +216,8 @@ processTagData <- function(data.folders,
     psat_folders <- lapply(data.folders, function(main_dir) {
       # list immediate subdirectories
       subdirs <- list.dirs(main_dir, full.names = TRUE, recursive = FALSE)
-      # filter subdirectories containing 'Locations.csv'
-      subdirs[sapply(subdirs, function(subdir) file.exists(file.path(subdir, "Locations.csv")))]
+      # filter subdirectories containing a 'Locations' file
+      subdirs[sapply(subdirs, function(subdir) {any(grepl("Locations.csv", list.files(subdir)))})]
     })
   } else {
     # build full paths for the specified psat.subdirectory
@@ -273,7 +281,8 @@ processTagData <- function(data.folders,
 
     # check if the sensor file exists
     if (is.na(sensor_file) || !file.exists(sensor_file)) {
-      cat("Sensor file missing. Skipping.\n")
+      cat("Data file missing. Skipping.\n\n")
+      data_list[[i]] <- list(NULL)
       next
     }
 
@@ -282,6 +291,25 @@ processTagData <- function(data.folders,
 
     # load sensor data from CSV
     sensor_data <- suppressWarnings(data.table::fread(sensor_file, select=import_cols, showProgress=TRUE))
+
+    # output dataset size (rounded to the nearest thousand)
+    if (verbose) {
+      # get the number of rows in the dataset
+      rows <- nrow(sensor_data)
+      if (rows >= 1e6) {
+        # check if the dataset has more than a million rows
+        result <- paste(format(round(rows / 1e6, 1), nsmall = 1), "M")
+      } else if (rows >= 1e3) {
+        # check if the dataset has more than a thousand rows (but less than a million)
+        result <- paste(format(round(rows / 1e3, 1), nsmall = 1), "K")
+      } else {
+        # for smaller datasets (less than a thousand rows), just display the raw number
+        result <- as.character(rows)
+      }
+      # print the result
+      cat("Total rows:", result, "\n")
+    }
+
 
     # rename columns
     data.table::setnames(sensor_data, c("date", "time", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "temp", "depth"))
@@ -298,15 +326,19 @@ processTagData <- function(data.folders,
     # process PSAT data if available
     if (!is.na(psat_file) && file.exists(psat_file)) {
       # provide feedback to the user if verbose mode is enabled
-      if(verbose) cat(paste0("Fetching location data from the PSAT file...\n"))
+      if(verbose) cat(paste0("Fetching positions from the PSAT file...\n"))
       # import PSAT GPS locations
       psat_data <- data.table::fread(psat_files[i], select = c("Ptt", "Date", "Type", "Latitude", "Longitude"))
       psat_data[, Date := as.POSIXct(Date, format = "%H:%M:%OS %d-%b-%Y", tz = "UTC")]
-      data.table::setnames(psat_data, c("PTT", "datetime", "position_type", "lat", "lon"))
+      data.table::setnames(psat_data, c("PTT", "timebin", "position_type", "lat", "lon"))
       # remove fractional seconds from PSAT locs datetimes
-      psat_data[, datetime := as.POSIXct(floor(as.numeric(datetime)), origin = "1970-01-01", tz = "UTC")]
+      psat_data[, timebin := as.POSIXct(floor(as.numeric(timebin)), origin = "1970-01-01", tz = "UTC")]
+      # add "timebin" column with datetime rounded to the nearest second (floor)
+      sensor_data[, timebin := as.POSIXct(floor(as.numeric(datetime)), origin = "1970-01-01", tz = "UTC")]
       # merge PSAT positions with sensor data
-      sensor_data <- merge(sensor_data, psat_data, by = "datetime", all.x = TRUE)
+      sensor_data <- merge(sensor_data, psat_data, by = "timebin", all.x = TRUE)
+      # remove the "timebin" column
+      sensor_data[, timebin := NULL]
     } else {
       # create empty columns for "PTT", "datetime", "type", "lat", "lon" with NA values
       sensor_data[, `:=`(PTT = NA, position_type = NA, lat = NA, lon = NA)]
@@ -315,6 +347,7 @@ processTagData <- function(data.folders,
 
     ############################################################################
     # Apply axis.mapping transformations #######################################
+    ############################################################################
 
     # retrieve tag type from metadata
     tag_type <- animal_info[[tag.col]]
@@ -346,12 +379,13 @@ processTagData <- function(data.folders,
       }
 
       # update the sensor data with the swapped values
-      sensor_data[] <- temp_data
+      sensor_data <- data.table::copy(temp_data)
     }
 
 
     ############################################################################
     # Calculate acceleration metrics ###########################################
+    ############################################################################
 
     # provide feedback to the user if verbose mode is enabled
     if(verbose) cat("Calculating acceleration metrics...\n")
@@ -362,7 +396,7 @@ processTagData <- function(data.folders,
     # calculate dynamic and vectorial body acceleration using a moving window (3-sec)
     # doi: 10.3354/ab00104
     sampling_freq <- nrow(sensor_data)/length(unique(lubridate::floor_date(sensor_data$datetime, "sec")))
-    sampling_freq <- plyr::round_any(sampling_freq, 10)
+    sampling_freq <- plyr::round_any(sampling_freq, 5)
     staticX <- data.table::frollmean(sensor_data$ax, n = dba.window * sampling_freq, fill = NA,  align = "center")
     staticY <- data.table::frollmean(sensor_data$ay, n = dba.window * sampling_freq, fill = NA, align = "center")
     staticZ <- data.table::frollmean(sensor_data$az, n = dba.window * sampling_freq, fill = NA, align = "center")
@@ -384,6 +418,7 @@ processTagData <- function(data.folders,
 
     ############################################################################
     # Calculate orientation metrics ############################################
+    ############################################################################
 
     # provide feedback to the user if verbose mode is enabled
     if (verbose) cat("Calculating orientation metrics...\n")
@@ -422,6 +457,7 @@ processTagData <- function(data.folders,
 
     ############################################################################
     # Calculate linear motion metrics ##########################################
+    ############################################################################
 
     # provide feedback to the user if verbose mode is enabled
     if (verbose) cat("Calculating linear motion metrics...\n")
@@ -449,72 +485,96 @@ processTagData <- function(data.folders,
       sensor_data[, heave := data.table::frollmean(heave, n = smoothing.window, fill = NA, align = "center")]
     }
 
-
     ############################################################################
-    # Aggregate data ###########################################################
+    # Downsample data ##########################################################
+    ############################################################################
 
     # if a downsampling rate is specified, aggregate the data to the defined frequency (in Hz)
     if(!is.null(downsample.to)){
 
-      # provide feedback to the user if verbose mode is enabled
-      if (verbose)  cat("Downsampling data to", downsample.to, "Hz...\n")
+      # check if the specified downsampling frequency matches the dataset's sampling frequency
+      if (downsample.to == sampling_freq) {
+        if (verbose) cat("Dataset sampling rate is already", downsample.to, "Hz. Skipping downsampling.\n")
+        processed_data <- sensor_data
 
-      # select columns to keep
-      metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave")
-      psat_cols <- c("PTT", "position_type", "lat", "lon")
+      } else {
 
-      # convert the desired downsample rate to time interval in seconds
-      downsample_interval <- 1 / downsample.to
+        # provide feedback to the user if verbose mode is enabled
+        if (verbose)  cat("Downsampling data to", downsample.to, "Hz...\n")
 
-      # round datetime to the nearest downsample interval
-      sensor_data[, datetime := floor(as.numeric(datetime) / downsample_interval) * downsample_interval]
-      sensor_data[, datetime := as.POSIXct(datetime, origin = "1970-01-01", tz = "UTC")]
+        # select columns to keep
+        metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave")
+        psat_cols <- c("PTT", "position_type", "lat", "lon")
 
-      # aggregate data into the specified interval
-      processed_data <- sensor_data[, lapply(.SD, mean, na.rm = TRUE), by = datetime, .SDcols = c(metrics, psat_cols)]
+        # convert the desired downsample rate to time interval in seconds
+        downsample_interval <- 1 / downsample.to
 
-      # add ID column
-      processed_data[, ID := id]
+        # round datetime to the nearest downsample interval
+        sensor_data[, datetime := floor(as.numeric(datetime) / downsample_interval) * downsample_interval]
+        sensor_data[, datetime := as.POSIXct(datetime, origin = "1970-01-01", tz = "UTC")]
 
-      # sum burst swimming events (based on specified percentiles)
-      if(!is.null(burst.quantiles)){
-        burst_cols <- paste0("burst", burst.quantiles * 100)
-        processed_bursts <- sensor_data[, lapply(.SD, sum, na.rm = TRUE), by = datetime, .SDcols = burst_cols]
-        # combine the two aggregated datasets
-        processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE)
+        # temporarily suppress console output (redirect to a temporary file)
+        sink(tempfile())
+
+        #  aggregate data into the specified interval
+        processed_data <- sensor_data[, lapply(.SD, function(x) if (is.numeric(x)) mean(x, na.rm = TRUE) else first(x)),
+                                      by = datetime, .SDcols = c(metrics, psat_cols)]
+
+        # restore normal output
+        sink()
+
+        # add ID column
+        processed_data[, ID := id]
+
+        # sum burst swimming events (based on specified percentiles)
+        if(!is.null(burst.quantiles)){
+          burst_cols <- paste0("burst", burst.quantiles * 100)
+          processed_bursts <- sensor_data[, lapply(.SD, sum, na.rm = TRUE), by = datetime, .SDcols = burst_cols]
+          # combine the two aggregated datasets
+          processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE)
+        }
+
+        # reorder columns: ID, metrics, burst.quantiles (if exists), and psat_cols
+        data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), psat_cols))
       }
-
-      # reorder columns: ID, metrics, burst.quantiles (if exists), and psat_cols
-      data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), psat_cols))
 
     } else{
       # if no downsampling rate is defined, return the original sensor data
       processed_data <- sensor_data
     }
 
-
     ############################################################################
-    # Check for temporal discontinuities between measurements ##################
+    # Check for temporal discontinuities and spurious depth measurements #######
+    ############################################################################
 
     # save original start and end datetimes
     first_datetime <- min(processed_data$datetime)
     last_datetime <- max(processed_data$datetime)
 
-    # provide feedback to the user if verbose mode is enabled
-    if (verbose) cat("Checking for temporal gaps in the data...\n")
+    # define current sampling frequency
+    sampling_rate <- ifelse(!is.null(downsample.to), downsample.to, sampling_freq)
 
-    # check for for temporal discontinuities
+    # check for spurious depth values based on vertical displacement speed
+    if(!is.null(vertical.speed.threshold)){
+      processed_data <- checkVerticalSpeed(data = processed_data,
+                                           sampling.rate = sampling_rate,
+                                           vertical.speed.threshold = vertical.speed.threshold,
+                                           verbose = verbose)
+    }
+
+    # check for temporal discontinuities
     processed_data <- checkTimeGaps(processed_data, verbose = FALSE)
+
+
+    ############################################################################
+    # Store processed data #####################################################
+    ############################################################################
 
     # provide feedback to the user if verbose mode is enabled
     if (verbose) cat("Done! Data processed successfully.\n")
 
     # print empty line
     cat("\n")
-
-
-    ############################################################################
-    # Store processed data #####################################################
 
     # round numeric variables to save memory
     decimal_places <- 2
@@ -538,7 +598,8 @@ processTagData <- function(data.folders,
     attr(processed_data, 'magnetic.declination') <- declination_deg
     attr(processed_data, 'dba.window') <- dba.window
     attr(processed_data, 'smoothing.window') <- smoothing.window
-    attr(processed_data, 'smoothing.window') <- smoothing.window
+    attr(processed_data, 'downsample.to') <- downsample.to
+    attr(processed_data, 'vertical.speed.threshold') <- vertical.speed.threshold
     attr(processed_data, 'processing.date') <- Sys.time()
 
     # store processed sensor data in the list
@@ -555,6 +616,11 @@ processTagData <- function(data.folders,
   # Return processed data ######################################################
   ##############################################################################
 
+  # print time taken
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  cat(crayon::bold("Total execution time:"), sprintf("%.02f", as.numeric(time.taken)), base::units(time.taken), "\n\n")
+
   # return the list containing processed sensor data for all folders
   names(data_list) <- basename(data.folders)
   return(data_list)
@@ -563,3 +629,4 @@ processTagData <- function(data.folders,
 #######################################################################################################
 #######################################################################################################
 #######################################################################################################
+

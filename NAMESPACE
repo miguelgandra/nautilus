@@ -2,6 +2,7 @@
 
 export(annotateData)
 export(checkTimeGaps)
+export(checkVerticalSpeed)
 export(extractFeatures)
 export(filterDeploymentData)
 export(getVideoMetadata)

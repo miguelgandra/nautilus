@@ -14,12 +14,14 @@ filterDeploymentData(
   depth.col = "depth",
   plot.metrics = c("pitch", "sway"),
   plot.metrics.labels = NULL,
-  plot = TRUE
+  display.plots = FALSE,
+  save.plots = TRUE
 )
 }
 \arguments{
-\item{data}{A data frame containing the processed dataset of each animal, as each one of the elements of the list
-returned by the \link{processTagData} function. It should include a column for 'depth' and 'datetime'.}
+\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
+containing data from multiple animals. The output of the \link{processTagData} function is recommended, as it formats
+the data appropriately for further analysis.}
 
 \item{depth.threshold}{A numeric value specifying the minimum mean depth to classify a segment as part of
 the deployment period (default is 3.5).}
@@ -45,8 +47,20 @@ the deployment period assignments (default is \code{c("pitch", "sway")}).}
 \item{plot.metrics.labels}{A character vector specifying custom titles for the metrics plotted in the output.
 If set to NULL, the column names provided in \code{plot.metrics} will be used as labels (default is NULL).}
 
-\item{plot}{A boolean indicating whether to generate diagnostic plots showing depth and the specified metrics
-during deployment periods. This visualization helps to validate the identified periods (default is TRUE).}
+\item{display.plots}{A logical value indicating whether the diagnostic plots should be displayed.
+These plots generate diagnostic visuals showing depth and additional metrics,
+assisting users in reviewing the extracted deployment periods.
+If set to \code{TRUE}, the plots will be shown in the active graphics device.
+Note: If set to \code{TRUE}, the code can take longer to run due to the delay in plotting extensive data series to the screen.
+If set to \code{FALSE}, no plots will be displayed, even if they are saved.
+Default is \code{FALSE}.}
+
+\item{save.plots}{A logical value indicating whether the diagnostic plots should be saved.
+If set to \code{TRUE}, the plots will be recorded and stored in the \code{diagnostic_plots} list.
+The saved plots can later be displayed using \code{replayPlot()}.
+These plots generate diagnostic visuals showing depth and additional metrics, assisting users in reviewing the extracted deployment periods.
+If set to \code{FALSE}, no plots will be saved.
+Default is \code{FALSE}.}
 }
 \value{
 A filtered data frame containing the deployment period between the detected attachment and popup times.
