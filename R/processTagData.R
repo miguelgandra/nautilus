@@ -563,7 +563,7 @@ processTagData <- function(data.folders,
     }
 
     # check for temporal discontinuities
-    processed_data <- checkTimeGaps(processed_data, verbose = FALSE)
+    processed_data <- checkTimeGaps(data = processed_data, verbose = verbose)
 
 
     ############################################################################

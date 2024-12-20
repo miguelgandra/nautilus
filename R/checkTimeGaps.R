@@ -4,18 +4,30 @@
 
 #' Identify and Handle Temporal Discontinuities in Time Series Data
 #'
-#' This function checks for temporal discontinuities in a specified datetime column of a dataset.
-#' It automatically infers the sampling interval by identifying the most frequent time difference between
-#' consecutive timestamps and reports it to the user. Detected gaps larger than this interval are flagged
-#' as anomalies, and rows corresponding to these gaps are discarded based on their position relative to
-#' the defined pre-deployment and post-deployment periods.
+#' This function identifies and handles temporal discontinuities in a specified datetime column of a dataset.
+#' It determines the expected sampling interval by calculating the most frequent time difference
+#' between consecutive timestamps. Any detected gaps larger than this interval are flagged as anomalies.
+#'
+#' Rows corresponding to these anomalies are removed based on their position relative to
+#' two customizable thresholds:
+#' - **Early data period:** If anomalies occur within the first early.threshold% of the dataset,
+#'   all rows before the last anomaly in this range are discarded.
+#' - **Late data period:** If anomalies occur within the last late.threshold% of the dataset,
+#'   all rows after the first anomaly in this range are discarded.
+#'
+#' Anomalies detected within the central portion of the dataset, outside these thresholds, will not result in
+#' any rows being removed. Instead, a warning is issued to alert the user to potential data irregularities
+#' requiring manual inspection.
 #'
 #' @param data A data frame or data table containing a column with datetime information. The column should be of class POSIXt.
+#' @param id.col A string representing the column name for the ID field (default is "ID").
 #' @param datetime.col A character string specifying the name of the column containing the datetime values. Default is `"datetime"`.
-#' @param pre.deploy.threshold A numeric value between 0 and 1, indicating the threshold (as a percentage) for the start of the deployment period.
-#' Data before this percentage will be considered as pre-deployment. Default is 0.2 (20%).
-#' @param post.deploy.threshold A numeric value between 0 and 1, indicating the threshold (as a percentage) for the end of the deployment period.
-#' Data after this percentage will be considered as post-deployment. Default is 0.8 (80%).
+#' @param early.threshold A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
+#' Rows falling within the first early.threshold * 100% of the dataset are classified as part of this phase.
+#' Anomalies detected in this range will result in the removal of all earlier rows. The default value is 0.2 (20%).
+#' @param late.threshold A numeric value between 0 and 1 that defines the portion of the dataset considered as the late / post-deployment phase.
+#' Rows falling within the last (1 - late.threshold) * 100% of the dataset are classified as part of this phase.
+#' Anomalies detected in this range will result in the removal of all subsequent rows. The default value is 0.8 (80%).
 #' @param verbose Logical. If TRUE, the function will print detailed processing
 #' information. Defaults to TRUE.
 #'
@@ -24,9 +36,10 @@
 
 
 checkTimeGaps <- function(data,
+                          id.col = "ID",
                           datetime.col = "datetime",
-                          pre.deploy.threshold = 0.2,
-                          post.deploy.threshold = 0.8,
+                          early.threshold = 0.2,
+                          late.threshold = 0.8,
                           verbose = TRUE) {
 
   ##############################################################################
@@ -44,6 +57,11 @@ checkTimeGaps <- function(data,
   # convert data.table to data.frame for processing
   if (inherits(data, "data.table")) {
     data <- as.data.frame(data)
+  }
+
+  # check if id.col exists in the data
+  if (!(id.col %in% colnames(data))) {
+    stop(paste0("The specified ID column (", id.col, ") does not exist in the data."), call. = FALSE)
   }
 
   # check if datetime.col exists in the data
@@ -68,53 +86,61 @@ checkTimeGaps <- function(data,
   interval <- as.numeric(names(sort(table(time_diffs_no_na), decreasing = TRUE)[1]))
 
   # print the inferred sampling interval to the console
-  if (verbose) {
-    interval_readable <- paste0(interval, " ", ifelse(interval == 1, "sec", "secs"))
-    cat("Inferred sampling interval: ", interval_readable, "\n")
-  }
+  #if (verbose) {
+  #  interval_readable <- paste0(interval, " ", ifelse(interval == 1, "sec", "secs"))
+  #  cat("Inferred sampling interval: ", interval_readable, "\n")
+  #}
 
   ##############################################################################
   # Check for temporal discontinuities between measurements ####################
   ##############################################################################
 
   # find time_diff values greater than 1
-  time_anomalies <- data$time_diff[which(data$time_diff > interval)]
+  time_anomalies <- which(data$time_diff > interval)
 
   # if a gap is found
   if (length(time_anomalies) > 0) {
-    # print the total number of time anomalies found to the console
-    cat(paste0("Time gaps found (", length(time_anomalies),"): "))
 
-    # identify the indices where the time anomalies occur
-    time_anomalies_indices <- which(data$time_diff > interval)
+    # initialize discard ranges
+    pre_deploy_cutoff <- 1
+    post_deploy_cutoff <- nrow(data)
 
     # identify gaps occurring in the first 20% or last 80% of the total time
-    pre_deploy_gaps <- time_anomalies_indices[time_anomalies_indices < round(pre.deploy.threshold * nrow(data))]
-    post_deploy_gaps <- time_anomalies_indices[time_anomalies_indices > round(post.deploy.threshold * nrow(data))]
+    pre_deploy_gaps <- time_anomalies[time_anomalies < round(early.threshold * nrow(data))]
+    post_deploy_gaps <- time_anomalies[time_anomalies > round(late.threshold * nrow(data))]
 
     # if gaps are found in the beginning of the deployment
     if(length(pre_deploy_gaps) > 0) {
       # get the index of the last gap before the deployment period
-      time_gap_index <- max(pre_deploy_gaps)
+      pre_deploy_cutoff <- max(pre_deploy_gaps)
       # calculate and print the number of rows discarded before the time gap
-      discarded_interval <- round(difftime(data[[datetime.col]][1], data[[datetime.col]][time_gap_index]), 1)
-      cat(paste0("first ", time_gap_index, " rows discarded (", discarded_interval, " ", attr(discarded_interval, "units"), ")\n"))
-      # discard data before the time gap
-      data <- data[time_gap_index:nrow(data),]
+      discarded_interval <- round(difftime(data[[datetime.col]][1], data[[datetime.col]][pre_deploy_cutoff]), 1)
+      # provide feedback about the number of discarded rows
+      if (verbose) cat(sprintf("Time gaps found (%d): first %d rows discarded (%.1f %s).\n",
+                               length(pre_deploy_gaps), pre_deploy_cutoff, discarded_interval, attr(discarded_interval, "units")))
+    }
 
     # if gaps are found after the deployment period
-    } else if(length(post_deploy_gaps) > 0) {
+    if(length(post_deploy_gaps) > 0) {
       # get the index of the first gap after the deployment period
-      time_gap_index <- min(post_deploy_gaps)
+      post_deploy_cutoff <- min(post_deploy_gaps)
       # calculate and print the number of rows discarded after the time gap
-      discarded_rows <- nrow(data) - time_gap_index
-      discarded_interval <- round(difftime(data[[datetime.col]][time_gap_index], data[[datetime.col]][nrow(data)]), 1)
-      cat(paste0("last ", discarded_rows, " rows discarded (", discarded_interval, " ", attr(discarded_interval, "units"), ")\n"))
-      # discard data after the time gap
-      data <- data[1:time_gap_index,]
+      discarded_interval <- round(difftime(data[[datetime.col]][post_deploy_cutoff], data[[datetime.col]][nrow(data)]), 1)
+      if (verbose) cat(sprintf("Time gaps found (%d): last %d rows discarded (%.1f %s).\n",
+                               length(post_deploy_gaps), nrow(data) - post_deploy_cutoff, discarded_interval, attr(discarded_interval, "units")))
+    }
 
-    } else {
-      stop("Time gap detected in the middle of the data range", call. = FALSE)
+    # subset the data to remove outliers at both ends
+    data <- data[pre_deploy_cutoff:post_deploy_cutoff, ]
+
+    # check for remaining time gaps in the middle
+    if(length(pre_deploy_gaps)==0 & length(post_deploy_gaps)==0) {
+      if(verbose) cat(sprintf("Time gaps found, but not removed. Check warnings.\n", length(time_anomalies)))
+      id <- unique(data[[id.col]])
+      warning(paste(id, "-", length(time_anomalies), "time",
+                    ifelse(length(time_anomalies) == 1, "gap", "gaps"),
+                    "detected in the middle of the data range.",
+                    "No rows were discarded. Please review the data to assess its validity."), call. = FALSE)
     }
   }
 

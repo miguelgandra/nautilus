@@ -6,22 +6,27 @@
 \usage{
 checkTimeGaps(
   data,
+  id.col = "ID",
   datetime.col = "datetime",
-  pre.deploy.threshold = 0.2,
-  post.deploy.threshold = 0.8,
+  early.threshold = 0.2,
+  late.threshold = 0.8,
   verbose = TRUE
 )
 }
 \arguments{
 \item{data}{A data frame or data table containing a column with datetime information. The column should be of class POSIXt.}
 
+\item{id.col}{A string representing the column name for the ID field (default is "ID").}
+
 \item{datetime.col}{A character string specifying the name of the column containing the datetime values. Default is \code{"datetime"}.}
 
-\item{pre.deploy.threshold}{A numeric value between 0 and 1, indicating the threshold (as a percentage) for the start of the deployment period.
-Data before this percentage will be considered as pre-deployment. Default is 0.2 (20\%).}
+\item{early.threshold}{A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
+Rows falling within the first early.threshold * 100\% of the dataset are classified as part of this phase.
+Anomalies detected in this range will result in the removal of all earlier rows. The default value is 0.2 (20\%).}
 
-\item{post.deploy.threshold}{A numeric value between 0 and 1, indicating the threshold (as a percentage) for the end of the deployment period.
-Data after this percentage will be considered as post-deployment. Default is 0.8 (80\%).}
+\item{late.threshold}{A numeric value between 0 and 1 that defines the portion of the dataset considered as the late / post-deployment phase.
+Rows falling within the last (1 - late.threshold) * 100\% of the dataset are classified as part of this phase.
+Anomalies detected in this range will result in the removal of all subsequent rows. The default value is 0.8 (80\%).}
 
 \item{verbose}{Logical. If TRUE, the function will print detailed processing
 information. Defaults to TRUE.}
@@ -30,9 +35,21 @@ information. Defaults to TRUE.}
 A data frame (\code{data}) with rows before or after the detected temporal discontinuities removed.
 }
 \description{
-This function checks for temporal discontinuities in a specified datetime column of a dataset.
-It automatically infers the sampling interval by identifying the most frequent time difference between
-consecutive timestamps and reports it to the user. Detected gaps larger than this interval are flagged
-as anomalies, and rows corresponding to these gaps are discarded based on their position relative to
-the defined pre-deployment and post-deployment periods.
+This function identifies and handles temporal discontinuities in a specified datetime column of a dataset.
+It determines the expected sampling interval by calculating the most frequent time difference
+between consecutive timestamps. Any detected gaps larger than this interval are flagged as anomalies.
+}
+\details{
+Rows corresponding to these anomalies are removed based on their position relative to
+two customizable thresholds:
+\itemize{
+\item \strong{Early data period:} If anomalies occur within the first early.threshold\% of the dataset,
+all rows before the last anomaly in this range are discarded.
+\item \strong{Late data period:} If anomalies occur within the last late.threshold\% of the dataset,
+all rows after the first anomaly in this range are discarded.
+}
+
+Anomalies detected within the central portion of the dataset, outside these thresholds, will not result in
+any rows being removed. Instead, a warning is issued to alert the user to potential data irregularities
+requiring manual inspection.
 }

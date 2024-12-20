@@ -88,8 +88,8 @@ summarizeTagData <- function(data,
     declination_deg <- ifelse("magnetic.declination" %in% names(attributes(data_individual)), attributes(data_individual)$magnetic.declination, NA)
 
     # get PSAT locations
-    fastloc_positions <- length(which(!is.na(data_individual$position_type=="FastGPS")))
-    user_positions <- length(which(!is.na(data_individual$position_type=="User")))
+    fastloc_positions <- length(which(data_individual$position_type=="FastGPS"))
+    user_positions <- length(which(data_individual$position_type=="User"))
 
     # create a row for each individual
     summary_list[[i]] <- data.frame(

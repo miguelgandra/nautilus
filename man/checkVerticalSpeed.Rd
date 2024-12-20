@@ -10,8 +10,8 @@ checkVerticalSpeed(
   depth.col = "depth",
   vertical.speed.threshold,
   sampling.rate,
-  pre.deploy.threshold = 0.2,
-  post.deploy.threshold = 0.8,
+  early.threshold = 0.2,
+  late.threshold = 0.8,
   verbose = TRUE
 )
 }
@@ -26,9 +26,13 @@ checkVerticalSpeed(
 
 \item{sampling.rate}{The sampling rate for the data (in Hz), used to adjust the vertical speed calculation. Default is \code{1}.}
 
-\item{pre.deploy.threshold}{A numeric value between 0 and 1, indicating the threshold (as a percentage) for the start of the deployment period.}
+\item{early.threshold}{A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
+Rows falling within the first early.threshold * 100\% of the dataset are classified as part of this phase.
+Anomalies detected in this range will result in the removal of all earlier rows. The default value is 0.2 (20\%).}
 
-\item{post.deploy.threshold}{A numeric value between 0 and 1, indicating the threshold (as a percentage) for the end of the deployment period.}
+\item{late.threshold}{A numeric value between 0 and 1 that defines the portion of the dataset considered as the late / post-deployment phase.
+Rows falling within the last (1 - late.threshold) * 100\% of the dataset are classified as part of this phase.
+Anomalies detected in this range will result in the removal of all subsequent rows. The default value is 0.8 (80\%).}
 
 \item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
 }
@@ -39,6 +43,17 @@ A data frame (\code{data}) with rows containing vertical speed outliers removed.
 This function checks for vertical displacement speed outliers in the data, where vertical speed
 is calculated as the absolute difference in depth between consecutive measurements, adjusted for
 the sampling rate. Spurious data points with vertical speeds exceeding a user-specified threshold
-are flagged, and rows with these outliers are removed based on their position relative to the
-defined pre-deployment and post-deployment periods.
+are flagged. Rows corresponding to these anomalies are removed based on their position relative to
+two customizable thresholds:
+\itemize{
+\item \strong{Early data period:} If anomalies occur within the first early.threshold\% of the dataset,
+all rows before the last anomaly in this range are discarded.
+\item \strong{Late data period:} If anomalies occur within the last late.threshold\% of the dataset,
+all rows after the first anomaly in this range are discarded.
+}
+}
+\details{
+Anomalies detected within the central portion of the dataset, outside these thresholds, will not result in
+any rows being removed. Instead, a warning is issued to alert the user to potential data irregularities
+requiring manual inspection.
 }
