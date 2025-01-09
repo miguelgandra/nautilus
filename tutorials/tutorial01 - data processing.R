@@ -136,11 +136,11 @@ data_list <- processTagData(data.folders = data_folders,
                             lat.col = "deploy_lat",
                             tagdate.col = "deploy_date",
                             axis.mapping = axes_config,
-                            sensor.smoothing.factor = 2,
+                            sensor.smoothing.factor = 4,
                             dba.window = 6,
                             smoothing.window = 1,
                             burst.quantiles = c(0.95, 0.99),
-                            downsample.to = 20,
+                            downsample.to = 1,
                             vertical.speed.threshold = 6.5,
                             verbose = TRUE)
 

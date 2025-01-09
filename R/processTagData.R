@@ -318,7 +318,6 @@ processTagData <- function(data.folders,
       cat("Total rows:", result, "\n")
     }
 
-
     # rename columns
     data.table::setnames(sensor_data, c("date", "time", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "temp", "depth"))
 
@@ -588,8 +587,11 @@ processTagData <- function(data.folders,
         sink(tempfile())
 
         #  aggregate data into the specified interval
-        processed_data <- sensor_data[, lapply(.SD, function(x) if (is.numeric(x)) mean(x, na.rm = TRUE) else first(x)),
+        processed_data <- sensor_data[, lapply(.SD, function(x) if (is.numeric(x)) mean(x, na.rm = TRUE) else data.table::first(x)),
                                       by = datetime, .SDcols = c(metrics, psat_cols)]
+
+        # re-add ID column
+        processed_data[, ID := id]
 
         # restore normal output
         sink()
