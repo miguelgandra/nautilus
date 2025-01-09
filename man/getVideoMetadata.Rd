@@ -4,25 +4,44 @@
 \alias{getVideoMetadata}
 \title{Extract Video Metadata and Timestamps}
 \usage{
-getVideoMetadata(directory)
+getVideoMetadata(
+  video.folders,
+  video.format = "mp4",
+  id.metadata = NULL,
+  id.col = "ID",
+  tagdate.col = "tagging_date"
+)
 }
 \arguments{
-\item{directory}{Character string. Path to the directory containing video files.
-Supported formats are \code{.mp4} and \code{.mov}.}
+\item{video.folders}{Character vector. Paths to directories containing video files.}
+
+\item{video.format}{Character vector. Allowed video formats, such as "mp4" or "mov". Defaults to "mp4".}
+
+\item{id.metadata}{Optional. Data frame containing metadata about the videos. Must include columns for
+identifying IDs (\code{id.col}) and tagging dates (\code{tagdate.col}). If provided, the tagging date is used to
+determine the start time of the video.}
+
+\item{id.col}{Character string. Column name in \code{id.metadata} corresponding to folder IDs. Defaults to "ID".}
+
+\item{tagdate.col}{Character string. Column name in \code{id.metadata} with tagging dates. Defaults to "tagging_date".}
 }
 \value{
-A data frame containing metadata for each video, including:
-\describe{
-\item{video}{Filename of the video.}
-\item{start}{Start time of the video (POSIXct).}
-\item{end}{End time of the video (POSIXct).}
-\item{duration}{Duration of the video in seconds.}
-\item{frame_rate}{Frame rate of the video in frames per second.}
-\item{file}{Full path to the video file.}
+A data frame containing metadata for each video file, including:
+\itemize{
+\item \code{ID}: Folder identifier (if \code{id.metadata} is provided).
+\item \code{video}: Video filename.
+\item \code{start}: Start time of the video (POSIXct).
+\item \code{end}: End time of the video (POSIXct).
+\item \code{duration}: Video duration in seconds.
+\item \code{frame_rate}: Frame rate in frames per second.
+\item \code{file}: Full path to the video file.
 }
 }
 \description{
-This function processes video files in a specified directory to extract metadata,
-including start time, duration, end time, and frame rate. The start time is derived
-from an OCR operation on the first frame of each video.
+This function extracts metadata from video files within specified directories. The metadata includes
+start time, end time, duration, and frame rate. The start time is derived using Optical Character
+Recognition (OCR) on the first frame of each video. If \code{id.metadata} is supplied, the start time will
+be assumed to match the tagging date of the animal, and only the time portion will be extracted using OCR.
+This approach increases the reliability of the time extraction by using the known tagging date as a reference.
+However, note that OCR is not perfect, and its accuracy may vary from video to video.
 }

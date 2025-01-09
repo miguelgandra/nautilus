@@ -15,8 +15,9 @@ processTagData(
   lat.col = "lat",
   tagdate.col = "tagging_date",
   axis.mapping = NULL,
+  sensor.smoothing.factor = 4,
   dba.window = 3,
-  smoothing.window = 5,
+  smoothing.window = 1,
   burst.quantiles = c(0.95, 0.99),
   downsample.to = 1,
   vertical.speed.threshold = NULL,
@@ -56,10 +57,17 @@ The data frame should have three columns:
 }
 Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.}
 
+\item{sensor.smoothing.factor}{Optional. A factor that determines the size of the moving window (in timesteps)
+used to smooth raw sensor signals, including acceleration, gyroscope, and magnetometer data.
+The window size is calculated as \code{sampling.frequence / smoothing.factor}. A smaller value results
+in greater smoothing. Set to NULL to disable smoothing. Defaults to 4.}
+
 \item{dba.window}{Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.}
 
-\item{smoothing.window}{Optional. The size of the moving window (in timesteps) used for smoothing the signals.
-A larger value results in greater smoothing. Set to NULL to disable smoothing. Defaults to 5.}
+\item{smoothing.window}{Optional. A numeric value specifying the size of the moving window (in seconds) used to smooth
+the metrics time series. For angular metrics (e.g., roll, pitch, heading), a moving circular mean is applied, while for
+linear signals (e.g., surge, sway, heave), a moving arithmetic mean is used. The window size is determined as the
+product of \code{sampling_freq} and \code{smoothing.window}.}
 
 \item{burst.quantiles}{Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).}
@@ -95,9 +103,9 @@ The following key metrics are automatically calculated:
 
 \strong{Acceleration:}
 \itemize{
-\item Total Acceleration: (m/s²) - The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
-\item Vectorial Dynamic Body Acceleration (VeDBA): (m/s²) Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
-\item Overall Dynamic Body Acceleration (ODBA): (m/s²) A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
+\item Total Acceleration: (g) - The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
+\item Vectorial Dynamic Body Acceleration (VeDBA): (g) Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
+\item Overall Dynamic Body Acceleration (ODBA): (g) A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
 \item Burst Swimming Events: Identifies periods of high acceleration based on a given acceleration magnitude percentile, which can be used to detect burst swimming behavior. This metric is binary, indicating whether the acceleration exceeds the threshold.
 }
 
@@ -111,8 +119,8 @@ The heading is corrected according to the magnetic declination value estimated b
 
 \strong{Linear motion:}
 \itemize{
-\item Surge: (m/s) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
-\item Sway: (m/s) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
-\item Heave: (m/s) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
+\item Surge: (g) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
+\item Sway: (g) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
+\item Heave: (g) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
 }
 }

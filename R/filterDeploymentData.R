@@ -8,9 +8,15 @@
 #' to detect change points in both mean and variance. It then extracts the periods between the pre-deployment
 #' and post-deployment phases based on the specified datetime range.
 #'
+#' @details
 #' The function uses a binary segmentation method (`cpt.meanvar`) to detect changes in depth and variance,
-#' and it allows users to specify the maximum number of changepoints detected. The function also provides options
-#' to visualize the data with custom plot options.
+#' and it allows users to specify the maximum number of changepoints detected.
+#'
+#' If the sampling frequency is greater than 1 Hz, the function downsamples the data to 1 Hz by rounding
+#' datetime values to the nearest second and computing the mean for each second. This is done to improve speed
+#' and avoid memory bottlenecks when handling large datasets.
+#'
+#' The function also provides options to visualize the data with custom plot options.
 #'
 #' @param data A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
 #' containing data from multiple animals. The output of the \link{processTagData} function is recommended, as it formats
@@ -128,8 +134,8 @@ filterDeploymentData <- function(data,
     # access the individual dataset
     individual_data <- data[[i]]
 
-    # skip NULL elements in the list
-    if (is.null(individual_data) || is.null(unlist(individual_data))) next
+    # skip NULL or empty elements in the list
+    if (is.null(individual_data) || length(individual_data) == 0) next
 
     # check if each element in the list is a valid data.frame or data.table
     if (!inherits(individual_data, "data.frame") && !inherits(individual_data, "data.table")) {
@@ -143,45 +149,90 @@ filterDeploymentData <- function(data,
     original_attributes <- attributes(individual_data)[-c(1:4)]
 
     # convert data.table to data.frame for processing
-    if (inherits(individual_data, "data.table")) {
-      individual_data <- as.data.frame(individual_data)
+    if (inherits(individual_data, "data.frame")) {
+      individual_data <- data.table::setDT(individual_data)
     }
+
+    # retrieve ID from the dataset based on the specified 'id.col' column
+    id <- unique(individual_data[[id.col]])
+
+
 
     ############################################################################
     # Prepare variables ########################################################
     ############################################################################
 
-    # retrieve ID from the dataset based on the specified 'id.col' column
-    id <- unique(individual_data[[id.col]])
-
     # check if 'first.datetime' attribute exists in the dataset
     # if present, use it; otherwise, calculate the earliest datetime from the data
-    if("first.datetime" %in% names(attributes(individual_data))){
-      first_datetime <- attributes(individual_data)$first.datetime
-    }else{
-      first_datetime <- min(individual_data[[datetime.col]], na.rm = TRUE)
+    first_datetime <- if ("first.datetime" %in% names(attributes(data[[i]]))) {
+      attributes(data[[i]])$first.datetime
+    } else {
+      individual_data[, min(get(datetime.col), na.rm = TRUE)]
     }
 
     # check if 'last.datetime' attribute exists in the dataset
     # if present, use it; otherwise, calculate the latest datetime from the data
-    if("last.datetime" %in% names(attributes(individual_data))){
-      last_datetime <- attributes(individual_data)$last.datetime
-    }else{
-      first_datetime <- max(individual_data[[datetime.col]], na.rm = TRUE)
+    last_datetime <- if ("last.datetime" %in% names(attributes(data[[i]]))) {
+      attributes(data[[i]])$last.datetime
+    } else {
+      individual_data[, max(get(datetime.col), na.rm = TRUE)]
     }
 
     # check if PSAT columns are present
     psat_cols <- c("PTT", "position_type", "lon", "lat")
     positions_available <- FALSE
-    if(all(psat_cols %in% colnames(individual_data))) {
+    if (all(psat_cols %in% colnames(individual_data))) {
       # split PSAT positions for plotting (if available)
-      if(any(!is.na(individual_data$position_type))){
+      if (individual_data[, any(!is.na(position_type))]) {
         positions_available <- TRUE
-        fastloc_pos <- individual_data[which(individual_data$position_type == "FastGPS"), c(datetime.col, "lon", "lat"), drop = FALSE]
-        fastloc_pos <- individual_data[which(individual_data$position_type == "FastGPS"), c(datetime.col, "lon", "lat"), drop = FALSE]
-
-        user_pos <- individual_data[which(individual_data$position_type == "User"), c(datetime.col, "lon", "lat"), drop = FALSE]
+        # filter for FastGPS positions
+        fastloc_pos <- individual_data[position_type == "FastGPS", .SD, .SDcols = c(datetime.col, "lon", "lat")]
+        # filter for User positions
+        user_pos <- individual_data[position_type == "User", .SD, .SDcols = c(datetime.col, "lon", "lat")]
       }
+    }
+
+
+    ############################################################################
+    # Downsample data to 1 Hz ##################################################
+    ############################################################################
+
+    # check if 'sampling_freq' attribute exists in the dataset
+    # if present, use it; otherwise, calculate the sampling frequency from the data
+    sampling_freq <- if ("sampling.frequency" %in% names(attributes(individual_data))) {
+      attributes(data[[i]])$sampling.frequency
+    } else {
+      sampling_rate <- nrow(individual_data)/length(unique(lubridate::floor_date(individual_data[[datetime.col]], "sec")))
+      plyr::round_any(sampling_rate, 5)
+    }
+
+    # check if the sampling frequency is greater than 1 Hz and downsample is required
+    if(sampling_freq > 1){
+
+      # temporarily suppress console output (redirect to a temporary file)
+      sink(tempfile())
+
+      # downsample to 1 Hz by rounding datetime to the nearest second and taking the mean value for each second
+      reduced_data <- individual_data[, lapply(c(depth.col, plot.metrics), function(col) mean(get(col), na.rm = TRUE)),
+                                      by = .(lubridate::floor_date(get(datetime.col)))]
+      # correct the column names
+      data.table::setnames(reduced_data, old = names(reduced_data), new =  c(datetime.col, c(depth.col, plot.metrics)))
+
+      # add ID column
+      reduced_data[, ID := id]
+
+      # reorder columns
+      data.table::setcolorder(reduced_data, c("ID", setdiff(names(reduced_data), "ID")))
+
+      # restore normal output
+      sink()
+
+      # else, if downsampling is not required (sampling frequency <= 1 Hz)
+    } else {
+
+      #keep only relevant columns
+      reduced_data <- individual_data[, c(id.col, datetime.col, depth.col, plot.metrics), with = FALSE]
+
     }
 
 
@@ -190,14 +241,23 @@ filterDeploymentData <- function(data,
     ############################################################################
 
     # add 1 hour of 0-depth data before the first and after the last datetime
-    before_df <- data.frame("ID"=id, "datetime"=seq(min(individual_data[[datetime.col]])-3600, to=min(individual_data[[datetime.col]])-1, by="1 sec"), depth=0)
-    colnames(before_df)[2] <- datetime.col
-    after_df <- data.frame("ID"=id, "datetime"=seq(max(individual_data[[datetime.col]])+1, to=max(individual_data[[datetime.col]])+3600, by="1 sec"), depth=0)
-    colnames(after_df)[2] <- datetime.col
+    before_dt <- data.table::data.table("ID" = id,
+                                        datetime = seq(min(reduced_data[[datetime.col]]) - 3600,
+                                                       to = min(reduced_data[[datetime.col]]) - 1,
+                                                       by = "1 sec"),
+                                        depth = 0)
+
+    after_dt <- data.table::data.table("ID" = id,
+                                       datetime = seq(max(reduced_data[[datetime.col]]) + 1,
+                                                      to = max(reduced_data[[datetime.col]]) + 3600,
+                                                      by = "1 sec"),
+                                       depth = 0)
 
     # merge buffers with the original dataset
-    individual_data <- dplyr::bind_rows(before_df, individual_data, after_df)
-    individual_data <- individual_data[order(individual_data[[datetime.col]]),]
+    reduced_data <- data.table::rbindlist(list(before_dt, reduced_data, after_dt), fill = TRUE)
+
+    # order by datetime column
+    data.table::setorder(reduced_data, datetime)
 
 
     ############################################################################
@@ -211,19 +271,19 @@ filterDeploymentData <- function(data,
       "ID: ", crayon::blue$bold(id), "\n"))
 
     # run binary segmentation to detect change points in both mean and variance
-    cp_depth <- suppressWarnings(changepoint::cpt.meanvar(individual_data[[depth.col]], method="BinSeg", Q=max.changepoints, test.stat="Normal"))
+    cp_depth <- suppressWarnings(changepoint::cpt.meanvar(reduced_data[[depth.col]], method="BinSeg", Q=max.changepoints, test.stat="Normal"))
 
     # extract changepoints
     changepoints <- changepoint::cpts(cp_depth)
 
     # add start and end indices
-    changepoints <- c(1, changepoints, nrow(individual_data))
+    changepoints <- c(1, changepoints, nrow(reduced_data))
 
     # calculate mean and variance for each segment
     segment_stats <- lapply(seq_along(changepoints[-1]), function(s) {
       start_idx <- changepoints[s]
       end_idx <- changepoints[s + 1] - 1
-      segment <- individual_data[[depth.col]][start_idx:end_idx]
+      segment <- reduced_data[[depth.col]][start_idx:end_idx]
       list(start = start_idx, end = end_idx, mean = mean(segment), variance = var(segment))
     })
 
@@ -249,8 +309,8 @@ filterDeploymentData <- function(data,
     # Print to console #########################################################
     ############################################################################
 
-    attachtime <- individual_data[[datetime.col]][deploy_index]
-    poptime <- individual_data[[datetime.col]][popup_index]
+    attachtime <- reduced_data[[datetime.col]][deploy_index]
+    poptime <- reduced_data[[datetime.col]][popup_index]
 
     # calculate the deploy duration
     total_duration <- difftime(last_datetime, first_datetime, units = "hours")
@@ -262,7 +322,7 @@ filterDeploymentData <- function(data,
     pre_deploy <- sprintf("%dh:%02dm", floor(pre_deploy), round((pre_deploy - floor(pre_deploy)) * 60))
     post_deploy <- as.numeric(difftime(last_datetime, poptime, units="hours"))
     post_deploy <- sprintf("%dh:%02dm", floor(post_deploy), round((post_deploy - floor(post_deploy)) * 60))
-    rows_discarded <- length(1:deploy_index) + length(popup_index:nrow(individual_data))
+    rows_discarded <- length(1:deploy_index) + length(popup_index:nrow(reduced_data))
 
     # print results to the console
     cat(sprintf("Total dataset duration: %s\n", total_duration))
@@ -291,23 +351,23 @@ filterDeploymentData <- function(data,
 
       layout(matrix(1:3, ncol=1), heights=c(2,1,1))
       par(mar=c(0.6, 3.4, 2, 2), mgp=c(2.2,0.6,0))
-      total_rows <- nrow(individual_data)
+      total_rows <- nrow(reduced_data)
 
       ##################################################################
       # generate the primary plot showing depth patterns ###############
 
       # set up empty plot with appropriate y-axis limits
-      plot(y=individual_data[[depth.col]], x=individual_data[[datetime.col]], type="n", ylim=c(max(individual_data[[depth.col]], na.rm=T), -5),
+      plot(y=reduced_data[[depth.col]], x=reduced_data[[datetime.col]], type="n", ylim=c(max(reduced_data[[depth.col]], na.rm=T), -5),
            main=id, xlab="", ylab="Depth (m)", las=1, xaxt="n", cex.axis=0.8, cex.lab=0.9, cex.main=1)
       # add a background shaded rectangle
       rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], col="grey97", border=NA)
       # plot the depth time series
-      lines(y=individual_data[[depth.col]], x=individual_data[[datetime.col]], lwd=0.8)
+      lines(y=reduced_data[[depth.col]], x=reduced_data[[datetime.col]], lwd=0.8)
       # add vertical red dashed lines to mark deployment and popup indices
-      abline(v=individual_data[[datetime.col]][c(deploy_index, popup_index)], col="red", lty=3)
+      abline(v=reduced_data[[datetime.col]][c(deploy_index, popup_index)], col="red", lty=3)
       # highlight the discarded data in red
-      lines(x=individual_data[[datetime.col]][1:deploy_index], y=individual_data[[depth.col]][1:deploy_index], col="red1", lwd=0.8)
-      lines(x=individual_data[[datetime.col]][popup_index:total_rows], y=individual_data[[depth.col]][popup_index:total_rows], col="red1", lwd=0.8)
+      lines(x=reduced_data[[datetime.col]][1:deploy_index], y=reduced_data[[depth.col]][1:deploy_index], col="red1", lwd=0.8)
+      lines(x=reduced_data[[datetime.col]][popup_index:total_rows], y=reduced_data[[depth.col]][popup_index:total_rows], col="red1", lwd=0.8)
       # add a border around the plot area
       box()
       # if positions are available, highlight their timestamp
@@ -329,17 +389,17 @@ filterDeploymentData <- function(data,
         if(v==length(plot.metrics))  par(mar=c(2, 3.4, 0.6, 2))
 
         # set up empty plot with appropriate y-axis limits
-        plot(y=individual_data[[plot.metrics[v]]], x=individual_data[[datetime.col]], type="n", main="", xlab="",
+        plot(y=reduced_data[[plot.metrics[v]]], x=reduced_data[[datetime.col]], type="n", main="", xlab="",
              ylab=plot.metrics.labels[v], xaxt="n", las=1, cex.axis=0.8,  cex.lab=0.9)
         # add a background shaded rectangle
         rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], col="grey97", border=NA)
         # plot the metric time series
-        lines(y=individual_data[[plot.metrics[v]]], x=individual_data[[datetime.col]], lwd=0.8)
+        lines(y=reduced_data[[plot.metrics[v]]], x=reduced_data[[datetime.col]], lwd=0.8)
         # add vertical red dashed lines to mark deployment and popup indices
-        abline(v=individual_data[[datetime.col]][c(deploy_index, popup_index)], col="red", lty=3)
+        abline(v=reduced_data[[datetime.col]][c(deploy_index, popup_index)], col="red", lty=3)
         # highlight the discarded data in red
-        lines(x=individual_data[[datetime.col]][1:deploy_index], y=individual_data[[plot.metrics[v]]][1:deploy_index], col="red1", lwd=0.8)
-        lines(x=individual_data[[datetime.col]][popup_index:total_rows], y=individual_data[[plot.metrics[v]]][popup_index:total_rows], col="red1", lwd=0.8)
+        lines(x=reduced_data[[datetime.col]][1:deploy_index], y=reduced_data[[plot.metrics[v]]][1:deploy_index], col="red1", lwd=0.8)
+        lines(x=reduced_data[[datetime.col]][popup_index:total_rows], y=reduced_data[[plot.metrics[v]]][popup_index:total_rows], col="red1", lwd=0.8)
         # add a border around the plot area
         box()
         if(positions_available){
@@ -352,7 +412,7 @@ filterDeploymentData <- function(data,
       # add a date x-axis ##############################################
 
       # determine the date range
-      date_range <- range(individual_data[[datetime.col]], na.rm = TRUE)
+      date_range <- range(reduced_data[[datetime.col]], na.rm = TRUE)
       # use 'pretty' to automatically calculate appropriate tick positions
       ticks <- pretty(date_range, n = 6)
       # calculate minor tick positions between main ticks
@@ -376,26 +436,28 @@ filterDeploymentData <- function(data,
 
     }
 
-      ##########################################################################
-      # Save updated data ######################################################
-      ##########################################################################
+    ############################################################################
+    # Save updated data ########################################################
+    ############################################################################
 
-      # subset the data from the specified indices (deploy_index to popup_index)
-      individual_data <- individual_data[deploy_index:popup_index, ]
+    # subset the data between the specified attachtime and poptime
+    individual_data <- individual_data[individual_data[[datetime.col]] >= attachtime & individual_data[[datetime.col]] <= poptime, ]
 
-      # if the original data was a data.table, convert it back to data.table
-      if ("data.table" %in% original_class) {
-        individual_data <- data.table::as.data.table(individual_data)
-      }
 
-      # reapply the original attributes to the processed data
-      for (attr_name in names(original_attributes)) {
-        attr(individual_data, attr_name) <- original_attributes[[attr_name]]
-      }
+    # if the original data was a data.table, convert it back to data.table
+    if ("data.frame" %in% original_class) {
+      individual_data <- as.data.frame(individual_data)
+    }
 
-      # save the filtered data
-      processed_data[[i]] <- individual_data
-      names(processed_data)[i] <- names(data)[i]
+    # reapply the original attributes to the processed data
+    for (attr_name in names(original_attributes)) {
+      attr(individual_data, attr_name) <- original_attributes[[attr_name]]
+    }
+
+    # save the filtered data
+    processed_data[[i]] <- individual_data
+    names(processed_data)[i] <- names(data)[i]
+
   }
 
 

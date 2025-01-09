@@ -82,33 +82,39 @@ animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 # Configure the axes mapping for IMU (Inertial Measurement Unit) data.
 # It specifies how raw sensor axes (accelerometer, magnetometer, gyroscope) are
 # mapped for different tags, so they match the NED (North-East-Down) coordinate system.
+# The "type" is automatically determined based on the ID names:
+# - If the ID name includes the substring "CAM", it will be classified as type "CAM".
+# - If no such match is found, the type will default to "CMD".
 # The "tag" column in the configuration should match the tags included in the ID metadata.
 # Accelerometer axes: ax, ay, and az.
 # Magnetometer axes: mx, my, and mz.
 # Gyroscope axes: gx, gy, and gz.
 
 
-# Specify file containing IMU (Inertial Measurement Unit) axes configuration
-axes_config_file <- "./axes_configuration.csv"
+# Create the data frame for axis mapping
+axes_config <- data.frame(
+  type = character(),
+  tag = character(),
+  from = character(),
+  to = character()
+)
 
-# If configuration file does not exist, create a default axes mapping
-if(!file.exists(axes_config_file)){
-  # Mapping for CATS mini-Diary TAG
-  axes_config <- data.frame("tag"=NA, "from"=NA, "to"=NA)
-  axes_config[1,] <- c("CATS", "ax", "-ay")
-  axes_config[2,] <- c("CATS", "ay", "-ax")
-  # Mapping for CEiiA CAM TAG
-  axes_config[3,] <- c("CEIIA", "ax", "az")
-  axes_config[4,] <- c("CEIIA", "ay", "-ax")
-  axes_config[5,] <- c("CEIIA", "az", "ay")
-  axes_config[6,] <- c("CEIIA", "mx", "mz")
-  axes_config[7,] <- c("CEIIA", "mz", "-mx")
-  # Save the default configuration to a CSV file for future use
-  write.csv(axes_config, file=axes_config_file)
-}else{
-  # Load existing axes configuration
-  axes_config <- read.csv(axes_config_file, header=TRUE)
-}
+# Mapping for CATS CAM TAG
+axes_config[1, ] <- c("CAM", "CATS", "ax", "-ax")
+axes_config[2, ] <- c("CAM", "CATS", "ay", "-ay")
+axes_config[3, ] <- c("CAM", "CATS", "az", "-az")
+
+# Mapping for CEiiA CAM TAG
+axes_config[4, ] <- c("CAM", "CEIIA", "ax", "az")
+axes_config[5, ] <- c("CAM", "CEIIA", "ay", "-ax")
+axes_config[6, ] <- c("CAM", "CEIIA", "az", "ay")
+axes_config[7, ] <- c("CAM", "CEIIA", "mx", "mz")
+axes_config[8, ] <- c("CAM", "CEIIA", "mz", "-mx")
+
+# Mapping for CATS mini-Diary TAG (CMD)
+axes_config[9, ] <- c("CMD", "CATS", "ax", "-ay")
+axes_config[10, ] <- c("CMD", "CATS", "ay", "-ax")
+
 
 
 ################################################################################
@@ -130,11 +136,12 @@ data_list <- processTagData(data.folders = data_folders,
                             lat.col = "deploy_lat",
                             tagdate.col = "deploy_date",
                             axis.mapping = axes_config,
-                            dba.window = 3,
-                            smoothing.window = 5,
+                            sensor.smoothing.factor = 2,
+                            dba.window = 6,
+                            smoothing.window = 1,
                             burst.quantiles = c(0.95, 0.99),
-                            downsample.to = 1,
-                            vertical.speed.threshold = 3,
+                            downsample.to = 20,
+                            vertical.speed.threshold = 6.5,
                             verbose = TRUE)
 
 
@@ -145,7 +152,6 @@ data_list <- processTagData(data.folders = data_folders,
 # Filter tag data to exclude pre- and post-deployment periods based on
 # depth and variance thresholds. Generate and save diagnostic plots
 # for each filtered dataset.
-
 
 # Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
 filter_results <- filterDeploymentData(data = data_list,
@@ -212,6 +218,9 @@ summary <- summarizeTagData(filtered_list)
 
 # Print the summary table
 print(summary)
+
+# Save the summary table as CSV
+write.csv(summary, file="./summary_table.csv")
 
 
 ###############################################################################################

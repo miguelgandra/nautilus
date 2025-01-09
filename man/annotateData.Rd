@@ -7,34 +7,40 @@
 annotateData(
   data,
   annotations,
-  event.name = "event",
   id.col = "ID",
   datetime.col = "datetime",
+  event.col = "event",
   start.col = "start",
-  end.col = "end"
+  end.col = "end",
+  selected.events = NULL
 )
 }
 \arguments{
-\item{data}{A data frame containing the original dataset with a \code{datetime} column.}
+\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame containing data from multiple animals.}
 
 \item{annotations}{A data frame containing the start and end times of events/behaviors (columns specified by \code{start.col} and \code{end.col})
 and an individual ID column (specified by \code{id.col}).}
-
-\item{event.name}{A character string specifying the name for the new binary column.}
 
 \item{id.col}{A character string specifying the name of the column in both \code{data} and \code{annotations} containing animal IDs.}
 
 \item{datetime.col}{A character string specifying the name of the column in \code{data} containing the datetime values.}
 
+\item{event.col}{A character string specifying}
+
 \item{start.col}{A character string specifying the name of the column in \code{annotations} containing event start times.}
 
 \item{end.col}{A character string specifying the name of the column in \code{annotations} containing event end times.}
+
+\item{selected.events}{A vector of event types to be annotated. If NULL (default), all events will be annotated.}
 }
 \value{
-A data frame with an additional binary column indicating whether each row falls within the specified event/behavior.
+A list of data frames (one for each individual) with binary columns indicating the presence (1) or absence (0) of each specified event.
 }
 \description{
-This function takes an original dataset and a data frame with event start and end times, along with individual IDs,
-then creates a new binary column in the dataset which marks rows that fall within the specified event or behavior
-periods as \code{1} and others as \code{0}.
+This function annotates a list of individual data frames (or a single aggregated data frame) with event or behavior information.
+It links time-bound events (e.g., feeding, social interactions) to sensor data collected from individual animals,
+with the event annotations typically derived from a detailed review of footage recorded by camera tags.
+The function scans the dataset(s) for each animal, checking whether each row's timestamp falls within the defined time intervals of
+specific events listed in the provided annotations data frame, marking rows that fall within the specified event or behavior
+periods as \code{1} and those outside the periods as \code{0}.
 }

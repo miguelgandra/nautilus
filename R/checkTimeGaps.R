@@ -22,6 +22,12 @@
 #' @param data A data frame or data table containing a column with datetime information. The column should be of class POSIXt.
 #' @param id.col A string representing the column name for the ID field (default is "ID").
 #' @param datetime.col A character string specifying the name of the column containing the datetime values. Default is `"datetime"`.
+#' @param time.diff.threshold A numeric value specifying the maximum allowable difference
+#' between consecutive time differences to be considered within the expected sampling interval.
+#' Any time differences exceeding this threshold will be flagged as outliers, even if they are
+#' close to the most frequent sampling interval. This helps account for small fluctuations or
+#' inaccuracies in timestamps due to floating-point rounding. If set to `NULL`, no
+#' additional threshold is applied beyond the inferred sampling interval. Defaults to `0.001`.
 #' @param early.threshold A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
 #' Rows falling within the first early.threshold * 100% of the dataset are classified as part of this phase.
 #' Anomalies detected in this range will result in the removal of all earlier rows. The default value is 0.2 (20%).
@@ -38,6 +44,7 @@
 checkTimeGaps <- function(data,
                           id.col = "ID",
                           datetime.col = "datetime",
+                          time.diff.threshold = 0.001,
                           early.threshold = 0.2,
                           late.threshold = 0.8,
                           verbose = TRUE) {
@@ -85,6 +92,9 @@ checkTimeGaps <- function(data,
   # find the most frequent time difference
   interval <- as.numeric(names(sort(table(time_diffs_no_na), decreasing = TRUE)[1]))
 
+  # calculate second-order differences (differences between time differences)
+  time_diff_variation <- c(NA, diff(data$time_diff))
+
   # print the inferred sampling interval to the console
   #if (verbose) {
   #  interval_readable <- paste0(interval, " ", ifelse(interval == 1, "sec", "secs"))
@@ -95,7 +105,12 @@ checkTimeGaps <- function(data,
   # Check for temporal discontinuities between measurements ####################
   ##############################################################################
 
-  # find time_diff values greater than 1
+  # adjust time differences based on the threshold
+  if(!is.null(time.diff.threshold)){
+    data$time_diff <- ifelse(abs(time_diff_variation) < time.diff.threshold, 0, data$time_diff)
+  }
+
+  # find time anomalies (gaps larger than the most frequent interval)
   time_anomalies <- which(data$time_diff > interval)
 
   # if a gap is found

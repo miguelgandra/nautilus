@@ -72,8 +72,13 @@ and post-deployment phases based on the specified datetime range.
 }
 \details{
 The function uses a binary segmentation method (\code{cpt.meanvar}) to detect changes in depth and variance,
-and it allows users to specify the maximum number of changepoints detected. The function also provides options
-to visualize the data with custom plot options.
+and it allows users to specify the maximum number of changepoints detected.
+
+If the sampling frequency is greater than 1 Hz, the function downsamples the data to 1 Hz by rounding
+datetime values to the nearest second and computing the mean for each second. This is done to improve speed
+and avoid memory bottlenecks when handling large datasets.
+
+The function also provides options to visualize the data with custom plot options.
 }
 \seealso{
 \link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.

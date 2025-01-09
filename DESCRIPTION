@@ -25,6 +25,9 @@ Imports:
 	zoo,
 	crayon,
 	oce
+Suggests:
+	randomForest,
+	pROC
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 

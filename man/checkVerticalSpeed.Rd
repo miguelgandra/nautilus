@@ -10,6 +10,8 @@ checkVerticalSpeed(
   depth.col = "depth",
   vertical.speed.threshold,
   sampling.rate,
+  depth.sensor.resolution = 0.5,
+  depth.sensor.accuracy = 1,
   early.threshold = 0.2,
   late.threshold = 0.8,
   verbose = TRUE
@@ -25,6 +27,10 @@ checkVerticalSpeed(
 \item{vertical.speed.threshold}{A numeric value specifying the threshold for vertical speed outliers (in m/s).}
 
 \item{sampling.rate}{The sampling rate for the data (in Hz), used to adjust the vertical speed calculation. Default is \code{1}.}
+
+\item{depth.sensor.resolution}{Numeric. The fixed uncertainty in the depth reading due to the sensor's resolution (e.g., ±0.5 meters).}
+
+\item{depth.sensor.accuracy}{Numeric. The variable uncertainty in the depth reading, expressed as a percentage of the measured depth (e.g., ±1\% of the depth reading).}
 
 \item{early.threshold}{A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
 Rows falling within the first early.threshold * 100\% of the dataset are classified as part of this phase.

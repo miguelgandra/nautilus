@@ -38,9 +38,15 @@
 #'   \item \strong{to}: A column specifying the target axis in the desired coordinate system.
 #' }
 #' Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.
+#' @param sensor.smoothing.factor Optional. A factor that determines the size of the moving window (in timesteps)
+#' used to smooth raw sensor signals, including acceleration, gyroscope, and magnetometer data.
+#' The window size is calculated as `sampling.frequence / smoothing.factor`. A smaller value results
+#' in greater smoothing. Set to NULL to disable smoothing. Defaults to 4.
 #' @param dba.window Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.
-#' @param smoothing.window Optional. The size of the moving window (in timesteps) used for smoothing the signals.
-#' A larger value results in greater smoothing. Set to NULL to disable smoothing. Defaults to 5.
+#' @param smoothing.window Optional. A numeric value specifying the size of the moving window (in seconds) used to smooth
+#' the metrics time series. For angular metrics (e.g., roll, pitch, heading), a moving circular mean is applied, while for
+#' linear signals (e.g., surge, sway, heave), a moving arithmetic mean is used. The window size is determined as the
+#' product of `sampling_freq` and `smoothing.window`.
 #' @param burst.quantiles Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 #' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
 #' @param downsample.to Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
@@ -56,9 +62,9 @@
 #'
 #' \strong{Acceleration:}
 #' \itemize{
-#'   \item Total Acceleration: (m/s²) - The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
-#'   \item Vectorial Dynamic Body Acceleration (VeDBA): (m/s²) Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
-#'   \item Overall Dynamic Body Acceleration (ODBA): (m/s²) A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
+#'   \item Total Acceleration: (g) - The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
+#'   \item Vectorial Dynamic Body Acceleration (VeDBA): (g) Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
+#'   \item Overall Dynamic Body Acceleration (ODBA): (g) A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
 #'   \item Burst Swimming Events: Identifies periods of high acceleration based on a given acceleration magnitude percentile, which can be used to detect burst swimming behavior. This metric is binary, indicating whether the acceleration exceeds the threshold.
 #' }
 #'
@@ -72,9 +78,9 @@
 #'
 #' \strong{Linear motion:}
 #' \itemize{
-#'   \item Surge: (m/s) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
-#'   \item Sway: (m/s) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
-#'   \item Heave: (m/s) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
+#'   \item Surge: (g) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
+#'   \item Sway: (g) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
+#'   \item Heave: (g) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
 #' }
 #'
 #'
@@ -93,8 +99,9 @@ processTagData <- function(data.folders,
                            lat.col = "lat",
                            tagdate.col = "tagging_date",
                            axis.mapping = NULL,
+                           sensor.smoothing.factor = 4,
                            dba.window = 3,
-                           smoothing.window = 5,
+                           smoothing.window = 1,
                            burst.quantiles = c(0.95, 0.99),
                            downsample.to = 1,
                            vertical.speed.threshold = NULL,
@@ -112,7 +119,7 @@ processTagData <- function(data.folders,
   if(!is.character(data.folders)) stop("`data.folders` must be a character vector.", call. = FALSE)
 
   # check if the provided data.folders exist
-  missing_folders <- data.folders[!file.exists(data.folders)]
+  missing_folders <- data.folders[!dir.exists(data.folders)]
   if (length(missing_folders) > 0) {
     stop(paste0("The following folders were not found: ", paste(missing_folders, collapse = ", ")), call. = FALSE)
   }
@@ -140,8 +147,8 @@ processTagData <- function(data.folders,
 
   # validate orientation.mapping
   if(!is.null(axis.mapping)){
-    if (!all(c("tag", "from", "to") %in% colnames(axis.mapping))) {
-      stop("The 'axis.mapping' data frame must contain 'tag', 'from', and 'to' columns.", call. = FALSE)
+    if (!all(c("type", "tag", "from", "to") %in% colnames(axis.mapping))) {
+      stop("The 'axis.mapping' data frame must contain 'type', 'tag', 'from', and 'to' columns.", call. = FALSE)
     }else {
       if (any(!axis.mapping$tag %in% id.metadata[[tag.col]])) warning("Some tags in axis.mapping do not match tags in id.metadata.", call. = FALSE)
       if (any(!id.metadata[[tag.col]] %in% axis.mapping$tag)) {
@@ -155,7 +162,8 @@ processTagData <- function(data.folders,
     }
   }
 
-  # validate window parameters
+  # validate smoothing and moving window parameters
+  if(!is.numeric(sensor.smoothing.factor)) stop("`sensor.smoothing.factor` must be a numeric value.", call. = FALSE)
   if(!is.numeric(dba.window) || dba.window <= 0) stop("`dba.window` must be a positive numeric value.", call. = FALSE)
   if(!is.numeric(smoothing.window) || smoothing.window <= 0) stop("`smoothing.window` must be a positive numeric value.", call. = FALSE)
 
@@ -323,6 +331,9 @@ processTagData <- function(data.folders,
     # correct negative depths
     sensor_data[depth < 0, depth := 0]
 
+    # add ID column
+    sensor_data[, ID := id]
+
     # process PSAT data if available
     if (!is.na(psat_file) && file.exists(psat_file)) {
       # provide feedback to the user if verbose mode is enabled
@@ -350,16 +361,23 @@ processTagData <- function(data.folders,
     ############################################################################
 
     # retrieve tag type from metadata
-    tag_type <- animal_info[[tag.col]]
+    tag_model <- animal_info[[tag.col]]
 
     # change axis designation and direction to match the NED system
-    if (!is.null(axis.mapping) && !is.na(tag_type)) {
+    if (!is.null(axis.mapping) && !is.na(tag_model)) {
+
+      # extract the unique types from the data frame
+      types <- unique(axis.mapping$type)
+
+      # check which type is present in the ID name (if no match, assign the default type)
+      tag_type <- types[sapply(types, function(x) grepl(x, id))]
+      if (length(tag_type) == 0) {tag_type <- "CMD"}
 
       # provide feedback to the user if verbose mode is enabled
-      if(verbose) cat(paste0("Applying axis mapping for tag type: ", tag_type, "\n"))
+      if(verbose) cat(paste("Applying axis mapping for tag:", tag_model, tag_type, "\n"))
 
-      # filter the axis.mapping for the current tag type
-      tag_mapping <- axis.mapping[axis.mapping$tag == tag_type,]
+      # filter the axis.mapping for the current tag type and model
+      tag_mapping <- axis.mapping[axis.mapping$tag == tag_model & axis.mapping$type == tag_type,]
 
       # create a temporary copy of the data for simultaneous swaps
       temp_data <- data.table::copy(sensor_data)
@@ -384,19 +402,58 @@ processTagData <- function(data.folders,
 
 
     ############################################################################
+    # Smooth sensor signals (optional for noise reduction) #####################
+    ############################################################################
+
+    # calculate sampling frequency
+    sampling_freq <- nrow(sensor_data)/length(unique(lubridate::floor_date(sensor_data$datetime, "sec")))
+    sampling_freq <- plyr::round_any(sampling_freq, 5)
+
+    # smooth signals using a moving average
+    if(!is.null(sensor.smoothing.factor)) {
+
+      # provide feedback to the user if verbose mode is enabled
+      if(verbose) cat("Smoothing sensor signals...\n")
+
+      # set window size
+      smoothing_window <- round(sampling_freq / sensor.smoothing.factor)
+
+      # smooth raw accelerometer values
+      sensor_data[, ax := data.table::frollmean(ax, n = smoothing_window, fill = NA, align = "center")]
+      sensor_data[, ay := data.table::frollmean(ay, n = smoothing_window, fill = NA, align = "center")]
+      sensor_data[, az := data.table::frollmean(az, n = smoothing_window, fill = NA, align = "center")]
+
+      # smooth raw gyroscope values
+      sensor_data[, gx := data.table::frollmean(gx, n = smoothing_window, fill = NA, align = "center")]
+      sensor_data[, gy := data.table::frollmean(gy, n = smoothing_window, fill = NA, align = "center")]
+      sensor_data[, gz := data.table::frollmean(gz, n = smoothing_window, fill = NA, align = "center")]
+
+      # smooth magnetometer values
+      sensor_data[, mx := data.table::frollmean(mx, n = smoothing_window, fill = NA, align = "center")]
+      sensor_data[, my := data.table::frollmean(my, n = smoothing_window, fill = NA, align = "center")]
+      sensor_data[, mz := data.table::frollmean(mz, n = smoothing_window, fill = NA, align = "center")]
+   }
+
+    ############################################################################
     # Calculate acceleration metrics ###########################################
     ############################################################################
 
     # provide feedback to the user if verbose mode is enabled
     if(verbose) cat("Calculating acceleration metrics...\n")
 
+    # convert acceleration axes from m/2 to Gs
+    if(tag_model != "CEIIA"){
+      sensor_data[, ax := ax / 9.80665]
+      sensor_data[, ay := ay / 9.80665]
+      sensor_data[, az := az / 9.80665]
+      if(verbose) cat(paste0("Acceleration values converted from m/s", "\U00B2", " to g.\n"))
+    }
+
     # calculate total acceleration
     sensor_data[, accel := sqrt(ax^2 + ay^2 + az^2)]
 
     # calculate dynamic and vectorial body acceleration using a moving window (3-sec)
     # doi: 10.3354/ab00104
-    sampling_freq <- nrow(sensor_data)/length(unique(lubridate::floor_date(sensor_data$datetime, "sec")))
-    sampling_freq <- plyr::round_any(sampling_freq, 5)
     staticX <- data.table::frollmean(sensor_data$ax, n = dba.window * sampling_freq, fill = NA,  align = "center")
     staticY <- data.table::frollmean(sensor_data$ay, n = dba.window * sampling_freq, fill = NA, align = "center")
     staticZ <- data.table::frollmean(sensor_data$az, n = dba.window * sampling_freq, fill = NA, align = "center")
@@ -447,11 +504,12 @@ processTagData <- function(data.folders,
     sensor_data[, heading := ifelse(heading < 0, heading + 360, heading)]
     sensor_data[, heading := ifelse(heading >= 360, heading - 360, heading)]
 
-    # smooth the signals using a moving average (optional for noise reduction)
+    # apply a moving circular mean to smooth the metrics time series
     if(!is.null(smoothing.window)) {
-      sensor_data[, roll := data.table::frollmean(roll, n = smoothing.window, fill = NA, align = "center")]
-      sensor_data[, pitch := data.table::frollmean(pitch, n = smoothing.window, fill = NA, align = "center")]
-      sensor_data[, heading := data.table::frollmean(heading, n = smoothing.window, fill = NA, align = "center")]
+      window_size <- sampling_freq * smoothing.window
+      sensor_data[, roll := .rollingCircularMean(roll, window = window_size, range = c(-180, 180) )]
+      sensor_data[, pitch := .rollingCircularMean(pitch, window = window_size,  range = c(-90, 90))]
+      sensor_data[, heading := .rollingCircularMean(heading, window = window_size, range = c(0, 360))]
     }
 
 
@@ -480,14 +538,22 @@ processTagData <- function(data.folders,
 
     # smooth the signals using a moving average (optional for noise reduction)
     if(!is.null(smoothing.window)){
-      sensor_data[, surge := data.table::frollmean(surge, n = smoothing.window, fill = NA, align = "center")]
-      sensor_data[, sway := data.table::frollmean(sway, n = smoothing.window, fill = NA, align = "center")]
-      sensor_data[, heave := data.table::frollmean(heave, n = smoothing.window, fill = NA, align = "center")]
+      window_size <- sampling_freq * smoothing.window
+      sensor_data[, surge := data.table::frollmean(surge, n = window_size, fill = NA, align = "center")]
+      sensor_data[, sway := data.table::frollmean(sway, n = window_size, fill = NA, align = "center")]
+      sensor_data[, heave := data.table::frollmean(heave, n = window_size, fill = NA, align = "center")]
     }
 
     ############################################################################
     # Downsample data ##########################################################
     ############################################################################
+
+    # select columns to keep
+    metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave")
+    psat_cols <- c("PTT", "position_type", "lat", "lon")
+
+    # store current sampling frequency
+    sampling_rate <- sampling_freq
 
     # if a downsampling rate is specified, aggregate the data to the defined frequency (in Hz)
     if(!is.null(downsample.to)){
@@ -497,14 +563,19 @@ processTagData <- function(data.folders,
         if (verbose) cat("Dataset sampling rate is already", downsample.to, "Hz. Skipping downsampling.\n")
         processed_data <- sensor_data
 
+      # check if the specified downsampling frequency exceeds the dataset's sampling frequency
+      } else if(downsample.to > sampling_freq) {
+        if (verbose) cat("Warning: Dataset sampling rate (", sampling_freq, "Hz) is lower than the specified downsampling rate (", downsample.to, "Hz). Skipping downsampling.\n", sep = "")
+        processed_data <- sensor_data
+
+      # start downsampling
       } else {
 
         # provide feedback to the user if verbose mode is enabled
         if (verbose)  cat("Downsampling data to", downsample.to, "Hz...\n")
 
-        # select columns to keep
-        metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave")
-        psat_cols <- c("PTT", "position_type", "lat", "lon")
+        # store new sampling frequency
+        sampling_rate <- downsample.to
 
         # convert the desired downsample rate to time interval in seconds
         downsample_interval <- 1 / downsample.to
@@ -523,9 +594,6 @@ processTagData <- function(data.folders,
         # restore normal output
         sink()
 
-        # add ID column
-        processed_data[, ID := id]
-
         # sum burst swimming events (based on specified percentiles)
         if(!is.null(burst.quantiles)){
           burst_cols <- paste0("burst", burst.quantiles * 100)
@@ -533,15 +601,16 @@ processTagData <- function(data.folders,
           # combine the two aggregated datasets
           processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE)
         }
-
-        # reorder columns: ID, metrics, burst.quantiles (if exists), and psat_cols
-        data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), psat_cols))
       }
 
     } else{
       # if no downsampling rate is defined, return the original sensor data
       processed_data <- sensor_data
     }
+
+    # reorder columns: ID, metrics, burst.quantiles (if exists), and psat_cols
+    data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), psat_cols))
+
 
     ############################################################################
     # Check for temporal discontinuities and spurious depth measurements #######
@@ -550,9 +619,6 @@ processTagData <- function(data.folders,
     # save original start and end datetimes
     first_datetime <- min(processed_data$datetime)
     last_datetime <- max(processed_data$datetime)
-
-    # define current sampling frequency
-    sampling_rate <- ifelse(!is.null(downsample.to), downsample.to, sampling_freq)
 
     # check for spurious depth values based on vertical displacement speed
     if(!is.null(vertical.speed.threshold)){
@@ -563,7 +629,9 @@ processTagData <- function(data.folders,
     }
 
     # check for temporal discontinuities
-    processed_data <- checkTimeGaps(data = processed_data, verbose = verbose)
+    processed_data <- checkTimeGaps(data = processed_data,
+                                    time.diff.threshold = 0.001,
+                                    verbose = verbose)
 
 
     ############################################################################
@@ -596,6 +664,7 @@ processTagData <- function(data.folders,
     attr(processed_data, 'last.datetime') <- last_datetime
     attr(processed_data, 'sampling.frequency') <- sampling_freq
     attr(processed_data, 'magnetic.declination') <- declination_deg
+    attr(processed_data, 'sensor.smoothing.factor') <- sensor.smoothing.factor
     attr(processed_data, 'dba.window') <- dba.window
     attr(processed_data, 'smoothing.window') <- smoothing.window
     attr(processed_data, 'downsample.to') <- downsample.to

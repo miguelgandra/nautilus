@@ -8,6 +8,7 @@ checkTimeGaps(
   data,
   id.col = "ID",
   datetime.col = "datetime",
+  time.diff.threshold = 0.001,
   early.threshold = 0.2,
   late.threshold = 0.8,
   verbose = TRUE
@@ -19,6 +20,13 @@ checkTimeGaps(
 \item{id.col}{A string representing the column name for the ID field (default is "ID").}
 
 \item{datetime.col}{A character string specifying the name of the column containing the datetime values. Default is \code{"datetime"}.}
+
+\item{time.diff.threshold}{A numeric value specifying the maximum allowable difference
+between consecutive time differences to be considered within the expected sampling interval.
+Any time differences exceeding this threshold will be flagged as outliers, even if they are
+close to the most frequent sampling interval. This helps account for small fluctuations or
+inaccuracies in timestamps due to floating-point rounding. If set to \code{NULL}, no
+additional threshold is applied beyond the inferred sampling interval. Defaults to \code{0.001}.}
 
 \item{early.threshold}{A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
 Rows falling within the first early.threshold * 100\% of the dataset are classified as part of this phase.

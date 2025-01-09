@@ -22,6 +22,8 @@
 #' @param id.col A string representing the column name for the ID field (default is "ID").
 #' @param depth.col A character string specifying the name of the column containing the depth values. Default is `"depth"`.
 #' @param vertical.speed.threshold A numeric value specifying the threshold for vertical speed outliers (in m/s).
+#' @param depth.sensor.resolution Numeric. The fixed uncertainty in the depth reading due to the sensor's resolution (e.g., ±0.5 meters).
+#' @param depth.sensor.accuracy Numeric. The variable uncertainty in the depth reading, expressed as a percentage of the measured depth (e.g., ±1% of the depth reading).
 #' @param early.threshold A numeric value between 0 and 1 that defines the portion of the dataset considered as the early / pre-deployment phase.
 #' Rows falling within the first early.threshold * 100% of the dataset are classified as part of this phase.
 #' Anomalies detected in this range will result in the removal of all earlier rows. The default value is 0.2 (20%).
@@ -39,6 +41,8 @@ checkVerticalSpeed <- function(data,
                                depth.col = "depth",
                                vertical.speed.threshold,
                                sampling.rate,
+                               depth.sensor.resolution = 0.5,
+                               depth.sensor.accuracy = 1,
                                early.threshold = 0.2,
                                late.threshold = 0.8,
                                verbose = TRUE) {
@@ -77,8 +81,21 @@ checkVerticalSpeed <- function(data,
   # provide feedback to the user if verbose mode is enabled
   if (verbose) cat("Checking data for spurious depth values...\n")
 
-  # calculate vertical speed (m/s) between consecutive depth measurements
-  vertical_speed <- c(NA, diff(data[[depth.col]]) * sampling.rate)
+  # calculate time difference (dt) between consecutive rows (in seconds)
+  dt <- c(NA, diff(data$datetime))
+
+  # calculate depth difference between consecutive rows (in meters)
+  depth_diff <- c(NA, diff(data[[depth.col]]))
+
+  # calculate vertical speed (m/s)
+  vertical_speed <- depth_diff / dt
+
+  # calculate the total uncertainty for each depth measurement (sensor accuracy + resolution)
+  depth_uncertainty <- depth.sensor.resolution * 2 + abs(data[[depth.col]]) * depth.sensor.accuracy/100
+
+  # only calculate vertical speed if the depth difference is large enough
+  # compared to the sensor's accuracy/resolution and time difference
+  vertical_speed <- ifelse(abs(depth_diff) > depth_uncertainty, depth_diff / dt,   NA)
 
 
   ##############################################################################
