@@ -55,6 +55,10 @@
 #' If the calculated vertical speed exceeds this value, the corresponding rows will be removed from the dataset.
 #' This threshold is useful for removing data points where vertical speed may be artificially high due to occasional sensor malfunctioning or noise.
 #' Default is `NULL`, which means no filtering will be applied based on vertical speed.
+#' @param depth.sensor.resolution Numeric. The fixed uncertainty in the depth reading
+#' due to the sensor's resolution (e.g., ±0.5 meters).
+#' @param depth.sensor.accuracy Numeric. The variable uncertainty in the depth reading,
+#' expressed as a percentage of the measured depth (e.g., ±1% of the depth reading).
 #' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.
 #'
 #' @details
@@ -81,6 +85,8 @@
 #'   \item Surge: (g) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
 #'   \item Sway: (g) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 #'   \item Heave: (g) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
+#'   \item Vertical Speed: (m/s) The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
+#'   Calculated as the difference in depth measurements divided by the time interval
 #' }
 #'
 #'
@@ -105,6 +111,8 @@ processTagData <- function(data.folders,
                            burst.quantiles = c(0.95, 0.99),
                            downsample.to = 1,
                            vertical.speed.threshold = NULL,
+                           depth.sensor.resolution = 0.5,
+                           depth.sensor.accuracy = 1,
                            verbose = TRUE) {
 
 
@@ -290,7 +298,7 @@ processTagData <- function(data.folders,
     # check if the sensor file exists
     if (is.na(sensor_file) || !file.exists(sensor_file)) {
       cat("Data file missing. Skipping.\n\n")
-      data_list[[i]] <- list(NULL)
+      data_list[[i]] <- NULL
       next
     }
 
@@ -535,12 +543,16 @@ processTagData <- function(data.folders,
     # motion along the vertical (Z) axis (up and down, often from diving or wave action)
     sensor_data[, heave := az * cos(roll_rad) - ax * sin(pitch_rad)]
 
+    # calculate vertical speed
+    sensor_data[, vertical_speed := c(NA, diff(depth) / as.numeric(diff(datetime), units = "secs"))]
+
     # smooth the signals using a moving average (optional for noise reduction)
     if(!is.null(smoothing.window)){
       window_size <- sampling_freq * smoothing.window
       sensor_data[, surge := data.table::frollmean(surge, n = window_size, fill = NA, align = "center")]
       sensor_data[, sway := data.table::frollmean(sway, n = window_size, fill = NA, align = "center")]
       sensor_data[, heave := data.table::frollmean(heave, n = window_size, fill = NA, align = "center")]
+      sensor_data[, vertical_speed := data.table::frollmean(vertical_speed, n = window_size, fill = NA, align = "center")]
     }
 
     ############################################################################
@@ -548,7 +560,7 @@ processTagData <- function(data.folders,
     ############################################################################
 
     # select columns to keep
-    metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave")
+    metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave", "vertical_speed")
     psat_cols <- c("PTT", "position_type", "lat", "lon")
 
     # store current sampling frequency
@@ -627,6 +639,8 @@ processTagData <- function(data.folders,
       processed_data <- checkVerticalSpeed(data = processed_data,
                                            sampling.rate = sampling_rate,
                                            vertical.speed.threshold = vertical.speed.threshold,
+                                           depth.sensor.resolution = depth.sensor.resolution,
+                                           depth.sensor.accuracy = depth.sensor.accuracy,
                                            verbose = verbose)
     }
 

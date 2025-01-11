@@ -26,6 +26,9 @@ Imports:
 	crayon,
 	oce
 Suggests:
+	foreach,
+	doSNOW,
+	parallel,
 	randomForest,
 	pROC
 URL: https://github.com/miguelgandra/nautilus

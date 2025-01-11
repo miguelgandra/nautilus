@@ -158,8 +158,8 @@ filter_results <- filterDeploymentData(data = data_list,
                                        depth.threshold = 3.5,
                                        variance.threshold = 6,
                                        max.changepoints = 6,
-                                       plot.metrics = c("pitch", "heave"),
-                                       plot.metrics.labels = c("Pitch (\u00BA)", "Heave (m/s)"),
+                                       plot.metrics = c("pitch", "sway"),
+                                       plot.metrics.labels = c("Pitch (\u00BA)", "Sway (g)"),
                                        display.plots = FALSE,
                                        save.plots = TRUE)
 

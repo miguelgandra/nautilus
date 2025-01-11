@@ -21,6 +21,8 @@ processTagData(
   burst.quantiles = c(0.95, 0.99),
   downsample.to = 1,
   vertical.speed.threshold = NULL,
+  depth.sensor.resolution = 0.5,
+  depth.sensor.accuracy = 1,
   verbose = TRUE
 )
 }
@@ -80,6 +82,12 @@ If the calculated vertical speed exceeds this value, the corresponding rows will
 This threshold is useful for removing data points where vertical speed may be artificially high due to occasional sensor malfunctioning or noise.
 Default is \code{NULL}, which means no filtering will be applied based on vertical speed.}
 
+\item{depth.sensor.resolution}{Numeric. The fixed uncertainty in the depth reading
+due to the sensor's resolution (e.g., ±0.5 meters).}
+
+\item{depth.sensor.accuracy}{Numeric. The variable uncertainty in the depth reading,
+expressed as a percentage of the measured depth (e.g., ±1\% of the depth reading).}
+
 \item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
 }
 \value{
@@ -122,5 +130,7 @@ The heading is corrected according to the magnetic declination value estimated b
 \item Surge: (g) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
 \item Sway: (g) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 \item Heave: (g) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
+\item Vertical Speed: (m/s) The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
+Calculated as the difference in depth measurements divided by the time interval
 }
 }
