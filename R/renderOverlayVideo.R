@@ -117,12 +117,14 @@ renderOverlayVideo <- function(video.file,
   if (cores <= 0 || !is.numeric(cores) || cores %% 1 != 0) stop("'cores' must be a positive integer.", call. = FALSE)
 
   # validate parallel computing packages
-  if (cores>1 && !requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
-  if (cores>1 && !requireNamespace("doSNOW", quietly=TRUE)) stop("The 'doSNOW' package is required for parallel computing but is not installed. Please install 'doSNOW' using install.packages('doSNOW') and try again.", call. = FALSE)
-  if (cores>1 && !requireNamespace("parallel", quietly=TRUE)){
-    stop("The 'parallel' package is required for parallel computing but is not installed. Please install 'parallel' using install.packages('parallel') and try again.", call. = FALSE)
-  }else if(parallel::detectCores()<cores){
-    stop(paste("Please choose a different number of cores for parallel computing (only", parallel::detectCores(), "available)."), call. = FALSE)
+  if (cores>1){
+    if(!requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
+    if(!requireNamespace("doSNOW", quietly=TRUE)) stop("The 'doSNOW' package is required for parallel computing but is not installed. Please install 'doSNOW' using install.packages('doSNOW') and try again.", call. = FALSE)
+    if(!requireNamespace("parallel", quietly=TRUE)){
+      stop("The 'parallel' package is required for parallel computing but is not installed. Please install 'parallel' using install.packages('parallel') and try again.", call. = FALSE)
+    }else if(parallel::detectCores()<cores){
+      stop(paste("Please choose a different number of cores for parallel computing (only", parallel::detectCores(), "available)."), call. = FALSE)
+    }
   }
 
   # validate that not both end.time and duration are supplied simultaneously
@@ -130,8 +132,12 @@ renderOverlayVideo <- function(video.file,
 
   # validate start.time and end.time formats
   time_pattern <- "^([01]?[0-9]|2[0-3]):([0-5]?[0-9]):([0-5]?[0-9])$"
-  if (!grepl(time_pattern, start.time)) stop("Invalid start.time format. Please use HH:MM:SS.", call. = FALSE)
-  if (!grepl(time_pattern, end.time)) stop("Invalid end.time format. Please use HH:MM:SS.", call. = FALSE)
+  if (!is.null(start.time)) {
+    if (!grepl(time_pattern, start.time)) stop("Invalid start.time format. Please use HH:MM:SS.", call. = FALSE)
+  }
+  if (!is.null(end.time)) {
+    if (!grepl(time_pattern, end.time)) stop("Invalid end.time format. Please use HH:MM:SS.", call. = FALSE)
+  }
 
   # validate jpeg.quality argument
   if (jpeg.quality < 1 || jpeg.quality > 31 || !is.numeric(jpeg.quality)) stop("The 'jpeg.quality' argument must be an integer between 1 and 31.", call. = FALSE)
@@ -148,7 +154,7 @@ renderOverlayVideo <- function(video.file,
   id <- as.character(selected_video$ID)
   start <- selected_video$start
   end <-  selected_video$end
-  duration <- selected_video$duration
+  video_duration <- selected_video$duration
   frame_rate <- selected_video$frame_rate
 
 
@@ -224,7 +230,7 @@ renderOverlayVideo <- function(video.file,
     # use duration directly
     effective_duration <- as.numeric(duration)
   } else {
-    effective_duration  <- difftime(end, start, "secs")
+    effective_duration  <- video_duration
   }
 
   # compute the expected frame count
@@ -242,7 +248,7 @@ renderOverlayVideo <- function(video.file,
     # case 2: start.time and duration are provided
     ffmpeg_command <- sprintf(
       "ffmpeg -i \"%s\" -ss %s -t %s -q:v %d \"%s/frame_%%06d.jpg\" 2>&1",
-      start.time, video.file, duration, jpeg.quality, frames_directory)
+      video.file, start.time, duration, jpeg.quality, frames_directory)
   }
 
   # initialize progress bar

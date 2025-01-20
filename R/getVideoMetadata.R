@@ -5,11 +5,15 @@
 #' Extract Video Metadata and Timestamps
 #'
 #' This function extracts metadata from video files within specified directories. The metadata includes
-#' start time, end time, duration, and frame rate. The start time is derived using Optical Character
-#' Recognition (OCR) on the first frame of each video. If `id.metadata` is supplied, the start time will
-#' be assumed to match the tagging date of the animal, and only the time portion will be extracted using OCR.
-#' This approach increases the reliability of the time extraction by using the known tagging date as a reference.
-#' However, note that OCR is not perfect, and its accuracy may vary from video to video.
+#' start time, end time, duration, and frame rate. The function is specifically fine-tuned for processing
+#' videos outputted by a particular biologging tag format, characterized by a black timestamp box located
+#' in the bottom right corner of the frames. The position of the timestamp box is hardcoded into the function,
+#' which means it may not work correctly with videos from other tag formats or configurations. The start
+#' time is determined using Optical Character Recognition (OCR) applied to the first frame of each video.
+#' If `id.metadata` is provided, the function assumes that the tagging date of the animal corresponds to
+#' the start date, and only the time portion is extracted via OCR. This approach improves the reliability
+#' of time extraction by using the known tagging date as a reference. Note that OCR is not perfect,
+#' and its accuracy may vary from video to video.
 #'
 #' @param video.folders Character vector. Paths to directories containing video files.
 #' @param video.format Character vector. Allowed video formats, such as "mp4" or "mov". Defaults to "mp4".
@@ -66,6 +70,21 @@ getVideoMetadata <- function(video.folders,
     }
   }
 
+  ##############################################################################
+  # Define allowed characters for OCR processing ###############################
+  ##############################################################################
+
+  # extract unique characters from English month abbreviations
+  month_letters <- paste0(month.abb,  collapse = "")
+  month_letters <- unlist(strsplit(month_letters, split = ""))
+  month_letters <- unique(month_letters)
+  char_order <- order(ifelse(month_letters %in% LETTERS, 0, 1), month_letters)
+  month_letters <- month_letters[char_order]
+  month_letters <- paste0(month_letters,  collapse = "")
+
+  # append numerical digits, punctuation, and spaces to allowed characters
+  allowed_chars <- paste0(month_letters, "0123456789.: ")
+
 
   ##############################################################################
   # Retrieve video filenames from each directory ###############################
@@ -110,7 +129,7 @@ getVideoMetadata <- function(video.folders,
   #cat(crayon::blue(paste0("- ", basename(video.folders), collapse = "\n")), "\n")
 
   # initialize progress bar
-  pb <- txtProgressBar(min=1, max=nrow(video_files), initial=0, style=3)
+  pb <- txtProgressBar(min=0, max=nrow(video_files), initial=0, style=3)
 
 
   #########################################################################
@@ -121,38 +140,36 @@ getVideoMetadata <- function(video.folders,
     id <- video_files$ID[i]
     video <- video_files$video[i]
 
-    # print progress to the console
-    # cat(sprintf("[%d/%d] Analysing: %s\n", i, length(video_files), basename(video)))
-
     ############################################################################
     # extract initial datetime from the first frame  ###########################
 
     # define temporary paths
-    first_frame_path <- file.path(tempdir(), sprintf("first_frame_video%02d.jpg", i))
-    #cropped_frame_path <- file.path(tempdir(), sprintf("cropped_frame_video%02d.jpg", i))
-    cropped_frame_path <- file.path(tempdir(), sprintf("cropped_frame_video%02d.png", i))
-    # extract the first frame using FFmpeg
-    system(sprintf('ffmpeg -y -i "%s" -vframes 1 -q:v 3 "%s"', video, first_frame_path), ignore.stdout=TRUE, ignore.stderr=TRUE)
+    first_frame_path <- file.path(tempdir(), sprintf("first_frame_video%04d.jpg", i))
+    cropped_frame_path <- file.path(tempdir(), sprintf("cropped_frame_video%04d.png", i))
 
-    # perform OCR on the cropped area of the frame
+    # extract the first frame using FFmpeg
+    system(sprintf('ffmpeg -y -i "%s" -vframes 1 -q:v 1 -vf "scale=-1:2160" "%s"', video, first_frame_path), ignore.stdout=TRUE, ignore.stderr=TRUE)
+
+    # read the extracted frame using the 'magick' package
     input_frame <- magick::image_read(first_frame_path)
-    cropped_image <- magick::image_crop(input_frame, geometry = "190x40+1600+1044")
-    # apply dilation to make the text bolder (increase the thickness of the text)
-    processed_image <- magick::image_morphology(cropped_image, method = "Dilate", kernel = "Disk:0.9")
-    # apply a threshold to convert gray pixels to black
-    processed_image <- magick::image_threshold(processed_image, type = "black", threshold = "50%")
-    # invert colors: make text black and the background white
-    processed_image <- magick::image_negate(processed_image)
-    # upscale the image by 150% and increase its DPI for better OCR accuracy
-    processed_image <- magick::image_resize(processed_image, geometry = "200%")
-    processed_image <- magick::image_quantize(processed_image, max = 2, colorspace = "gray")
-    magick::image_write(processed_image, path=cropped_frame_path, format = "png", density=300)
+    # crop the image to focus on the desired area
+    cropped_image <- magick::image_crop(input_frame, geometry = "400x150+3210+2100")
+
+    # image preprocessing
+    processed_image <- magick::image_resize(cropped_image, geometry = "300%")
+    processed_image <- magick::image_convert(processed_image, type = "Grayscale")
+    processed_image <- magick::image_threshold(processed_image, type = "black", threshold = "15%")
+    processed_image <- magick::image_morphology(processed_image, method = "Dilate", kernel = "Disk:0.3")
+    processed_image <- magick::image_modulate(processed_image, brightness = 110, saturation = 100)
+    processed_image <- magick::image_contrast(processed_image, sharpen = 5)
 
     # save the processed image for OCR
-    #magick::image_write(processed_image, cropped_frame_path)
+    magick::image_write(processed_image, path = cropped_frame_path, format = "png", density = 300)
+
     # perform OCR on the processed image and extract the text
-    ocr_engine <- tesseract::tesseract(language = "eng", options=list(tessedit_pageseg_mode = 7))
+    ocr_engine <- tesseract::tesseract(language = "eng", options=list(tessedit_pageseg_mode = 7, tessedit_char_whitelist = allowed_chars))
     ocr_text <- tesseract::ocr(cropped_frame_path, engine = ocr_engine )
+    ocr_text
 
     # check if id.metadata is provided
     if(!is.null(id.metadata)){
@@ -184,6 +201,18 @@ getVideoMetadata <- function(video.folders,
       # combine the extracted parts
       datetime <- paste0(numeric_str[[1]], month_str, numeric_str[[2]], " ", numeric_str[[3]])
     }
+
+    # check and replace invalid hour value "26" with "20"
+    datetime <- sub("^([0-9]{2}[a-zA-Z]{3}[0-9]{2} )26", "\\120", datetime)
+
+    # replace any  hour's tens digit higher than 2 with 0
+    datetime <- sub("^([0-9]{2}[a-zA-Z]{3}[0-9]{2} )([3-9])", "\\10", datetime)
+
+    # Replace the tens digit of the minutes if it's greater than 5
+    datetime <- sub("(\\d{2}:)([6-9])\\d", "\\10\\2", datetime)
+
+    # replace any second tens digit higher than 5 with 0
+    datetime <- sub("(\\d{2}:\\d{2}:)([6-9])", "\\10", datetime)
 
     # convert to POSIXct
     video_start <- as.POSIXct(datetime, "%d%b%y %H:%M:%OS", tz="UTC")

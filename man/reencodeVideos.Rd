@@ -7,7 +7,11 @@
 reencodeVideos(
   mov.directory,
   output.directory = mov.directory,
-  crf = 28,
+  file.suffix = "",
+  encoder = "libx265",
+  crf = 18,
+  video.quality = 50,
+  preset = "medium",
   overwrite = "ask"
 )
 }
@@ -17,13 +21,33 @@ reencodeVideos(
 \item{output.directory}{A string specifying the path to the directory where re-encoded \code{.mp4} files will be saved.
 Defaults to the same as \code{mov.directory}.}
 
+\item{file.suffix}{Character string to be appended to the base name of the
+output files (before the \code{.mp4} extension). This can be useful for differentiating
+reencoded files.}
+
+\item{encoder}{A string specifying the video encoder to use for re-encoding videos.
+Defaults to "hevc_videotoolbox", which utilizes hardware acceleration for faster processing when available.
+Supported values, such as "libx265" for software encoding, depend on the encoders available in \code{ffmpeg}.
+To view the available options, run \code{ffmpeg -codecs} in your terminal.}
+
 \item{crf}{A numeric value for the Constant Rate Factor (CRF), which controls the quality and file size of the output video.
 The CRF range is from 0 to 51, where:
 \itemize{
 \item A value of 0 represents lossless encoding, resulting in the highest quality but the largest file size.
-\item A value of 28 is considered a good balance between quality and compression for most use cases. This is the default value.
+\item A value of 18 is the default and provides high-quality output, free from most artifacts.
 \item A higher value (closer to 51) will result in lower quality and smaller file sizes.
+This parameter is \strong{only used when software encoding (libx265)} is selected.
+For hardware-accelerated encoders, such as \code{hevc_videotoolbox}, \code{h265_nvenc}, or \code{hevc_amf}, video quality is controlled by the \code{video.quality} parameter instead.
 }}
+
+\item{video.quality}{A numeric value between 1 and 100 that defines the quality of the output video. Higher values result in better quality but larger file sizes.
+This parameter is used when hardware acceleration (e.g., \code{hevc_videotoolbox}, \code{h265_nvenc}, etc.) is selected as the encoder.
+Defaults to 50.}
+
+\item{preset}{A string specifying the encoding speed preset. This controls the trade-off between encoding speed and output file size/quality.
+Valid options are: 'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'.
+Faster presets result in quicker encoding but lower compression, leading to larger file sizes, while slower presets provide better compression at the cost of longer encoding time.
+The default is "medium".}
 
 \item{overwrite}{A string that controls the behavior when output files already exist. Can be one of the following:
 \itemize{
@@ -36,19 +60,35 @@ The CRF range is from 0 to 51, where:
 Prints progress and time statistics to the console. The re-encoded videos are saved in the specified output directory.
 }
 \description{
-This function re-encodes all \code{.mov} video files in a specified input directory to HEVC (H.265) format.
-By default, it uses hardware acceleration (\code{hevc_videotoolbox}) for faster encoding, but if hardware acceleration
-is unavailable, the function will fall back to software encoding using \code{libx265}, which may take longer.
-The re-encoded videos are saved as \code{.mp4} files in the specified output directory, or in the input directory by default.
-Users can specify a Constant Rate Factor (\code{crf}) to control the balance between video quality and file size.
-Additionally, the \code{overwrite} parameter determines whether to overwrite existing output files, skip them, or prompt the user.
+This function re-encodes all \code{.mov} video files found in a specified input directory to
+the more efficient HEVC (H.265) format. Users can choose the desired encoder
+(e.g., \code{hevc_videotoolbox}, \code{libx265}, etc.) via the \code{encoder} parameter. By default,
+the function uses \code{libx265} for software encoding, but users can opt for hardware-accelerated
+encoding (\code{hevc_videotoolbox}) for faster processing times.
+The re-encoded files are saved as \code{.mp4} videos in the designated output directory,
+or in the same directory as the input files if no output path is provided.
+The \code{crf} (Constant Rate Factor) or \code{video.quality} argument can be specified to fine-tune
+the trade-off between video quality and file size, depending on the selected encoder.
+Additionally, the \code{overwrite} parameter allows users to control how existing output
+files are handled: overwrite them, skip them, or prompt the user before any action is taken.
 }
 \details{
-The re-encoding is done using the \code{ffmpeg} tool with the following options:
+The \code{encoder} parameter specifies the video encoder used for converting files to HEVC format.
+Supported encoders depend on your FFmpeg installation and the hardware or software capabilities of your system.
+
+Below are some commonly used HEVC encoders:
 \itemize{
-\item Video codec: \code{hevc_videotoolbox} for hardware-accelerated encoding (if available) or \code{libx265} for software encoding.
-\item Constant rate factor (\code{crf}) set by user or default (28) for a balance of quality and compression.
-\item Preset: \code{fast} for faster encoding speed.
-\item No audio (\code{-an}).
+\item \strong{libx265}: An open-source software-based HEVC encoder offering high-quality output and extensive customization options.#'
+\item \strong{hevc_videotoolbox}: Apple's hardware-accelerated HEVC encoder available on macOS devices.
+\item \strong{h265_nvenc}: NVIDIA's hardware-accelerated HEVC encoder. Requires an NVIDIA GPU with NVENC support.
+\item \strong{hevc_amf}: AMD's hardware-accelerated HEVC encoder. Requires an AMD GPU with AMF support.
+\item \strong{hevc_qsv}: Intel's hardware-accelerated HEVC encoder using Quick Sync Video technology. Requires a CPU with Quick Sync support.
 }
+
+To check which encoders are available on your system, use the following command:
+
+\if{html}{\out{<div class="sourceCode bash">}}\preformatted{ffmpeg -encoders | grep hevc
+}\if{html}{\out{</div>}}
+
+The output will list all HEVC encoders supported by your FFmpeg installation. Choose the one that best fits your hardware and encoding requirements.
 }

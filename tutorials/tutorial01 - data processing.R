@@ -129,6 +129,8 @@ data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FA
 
 # Process tag data using the "processTagData" function from the "nautilus" package
 data_list <- processTagData(data.folders = data_folders,
+                            save.files = TRUE,
+                            output.folder = "./data processed/complete",
                             id.metadata = animal_metadata,
                             id.col = "ID",
                             tag.col = "tag",
@@ -140,7 +142,7 @@ data_list <- processTagData(data.folders = data_folders,
                             dba.window = 6,
                             smoothing.window = 1,
                             burst.quantiles = c(0.95, 0.99),
-                            downsample.to = 1,
+                            downsample.to = 20,
                             vertical.speed.threshold = 6.5,
                             verbose = TRUE)
 

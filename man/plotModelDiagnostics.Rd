@@ -4,12 +4,24 @@
 \alias{plotModelDiagnostics}
 \title{Plot Model Diagnostics}
 \usage{
-plotModelDiagnostics(model, test.data)
+plotModelDiagnostics(
+  model,
+  test.data,
+  title.cex = 1,
+  lab.cex = 0.9,
+  axis.cex = 0.8
+)
 }
 \arguments{
 \item{model}{A trained random forest model object. This model is expected to be trained on a dataset where the dependent variable is a factor.}
 
 \item{test.data}{A data frame representing the testing dataset used to evaluate the model. Should include the dependent variable as the first column.}
+
+\item{title.cex}{A numeric value indicating the text size for plot titles. Default is 1.}
+
+\item{lab.cex}{A numeric value indicating the text size for axis labels. Default is 0.9.}
+
+\item{axis.cex}{A numeric value indicating the text size for axis tick marks and bar labels. Default is 0.8.}
 }
 \description{
 Generates a series of diagnostic plots for a machine learning model, including feature importance, ROC curve,

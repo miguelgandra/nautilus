@@ -46,6 +46,7 @@ launchVideo <- function(datetime, video.metadata, vlc.path=NULL){
 
   # find the video entry that contains the datetime
   matching_video <- video.metadata[video.metadata$start <= datetime & video.metadata$end >= datetime,]
+  matching_video <- matching_video[!is.na(matching_video$file),]
 
 
   ###############################################################

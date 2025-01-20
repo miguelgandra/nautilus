@@ -8,6 +8,9 @@ processTagData(
   data.folders,
   sensor.subdirectory = "CMD",
   psat.subdirectory = NULL,
+  save.files = FALSE,
+  output.folder = NULL,
+  output.suffix = NULL,
   id.metadata,
   id.col = "ID",
   tag.col = "tag",
@@ -36,6 +39,18 @@ This subdirectory should include the sensor CSV files for the corresponding anim
 \item{psat.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
 This subdirectory should contain the "Location.csv" file with any fastloc position data from the PSAT.}
 
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
+during the iteration process. This ensures that progress is saved incrementally, which can
+help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+
+\item{output.folder}{Character. Path to the folder where the processed files will be saved.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
+in the data folder corresponding to each ID. Default is \code{NULL}.}
+
+\item{output.suffix}{Character. A suffix to append to the file name when saving.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, a suffix based on the sampling
+rate (e.g., \verb{_100Hz}) will be used. Default is \code{NULL}.}
+
 \item{id.metadata}{Data frame. Metadata about the IDs to associate with the processed data.
 Must contain at least columns for ID and tag type.}
 
@@ -53,6 +68,7 @@ Must contain at least columns for ID and tag type.}
 This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame.
 The data frame should have three columns:
 \itemize{
+\item \strong{type}: A column specifying the tag type (\code{CAM} vs \code{CMD}).
 \item \strong{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
 \item \strong{from}: A column indicating the original axis in the sensor's coordinate system.
 \item \strong{to}: A column specifying the target axis in the desired coordinate system.

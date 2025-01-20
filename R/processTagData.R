@@ -22,6 +22,15 @@
 #' This subdirectory should include the sensor CSV files for the corresponding animal.
 #' @param psat.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
 #' This subdirectory should contain the "Location.csv" file with any fastloc position data from the PSAT.
+#' @param save.files Logical. If `TRUE`, the processed data for each ID will be saved as RDS files
+#' during the iteration process. This ensures that progress is saved incrementally, which can
+#' help prevent data loss if the process is interrupted or stops midway. Default is `FALSE`.
+#' @param output.folder Character. Path to the folder where the processed files will be saved.
+#' This parameter is only used if `save.files = TRUE`. If `NULL`, the RDS file will be saved
+#' in the data folder corresponding to each ID. Default is `NULL`.
+#' @param output.suffix Character. A suffix to append to the file name when saving.
+#' This parameter is only used if `save.files = TRUE`. If `NULL`, a suffix based on the sampling
+#' rate (e.g., `_100Hz`) will be used. Default is `NULL`.
 #' @param id.metadata Data frame. Metadata about the IDs to associate with the processed data.
 #' Must contain at least columns for ID and tag type.
 #' @param id.col Character. Column name for ID in `id.metadata` (default: "ID").
@@ -33,6 +42,7 @@
 #' This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame.
 #' The data frame should have three columns:
 #' \itemize{
+#'   \item \strong{type}: A column specifying the tag type (`CAM` vs `CMD`).
 #'   \item \strong{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
 #'   \item \strong{from}: A column indicating the original axis in the sensor's coordinate system.
 #'   \item \strong{to}: A column specifying the target axis in the desired coordinate system.
@@ -98,6 +108,9 @@
 processTagData <- function(data.folders,
                            sensor.subdirectory = "CMD",
                            psat.subdirectory = NULL,
+                           save.files = FALSE,
+                           output.folder = NULL,
+                           output.suffix = NULL,
                            id.metadata,
                            id.col = "ID",
                            tag.col = "tag",
@@ -142,6 +155,16 @@ processTagData <- function(data.folders,
     stop("`psat.subdirectory` must be NULL or a single string.", call. = FALSE)
   }
 
+  # ensure output.folder is a single string
+  if(!is.null(output.folder) && (!is.character(output.folder) || length(output.folder) != 1)) {
+    stop("`output.folder` must be NULL or a single string.", call. = FALSE)
+  }
+
+  # check if the output folder is valid (if specified)
+  if(!is.null(output.folder) && !dir.exists(output.folder)){
+    stop("The specified output folder does not exist. Please provide a valid folder path.", call. = FALSE)
+  }
+
   # validate `id.metadata` argument
   if(!is.data.frame(id.metadata)) stop("`id.metadata` must be a data frame.", call. = FALSE)
 
@@ -161,11 +184,8 @@ processTagData <- function(data.folders,
       if (any(!axis.mapping$tag %in% id.metadata[[tag.col]])) warning("Some tags in axis.mapping do not match tags in id.metadata.", call. = FALSE)
       if (any(!id.metadata[[tag.col]] %in% axis.mapping$tag)) {
         missing_tags <- setdiff(id.metadata[[tag.col]], axis.mapping$tag)
-        warning(
-          paste0("The following tag types in id.metadata are not present in axis.mapping: ",
-                paste(missing_tags, collapse = ", "),
-                ". No axis transformations were performed for these tag types."),
-                call. = FALSE)
+        warning_msg <- paste0("Warning: The following tag types in id.metadata are not present in axis.mapping: ",
+                              paste(missing_tags, collapse = ", "), ". No axis transformations will be performed for these tag types.\n")
       }
     }
   }
@@ -179,6 +199,9 @@ processTagData <- function(data.folders,
   if (!is.numeric(burst.quantiles) || any(burst.quantiles <= 0) || any(burst.quantiles > 1)) {
     stop("`burst.quantiles` must be a numeric vector with values in the range (0, 1].", call. = FALSE)
   }
+
+  # feedback for save files mode
+  if (!is.logical(save.files)) stop("`save.files` must be a logical value (TRUE or FALSE).", call. = FALSE)
 
   # feedback for verbose mode
   if (!is.logical(verbose)) stop("`verbose` must be a logical value (TRUE or FALSE).", call. = FALSE)
@@ -281,6 +304,9 @@ processTagData <- function(data.folders,
   if(verbose){
     cat(crayon::blue(paste0("- ", basename(data.folders), collapse = "\n")), "\n\n")
   }
+
+  # print warning
+  if (exists("warning_msg")) message(warning_msg)
 
   # iterate over each animal
   for (i in seq_along(data_files)) {
@@ -657,9 +683,6 @@ processTagData <- function(data.folders,
     # provide feedback to the user if verbose mode is enabled
     if (verbose) cat("Done! Data processed successfully.\n")
 
-    # print empty line
-    cat("\n")
-
     # round numeric variables to save memory
     decimal_places <- 2
     processed_data[, temp := round(temp, decimal_places)]
@@ -687,8 +710,26 @@ processTagData <- function(data.folders,
     attr(processed_data, 'vertical.speed.threshold') <- vertical.speed.threshold
     attr(processed_data, 'processing.date') <- Sys.time()
 
-    # store processed sensor data in the list
-    data_list[[i]] <- processed_data
+
+    # save the processed data as an RDS file
+    if(save.files){
+
+      # determine the output directory: use the specified output folder or the current data folder
+      output_dir <- ifelse(!is.null(output.folder), output.folder, data.folders[i])
+
+      # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
+      sufix <- ifelse(!is.null(output.suffix), output.suffix, paste0("_", sampling_rate, "Hz"))
+
+      # construct the output file name
+      output_file <- file.path(output_dir, paste0(id, sufix, ".rds"))
+
+      # save the processed data
+      saveRDS(processed_data, output_file)
+      if (verbose) cat(paste0("File saved: ", paste0(id, sufix, ".rds"), "\n"))
+    }
+
+    # print empty line
+    cat("\n")
 
     # clear unused objects from the environment to free up memory
     rm(sensor_data)

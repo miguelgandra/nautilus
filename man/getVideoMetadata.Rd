@@ -39,9 +39,13 @@ A data frame containing metadata for each video file, including:
 }
 \description{
 This function extracts metadata from video files within specified directories. The metadata includes
-start time, end time, duration, and frame rate. The start time is derived using Optical Character
-Recognition (OCR) on the first frame of each video. If \code{id.metadata} is supplied, the start time will
-be assumed to match the tagging date of the animal, and only the time portion will be extracted using OCR.
-This approach increases the reliability of the time extraction by using the known tagging date as a reference.
-However, note that OCR is not perfect, and its accuracy may vary from video to video.
+start time, end time, duration, and frame rate. The function is specifically fine-tuned for processing
+videos outputted by a particular biologging tag format, characterized by a black timestamp box located
+in the bottom right corner of the frames. The position of the timestamp box is hardcoded into the function,
+which means it may not work correctly with videos from other tag formats or configurations. The start
+time is determined using Optical Character Recognition (OCR) applied to the first frame of each video.
+If \code{id.metadata} is provided, the function assumes that the tagging date of the animal corresponds to
+the start date, and only the time portion is extracted via OCR. This approach improves the reliability
+of time extraction by using the known tagging date as a reference. Note that OCR is not perfect,
+and its accuracy may vary from video to video.
 }

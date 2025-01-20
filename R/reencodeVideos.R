@@ -4,32 +4,65 @@
 
 #' Reencode MOV Videos to HEVC Format
 #'
-#' This function re-encodes all `.mov` video files in a specified input directory to HEVC (H.265) format.
-#' By default, it uses hardware acceleration (`hevc_videotoolbox`) for faster encoding, but if hardware acceleration
-#' is unavailable, the function will fall back to software encoding using `libx265`, which may take longer.
-#' The re-encoded videos are saved as `.mp4` files in the specified output directory, or in the input directory by default.
-#' Users can specify a Constant Rate Factor (`crf`) to control the balance between video quality and file size.
-#' Additionally, the `overwrite` parameter determines whether to overwrite existing output files, skip them, or prompt the user.
-#'
+#' This function re-encodes all `.mov` video files found in a specified input directory to
+#' the more efficient HEVC (H.265) format. Users can choose the desired encoder
+#' (e.g., `hevc_videotoolbox`, `libx265`, etc.) via the `encoder` parameter. By default,
+#' the function uses `libx265` for software encoding, but users can opt for hardware-accelerated
+#' encoding (`hevc_videotoolbox`) for faster processing times.
+#' The re-encoded files are saved as `.mp4` videos in the designated output directory,
+#' or in the same directory as the input files if no output path is provided.
+#' The `crf` (Constant Rate Factor) or `video.quality` argument can be specified to fine-tune
+#' the trade-off between video quality and file size, depending on the selected encoder.
+#' Additionally, the `overwrite` parameter allows users to control how existing output
+#' files are handled: overwrite them, skip them, or prompt the user before any action is taken.
+
 #' @param mov.directory A string specifying the path to the directory containing `.mov` files to re-encode.
 #' @param output.directory A string specifying the path to the directory where re-encoded `.mp4` files will be saved.
 #' Defaults to the same as `mov.directory`.
+#' @param file.suffix Character string to be appended to the base name of the
+#' output files (before the `.mp4` extension). This can be useful for differentiating
+#' reencoded files.
+#' @param encoder A string specifying the video encoder to use for re-encoding videos.
+#' Defaults to "hevc_videotoolbox", which utilizes hardware acceleration for faster processing when available.
+#' Supported values, such as "libx265" for software encoding, depend on the encoders available in `ffmpeg`.
+#' To view the available options, run `ffmpeg -codecs` in your terminal.
 #' @param crf A numeric value for the Constant Rate Factor (CRF), which controls the quality and file size of the output video.
 #' The CRF range is from 0 to 51, where:
 #'   - A value of 0 represents lossless encoding, resulting in the highest quality but the largest file size.
-#'   - A value of 28 is considered a good balance between quality and compression for most use cases. This is the default value.
+#'   - A value of 18 is the default and provides high-quality output, free from most artifacts.
 #'   - A higher value (closer to 51) will result in lower quality and smaller file sizes.
+#' This parameter is **only used when software encoding (libx265)** is selected.
+#' For hardware-accelerated encoders, such as `hevc_videotoolbox`, `h265_nvenc`, or `hevc_amf`, video quality is controlled by the `video.quality` parameter instead.
+#' @param video.quality A numeric value between 1 and 100 that defines the quality of the output video. Higher values result in better quality but larger file sizes.
+#' This parameter is used when hardware acceleration (e.g., `hevc_videotoolbox`, `h265_nvenc`, etc.) is selected as the encoder.
+#' Defaults to 50.
+#' @param preset A string specifying the encoding speed preset. This controls the trade-off between encoding speed and output file size/quality.
+#' Valid options are: 'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'.
+#' Faster presets result in quicker encoding but lower compression, leading to larger file sizes, while slower presets provide better compression at the cost of longer encoding time.
+#' The default is "medium".
 #' @param overwrite A string that controls the behavior when output files already exist. Can be one of the following:
 #'   - `ask`: Prompt the user for each file whether to overwrite it (default).
 #'   - `TRUE`: Automatically overwrite existing files.
 #'   - `FALSE`: Skip re-encoding for existing files.
 #'
 #' @details
-#' The re-encoding is done using the `ffmpeg` tool with the following options:
-#'   - Video codec: `hevc_videotoolbox` for hardware-accelerated encoding (if available) or `libx265` for software encoding.
-#'   - Constant rate factor (`crf`) set by user or default (28) for a balance of quality and compression.
-#'   - Preset: `fast` for faster encoding speed.
-#'   - No audio (`-an`).
+#' The `encoder` parameter specifies the video encoder used for converting files to HEVC format.
+#' Supported encoders depend on your FFmpeg installation and the hardware or software capabilities of your system.
+#'
+#' Below are some commonly used HEVC encoders:
+#' - **libx265**: An open-source software-based HEVC encoder offering high-quality output and extensive customization options.#'
+#' - **hevc_videotoolbox**: Apple's hardware-accelerated HEVC encoder available on macOS devices.
+#' - **h265_nvenc**: NVIDIA's hardware-accelerated HEVC encoder. Requires an NVIDIA GPU with NVENC support.
+#' - **hevc_amf**: AMD's hardware-accelerated HEVC encoder. Requires an AMD GPU with AMF support.
+#' - **hevc_qsv**: Intel's hardware-accelerated HEVC encoder using Quick Sync Video technology. Requires a CPU with Quick Sync support.
+#'
+#' To check which encoders are available on your system, use the following command:
+#'
+#' ```bash
+#' ffmpeg -encoders | grep hevc
+#' ```
+#'
+#' The output will list all HEVC encoders supported by your FFmpeg installation. Choose the one that best fits your hardware and encoding requirements.
 #'
 #'
 #' @return Prints progress and time statistics to the console. The re-encoded videos are saved in the specified output directory.
@@ -38,7 +71,11 @@
 
 reencodeVideos <- function(mov.directory,
                            output.directory = mov.directory,
-                           crf = 28,
+                           file.suffix = "",
+                           encoder = "libx265",
+                           crf = 18,
+                           video.quality = 50,
+                           preset = "medium",
                            overwrite = "ask"){
 
 
@@ -59,40 +96,48 @@ reencodeVideos <- function(mov.directory,
     stop("Error: 'crf' must be a numeric value between 0 and 51.", call. = FALSE)
   }
 
+  # validate the video.quality argument
+  if(!is.numeric(video.quality) || length(video.quality) != 1 || video.quality < 1 || video.quality > 100) {
+    stop("Error: 'video.quality' must be a numeric value between 1 and 100.", call. = FALSE)
+  }
+
+  # validate the preset argument
+  valid_presets <- c("ultrafast", "superfast", "veryfast", "faster", "fast", "medium", "slow", "slower", "veryslow")
+  if (!preset %in% valid_presets) {
+    stop("Error: Invalid preset value. Valid options are: 'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'.", call. = FALSE)
+  }
+
   # replace ~ with full path
   mov.directory <- path.expand(mov.directory)
   output.directory <- path.expand(output.directory)
 
   # list all .mov files in the input directory
   mov_files <- list.files(mov.directory, pattern=".mov", full.names = TRUE)
+  mp4_files <- list.files(mov.directory, pattern=".mp4", full.names = TRUE)
+  video_files <- c(mov_files, mp4_files)
 
-  # check if there are any .mov files to process
-  if(length(mov_files) == 0) stop("No .mov files found in the specified input directory.", call. = FALSE)
-
-  # check if hevc_videotoolbox codec is available
-  hw_accel_check <- system("ffmpeg -codecs 2>&1 | grep hevc_videotoolbox", intern = TRUE)
-  if(length(hw_accel_check) > 0) {
-    # use hardware acceleration
-    video_codec <- "hevc_videotoolbox"
-  } else {
-    # fall back to software encoding
-    video_codec <- "libx265"
-    # ask the user if they want to proceed with software encoding
-    prompt_msg <- paste(crayon::red$bold("Warning:"),
-                        "Hardware acceleration (hevc_videotoolbox) not available. Using libx265 instead.",
-                        "This may take a long time to complete, depending on the size and number of videos.",
-                        "Do you wish to continue anyway?",
-                        crayon::black$bold("(yes/no)\n"))
-    prompt_msg <- paste(strwrap(prompt_msg, width=getOption("width")), collapse="\n")
-    cat(prompt_msg)
-    # capture user input
-    proceed <- readline()
-    # convert input to lowercase and check if it is negative
-    if(!(tolower(proceed) %in% c("yes", "y"))) {
+  # check if there are any .mp4 files in the input directory
+  if (length(mp4_files) > 0) {
+    cat(paste0("The following files are already in .mp4 format:\n",
+               crayon::blue(paste(basename(mp4_files), collapse = "\n"), "\n\n"),
+               "Do you wish to continue processing? (yes/no)"))
+    response <- readline()
+    if (!tolower(response) %in% c("yes", "y")) {
       # exit the function if the user decides not to proceed
-      cat("Process cancelled.\n")
+      cat("Processing cancelled.\n")
       return(invisible(NULL))
     }
+  }
+
+  # Check if there are any files to process
+  if (length(video_files) == 0) {
+    stop("No valid video files (.mov or .mp4) found in the specified input directory.", call. = FALSE)
+  }
+
+  # validate the encoder directly within the function
+  encoders_output <- system("ffmpeg -codecs 2>&1", intern = TRUE)
+  if (!any(grepl(paste0("\\b", encoder, "\\b"), encoders_output))) {
+    stop(sprintf("Error: Specified encoder '%s' is not available in your ffmpeg installation. Please check your ffmpeg setup.", encoder), call. = FALSE)
   }
 
 
@@ -104,11 +149,11 @@ reencodeVideos <- function(mov.directory,
   start_time <- Sys.time()
 
   # print a message to the console
-  cat(sprintf("Reencoding %d file%s to HEVC format:\n", length(mov_files),  ifelse(length(mov_files) == 1, "", "s")))
+  cat(sprintf("Reencoding %d file%s to HEVC format:\n", length(video_files),  ifelse(length(video_files) == 1, "", "s")))
 
   # list all files to be converted
-  if(length(mov_files) > 0) {
-    cat(paste0(" - ", crayon::blue(basename(mov_files)), collapse = "\n"), "\n")
+  if(length(video_files) > 0) {
+    cat(paste0(" - ", crayon::blue(basename(video_files)), collapse = "\n"), "\n")
   }
   cat("\n")
 
@@ -118,13 +163,13 @@ reencodeVideos <- function(mov.directory,
   ##############################################################################
 
   # loop through each .mov file for re-encoding
-  for (i in seq_along(mov_files)) {
+  for (i in seq_along(video_files)) {
 
     # retrieve current file
-    file <- mov_files[i]
+    file <- video_files[i]
 
-    # define the output file path with the .mp4 extension in the output directory
-    output_file <- file.path(output.directory, gsub("\\.mov$", ".mp4", basename(file)))
+    # define the output file path and append the suffix to the output filename (with .mp4 extension)
+    output_file <- file.path(output.directory, paste0(tools::file_path_sans_ext(basename(file)), file.suffix, ".mp4"))
 
     # check if the output file exists
     if (file.exists(output_file)) {
@@ -158,7 +203,16 @@ reencodeVideos <- function(mov.directory,
     pb <- txtProgressBar(min=0, max=100, style=3)
 
     # construct the ffmpeg command and capture progress
-    ffmpeg_command <- sprintf('ffmpeg -i "%s" -c:v %s -crf %d -preset fast -an -y "%s" 2>&1', file, video_codec, crf, output_file)
+    if (encoder %in% c("hevc_videotoolbox", "h265_nvenc", "hevc_amf", "hevc_qsv")) {
+      # hardware accelerated encoders generally don't use CRF
+      ffmpeg_command <- sprintf('ffmpeg -i "%s" -c:v %s -q:v %d -preset %s -tag:v hvc1 -an -y "%s" 2>&1',
+                                file, encoder, video.quality, preset, output_file)
+    } else if (encoder == "libx265") {
+      # software encoder (libx265) uses CRF
+      ffmpeg_command <- sprintf('ffmpeg -i "%s" -c:v %s -crf %d -preset %s -tag:v hvc1 -an -y "%s" 2>&1',
+                                file, encoder, crf, preset, output_file)
+    }
+
     # redirect stderr to stdout using '2>&1'
     process <- pipe(ffmpeg_command, "r")
     current_time <- 0

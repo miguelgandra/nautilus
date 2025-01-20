@@ -22,7 +22,7 @@
 # install.packages("devtools")
 
 # Install and load the 'nautilus' package from GitHub
-devtools::install_github("miguelgandra/nautilus")
+#devtools::install_github("miguelgandra/nautilus")
 library(nautilus)
 
 
@@ -32,12 +32,13 @@ library(nautilus)
 
 # Specify the folder path containing the .MOV video files that you want to reencode
 # Replace this path with the location of your own video files
-video_directory <- "~/Desktop/Whale Sharks/CAMS"
+video_directory <- "~/Desktop/Whale Sharks/CAMS/PIN_CAM_10/"
 
 # Reencode all MOV videos in the specified directory to HEVC (H.265) format
 # The reencoded videos will be saved as .mp4 files in the same directory by default
 # You can specify an alternative output directory if desired
-reencodeVideos(mov.directory=video_directory, crf = 28)
+reencodeVideos(mov.directory=video_directory, encoder = "hevc_videotoolbox", video.quality = 35)
+
 
 # Retrieve metadata for all processed videos in the specified directory
 # This function returns details like duration, start time, end time, and frame rate.

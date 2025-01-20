@@ -7,11 +7,13 @@
 extractFeatures(
   data,
   variables = c("depth", "surge", "pitch"),
-  metrics = c("mean", "sd"),
+  metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum", "energy",
+    "skewness", "kurtosis", "entropy"),
   window.size = 5,
   aggregate = FALSE,
   datetime.col = "datetime",
-  response.col = NULL
+  response.col = NULL,
+  cores = 1
 )
 }
 \arguments{
@@ -19,9 +21,11 @@ extractFeatures(
 
 \item{variables}{A character vector of column names from \code{data} for which to calculate metrics.}
 
-\item{metrics}{A character vector specifying the metrics to calculate. Supported metrics: "mean", "sd", "min", "max", "sum".}
+\item{metrics}{A character vector specifying the metrics to calculate. Supported metrics: "mean", "sd", "min", "max", "sum",
+"range", "mad", "skewness", "kurtosis", "energy", "entropy".}
 
-\item{window.size}{An integer specifying the size of the sliding or aggregation window.}
+\item{window.size}{An integer specifying the size of the sliding or aggregation window, in seconds.
+The actual number of steps in the window is determined based on the sampling interval of the data.}
 
 \item{aggregate}{Logical. If \code{TRUE}, aggregates data into distinct, non-overlapping windows. If \code{FALSE}, retains temporal resolution.}
 
@@ -29,6 +33,8 @@ extractFeatures(
 
 \item{response.col}{(Optional) A character string specifying the column in \code{data} containing response or annotated labels (e.g., feeding events).
 It must be binary (i.e., containing values 0 or 1).}
+
+\item{cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
 }
 \value{
 A data frame containing the calculated features. If \code{aggregate = TRUE}, the output will have fewer rows,
@@ -41,4 +47,21 @@ The response column, if specified, will also be aggregated or retained according
 This function calculates specified metrics (e.g., mean, standard deviation) for selected variables over a sliding window.
 It can either retain the temporal resolution of the dataset or aggregate data into distinct, non-overlapping windows.
 This is useful for preparing the dataset for machine learning or other analytical methods that require a structured set of features.
+}
+\details{
+This function supports the following metrics:
+\itemize{
+\item "mean": The average value of the data. It provides the central tendency of the dataset within each window.
+\item "median": The middle value of the data when ordered. It divides the dataset into two equal halves, providing a robust measure of central tendency that is less affected by outliers.
+\item "sd": The standard deviation of the data. It quantifies the amount of variation or dispersion of the data values within each window.
+\item "range": The range (max - min) of the data. It represents the difference between the maximum and minimum values within each window.
+\item "min": The minimum value of the data. It indicates the smallest value in the dataset within each window.
+\item "max": The maximum value of the data. It indicates the largest value in the dataset within each window.
+\item "iqr": The interquartile range of the data. It is the difference between the 75th percentile (Q3) and the 25th percentile (Q1) of the dataset, measuring the spread of the middle 50\% of the data.
+\item "sum": The sum of the data. It adds up all the values in the dataset within each window.
+\item "energy": The sum of the squares of the data. It reflects the magnitude of the values, commonly used in signal processing and analysis of periodicity.
+\item "skewness": The skewness of the data, a measure of the asymmetry of the distribution. A positive value indicates a right-skewed distribution, while a negative value indicates a left-skewed distribution.
+\item "kurtosis": The kurtosis of the data, a measure of the "tailedness" or sharpness of the distribution. High kurtosis indicates heavy tails, while low kurtosis indicates lighter tails.
+\item "entropy": The entropy of the data, which measures the unpredictability or randomness. High entropy values indicate more uncertainty or randomness in the data, while low values suggest more predictability.
+}
 }

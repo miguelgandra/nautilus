@@ -30,7 +30,9 @@ Suggests:
 	doSNOW,
 	parallel,
 	randomForest,
-	pROC
+	pROC,
+	moments,
+	entropy
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 
