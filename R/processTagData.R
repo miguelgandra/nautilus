@@ -710,7 +710,6 @@ processTagData <- function(data.folders,
     attr(processed_data, 'vertical.speed.threshold') <- vertical.speed.threshold
     attr(processed_data, 'processing.date') <- Sys.time()
 
-
     # save the processed data as an RDS file
     if(save.files){
 
@@ -730,6 +729,9 @@ processTagData <- function(data.folders,
 
     # print empty line
     cat("\n")
+
+    # store processed sensor data in the list
+    data_list[[i]] <- processed_data
 
     # clear unused objects from the environment to free up memory
     rm(sensor_data)
