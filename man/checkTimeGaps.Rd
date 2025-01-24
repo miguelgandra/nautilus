@@ -8,7 +8,7 @@ checkTimeGaps(
   data,
   id.col = "ID",
   datetime.col = "datetime",
-  time.diff.threshold = 0.001,
+  time.diff.threshold = 0.01,
   early.threshold = 0.2,
   late.threshold = 0.8,
   verbose = TRUE

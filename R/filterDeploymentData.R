@@ -143,10 +143,12 @@ filterDeploymentData <- function(data,
     }
 
     # capture the original class of 'data' (either 'data.frame' or 'data.table')
-    original_class <- class(individual_data)
+    original_class <- class(individual_data)[1]
 
-    # store original attributes before processing
-    original_attributes <- attributes(individual_data)[-c(1:4)]
+    # store original attributes before processing,  excluding internal ones
+    discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
+    original_attributes <- attributes(individual_data)
+    original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
 
     # convert data.table to data.frame for processing
     if (inherits(individual_data, "data.frame")) {
@@ -197,10 +199,10 @@ filterDeploymentData <- function(data,
     # Downsample data to 1 Hz ##################################################
     ############################################################################
 
-    # check if 'sampling_freq' attribute exists in the dataset
+    # check if 'processed.sampling.frequency' attribute exists in the dataset
     # if present, use it; otherwise, calculate the sampling frequency from the data
-    sampling_freq <- if ("sampling.frequency" %in% names(attributes(individual_data))) {
-      attributes(data[[i]])$sampling.frequency
+    sampling_freq <- if ("processed.sampling.frequency" %in% names(attributes(individual_data))) {
+      attributes(data[[i]])$processed.sampling.frequency
     } else {
       sampling_rate <- nrow(individual_data)/length(unique(lubridate::floor_date(individual_data[[datetime.col]], "sec")))
       plyr::round_any(sampling_rate, 5)
@@ -294,44 +296,63 @@ filterDeploymentData <- function(data,
     deployment_segments <- which(segment_stats$mean >= depth.threshold | segment_stats$variance >= variance.threshold)
     spurious_segments <- which(segment_stats$mean < depth.threshold | segment_stats$variance < variance.threshold)
 
-    # pre-deployment
-    pre_deployment <- max(spurious_segments[spurious_segments < min(deployment_segments)])
-    pre_segment_end <- segment_stats$end[pre_deployment]
-    post_deployment <- min(spurious_segments[spurious_segments > max(deployment_segments)])
-    post_segment_start <- segment_stats$start[post_deployment]
+    # check if no valid deployment segments are identified
+    if(length(deployment_segments)==0){
+      # notify that the dataset is discarded
+      cat("No valid deployment segments detected. Dataset discarded.\n")
+      # assign deploy_index and popup_index when no valid segments are found
+      deploy_index <- nrow(reduced_data)+1
+      popup_index <-  nrow(reduced_data)+1
 
-    # assign deploy_index and popup_index
-    deploy_index <- pre_segment_end + 1
-    popup_index <- post_segment_start - 1
+    }else{
+
+      # identify the pre-deployment segment
+      if(any(spurious_segments < min(deployment_segments))){
+        pre_deployment <- max(spurious_segments[spurious_segments < min(deployment_segments)])
+      }else{
+        pre_deployment <- max(spurious_segments[spurious_segments <= min(deployment_segments)])
+      }
+      pre_segment_end <- segment_stats$end[pre_deployment]
+
+      # identify the post-deployment segment
+      if(any(spurious_segments > max(deployment_segments))){
+        post_deployment <- min(spurious_segments[spurious_segments > max(deployment_segments)])
+      }else{
+        post_deployment <- min(spurious_segments[spurious_segments >= max(deployment_segments)])
+      }
+      post_segment_start <- segment_stats$start[post_deployment]
+
+      # assign deploy_index and popup_index
+      deploy_index <- pre_segment_end + 1
+      popup_index <- post_segment_start - 1
 
 
-    ############################################################################
-    # Print to console #########################################################
-    ############################################################################
+      ##########################################################################
+      # Print to console #######################################################
 
-    attachtime <- reduced_data[[datetime.col]][deploy_index]
-    poptime <- reduced_data[[datetime.col]][popup_index]
+      attachtime <- reduced_data[[datetime.col]][deploy_index]
+      poptime <- reduced_data[[datetime.col]][popup_index]
 
-    # calculate the deploy duration
-    total_duration <- difftime(last_datetime, first_datetime, units = "hours")
-    total_duration <- paste(sprintf("%.2f", as.numeric(total_duration)), attributes(total_duration)$units)
-    deploy_duration <- difftime(poptime, attachtime, units = "hours")
-    deploy_duration <- paste(sprintf("%.2f", as.numeric(deploy_duration)), attributes(deploy_duration)$units)
-    deploy_percentage <- as.numeric(difftime(poptime, attachtime, units = "hours"))/as.numeric(difftime(last_datetime, first_datetime, units = "hours"))*100
-    pre_deploy <- as.numeric(difftime(attachtime, first_datetime, units="hours"))
-    pre_deploy <- sprintf("%dh:%02dm", floor(pre_deploy), round((pre_deploy - floor(pre_deploy)) * 60))
-    post_deploy <- as.numeric(difftime(last_datetime, poptime, units="hours"))
-    post_deploy <- sprintf("%dh:%02dm", floor(post_deploy), round((post_deploy - floor(post_deploy)) * 60))
-    rows_discarded <- length(1:deploy_index) + length(popup_index:nrow(reduced_data))
+      # calculate the deploy duration
+      total_duration <- difftime(last_datetime, first_datetime, units = "hours")
+      total_duration <- paste(sprintf("%.2f", as.numeric(total_duration)), attributes(total_duration)$units)
+      deploy_duration <- difftime(poptime, attachtime, units = "hours")
+      deploy_duration <- paste(sprintf("%.2f", as.numeric(deploy_duration)), attributes(deploy_duration)$units)
+      deploy_percentage <- as.numeric(difftime(poptime, attachtime, units = "hours"))/as.numeric(difftime(last_datetime, first_datetime, units = "hours"))*100
+      pre_deploy <- as.numeric(difftime(attachtime, first_datetime, units="hours"))
+      pre_deploy <- sprintf("%dh:%02dm", floor(pre_deploy), round((pre_deploy - floor(pre_deploy)) * 60))
+      post_deploy <- as.numeric(difftime(last_datetime, poptime, units="hours"))
+      post_deploy <- sprintf("%dh:%02dm", floor(post_deploy), round((post_deploy - floor(post_deploy)) * 60))
+      rows_discarded <- length(1:deploy_index) + length(popup_index:nrow(reduced_data))
 
-    # print results to the console
-    cat(sprintf("Total dataset duration: %s\n", total_duration))
-    cat(sprintf("Estimated deployment duration: %s (%.1f%%)\n", deploy_duration, deploy_percentage))
-    cat(sprintf("Attach time: %s (+%s)\n", strftime(attachtime, "%d/%b/%Y %H:%M:%S", tz="UTC"), pre_deploy))
-    cat(sprintf("Popup time: %s (-%s)\n", strftime(poptime, "%d/%b/%Y %H:%M:%S", tz="UTC"), post_deploy))
-    cat(sprintf("Rows removed: %d (~%.0f%%)", rows_discarded, (rows_discarded / nrow(data)) * 100))
-    cat("\n")
-    #cat(crayon::bold("\n==================================================\n"))
+      # print results to the console
+      cat(sprintf("Total dataset duration: %s\n", total_duration))
+      cat(sprintf("Estimated deployment duration: %s (%.1f%%)\n", deploy_duration, deploy_percentage))
+      cat(sprintf("Attach time: %s (+%s)\n", strftime(attachtime, "%d/%b/%Y %H:%M:%S", tz="UTC"), pre_deploy))
+      cat(sprintf("Popup time: %s (-%s)\n", strftime(poptime, "%d/%b/%Y %H:%M:%S", tz="UTC"), post_deploy))
+      cat(sprintf("Rows removed: %d (~%.0f%%)", rows_discarded, (rows_discarded / nrow(data)) * 100))
+      cat("\n")
+    }
 
 
     ############################################################################

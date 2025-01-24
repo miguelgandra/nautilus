@@ -44,7 +44,7 @@
 checkTimeGaps <- function(data,
                           id.col = "ID",
                           datetime.col = "datetime",
-                          time.diff.threshold = 0.001,
+                          time.diff.threshold = 0.01,
                           early.threshold = 0.2,
                           late.threshold = 0.8,
                           verbose = TRUE) {
@@ -150,7 +150,7 @@ checkTimeGaps <- function(data,
 
     # check for remaining time gaps in the middle
     if(length(pre_deploy_gaps)==0 & length(post_deploy_gaps)==0) {
-      if(verbose) cat(sprintf("Time gaps found, but not removed. Check warnings.\n", length(time_anomalies)))
+      if(verbose) cat(sprintf("Time gaps found, but not removed. Check warnings.\n"))
       id <- unique(data[[id.col]])
       warning(paste(id, "-", length(time_anomalies), "time",
                     ifelse(length(time_anomalies) == 1, "gap", "gaps"),

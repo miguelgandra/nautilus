@@ -4,14 +4,28 @@
 \alias{summarizeTagData}
 \title{Generate Summary Statistics for Multiple Individuals}
 \usage{
-summarizeTagData(data, id.col = "ID", datetime.col = "datetime")
+summarizeTagData(
+  data,
+  id.metadata = NULL,
+  id.col = "ID",
+  datetime.col = "datetime",
+  error.stat = "sd"
+)
 }
 \arguments{
 \item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame containing data from multiple animals.}
 
+\item{id.metadata}{A data frame containing metadata about the tagged animals, such as their length,
+sex, or transmitter type. All columns in this data frame will be summarized and included
+in the final table. If there are multiple rows per animal, variables will be collapsed
+before merging with other statistics.}
+
 \item{id.col}{Column name for the animal ID (default is "ID").}
 
 \item{datetime.col}{Column name for the datetime (default is "datetime").}
+
+\item{error.stat}{The statistic to use for variability/error calculation, either 'sd' (standard deviation)
+or 'se' (standard error). Defaults to 'sd'.}
 }
 \value{
 A data frame with summary statistics for each animal, including the following columns:

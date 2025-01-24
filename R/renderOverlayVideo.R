@@ -444,6 +444,16 @@ renderOverlayVideo <- function(video.file,
 # Define helper function to process frames #####################################
 ################################################################################
 
+#' Process Video Frames with Sensor Data Overlays
+#'
+#' This function processes individual video frames by overlaying relevant sensor data such as heading, pitch, roll, depth, VeDBA (Vectorial Dynamic Body Acceleration),
+#' and vertical speed. The function creates a final frame with graphical representations of these metrics.
+#'
+#' @return Saves processed frame image as a `.jpg` file in the `processed_directory`.
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
 .processFrames <- function(i, start, frame_rate, sensor_data,
                            frames_directory, overlays_directory, processed_directory,
                            overlay.side, depth.window, vedba.window, vertical.speed.window,

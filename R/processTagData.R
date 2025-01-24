@@ -30,7 +30,7 @@
 #' in the data folder corresponding to each ID. Default is `NULL`.
 #' @param output.suffix Character. A suffix to append to the file name when saving.
 #' This parameter is only used if `save.files = TRUE`. If `NULL`, a suffix based on the sampling
-#' rate (e.g., `_100Hz`) will be used. Default is `NULL`.
+#' rate (e.g., `-100Hz`) will be used. Default is `NULL`.
 #' @param id.metadata Data frame. Metadata about the IDs to associate with the processed data.
 #' Must contain at least columns for ID and tag type.
 #' @param id.col Character. Column name for ID in `id.metadata` (default: "ID").
@@ -286,7 +286,7 @@ processTagData <- function(data.folders,
   import_cols <- c("Date (UTC)", "Time (UTC)", "Accelerometer X [m/s\xb2]", "Accelerometer Y [m/s\xb2]",
                    "Accelerometer Z [m/s\xb2]", "Gyroscope X [mrad/s]", "Gyroscope Y [mrad/s]", "Gyroscope Z [mrad/s]",
                    "Magnetometer X [\xb5T]", "Magnetometer Y [\xb5T]", "Magnetometer Z [\xb5T]", "Temperature (imu) [\xb0C]",
-                   "Temperature (depth) [\xb0C]", "Depth (200bar) 1 [m]", "Depth (200bar) [m]")
+                   "Temperature (depth) [\xb0C]", "Temp. (magnet.) [\xb0C]", "Depth (200bar) 1 [m]", "Depth (200bar) [m]", "Camera time")
 
 
   ##############################################################################
@@ -324,7 +324,7 @@ processTagData <- function(data.folders,
     # check if the sensor file exists
     if (is.na(sensor_file) || !file.exists(sensor_file)) {
       cat("Data file missing. Skipping.\n\n")
-      data_list[[i]] <- NULL
+      data_list[[i]] <- NA
       next
     }
 
@@ -333,6 +333,14 @@ processTagData <- function(data.folders,
 
     # load sensor data from CSV
     sensor_data <- suppressWarnings(data.table::fread(sensor_file, select=import_cols, showProgress=TRUE))
+
+    # check if the sensor data file is empty or is missing columns
+    if(nrow(sensor_data)==0 || ncol(sensor_data)<13){
+      cat("Data format not recognized. Skipping.\n\n")
+      data_list[[i]] <- NA
+      warning(paste(id, "- Sensor data file is either empty or does not contain recognized column headers. No data was imported."), call. = FALSE)
+      next
+    }
 
     # output dataset size (rounded to the nearest thousand)
     if (verbose) {
@@ -352,6 +360,16 @@ processTagData <- function(data.folders,
       cat("Total rows:", result, "\n")
     }
 
+    # check if the "Camera time" column exists
+    if ("Camera time" %in% colnames(sensor_data)) {
+      # find the first index where "Camera time" is greater than zero
+      camara_start <- which(sensor_data$`Camera time` > 0)[1]
+      # remove the "Camera time" column from the dataset
+      sensor_data[, "Camera time" := NULL]
+    }else{
+      camara_start <- NULL
+    }
+
     # rename columns
     data.table::setnames(sensor_data, c("date", "time", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "temp", "depth"))
 
@@ -367,6 +385,9 @@ processTagData <- function(data.folders,
     # add ID column
     sensor_data[, ID := id]
 
+    # if camara_start is not NULL, extract the corresponding datetime
+    if (!is.null(camara_start)) {camara_start <- sensor_data[camara_start, datetime]}
+
     # process PSAT data if available
     if (!is.na(psat_file) && file.exists(psat_file)) {
       # provide feedback to the user if verbose mode is enabled
@@ -377,6 +398,8 @@ processTagData <- function(data.folders,
       data.table::setnames(psat_data, c("PTT", "timebin", "position_type", "lat", "lon"))
       # remove fractional seconds from PSAT locs datetimes
       psat_data[, timebin := as.POSIXct(floor(as.numeric(timebin)), origin = "1970-01-01", tz = "UTC")]
+      # remove rows with duplicate 'timebin' values
+      psat_data <- psat_data[!duplicated(timebin)]
       # add "timebin" column with datetime rounded to the nearest second (floor)
       sensor_data[, timebin := as.POSIXct(floor(as.numeric(datetime)), origin = "1970-01-01", tz = "UTC")]
       # merge PSAT positions with sensor data
@@ -393,44 +416,48 @@ processTagData <- function(data.folders,
     # Apply axis.mapping transformations #######################################
     ############################################################################
 
-    # retrieve tag type from metadata
+    # retrieve tag model from metadata
     tag_model <- animal_info[[tag.col]]
 
-    # change axis designation and direction to match the NED system
+    # proceed only if axis.mapping is provided and tag_model is valid
     if (!is.null(axis.mapping) && !is.na(tag_model)) {
 
-      # extract the unique types from the data frame
-      types <- unique(axis.mapping$type)
+      # check if tag_model exists in axis.mapping
+      if(tag_model %in% axis.mapping$tag){
 
-      # check which type is present in the ID name (if no match, assign the default type)
-      tag_type <- types[sapply(types, function(x) grepl(x, id))]
-      if (length(tag_type) == 0) {tag_type <- "CMD"}
+        # extract the unique types from the data frame
+        types <- unique(axis.mapping$type)
 
-      # provide feedback to the user if verbose mode is enabled
-      if(verbose) cat(paste("Applying axis mapping for tag:", tag_model, tag_type, "\n"))
+        # check which type is present in the ID name (if no match, assign the default type)
+        tag_type <- types[sapply(types, function(x) grepl(x, id))]
+        if (length(tag_type) == 0) {tag_type <- "CMD"}
 
-      # filter the axis.mapping for the current tag type and model
-      tag_mapping <- axis.mapping[axis.mapping$tag == tag_model & axis.mapping$type == tag_type,]
+        # provide feedback to the user if verbose mode is enabled
+        if(verbose) cat(paste("Applying axis mapping for tag:", tag_model, tag_type, "\n"))
 
-      # create a temporary copy of the data for simultaneous swaps
-      temp_data <- data.table::copy(sensor_data)
+        # filter the axis.mapping for the current tag type and model
+        tag_mapping <- axis.mapping[axis.mapping$tag == tag_model & axis.mapping$type == tag_type,]
 
-      # apply each mapping
-      for (row in 1:nrow(tag_mapping)) {
-        from_axis <- tag_mapping$from[row]
-        to_axis <- tag_mapping$to[row]
-        if (grepl("^\\-", to_axis)) {
-          # sign change
-          axis_name <- sub("^\\-", "", to_axis)
-          temp_data[[axis_name]] <- -sensor_data[[from_axis]]
-        } else {
-          # swap axes
-          temp_data[[to_axis]] <- sensor_data[[from_axis]]
+        # create a temporary copy of the data for simultaneous swaps
+        temp_data <- data.table::copy(sensor_data)
+
+        # change axis designation and direction to match the NED system
+        for (row in 1:nrow(tag_mapping)) {
+          from_axis <- tag_mapping$from[row]
+          to_axis <- tag_mapping$to[row]
+          if (grepl("^\\-", to_axis)) {
+            # sign change
+            axis_name <- sub("^\\-", "", to_axis)
+            temp_data[[axis_name]] <- -sensor_data[[from_axis]]
+          } else {
+            # swap axes
+            temp_data[[to_axis]] <- sensor_data[[from_axis]]
+          }
         }
-      }
 
-      # update the sensor data with the swapped values
-      sensor_data <- data.table::copy(temp_data)
+        # update the sensor data with the swapped values
+        sensor_data <- data.table::copy(temp_data)
+      }
     }
 
 
@@ -699,15 +726,20 @@ processTagData <- function(data.folders,
 
     # create new attributes to save relevant variables
     attr(processed_data, 'directory') <- data.folders[i]
+    attr(processed_data, 'id') <- id
     attr(processed_data, 'first.datetime') <- first_datetime
     attr(processed_data, 'last.datetime') <- last_datetime
-    attr(processed_data, 'sampling.frequency') <- sampling_freq
+    attr(processed_data, 'original.sampling.frequency') <- sampling_freq
+    attr(processed_data, 'processed.sampling.frequency') <- sampling_rate
     attr(processed_data, 'magnetic.declination') <- declination_deg
     attr(processed_data, 'sensor.smoothing.factor') <- sensor.smoothing.factor
     attr(processed_data, 'dba.window') <- dba.window
     attr(processed_data, 'smoothing.window') <- smoothing.window
-    attr(processed_data, 'downsample.to') <- downsample.to
     attr(processed_data, 'vertical.speed.threshold') <- vertical.speed.threshold
+    attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
+    attr(processed_data, 'depth.sensor.resolution') <- depth.sensor.resolution
+    attr(processed_data, 'depth.sensor.accuracy') <- depth.sensor.accuracy
+    attr(processed_data, 'camara.start') <- camara_start
     attr(processed_data, 'processing.date') <- Sys.time()
 
     # save the processed data as an RDS file
@@ -717,7 +749,7 @@ processTagData <- function(data.folders,
       output_dir <- ifelse(!is.null(output.folder), output.folder, data.folders[i])
 
       # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
-      sufix <- ifelse(!is.null(output.suffix), output.suffix, paste0("_", sampling_rate, "Hz"))
+      sufix <- ifelse(!is.null(output.suffix), output.suffix, paste0("-", sampling_rate, "Hz"))
 
       # construct the output file name
       output_file <- file.path(output_dir, paste0(id, sufix, ".rds"))
@@ -749,8 +781,14 @@ processTagData <- function(data.folders,
   time.taken <- end.time - start.time
   cat(crayon::bold("Total execution time:"), sprintf("%.02f", as.numeric(time.taken)), base::units(time.taken), "\n\n")
 
-  # return the list containing processed sensor data for all folders
+  # assign names to the data list
   names(data_list) <- basename(data.folders)
+
+  # convert NA placeholders back to NULL
+  na_indices <- which(sapply(data_list, function(x) identical(x, NA)))
+  for (index in na_indices) {data_list[[index]] <- NULL}
+
+  # return the list containing processed sensor data for all folders
   return(data_list)
 }
 

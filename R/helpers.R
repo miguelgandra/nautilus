@@ -25,13 +25,66 @@ NULL
 #'
 #' @description Prints a string to the console with a specific formatting.
 #' @param string A character string to be printed to the console.
-#' @note This function is intended for internal use within the `moby` package.
+#' @note This function is intended for internal use within the `nautilus` package.
 #' @keywords internal
 #' @noRd
 
 .printConsole <- function(string){
   wrapped_text <- strwrap(string, width=getOption("width")*1.2)
   cat(paste0("\033[0;", 1, "m", wrapped_text, "\033[0m", "\n"))
+}
+
+
+##################################################################################################
+## Decimal Places   ##############################################################################
+## Sourced from https://stackoverflow.com/questions/5173692/how-to-return-number-of-decimal-places-in-r
+
+#' Decimal Places
+#'
+#' @description Determines the number of decimal places in a numeric value.
+#' @note This function is intended for internal use within the 'nautilus' package.
+#' @keywords internal
+#' @noRd
+
+.decimalPlaces <- function(x) {
+  if(is.na(x)){return(NA)}
+  if (abs(x - round(x)) > .Machine$double.eps^0.5) {
+    nchar(strsplit(sub('0+$', '', format(x, scientific=FALSE)), ".", fixed = TRUE)[[1]][[2]])
+  } else {
+    return(0)
+  }
+}
+.decimalPlaces <- Vectorize(.decimalPlaces)
+
+
+##################################################################################################
+## Standard Error ################################################################################
+
+#' Standard Error
+#'
+#' @description Computes the standard error (SE) of a numeric vector, defined as
+#' the standard deviation divided by the square root of the sample size.
+#' @note This function is intended for internal use within the 'nautilus' package.
+#' @keywords internal
+#' @noRd
+
+.standardError <- function(x) {
+  sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+}
+
+
+##################################################################################################
+## Mode ##########################################################################################
+
+#' Compute the Mode of a Vector
+#'
+#' @note This function is intended for internal use within the 'nautilus' package.
+#' @keywords internal
+#' @noRd
+
+.mode <- function(x) {
+  uniq <- unique(x)
+  uniq[which.max(tabulate(match(x, uniq)))]
 }
 
 
@@ -59,7 +112,7 @@ NULL
 #' The result is returned in degrees and adjusted to fall within the specified range. This operation ensures that
 #' angular data wrapping (e.g., crossing 360 degrees or -180 degrees) is handled correctly.
 #'
-#' @note This function is intended for internal use within the `moby` package.
+#' @note This function is intended for internal use within the `nautilus` package.
 #'
 #' @keywords internal
 #' @noRd

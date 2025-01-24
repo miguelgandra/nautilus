@@ -49,7 +49,7 @@ in the data folder corresponding to each ID. Default is \code{NULL}.}
 
 \item{output.suffix}{Character. A suffix to append to the file name when saving.
 This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, a suffix based on the sampling
-rate (e.g., \verb{_100Hz}) will be used. Default is \code{NULL}.}
+rate (e.g., \verb{-100Hz}) will be used. Default is \code{NULL}.}
 
 \item{id.metadata}{Data frame. Metadata about the IDs to associate with the processed data.
 Must contain at least columns for ID and tag type.}
