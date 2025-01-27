@@ -2,14 +2,16 @@
 % Please edit documentation in R/getVideoMetadata.R
 \name{getVideoMetadata}
 \alias{getVideoMetadata}
-\title{Extract Video Metadata and Timestamps}
+\title{Extract Metadata and Timestamps from Biologging Tag Video Files}
 \usage{
 getVideoMetadata(
   video.folders,
   video.format = "mp4",
   id.metadata = NULL,
   id.col = "ID",
-  tagdate.col = "tagging_date"
+  tagdate.col = "tagging_date",
+  validate.timestamps = TRUE,
+  ocr.language = "cam"
 )
 }
 \arguments{
@@ -24,6 +26,11 @@ determine the start time of the video.}
 \item{id.col}{Character string. Column name in \code{id.metadata} corresponding to folder IDs. Defaults to "ID".}
 
 \item{tagdate.col}{Character string. Column name in \code{id.metadata} with tagging dates. Defaults to "tagging_date".}
+
+\item{validate.timestamps}{In development.}
+
+\item{ocr.language}{Character string. Language or configuration used by the OCR engine for recognizing
+text in timestamp overlays. Defaults to "cam", indicating a predefined configuration for the target tag type.}
 }
 \value{
 A data frame containing metadata for each video file, including:
@@ -38,14 +45,36 @@ A data frame containing metadata for each video file, including:
 }
 }
 \description{
-This function extracts metadata from video files within specified directories. The metadata includes
-start time, end time, duration, and frame rate. The function is specifically fine-tuned for processing
-videos outputted by a particular biologging tag format, characterized by a black timestamp box located
-in the bottom right corner of the frames. The position of the timestamp box is hardcoded into the function,
-which means it may not work correctly with videos from other tag formats or configurations. The start
-time is determined using Optical Character Recognition (OCR) applied to the first frame of each video.
-If \code{id.metadata} is provided, the function assumes that the tagging date of the animal corresponds to
-the start date, and only the time portion is extracted via OCR. This approach improves the reliability
-of time extraction by using the known tagging date as a reference. Note that OCR is not perfect,
-and its accuracy may vary from video to video.
+This function extracts key metadata from video files located within specified
+directories. The extracted metadata includes the start time, end time, duration,
+and frame rate of the videos. It is specifically designed to process videos
+from biologging tags that include a black timestamp box positioned in the
+bottom-right corner of the frames.
+The function extracts individual frames using FFMPEG and employs Optical
+Character Recognition (OCR) via the Tesseract engine to read the timestamps.
+FFMPEG is also used to retrieve video information such as frame rate and duration.
+As the position of the timestamp box is fixed (hardcoded), this function may
+not be suitable for videos from tags with different configurations or formats.
+For more details and usage guidelines, check out the \code{Details} section.
+}
+\details{
+This function leverages the \strong{tesseract} R package to perform Optical Character Recognition (OCR).
+However, the \strong{Tesseract OCR engine} itself must be installed separately on your system, as the R
+package serves as a wrapper for it. The accuracy of the OCR process depends heavily on the version
+and configuration of the Tesseract engine. For installation instructions, refer to the
+\href{https://github.com/tesseract-ocr/tesseract}{Tesseract GitHub page} or the relevant package documentation.
+
+The function extracts the start time of each video by applying OCR to the first frame. The \code{ocr.language}
+parameter allows you to specify the OCR engine configuration. By default, this is set to \code{"cam"}, a custom-trained
+OCR model optimized for reading timestamps from videos produced by specific biologging CAM tag devices. The custom
+\code{"cam.traineddata"} file is included in the \code{inst/extdata} folder of the package repository.
+For other video formats or devices, you may need to adjust the engine to a more appropriate OCR configuration.
+
+If \code{id.metadata} is supplied, the function uses the tagging date from the metadata as a reference,
+extracting only the time component via OCR. This approach minimizes OCR errors by focusing on the
+time portion of the timestamp, avoiding potential misinterpretations of the date.
+
+For optimal results, ensure both the \verb{Tesseract OCR} engine and the custom-trained model are correctly
+installed and configured. Additionally, verify the \code{FFMPEG} installation, as it is used to extract frames
+and retrieve video details such as frame rate and duration.
 }

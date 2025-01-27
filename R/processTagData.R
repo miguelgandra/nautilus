@@ -363,11 +363,11 @@ processTagData <- function(data.folders,
     # check if the "Camera time" column exists
     if ("Camera time" %in% colnames(sensor_data)) {
       # find the first index where "Camera time" is greater than zero
-      camara_start <- which(sensor_data$`Camera time` > 0)[1]
+      camera_start <- which(sensor_data$`Camera time` > 0)[1]
       # remove the "Camera time" column from the dataset
       sensor_data[, "Camera time" := NULL]
     }else{
-      camara_start <- NULL
+      camera_start <- NULL
     }
 
     # rename columns
@@ -385,8 +385,8 @@ processTagData <- function(data.folders,
     # add ID column
     sensor_data[, ID := id]
 
-    # if camara_start is not NULL, extract the corresponding datetime
-    if (!is.null(camara_start)) {camara_start <- sensor_data[camara_start, datetime]}
+    # if camera_start is not NULL, extract the corresponding datetime
+    if (!is.null(camera_start)) {camera_start <- sensor_data[camera_start, datetime]}
 
     # process PSAT data if available
     if (!is.na(psat_file) && file.exists(psat_file)) {
@@ -739,7 +739,7 @@ processTagData <- function(data.folders,
     attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
     attr(processed_data, 'depth.sensor.resolution') <- depth.sensor.resolution
     attr(processed_data, 'depth.sensor.accuracy') <- depth.sensor.accuracy
-    attr(processed_data, 'camara.start') <- camara_start
+    attr(processed_data, 'camera.start') <- camera_start
     attr(processed_data, 'processing.date') <- Sys.time()
 
     # save the processed data as an RDS file

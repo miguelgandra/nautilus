@@ -6,9 +6,13 @@
 within its start and end times. If a matching video is found, it opens
 the video using VLC at the time corresponding to the given datetime.}
 \usage{
-launchVideo(datetime, video.metadata, vlc.path = NULL)
+launchVideo(id, datetime, video.metadata, vlc.path = NULL)
 }
 \arguments{
+\item{id}{A \code{character} or \code{factor} representing the unique ID
+for the animal associated with the video. This ID is used to search for the
+corresponding video entry in the metadata.}
+
 \item{datetime}{A \code{POSIXct} object representing the datetime to find
 within the video metadata.}
 

@@ -6,7 +6,7 @@
 \usage{
 extractFeatures(
   data,
-  variables = c("depth", "surge", "pitch"),
+  variables,
   metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum", "energy",
     "skewness", "kurtosis", "entropy"),
   window.size = 5,
@@ -17,7 +17,8 @@ extractFeatures(
 )
 }
 \arguments{
-\item{data}{A data frame containing the input data. Must include the variables specified in \code{variables}.}
+\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
+containing data from multiple animals. Must include the variables specified in \code{variables}.}
 
 \item{variables}{A character vector of column names from \code{data} for which to calculate metrics.}
 
@@ -37,11 +38,16 @@ It must be binary (i.e., containing values 0 or 1).}
 \item{cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
 }
 \value{
-A data frame containing the calculated features. If \code{aggregate = TRUE}, the output will have fewer rows,
-with one row per window. If \code{aggregate = FALSE}, the output retains the original number of rows, with
-calculated metrics for each window. If a \code{datetime} column exists in the input data, it will be adjusted to match
-the window aggregation, and the corresponding timestamp will be retained or adjusted based on the window size.
-The response column, if specified, will also be aggregated or retained according to the same rules.
+A list of data frames, each corresponding to an individual animal, containing the calculated features for the specified
+variables and metrics. The structure of the output depends on the \code{aggregate} parameter:
+\itemize{
+\item If \code{aggregate = TRUE}: Each data frame will have fewer rows, with one row per aggregation window. The datetime column
+will be adjusted to represent the midpoint of each aggregation window, if present. The response column, if specified,
+will also be aggregated (e.g., summed or averaged) based on the corresponding window.
+\item If \code{aggregate = FALSE}: Each data frame will retain the original temporal resolution, with calculated metrics for each
+sliding window. The datetime column and response column (if provided) will not be aggregated but will instead match
+the temporal alignment of the sliding windows.
+}
 }
 \description{
 This function calculates specified metrics (e.g., mean, standard deviation) for selected variables over a sliding window.

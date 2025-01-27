@@ -162,8 +162,11 @@ annotateData <- function(data,
     annotated_data[[i]] <- df
   }
 
-    # return the annotated list of data frames
-    return(annotated_data)
+  # remove NULL elements from the list
+  annotated_data <- annotated_data[!sapply(annotated_data, is.null)]
+
+  # return the annotated list of data frames
+  return(annotated_data)
 }
 
 #######################################################################################################
