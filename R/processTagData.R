@@ -61,14 +61,6 @@
 #' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
 #' @param downsample.to Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 #' Use NULL to retain the original resolution. Defaults to 1.
-#' @param vertical.speed.threshold Numeric. A threshold value for vertical displacement speed (in meters per second).
-#' If the calculated vertical speed exceeds this value, the corresponding rows will be removed from the dataset.
-#' This threshold is useful for removing data points where vertical speed may be artificially high due to occasional sensor malfunctioning or noise.
-#' Default is `NULL`, which means no filtering will be applied based on vertical speed.
-#' @param depth.sensor.resolution Numeric. The fixed uncertainty in the depth reading
-#' due to the sensor's resolution (e.g., ±0.5 meters).
-#' @param depth.sensor.accuracy Numeric. The variable uncertainty in the depth reading,
-#' expressed as a percentage of the measured depth (e.g., ±1% of the depth reading).
 #' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.
 #'
 #' @details
@@ -123,9 +115,6 @@ processTagData <- function(data.folders,
                            smoothing.window = 1,
                            burst.quantiles = c(0.95, 0.99),
                            downsample.to = 1,
-                           vertical.speed.threshold = NULL,
-                           depth.sensor.resolution = 0.5,
-                           depth.sensor.accuracy = 1,
                            verbose = TRUE) {
 
 
@@ -680,26 +669,16 @@ processTagData <- function(data.folders,
 
 
     ############################################################################
-    # Check for temporal discontinuities and spurious depth measurements #######
+    # Check for temporal discontinuities #######################################
     ############################################################################
 
     # save original start and end datetimes
     first_datetime <- min(processed_data$datetime)
     last_datetime <- max(processed_data$datetime)
 
-    # check for spurious depth values based on vertical displacement speed
-    if(!is.null(vertical.speed.threshold)){
-      processed_data <- checkVerticalSpeed(data = processed_data,
-                                           sampling.rate = sampling_rate,
-                                           vertical.speed.threshold = vertical.speed.threshold,
-                                           depth.sensor.resolution = depth.sensor.resolution,
-                                           depth.sensor.accuracy = depth.sensor.accuracy,
-                                           verbose = verbose)
-    }
-
     # check for temporal discontinuities
     processed_data <- checkTimeGaps(data = processed_data,
-                                    time.diff.threshold = 0.001,
+                                    time.diff.threshold = 0.01,
                                     verbose = verbose)
 
 
@@ -735,10 +714,7 @@ processTagData <- function(data.folders,
     attr(processed_data, 'sensor.smoothing.factor') <- sensor.smoothing.factor
     attr(processed_data, 'dba.window') <- dba.window
     attr(processed_data, 'smoothing.window') <- smoothing.window
-    attr(processed_data, 'vertical.speed.threshold') <- vertical.speed.threshold
     attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
-    attr(processed_data, 'depth.sensor.resolution') <- depth.sensor.resolution
-    attr(processed_data, 'depth.sensor.accuracy') <- depth.sensor.accuracy
     attr(processed_data, 'camera.start') <- camera_start
     attr(processed_data, 'processing.date') <- Sys.time()
 

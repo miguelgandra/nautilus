@@ -123,10 +123,19 @@ filterDeploymentData <- function(data,
   ##############################################################################
 
   # initialize an empty list to store the processed data and the plots
-  processed_data <- vector("list", length=length(data))
+  n_animals <- length(data)
+  processed_data <- vector("list", length=n_animals)
   names(processed_data) <- names(data)
-  diagnostic_plots <- vector("list", length=length(data))
+  diagnostic_plots <- vector("list", length=n_animals)
   names(diagnostic_plots) <- names(data)
+
+  # feedback message for the user
+  cat(paste0(
+    crayon::bold("\n=============== Filtering Deployment Periods ===============\n"),
+    "Scanning depth data for ", n_animals, " ", ifelse(n_animals == 1, "tag", "tags"), " to extract deployment windows\n",
+    crayon::bold("============================================================\n\n")
+  ))
+
 
   # iterate over each element in 'data'
   for (i in 1:length(data)) {
@@ -267,10 +276,7 @@ filterDeploymentData <- function(data,
     ############################################################################
 
     # feedback message for the user
-    cat(paste0(
-      crayon::bold("\n==================================================\n"),
-      crayon::bold("========== Filtering Deployment Periods ==========\n"),
-      "ID: ", crayon::blue$bold(id), "\n"))
+    cat(paste0("ID: ", crayon::blue$bold(id), "\n"))
 
     # run binary segmentation to detect change points in both mean and variance
     cp_depth <- suppressWarnings(changepoint::cpt.meanvar(reduced_data[[depth.col]], method="BinSeg", Q=max.changepoints, test.stat="Normal"))

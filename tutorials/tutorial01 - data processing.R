@@ -12,7 +12,9 @@
 # ---> Optionally downsample high-frequency sensor data to reduce volume and enhance manageability.
 # ---> Clean up spurious data sections before or after large time gaps.
 # ---> Automatically filter pre- and post-deployment data to focus on animal attachment periods.
+# ---> Detect and remove sensor outliers based on abrupt changes or prolonged flat-line readings.
 # ---> Generate summary statistics on key metrics for all animals.
+# ---> Generate depth profiles for all animals (color-coded by temperature).
 
 # NOTE: The current functions were fine-tuned to analyze whale-shark data. Hence, further adjustments
 # might be needed when analyzing different species, as behavioral and movement patterns may vary.
@@ -55,7 +57,7 @@ library(nautilus)
 ################################################################################
 
 # Read metadata file containing details about tagged animals
-animal_metadata <- read_excel("./PINTADO_metadata_multisensor.xlsx")
+animal_metadata <- readxl::read_excel("./PINTADO_metadata_multisensor.xlsx")
 
 # Select relevant columns
 selected_cols <- c("id", "dateTime", "site", "longitudeD", "latitudeD",
@@ -129,12 +131,14 @@ axes_config[10, ] <- c("CMD", "CATS", "ay", "-ax")
 data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FALSE)
 
 # Select or exclude specific folders within the source data folder (if needed)
-#data_folders <- data_folders[1:23]
+data_folders <- data_folders[1:23]
+#data_folders <- data_folders[24:58]
+
 
 # Process tag data using the "processTagData" function from the "nautilus" package
 data_list <- processTagData(data.folders = data_folders,
                             save.files = TRUE,
-                            output.folder = "./data processed/complete/20Hz",
+                            output.folder = "./data processed/complete/1Hz",
                             id.metadata = animal_metadata,
                             id.col = "ID",
                             tag.col = "tag",
@@ -146,8 +150,7 @@ data_list <- processTagData(data.folders = data_folders,
                             dba.window = 6,
                             smoothing.window = 1,
                             burst.quantiles = c(0.95, 0.99),
-                            downsample.to = 20,
-                            vertical.speed.threshold = 6.5,
+                            downsample.to = 1,
                             verbose = TRUE)
 
 
@@ -162,7 +165,7 @@ data_list <- processTagData(data.folders = data_folders,
 # during the execution of the `processTagData` function, this step is not required.
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/complete/20Hz", full.names = TRUE)
+data_files <- list.files("./data processed/complete/1Hz", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 data_list <- vector("list", length(data_files))
@@ -202,13 +205,54 @@ filter_results <- filterDeploymentData(data = data_ms,
 # Extract the filtered data from the results
 filtered_list <- filter_results$filtered_data
 
+# Remove empty data tables from the list
+filtered_list <- filtered_list[sapply(filtered_list, nrow) != 0]
+
 # Save the recorded plots to a PDF file for reviewing the filtered data.
-pdf("./plots/filtered_deployments_cam.pdf", width = 8, height = 5.5)
+pdf("./plots/filtered_deployments_ms.pdf", width = 8, height = 5.5)
 for(i in 1:length(filter_results$plots)){
   replayPlot(filter_results$plots[[i]], reloadPkgs = FALSE)
 }
 dev.off()
 
+
+# Adjust deployment periods manually if needed
+# Trim data for PIN_CAM_13 to exclude records after the tag pop-off time
+popoff <- as.POSIXct("2019-09-27 12:46:42", tz="UTC")
+filtered_list[["PIN_CAM_13"]] <- filtered_list[["PIN_CAM_13"]][datetime <= popoff]
+
+
+
+################################################################################
+# Detect and remove sensor anomalies ###########################################
+################################################################################
+
+# The following code applies the "checkSensorAnomalies" function to detect and filter
+# out potential sensor errors in depth and temperature time series data. The function
+# identifies outliers based on two key criteria: rate of change (for detecting spikes or
+# rapid fluctuations) and stall periods (for detecting sensor malfunctions or periods
+# of constant readings). Optionally, the identified outliers can be replaced with
+# interpolated values.
+
+# Process depth time series to detect anomalies
+filtered_list <- checkSensorAnomalies(data = filtered_list,
+                                      id.col = "ID",
+                                      sensor.col = "depth",
+                                      sensor.name = "Depth",
+                                      rate.threshold = 7,
+                                      sensor.resolution = 0.5,
+                                      sensor.accuracy.percent = 1,
+                                      interpolate = TRUE)
+
+# Process temperature time series to detect anomalies
+filtered_list <- checkSensorAnomalies(data = filtered_list,
+                                      id.col = "ID",
+                                      sensor.col = "temp",
+                                      sensor.name = "Temperature",
+                                      rate.threshold = 1,
+                                      sensor.resolution = 0.05,
+                                      sensor.accuracy.fixed = 0.1,
+                                      interpolate = TRUE)
 
 
 ################################################################################
@@ -216,7 +260,7 @@ dev.off()
 ################################################################################
 
 # Specify the directory where the CSV files will be saved
-output_directory <- "./data processed/filtered/"
+output_directory <- "./data processed/filtered/1Hz/"
 
 # Loop through each animal dataset and save the processed data in RDS format (more storage-efficient)
 # This also keeps the attributes associated with each dataset (required for the summarizeTagData() function)
@@ -242,7 +286,7 @@ for(i in 1:length(filtered_list)){
 ################################################################################
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/filtered/", full.names = TRUE)
+data_files <- list.files("./data processed/filtered/1Hz", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 filtered_list <- vector("list", length(data_files))
@@ -279,6 +323,25 @@ print(summary)
 
 # Save the summary table as CSV
 write.csv(summary, file="./summary_table_all.csv", row.names = FALSE)
+
+
+################################################################################
+# Generate depth profiles  #####################################################
+################################################################################
+
+#' This section generates depth profiles for all animals in the dataset.
+#' Depth values are plotted against time and color-coded by temperature.
+#' The resulting plots are saved as a PDF file for further analysis.
+
+# Generate depth profiles and save them to a PDF file
+pdf("./plots/depth-profiles.pdf", width = 13, height = 9)
+plotDepthProfiles(filtered_list,
+                  animal_metadata,
+                  color.by = "temp",
+                  lon.col="deploy_lon",
+                  lat.col = "deploy_lat")
+# Close the PDF device
+dev.off()
 
 
 ###############################################################################################

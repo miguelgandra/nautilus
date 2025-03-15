@@ -25,6 +25,7 @@ Imports:
 	crayon,
 	oce
 Suggests:
+	moby,
 	foreach,
 	doSNOW,
 	parallel,
