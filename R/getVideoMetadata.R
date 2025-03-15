@@ -204,10 +204,10 @@ getVideoMetadata <- function(video.folders,
 
   # feedback messages for the user
   cat(paste0(
-    crayon::bold("\n============== Extracting Video Metadata ==============\n"),
+    crayon::bold("\n=============== Extracting Video Metadata ===============\n"),
     "Processing ", n_videos, " video files across ", n_animals, ifelse(n_animals == 1, " dataset", " datasets"),
     " - OCR time!\n",
-    crayon::bold("=======================================================\n\n")))
+    crayon::bold("=========================================================\n\n")))
 
 
   # initialize results list

@@ -23,7 +23,8 @@ Imports:
 	changepoint,
 	zoo,
 	crayon,
-	oce
+	oce,
+	suntools
 Suggests:
 	moby,
 	foreach,

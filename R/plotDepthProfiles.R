@@ -177,7 +177,7 @@ plotDepthProfiles <- function(data,
 
       # classify each timestamp into diel phases
       coords <- data.frame("lon"=lon, "lat"=lat)
-      diel_phase <-  moby::getDielPhase(time_seq, coordinates = coords, phases = 3)
+      diel_phase <-  getDielPhase(time_seq, coordinates = coords, phases = 3)
 
       # identify transition points between diel phases
       phase_change <- c(1, which(diff(as.numeric(factor(diel_phase))) != 0) + 1, length(time_seq))
