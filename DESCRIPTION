@@ -26,7 +26,6 @@ Imports:
 	oce,
 	suntools
 Suggests:
-	moby,
 	foreach,
 	doSNOW,
 	parallel,
