@@ -32,6 +32,7 @@ Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalhães, R., Barto
 - Annotate datasets with events or behaviours of interest, linking time-bound events (e.g., feeding) from video review to the corresponding sensor data.
 - Extract features from a sliding window, calculating metrics (e.g., mean, standard deviation) for selected variables, preparing datasets for machine learning or other analytical methods.
 - Additional features are being developed to further enhance functionality.
+<br/><br/>
 
 
 ## Installation
