@@ -215,7 +215,9 @@ summarizeTagData <- function(data,
   deploy_duration <- round(as.numeric(difftime(deploy_end, deploy_start, units="hours")), 2)
 
   # get maximum depth and temperature range
+  mean_depth <- round(data_individual[, mean(depth, na.rm = TRUE)], 0)
   max_depth <- round(data_individual[, max(depth, na.rm = TRUE)], 0)
+  mean_temp <- round(data_individual[, mean(temp, na.rm = TRUE)], 1)
   min_temp <- round(data_individual[, min(temp, na.rm = TRUE)], 1)
   max_temp <- round(data_individual[, max(temp, na.rm = TRUE)], 1)
 
@@ -244,7 +246,9 @@ summarizeTagData <- function(data,
     "Deploy duration (h)" = deploy_duration,
     "Sampling freq (Hz)" = sampling_freq,
     "Magnetic declination" = declination_deg,
+    "Mean Depth (m)" = mean_depth,
     "Max Depth (m)" = max_depth,
+    "Mean Temp (\u00BAC)" = mean_temp,
     "Min Temp (\u00BAC)" = min_temp,
     "Max Temp (\u00BAC)" = max_temp,
     "Fastloc GPS"=fastloc_positions,

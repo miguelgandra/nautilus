@@ -290,11 +290,16 @@ extractFeatures <- function(data,
     # combine features into a single data frame
     feature_data <- as.data.frame(feature_list)
 
+
     # add the timestamp column
     if (!aggregate) {
       feature_data[[datetime.col]] <- data_individual[[datetime.col]]
     } else {
-      feature_data[[datetime.col]] <- data_individual[[datetime.col]][seq(1, nrow(data_individual), by = window.size)]
+      # calculate step size in rows (window.size [seconds] × sampling frequency [Hz])
+      step <- window.size * sampling_freq
+      # ensure we don't exceed data bounds
+      idx <- seq(1, nrow(data_individual), by = step)
+      feature_data[[datetime.col]] <- data_individual[[datetime.col]][idx]
     }
 
     # add the 'ID' column to the processed data
@@ -356,9 +361,18 @@ extractFeatures <- function(data,
                             skewness = function(x) moments::skewness(x, na.rm = TRUE),
                             kurtosis = function(x) moments::kurtosis(x, na.rm = TRUE),
                             entropy = function(x) {
-                              hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
-                              p <- hist_data$density / sum(hist_data$density)
-                              entropy::entropy(p)
+                              # remove NA values first
+                              x <- x[!is.na(x)]
+                              # if all values are identical or there's no variation, return 0
+                              if(length(unique(x)) <= 1) return(NA)
+                              # try Sturges method first, fall back to NA if it fails
+                              tryCatch({
+                                hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
+                                p <- hist_data$density / sum(hist_data$density)
+                                entropy::entropy(p)
+                              }, error = function(e) {
+                               return(NA)
+                              })
                             })
 
   # apply the rolling function to the variable

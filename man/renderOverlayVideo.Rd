@@ -17,6 +17,7 @@ renderOverlayVideo(
   depth.window = 5 * 60,
   vedba.window = 30,
   vertical.speed.window = 30,
+  tailbeat.window = 30,
   text.color = "black",
   sensor.val.color = "red3",
   jpeg.quality = 3,
@@ -56,6 +57,8 @@ if specified.}
 Defaults to 30 seconds.}
 
 \item{vertical.speed.window}{The time window (in seconds) for calculating vertical speed. Defaults to 30 seconds.}
+
+\item{tailbeat.window}{The time window (in seconds) for calculating and visualizing tail beat frequency. Defaults to 30 seconds.}
 
 \item{text.color}{The color of the overlay text. Defaults to "black".}
 

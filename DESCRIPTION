@@ -33,7 +33,8 @@ Suggests:
 	pROC,
 	moments,
 	entropy,
-	tesseract
+	tesseract,
+	WaveletComp
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 

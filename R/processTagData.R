@@ -9,18 +9,21 @@
 #' efficiently import CSV files. The function automatically computes several key metrics related to
 #' acceleration, orientation, and linear motion based on accelerometer, magnetometer, and gyroscope time series
 #' (see the Details section below for a list of metrics).
-#' Additionally, the function can automatically integrate and merge positions obtained from pop-up satellite archival tags (PSATs).
-#' The PSAT data should be included in a separate folder within each individual’s directory for correct integration.
-#' To handle large datasets, the function provides the option to downsample the data to a specified frequency, reducing
-#' the data resolution and volume after the metrics are calculated. This is particularly useful when working with high-frequency
-#' data from sensors, making it more manageable for further analysis
-#'
+#' Additionally, the function can automatically integrate and merge positions obtained from Wildlife Computers tags
+#' (e.g., MiniPATs, MK10s, and SPOT tags). The tag data should be included in a separate
+#' folder within each individual's directory for correct integration. To handle large datasets, the function provides
+#' the option to downsample the data to a specified frequency, reducing the data resolution and volume after the metrics
+#' are calculated. This is particularly useful when working with high-frequency data from sensors, making it more
+#' manageable for further analysis.
 #'
 #' @param data.folders Character vector. Paths to the folders containing data to be processed.
 #' Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly PSAT data.
 #' @param sensor.subdirectory Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
 #' This subdirectory should include the sensor CSV files for the corresponding animal.
-#' @param psat.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
+#' @param wc.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
+#' (e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
+#' This subdirectory should contain the "Locations.csv" file with position data from the tag.
+#' @param wc.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
 #' This subdirectory should contain the "Location.csv" file with any fastloc position data from the PSAT.
 #' @param save.files Logical. If `TRUE`, the processed data for each ID will be saved as RDS files
 #' during the iteration process. This ensures that progress is saved incrementally, which can
@@ -53,10 +56,14 @@
 #' The window size is calculated as `sampling.frequence / smoothing.factor`. A smaller value results
 #' in greater smoothing. Set to NULL to disable smoothing. Defaults to 4.
 #' @param dba.window Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.
-#' @param smoothing.window Optional. A numeric value specifying the size of the moving window (in seconds) used to smooth
-#' the metrics time series. For angular metrics (e.g., roll, pitch, heading), a moving circular mean is applied, while for
-#' linear signals (e.g., surge, sway, heave), a moving arithmetic mean is used. The window size is determined as the
-#' product of `sampling_freq` and `smoothing.window`.
+#' @param dba.smoothing Optional. Smoothing window (in seconds) for VeDBA/ODBA metrics.
+#' Uses arithmetic mean. Set to NULL to disable. Default: 2.
+#' @param orientation.smoothing Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
+#' Uses circular mean. Set to NULL to disable. Default: 1.
+#' @param motion.smoothing Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
+#' Uses arithmetic mean. Set to NULL to disable. Default: 1.
+#' @param speed.smoothing Optional. Smoothing window (in seconds) for vertical speed.
+#' Uses arithmetic mean. Set to NULL to disable. Default: 2.
 #' @param burst.quantiles Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 #' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
 #' @param downsample.to Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
@@ -99,7 +106,7 @@
 
 processTagData <- function(data.folders,
                            sensor.subdirectory = "CMD",
-                           psat.subdirectory = NULL,
+                           wc.subdirectory = NULL,
                            save.files = FALSE,
                            output.folder = NULL,
                            output.suffix = NULL,
@@ -110,9 +117,12 @@ processTagData <- function(data.folders,
                            lat.col = "lat",
                            tagdate.col = "tagging_date",
                            axis.mapping = NULL,
-                           sensor.smoothing.factor = 4,
+                           sensor.smoothing.factor = 5,
                            dba.window = 3,
-                           smoothing.window = 1,
+                           dba.smoothing = 2,
+                           orientation.smoothing = 1,
+                           motion.smoothing = 1,
+                           speed.smoothing = 2,
                            burst.quantiles = c(0.95, 0.99),
                            downsample.to = 1,
                            verbose = TRUE) {
@@ -139,9 +149,9 @@ processTagData <- function(data.folders,
     stop("`sensor.subdirectory` must be a single string.", call. = FALSE)
   }
 
-  # ensure psat.subdirectory is either NULL or a single string
-  if(!is.null(psat.subdirectory) && (!is.character(psat.subdirectory) || length(psat.subdirectory) != 1)) {
-    stop("`psat.subdirectory` must be NULL or a single string.", call. = FALSE)
+  # ensure wc.subdirectory is either NULL or a single string
+  if(!is.null(wc.subdirectory) && (!is.character(wc.subdirectory) || length(wc.subdirectory) != 1)) {
+    stop("`wc.subdirectory` must be NULL or a single string.", call. = FALSE)
   }
 
   # ensure output.folder is a single string
@@ -182,7 +192,10 @@ processTagData <- function(data.folders,
   # validate smoothing and moving window parameters
   if(!is.numeric(sensor.smoothing.factor)) stop("`sensor.smoothing.factor` must be a numeric value.", call. = FALSE)
   if(!is.numeric(dba.window) || dba.window <= 0) stop("`dba.window` must be a positive numeric value.", call. = FALSE)
-  if(!is.numeric(smoothing.window) || smoothing.window <= 0) stop("`smoothing.window` must be a positive numeric value.", call. = FALSE)
+  if(!is.numeric(orientation.smoothing) || orientation.smoothing <= 0) stop("`orientation.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.numeric(motion.smoothing) || motion.smoothing <= 0) stop("`motion.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.numeric(speed.smoothing) || speed.smoothing <= 0) stop("`speed.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.numeric(dba.smoothing) || dba.smoothing <= 0) stop("`dba.smoothing` must be a positive numeric value.", call. = FALSE)
 
   # validate `burst.quantiles`
   if (!is.numeric(burst.quantiles) || any(burst.quantiles <= 0) || any(burst.quantiles > 1)) {
@@ -238,26 +251,26 @@ processTagData <- function(data.folders,
     }
   }
 
-  # identify PSAT folders or use the specified psat.subdirectory parameter
-  if (is.null(psat.subdirectory)) {
+  # identify Wildlife Computers tag folders or use the specified wc.subdirectory parameter
+  if (is.null(wc.subdirectory)) {
     # list and filter subdirectories for each main directory in data.folders
-    psat_folders <- lapply(data.folders, function(main_dir) {
+    wc_folders <- lapply(data.folders, function(main_dir) {
       # list immediate subdirectories
       subdirs <- list.dirs(main_dir, full.names = TRUE, recursive = FALSE)
       # filter subdirectories containing a 'Locations' file
       subdirs[sapply(subdirs, function(subdir) {any(grepl("Locations.csv", list.files(subdir)))})]
     })
   } else {
-    # build full paths for the specified psat.subdirectory
-    psat_folders <- lapply(data.folders, function(main_dir) file.path(main_dir, psat.subdirectory))
+    # build full paths for the specified wc.subdirectory
+    wc_folders <- lapply(data.folders, function(main_dir) file.path(main_dir, wc.subdirectory))
   }
 
-  # locate PSAT data files (e.g., "Locations.csv")
-  psat_files <- sapply(psat_folders, function(x) {
+  # locate locations files within the Wildlife Computers folders (e.g., "Locations.csv")
+  wc_files <- sapply(wc_folders, function(x) {
     files <- list.files(x, full.names = TRUE, pattern = "Locations\\.csv$")
     if (length(files) > 0) files[1] else NA
   })
-  names(psat_files) <- basename(data.folders)
+  names(wc_files) <- basename(data.folders)
 
 
 
@@ -306,9 +319,9 @@ processTagData <- function(data.folders,
     # print progress to the console
     cat(sprintf("[%d] %s\n", i, id))
 
-    # retrieve sensor and PSAT file paths for the current animal
+    # retrieve sensor and WC locations file paths for the current animal
     sensor_file <- data_files[i]
-    psat_file <- psat_files[i]
+    locations_file <- wc_files[i]
 
     # check if the sensor file exists
     if (is.na(sensor_file) || !file.exists(sensor_file)) {
@@ -377,27 +390,27 @@ processTagData <- function(data.folders,
     # if camera_start is not NULL, extract the corresponding datetime
     if (!is.null(camera_start)) {camera_start <- sensor_data[camera_start, datetime]}
 
-    # process PSAT data if available
-    if (!is.na(psat_file) && file.exists(psat_file)) {
+    # process WC location data if available
+    if (!is.na(locations_file) && file.exists(locations_file)) {
       # provide feedback to the user if verbose mode is enabled
-      if(verbose) cat(paste0("Fetching positions from the PSAT file...\n"))
-      # import PSAT GPS locations
-      psat_data <- data.table::fread(psat_files[i], select = c("Ptt", "Date", "Type", "Latitude", "Longitude"))
-      psat_data[, Date := as.POSIXct(Date, format = "%H:%M:%OS %d-%b-%Y", tz = "UTC")]
-      data.table::setnames(psat_data, c("PTT", "timebin", "position_type", "lat", "lon"))
+      if(verbose) cat("Importing location data from Wildlife Computers tag...\n")
+      # import locations data
+      locs_data <- data.table::fread(wc_files[i], select = c("Ptt", "Date", "Type", "Latitude", "Longitude", "Quality"))
+      locs_data[, Date := as.POSIXct(Date, format = "%H:%M:%OS %d-%b-%Y", tz = "UTC")]
+      data.table::setnames(locs_data, c("PTT", "timebin", "position_type", "lat", "lon", "quality"))
       # remove fractional seconds from PSAT locs datetimes
-      psat_data[, timebin := as.POSIXct(floor(as.numeric(timebin)), origin = "1970-01-01", tz = "UTC")]
+      locs_data[, timebin := as.POSIXct(floor(as.numeric(timebin)), origin = "1970-01-01", tz = "UTC")]
       # remove rows with duplicate 'timebin' values
-      psat_data <- psat_data[!duplicated(timebin)]
+      locs_data <- locs_data[!duplicated(timebin)]
       # add "timebin" column with datetime rounded to the nearest second (floor)
       sensor_data[, timebin := as.POSIXct(floor(as.numeric(datetime)), origin = "1970-01-01", tz = "UTC")]
       # merge PSAT positions with sensor data
-      sensor_data <- merge(sensor_data, psat_data, by = "timebin", all.x = TRUE)
+      sensor_data <- merge(sensor_data, locs_data, by = "timebin", all.x = TRUE)
       # remove the "timebin" column
       sensor_data[, timebin := NULL]
     } else {
       # create empty columns for "PTT", "datetime", "type", "lat", "lon" with NA values
-      sensor_data[, `:=`(PTT = NA, position_type = NA, lat = NA, lon = NA)]
+      sensor_data[, `:=`(PTT = NA, position_type = NA, lat = NA, lon = NA, quality = NA)]
     }
 
 
@@ -501,16 +514,45 @@ processTagData <- function(data.folders,
     # calculate total acceleration
     sensor_data[, accel := sqrt(ax^2 + ay^2 + az^2)]
 
-    # calculate dynamic and vectorial body acceleration using a moving window (3-sec)
+    # calculate dynamic and vectorial body acceleration using a moving window
     # doi: 10.3354/ab00104
-    staticX <- data.table::frollmean(sensor_data$ax, n = dba.window * sampling_freq, fill = NA,  align = "center")
-    staticY <- data.table::frollmean(sensor_data$ay, n = dba.window * sampling_freq, fill = NA, align = "center")
-    staticZ <- data.table::frollmean(sensor_data$az, n = dba.window * sampling_freq, fill = NA, align = "center")
+
+    # calculate window parameters
+    window_size <- dba.window * sampling_freq
+    pad_length <- ceiling(window_size / 2)
+
+    # define a reusable padding function - centered rolling mean with edge padding to avoid NAs
+    .pad_rollmean <- function(x, window, pad_len) {
+      # symmetric padding using first/last values
+      padded <- c(rep(x[1], pad_len), x, rep(x[length(x)], pad_len))
+      # compute centered rolling mean on padded data
+      rolled <- data.table::frollmean(padded, n = window, align = "center", na.rm = TRUE)
+      # trim to original length
+      rolled[(pad_len + 1):(length(x) + pad_len)]
+    }
+
+    # calculate static (low-frequency) acceleration using padded rolling mean
+    staticX = .pad_rollmean(sensor_data$ax, window_size, pad_length)
+    staticY = .pad_rollmean(sensor_data$ay, window_size, pad_length)
+    staticZ = .pad_rollmean(sensor_data$az, window_size, pad_length)
+
+    # calculate dynamic (high-frequency) acceleration by removing static component
     dynamicX <- sensor_data$ax - staticX
     dynamicY <- sensor_data$ay - staticY
     dynamicZ <- sensor_data$az - staticZ
-    sensor_data[, odba := abs(dynamicX) + abs(dynamicY) + abs(dynamicZ)]
-    sensor_data[, vedba := sqrt((dynamicX^2) + (dynamicY^2) + (dynamicZ^2))]
+
+    # calculate ODBA (Overall Dynamic Body Acceleration) and VeDBA (Vectorial DBA)
+    sensor_data[, `:=`(
+      odba = abs(dynamicX) + abs(dynamicY) + abs(dynamicZ),
+      vedba = sqrt(dynamicX^2 + dynamicY^2 + dynamicZ^2)
+    )]
+
+    # smooth the signals using a moving average (optional for noise reduction)
+    if(!is.null(dba.smoothing)){
+      window_size <- sampling_freq * dba.smoothing
+      sensor_data[, odba := data.table::frollmean(odba, n = window_size, fill = NA, align = "center")]
+      sensor_data[, vedba := data.table::frollmean(vedba, n = window_size, fill = NA, align = "center")]
+    }
 
     # estimate burst swimming events (based on specified percentiles)
     if(!is.null(burst.quantiles)){
@@ -519,6 +561,40 @@ processTagData <- function(data.folders,
         burst_col <- paste0("burst", q*100)
         sensor_data[, (burst_col) := as.integer(accel >= accel_threshold)]
       }
+    }
+
+    ############################################################################
+    # Calculate linear motion metrics ##########################################
+    ############################################################################
+
+    # provide feedback to the user if verbose mode is enabled
+    if (verbose) cat("Calculating linear motion metrics...\n")
+
+    # calculate surge
+    # motion along the longitudinal (X) axis (forward/backward swimming)
+    sensor_data[, surge := ax - staticX]
+
+    # calculate sway
+    # motion along the lateral (Y) axis (side-to-side swaying)
+    sensor_data[, sway := ay - staticY]
+
+    # calculate heave
+    # motion along the vertical (Z) axis (up and down, often from diving or wave action)
+    sensor_data[, heave := az - staticZ]
+
+    # calculate vertical speed
+    sensor_data[, vertical_speed := c(NA, diff(depth) / as.numeric(diff(datetime), units = "secs"))]
+
+    # smooth the signals using a moving average (optional for noise reduction)
+    if(!is.null(motion.smoothing)){
+      window_size <- sampling_freq * motion.smoothing
+      sensor_data[, surge := data.table::frollmean(surge, n = window_size, fill = NA, align = "center")]
+      sensor_data[, sway := data.table::frollmean(sway, n = window_size, fill = NA, align = "center")]
+      sensor_data[, heave := data.table::frollmean(heave, n = window_size, fill = NA, align = "center")]
+    }
+    if(!is.null(speed.smoothing)){
+      window_size <- sampling_freq * speed.smoothing
+      sensor_data[, vertical_speed := data.table::frollmean(vertical_speed, n = window_size, fill = NA, align = "center")]
     }
 
 
@@ -554,8 +630,8 @@ processTagData <- function(data.folders,
     sensor_data[, heading := ifelse(heading >= 360, heading - 360, heading)]
 
     # apply a moving circular mean to smooth the metrics time series
-    if(!is.null(smoothing.window)) {
-      window_size <- sampling_freq * smoothing.window
+    if(!is.null(orientation.smoothing)) {
+      window_size <- sampling_freq * orientation.smoothing
       sensor_data[, roll := .rollingCircularMean(roll, window = window_size, range = c(-180, 180) )]
       sensor_data[, pitch := .rollingCircularMean(pitch, window = window_size,  range = c(-90, 90))]
       sensor_data[, heading := .rollingCircularMean(heading, window = window_size, range = c(0, 360))]
@@ -563,47 +639,12 @@ processTagData <- function(data.folders,
 
 
     ############################################################################
-    # Calculate linear motion metrics ##########################################
-    ############################################################################
-
-    # provide feedback to the user if verbose mode is enabled
-    if (verbose) cat("Calculating linear motion metrics...\n")
-
-    # convert roll and pitch to radians for calculations
-    roll_rad <- sensor_data$roll * (pi / 180)
-    pitch_rad <- sensor_data$pitch * (pi / 180)
-
-    # calculate surge
-    # motion along the longitudinal (X) axis (forward/backward swimming)
-    sensor_data[, surge := ax * cos(pitch_rad) + az * sin(pitch_rad)]
-
-    # calculate sway
-    # motion along the lateral (Y) axis (side-to-side swaying)
-    sensor_data[, sway := ay * cos(roll_rad) - az * sin(roll_rad)]
-
-    # calculate heave
-    # motion along the vertical (Z) axis (up and down, often from diving or wave action)
-    sensor_data[, heave := az * cos(roll_rad) - ax * sin(pitch_rad)]
-
-    # calculate vertical speed
-    sensor_data[, vertical_speed := c(NA, diff(depth) / as.numeric(diff(datetime), units = "secs"))]
-
-    # smooth the signals using a moving average (optional for noise reduction)
-    if(!is.null(smoothing.window)){
-      window_size <- sampling_freq * smoothing.window
-      sensor_data[, surge := data.table::frollmean(surge, n = window_size, fill = NA, align = "center")]
-      sensor_data[, sway := data.table::frollmean(sway, n = window_size, fill = NA, align = "center")]
-      sensor_data[, heave := data.table::frollmean(heave, n = window_size, fill = NA, align = "center")]
-      sensor_data[, vertical_speed := data.table::frollmean(vertical_speed, n = window_size, fill = NA, align = "center")]
-    }
-
-    ############################################################################
     # Downsample data ##########################################################
     ############################################################################
 
     # select columns to keep
-    metrics <- c("temp","depth","ax", "ay", "az", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave", "vertical_speed")
-    psat_cols <- c("PTT", "position_type", "lat", "lon")
+    metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave", "vertical_speed")
+    position_cols <- c("PTT", "position_type", "lat", "lon", "quality")
 
     # store current sampling frequency
     sampling_rate <- sampling_freq
@@ -642,7 +683,7 @@ processTagData <- function(data.folders,
 
         #  aggregate data into the specified interval
         processed_data <- sensor_data[, lapply(.SD, function(x) if (is.numeric(x)) mean(x, na.rm = TRUE) else data.table::first(x)),
-                                      by = datetime, .SDcols = c(metrics, psat_cols)]
+                                      by = datetime, .SDcols = c(metrics, position_cols)]
 
         # re-add ID column
         processed_data[, ID := id]
@@ -664,8 +705,8 @@ processTagData <- function(data.folders,
       processed_data <- sensor_data
     }
 
-    # reorder columns: ID, metrics, burst.quantiles (if exists), and psat_cols
-    data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), psat_cols))
+    # reorder columns: ID, metrics, burst.quantiles (if exists), and position_cols
+    data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), position_cols))
 
 
     ############################################################################
@@ -689,16 +730,27 @@ processTagData <- function(data.folders,
     # provide feedback to the user if verbose mode is enabled
     if (verbose) cat("Done! Data processed successfully.\n")
 
-    # round numeric variables to save memory
-    decimal_places <- 2
-    processed_data[, temp := round(temp, decimal_places)]
-    processed_data[, depth := round(depth, decimal_places)]
-    processed_data[, roll := round(roll, decimal_places)]
-    processed_data[, pitch := round(pitch, decimal_places)]
-    processed_data[, heading := round(heading, decimal_places)]
-    processed_data[, surge := round(surge, decimal_places)]
-    processed_data[, sway := round(sway, decimal_places)]
-    processed_data[, heave := round(heave, decimal_places)]
+
+    # define sensor-specific rounding rules (units in brackets)
+    rounding_specs <- list(
+      # raw sensor data
+      accelerometer = list(vars = c("ax", "ay", "az"), digits = 4),
+      gyroscope = list(vars = c("gx", "gy", "gz"), digits = 2),
+      magnetometer = list(vars = c("mx", "my", "mz"), digits = 2),
+      # processed metrics
+      temperature = list(vars = "temp", digits = 2),
+      depth = list(vars = "depth", digits = 2),
+      dynamics = list(vars = c("accel", "odba", "vedba"), digits = 3),
+      orientation = list(vars = c("roll", "pitch", "heading"), digits = 2),
+      movement = list(vars = c("surge", "sway", "heave"), digits = 4),
+      velocity = list(vars = "vertical_speed", digits = 2)
+    )
+
+    # apply rounding to save memory
+    for (group in rounding_specs) {
+      processed_data[, (group$vars) := lapply(.SD, round, digits = group$digits),
+                     .SDcols = group$vars]
+    }
 
     # convert NaN to NA
     processed_data[, (names(processed_data)) := lapply(.SD, function(x) {x[is.nan(x)] <- NA; return(x)})]
@@ -708,12 +760,16 @@ processTagData <- function(data.folders,
     attr(processed_data, 'id') <- id
     attr(processed_data, 'first.datetime') <- first_datetime
     attr(processed_data, 'last.datetime') <- last_datetime
+    attr(processed_data, 'original.rows') <- rows
     attr(processed_data, 'original.sampling.frequency') <- sampling_freq
     attr(processed_data, 'processed.sampling.frequency') <- sampling_rate
     attr(processed_data, 'magnetic.declination') <- declination_deg
     attr(processed_data, 'sensor.smoothing.factor') <- sensor.smoothing.factor
     attr(processed_data, 'dba.window') <- dba.window
-    attr(processed_data, 'smoothing.window') <- smoothing.window
+    attr(processed_data, 'dba.smoothing') <- dba.smoothing
+    attr(processed_data, 'orientation.smoothing') <- orientation.smoothing
+    attr(processed_data, 'motion.smoothing') <- motion.smoothing
+    attr(processed_data, 'speed.smoothing') <- speed.smoothing
     attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
     attr(processed_data, 'camera.start') <- camera_start
     attr(processed_data, 'processing.date') <- Sys.time()

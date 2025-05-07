@@ -27,6 +27,7 @@
 #' @param vedba.window The time window (in seconds) for averaging or visualizing VE-DBA (Vectorial Dynamic Body Acceleration) data.
 #'   Defaults to 30 seconds.
 #' @param vertical.speed.window The time window (in seconds) for calculating vertical speed. Defaults to 30 seconds.
+#' @param tailbeat.window The time window (in seconds) for calculating and visualizing tail beat frequency. Defaults to 30 seconds.
 #' @param text.color The color of the overlay text. Defaults to "black".
 #' @param sensor.val.color The color used to display sensor values. Defaults to "red3".
 #' @param jpeg.quality An integer specifying the quality of the extracted JPEG frames.
@@ -70,6 +71,7 @@ renderOverlayVideo <- function(video.file,
                                depth.window = 5 * 60,
                                vedba.window = 30,
                                vertical.speed.window = 30,
+                               tailbeat.window = 30,
                                text.color = "black",
                                sensor.val.color = "red3",
                                jpeg.quality = 3,
@@ -114,6 +116,7 @@ renderOverlayVideo <- function(video.file,
   if (depth.window <= 0 || !is.numeric(depth.window)) stop("'depth.window' must be a positive number.", call. = FALSE)
   if (vedba.window <= 0 || !is.numeric(vedba.window)) stop("'vedba.window' must be a positive number.", call. = FALSE)
   if (vertical.speed.window <= 0 || !is.numeric(vertical.speed.window)) stop("'vertical.speed.window' must be a positive number.", call. = FALSE)
+  if (tailbeat.window <= 0 || !is.numeric(tailbeat.window)) stop("'tailbeat.window' must be a positive number.", call. = FALSE)
   if (cores <= 0 || !is.numeric(cores) || cores %% 1 != 0) stop("'cores' must be a positive integer.", call. = FALSE)
 
   # validate parallel computing packages
@@ -318,7 +321,7 @@ renderOverlayVideo <- function(video.file,
       .processFrames(i, start, frame_rate, sensor.data,
                      frames_directory, overlays_directory, processed_directory,
                      overlay.side, depth.window, vedba.window, vertical.speed.window,
-                     text.color, sensor.val.color)
+                     tailbeat.window, text.color, sensor.val.color)
 
       # update progress bar
       setTxtProgressBar(pb, i)
@@ -364,7 +367,7 @@ renderOverlayVideo <- function(video.file,
      .processFrames(i, start, frame_rate, sensor.data,
                     frames_directory, overlays_directory, processed_directory,
                     overlay.side, depth.window, vedba.window, vertical.speed.window,
-                    text.color, sensor.val.color)
+                    tailbeat.window, text.color, sensor.val.color)
    }
 
    # close progress bar
@@ -401,9 +404,10 @@ renderOverlayVideo <- function(video.file,
     cat("Using standard H.264 encoding with libx264.\n")
   }
 
+
   # construct the ffmpeg command
   ffmpeg_command <- sprintf(
-    'ffmpeg -framerate 30 -i "%s/final_frame_%%06d.jpg" -c:v %s -pix_fmt yuv420p -crf %d "%s" 2>&1',
+    'ffmpeg -framerate 30 -i "%s/final_frame_%%06d.jpg" -c:v %s -pix_fmt yuv420p -tag:v hvc1 -crf %d "%s" 2>&1',
     processed_directory,
     video_codec,
     crf,
@@ -457,7 +461,7 @@ renderOverlayVideo <- function(video.file,
 .processFrames <- function(i, start, frame_rate, sensor_data,
                            frames_directory, overlays_directory, processed_directory,
                            overlay.side, depth.window, vedba.window, vertical.speed.window,
-                           text.color, sensor.val.color){
+                           tailbeat.window, text.color, sensor.val.color){
 
   # define paths
   frame_path <- sprintf("%s/frame_%06d.jpg", frames_directory, i)
@@ -475,11 +479,11 @@ renderOverlayVideo <- function(video.file,
   frame <- magick::image_read(frame_path)
 
   # open a PNG device with transparency
-  png(filename = overlay_path, width = 1200, height = 1800, bg = "transparent", res = 300)
+  png(filename = overlay_path, width = 1100, height = 2000, bg = "transparent", res = 300)
 
   # set up layout
-  mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7), nrow=5, byrow=TRUE)
-  layout(mat, heights=c(2,1,1,1,1))
+  mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8), nrow=6, byrow=TRUE)
+  layout(mat, heights=c(2,1,1,1,1,1))
   par(mar = c(1, 1, 1, 1), oma = c(0, 0, 1.5, 0), xpd = NA)
 
 
@@ -603,6 +607,33 @@ renderOverlayVideo <- function(video.file,
 
 
   #################################################################
+  # plot tail beat frequency graph ################################
+
+  # filter sensor_data for the time window
+  window_data <- sensor_data[abs(as.numeric(difftime(sensor_data$datetime, current_time, units = "secs"))) <= tailbeat.window, ]
+
+  # plot TBF time series
+  if(any(!is.na(window_data))){
+    plot(window_data$datetime, window_data$tbf_hz, type = "n", xlab = "", xaxs="i",
+         axes = FALSE, ylim = range(window_data$tbf_hz, na.rm = TRUE))
+    polygon(
+      x = c(window_data$datetime, rev(window_data$datetime)),
+      y = c(window_data$tbf_hz, rep(par("usr")[3], nrow(window_data))),
+      col = adjustcolor("white", alpha.f=0.5), border = NA)
+    lines(window_data$datetime, window_data$tbf_hz, col = "black", lwd = 1)
+    segments(x0 = frame_data$datetime, y0 = par("usr")[3], y1 = frame_data$tbf_hz, col = "red", lwd = 1.8)
+    points(frame_data$datetime, frame_data$tbf_hz, col = "red", pch = 16, cex = 1)
+    title(main = "Tail Beat Frequency", line = 1.6, xpd = NA, cex.main = 1.2,  col.main = text.color)
+    if(!is.na(frame_data$tbf_hz)) title(main=sprintf("%.1f Hz", frame_data$tbf_hz), font.main=1, line=0.55, cex.main=1.05, xpd=NA, col.main=sensor.val.color)
+    axis(side=2, at=pretty(range(window_data$tbf_hz, na.rm=TRUE)), labels=pretty(range(window_data$tbf_hz, na.rm=TRUE)),
+         las=1, cex.axis=0.7, xpd=FALSE)
+    box()
+  }else{
+    plot.new()
+  }
+
+
+  #################################################################
   # add current timestamp #########################################
 
   # set margins
@@ -636,7 +667,7 @@ renderOverlayVideo <- function(video.file,
 
   # set the width and height of the overlay image
   overlay_width <- 500
-  overlay_height <- 750
+  overlay_height <- 950
 
   # resize the overlay image before compositing
   overlay_img_resized <- magick::image_scale(overlay_img, paste0(overlay_width, "x", overlay_height))

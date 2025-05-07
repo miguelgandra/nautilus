@@ -13,11 +13,15 @@
 # ---> Clean up spurious data sections before or after large time gaps.
 # ---> Automatically filter pre- and post-deployment data to focus on animal attachment periods.
 # ---> Detect and remove sensor outliers based on abrupt changes or prolonged flat-line readings.
+# ---> Estimate tail beat frequencies based on wavelet analysis.
 # ---> Generate summary statistics on key metrics for all animals.
 # ---> Generate depth profiles for all animals (color-coded by temperature).
 
-# NOTE: The current functions were fine-tuned to analyze whale-shark data. Hence, further adjustments
-# might be needed when analyzing different species, as behavioral and movement patterns may vary.
+
+# NOTE: This package's functions were optimized for biologging data from G-Pilot and i-Pilot tags,
+# with current parameters specifically fine-tuned for whale shark kinematics and behavioral patterns.
+# When analyzing other species or tag systems, adjustments may be needed to account for differences
+# in movement ecology, sensor specifications, or data structure.
 
 
 ################################################################################
@@ -138,7 +142,7 @@ data_folders <- data_folders[1:23]
 # Process tag data using the "processTagData" function from the "nautilus" package
 data_list <- processTagData(data.folders = data_folders,
                             save.files = TRUE,
-                            output.folder = "./data processed/complete/1Hz",
+                            output.folder = "./data processed/complete/20Hz",
                             id.metadata = animal_metadata,
                             id.col = "ID",
                             tag.col = "tag",
@@ -150,7 +154,7 @@ data_list <- processTagData(data.folders = data_folders,
                             dba.window = 6,
                             smoothing.window = 1,
                             burst.quantiles = c(0.95, 0.99),
-                            downsample.to = 1,
+                            downsample.to = 20,
                             verbose = TRUE)
 
 
@@ -165,7 +169,7 @@ data_list <- processTagData(data.folders = data_folders,
 # during the execution of the `processTagData` function, this step is not required.
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/complete/1Hz", full.names = TRUE)
+data_files <- list.files("./data processed/complete/20Hz", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 data_list <- vector("list", length(data_files))
@@ -191,6 +195,7 @@ for(i in 1:length(data_files)){
 # Process data in subsets to manage memory usage and avoid memory overload errors
 data_ms <- data_list[1:21]
 data_cam <- data_list[22:53]
+rm(data_list); gc()
 
 # Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
 filter_results <- filterDeploymentData(data = data_ms,
@@ -255,12 +260,54 @@ filtered_list <- checkSensorAnomalies(data = filtered_list,
                                       interpolate = TRUE)
 
 
+# Recalculate Vertical Speed After Depth Corrections
+# Recomputes vertical speed (m/s) for each dataset in the list following depth corrections.
+# This must be called after `checkSensorAnomalies()` or any other function that modifies depth values,
+# as vertical speed is derived from depth changes over time.
+filtered_list <- lapply(filtered_list, function(x) {
+  # Calculate vertical speed (m/s)
+  x[, vertical_speed := c(NA, diff(depth) / as.numeric(diff(datetime), units = "secs"))]
+  # Handle potential infinite values from division by zero
+  x[is.infinite(vertical_speed), vertical_speed := NA_real_]
+  # Optional smoothing (if speed.smoothing parameter exists)
+  if("speed.smoothing" %in% names(attributes(x))) {
+    sampling_freq <- attributes(x)$processed.sampling.frequency
+    window_size <- sampling_freq * attributes(x)$speed.smoothing
+    x[, vertical_speed := data.table::frollmean(vertical_speed, n = window_size, fill = NA, align = "center")]
+  }
+  return(x)
+})
+
+
+################################################################################
+# Estimate Tail Beat Frequencies via Wavelet Analysis ##########################
+################################################################################
+
+# This function performs wavelet analysis to estimate tail beat frequencies from
+# motion data (typically surge/sway acceleration).
+
+# Important Note on Sampling Frequency:
+# The input dataset must have a sampling frequency at least twice the chosen
+# max.freq.Hz (Nyquist theorem). For reliable results, we recommend the sampling
+# frequency be at least 4× higher than max.freq.Hz. For example, with max.freq.Hz = 2,
+# the data should be sampled at ≥8 Hz (though ≥4 Hz would meet Nyquist minimum).
+
+filtered_list <- calculateTailBeats(data = data_ms[1],
+                                    output.dir = "./plots/tail beat frequencies",
+                                    motion.col = "surge",
+                                    ridge.only = FALSE,
+                                    min.freq.Hz = 0.02,
+                                    max.freq.Hz = 2,
+                                    power.ratio.threshold = 2,
+                                    max.interp.gap = 10,
+                                    cores = 1)
+
 ################################################################################
 # Save processed data ##########################################################
 ################################################################################
 
 # Specify the directory where the CSV files will be saved
-output_directory <- "./data processed/filtered/1Hz/"
+output_directory <- "./data processed/filtered/20Hz/"
 
 # Loop through each animal dataset and save the processed data in RDS format (more storage-efficient)
 # This also keeps the attributes associated with each dataset (required for the summarizeTagData() function)
@@ -286,7 +333,7 @@ for(i in 1:length(filtered_list)){
 ################################################################################
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/filtered/1Hz", full.names = TRUE)
+data_files <- list.files("./data processed/filtered/20Hz", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 filtered_list <- vector("list", length(data_files))

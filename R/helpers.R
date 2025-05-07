@@ -183,10 +183,12 @@ NULL
 ## - added tick.length
 ## - added horizontal option
 ## - added zlab option
+## - added mgp parameter
 
 #' Color Legend
 #'
-#' @description Creates a color legend for a plot, adapted from https://rdrr.io/cran/shape/src/R/colorlegend.R with additional features such as main.adj, main.inset, and support for scientific notation.
+#' @description Creates a color legend for a plot, adapted from https://rdrr.io/cran/shape/src/R/colorlegend.R
+#' with additional features such as main.adj, main.inset, and support for scientific notation.
 #' @note This function is intended for internal use within the 'nautilus' package.
 #' @keywords internal
 #' @noRd
@@ -211,6 +213,7 @@ NULL
                          tick.length = 0.3,
                          lab.scientific = FALSE,
                          horizontal = FALSE,
+                         mgp = c(1.5, 0.5, 0),  # New parameter similar to par()'s mgp
                          ...) {
 
   ## Set the number of colors
@@ -290,9 +293,9 @@ NULL
         labels[match(zz, zval)] <- zlab
       }
 
-
-      ## Adjust y-position to ensure visibility
-      text(Xpos, tick.ystart - 0.02 * dy, labels, col = lab.col, adj=c(0.5, 1), ...)
+      ## Adjust y-position using mgp parameter
+      label.offset <- mgp[1] * (tick.yend - tick.ystart)  # Use first mgp value for label offset
+      text(Xpos, tick.ystart - label.offset, labels, col = lab.col, adj=c(0.5, 1), ...)
     }
 
 
@@ -345,9 +348,9 @@ NULL
       # 1 for right-alignment, 0 for left-alignment
       adj_value <- if (left) 1 else 0
 
-      ## Add labels next to ticks
-      #pos <- if (left) 2 else 4
-      text(tick.xend + 0.01 * dx, Ypos, labels, col = lab.col, adj = adj_value, ...)
+      ## Add labels next to ticks with mgp-controlled spacing
+      label.offset <- mgp[1] * (tick.xend - tick.xstart)  # Use first mgp value for label offset
+      text(tick.xend + label.offset, Ypos, labels, col = lab.col, adj = adj_value, ...)
     }
   }
 

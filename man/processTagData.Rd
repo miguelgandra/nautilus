@@ -7,7 +7,7 @@
 processTagData(
   data.folders,
   sensor.subdirectory = "CMD",
-  psat.subdirectory = NULL,
+  wc.subdirectory = NULL,
   save.files = FALSE,
   output.folder = NULL,
   output.suffix = NULL,
@@ -18,9 +18,12 @@ processTagData(
   lat.col = "lat",
   tagdate.col = "tagging_date",
   axis.mapping = NULL,
-  sensor.smoothing.factor = 4,
+  sensor.smoothing.factor = 5,
   dba.window = 3,
-  smoothing.window = 1,
+  dba.smoothing = 2,
+  orientation.smoothing = 1,
+  motion.smoothing = 1,
+  speed.smoothing = 2,
   burst.quantiles = c(0.95, 0.99),
   downsample.to = 1,
   verbose = TRUE
@@ -33,7 +36,7 @@ Each folder corresponds to an individual animal and should contain subdirectorie
 \item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
 This subdirectory should include the sensor CSV files for the corresponding animal.}
 
-\item{psat.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
+\item{wc.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
 This subdirectory should contain the "Location.csv" file with any fastloc position data from the PSAT.}
 
 \item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
@@ -79,10 +82,17 @@ in greater smoothing. Set to NULL to disable smoothing. Defaults to 4.}
 
 \item{dba.window}{Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.}
 
-\item{smoothing.window}{Optional. A numeric value specifying the size of the moving window (in seconds) used to smooth
-the metrics time series. For angular metrics (e.g., roll, pitch, heading), a moving circular mean is applied, while for
-linear signals (e.g., surge, sway, heave), a moving arithmetic mean is used. The window size is determined as the
-product of \code{sampling_freq} and \code{smoothing.window}.}
+\item{dba.smoothing}{Optional. Smoothing window (in seconds) for VeDBA/ODBA metrics.
+Uses arithmetic mean. Set to NULL to disable. Default: 2.}
+
+\item{orientation.smoothing}{Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
+Uses circular mean. Set to NULL to disable. Default: 1.}
+
+\item{motion.smoothing}{Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
+Uses arithmetic mean. Set to NULL to disable. Default: 1.}
+
+\item{speed.smoothing}{Optional. Smoothing window (in seconds) for vertical speed.
+Uses arithmetic mean. Set to NULL to disable. Default: 2.}
 
 \item{burst.quantiles}{Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).}
@@ -102,11 +112,12 @@ sensor data for multiple individuals. It utilizes the fast \code{data.table::fre
 efficiently import CSV files. The function automatically computes several key metrics related to
 acceleration, orientation, and linear motion based on accelerometer, magnetometer, and gyroscope time series
 (see the Details section below for a list of metrics).
-Additionally, the function can automatically integrate and merge positions obtained from pop-up satellite archival tags (PSATs).
-The PSAT data should be included in a separate folder within each individual’s directory for correct integration.
-To handle large datasets, the function provides the option to downsample the data to a specified frequency, reducing
-the data resolution and volume after the metrics are calculated. This is particularly useful when working with high-frequency
-data from sensors, making it more manageable for further analysis
+Additionally, the function can automatically integrate and merge positions obtained from Wildlife Computers tags
+(e.g., MiniPATs, MK10s, and SPOT tags). The tag data should be included in a separate
+folder within each individual's directory for correct integration. To handle large datasets, the function provides
+the option to downsample the data to a specified frequency, reducing the data resolution and volume after the metrics
+are calculated. This is particularly useful when working with high-frequency data from sensors, making it more
+manageable for further analysis.
 }
 \details{
 The following key metrics are automatically calculated:
