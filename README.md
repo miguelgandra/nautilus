@@ -14,9 +14,9 @@ The package also includes tools for integrating and analysing video data collect
 
 **Note:** This package is still in its early stages of development and is being actively improved. Some features may change or expand as the package evolves.
 
-### Reference
-Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalhães, R., Bartolomeu, T., Liebsch, N., Meyer, C. & Afonso, P. (2022). The advantages and challenges of non-invasive towed PILOT tags for free-ranging deep-diving megafauna. *Animal Biotelemetry, 10*(1), 39. [DOI: 10.1186/s40317-022-00310-1](https://doi.org/10.1186/s40317-022-00310-1)
-
+**Reference**
+Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalhães, R., Bartolomeu, T., Liebsch, N., Meyer, C. & Afonso, P. (2022). The advantages and challenges of non-invasive towed PILOT tags for free-ranging deep-diving megafauna. *Animal Biotelemetry, 10*(1), 39. https://doi.org/10.1186/s40317-022-00310-1
+<br> <!-- This line adds a break to create space -->
 
 ## Features
 
