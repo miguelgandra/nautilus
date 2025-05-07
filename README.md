@@ -16,8 +16,8 @@ The package also includes tools for integrating and analysing video data collect
 
 **Reference:**
 Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalhães, R., Bartolomeu, T., Liebsch, N., Meyer, C. & Afonso, P. (2022). The advantages and challenges of non-invasive towed PILOT tags for free-ranging deep-diving megafauna. *Animal Biotelemetry, 10*(1), 39. https://doi.org/10.1186/s40317-022-00310-1
-
-
+<br/><br/>
+<br/><br/>
 
 ## Features
 
@@ -25,12 +25,12 @@ Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalhães, R., Barto
 - Automatically identify and filter deployment periods (when the tag is attached to the animal) from pre- and post-deployment periods.
 - Identify and handle outliers in sensor time-series data, improving data quality and reliability.
 - Calculate a variety of behavioural and kinematic metrics (e.g., ODBA, surge, heading, pitch, etc.).
+- Estimate tail beat frequencies using continuous wavelet transforms (CWT).
 - Automatically generate publication-ready summary tables with key statistics from the processed datasets.
 - Plot animals' depth profiles as colour-coded time-series, facilitating visual inspection of diving behaviour.
-- Estimate tail beat frequencies using continuous wavelet transforms (CWT) for fine-scale behavioural analysis.
 - Process video data associated with onboard cameras.
 - Easily jump to specific datetimes in video files directly from R.
-- Annotate datasets with events or behaviours of interest, linking time-bound events (e.g., feeding, social interactions) from video review to the corresponding sensor data.
+- Annotate datasets with events or behaviours of interest, linking time-bound events (e.g., feeding) from video review to the corresponding sensor data.
 - Extract features from a sliding window, calculating metrics (e.g., mean, standard deviation) for selected variables, preparing datasets for machine learning or other analytical methods.
 - Additional features are being developed to further enhance functionality.
 
