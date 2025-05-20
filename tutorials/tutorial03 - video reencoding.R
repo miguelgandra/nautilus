@@ -33,6 +33,7 @@ library(nautilus)
 # Specify the folder path containing the .MOV video files that you want to reencode
 # Replace this path with the location of your own video files
 video_directory <- "~/Desktop/Whale Sharks/CAMS/PIN_CAM_10/"
+video_directory <- "/Volumes/T7 Shield/CAMS/2022/PIN_CAM_31/MOV"
 
 # Reencode all MOV videos in the specified directory to HEVC (H.265) format
 # The reencoded videos will be saved as .mp4 files in the same directory by default

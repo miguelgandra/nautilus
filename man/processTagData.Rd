@@ -14,11 +14,15 @@ processTagData(
   id.metadata,
   id.col = "ID",
   tag.col = "tag",
-  lon.col = "lon",
-  lat.col = "lat",
-  tagdate.col = "tagging_date",
+  deploy.date.col = "tagging_date",
+  deploy.lon.col = "deploy_lon",
+  deploy.lat.col = "deploy_lat",
+  pop.date.col = "popup_data",
+  pop.lon.col = "popup_lon",
+  pop.lat.col = "popup_lat",
   axis.mapping = NULL,
-  sensor.smoothing.factor = 5,
+  orientation.algorithm = "tilt_compass",
+  madgwick.beta = 0.02,
   dba.window = 3,
   dba.smoothing = 2,
   orientation.smoothing = 1,
@@ -26,18 +30,25 @@ processTagData(
   speed.smoothing = 2,
   burst.quantiles = c(0.95, 0.99),
   downsample.to = 1,
+  pitch.warning.threshold = 45,
+  roll.warning.threshold = 45,
+  check.time.anomalies = TRUE,
+  timezone = "UTC",
+  data.table.threads = NULL,
   verbose = TRUE
 )
 }
 \arguments{
 \item{data.folders}{Character vector. Paths to the folders containing data to be processed.
-Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly PSAT data.}
+Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly
+additional (Wildlife Computers) tag data.}
 
 \item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
 This subdirectory should include the sensor CSV files for the corresponding animal.}
 
-\item{wc.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
-This subdirectory should contain the "Location.csv" file with any fastloc position data from the PSAT.}
+\item{wc.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
+(e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
+This subdirectory should contain the "Locations.csv" file with position data from the tag.}
 
 \item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
 during the iteration process. This ensures that progress is saved incrementally, which can
@@ -58,27 +69,43 @@ Must contain at least columns for ID and tag type.}
 
 \item{tag.col}{Character. Column name for the tag type in \code{id.metadata} (default: "tag").}
 
-\item{lon.col}{Character. Column name for longitude in sensor data (default: "lon").}
+\item{deploy.date.col}{Character. Column name for the tagging date in \code{id.metadata} (default: "tagging_date").}
 
-\item{lat.col}{Character. Column name for latitude in sensor data (default: "lat").}
+\item{deploy.lon.col}{Character. Column name for longitude in sensor data (default: "deploy_lon").}
 
-\item{tagdate.col}{Character. Column name for the tagging date in \code{id.metadata} (default: "tagging_date").}
+\item{deploy.lat.col}{Character. Column name for latitude in sensor data (default: "deploy_lat").}
+
+\item{pop.date.col}{Character. Column name for the popup date in \code{id.metadata} (default: "popup_date").}
+
+\item{pop.lon.col}{Character. Column name for popup longitude in sensor data (default: "popup_lon").}
+
+\item{pop.lat.col}{Character. Column name for popup latitude in sensor data (default: "popup_lat").}
 
 \item{axis.mapping}{Optional. A data frame containing the axis transformations for the IMU (Inertial Measurement Unit).
-This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame.
+This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame
+or to mark faulty sensor data as NA.
 The data frame should have three columns:
 \itemize{
-\item \strong{type}: A column specifying the tag type (\code{CAM} vs \code{CMD}).
-\item \strong{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
-\item \strong{from}: A column indicating the original axis in the sensor's coordinate system.
-\item \strong{to}: A column specifying the target axis in the desired coordinate system.
+\item \emph{type}: A column specifying the tag type (\code{CAM} vs \code{CMD}).
+\item \emph{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
+\item \emph{from}: A column indicating the original axis in the sensor's coordinate system.
+\item \emph{to}: A column specifying the target axis in the desired coordinate system.
 }
 Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.}
 
-\item{sensor.smoothing.factor}{Optional. A factor that determines the size of the moving window (in timesteps)
-used to smooth raw sensor signals, including acceleration, gyroscope, and magnetometer data.
-The window size is calculated as \code{sampling.frequence / smoothing.factor}. A smaller value results
-in greater smoothing. Set to NULL to disable smoothing. Defaults to 4.}
+\item{orientation.algorithm}{Orientation estimation algorithm:
+\itemize{
+\item \code{"tilt_compass"} (default): Lightweight 6-axis tilt-compensated compass.
+\item \code{"madgwick"}: High-accuracy 9-axis sensor fusion. Requires Python \code{AHRS} module.
+}}
+
+\item{madgwick.beta}{Numeric. The Madgwick filter's gain parameter (default: 0.1).
+This parameter controls the trade-off between gyroscope and accelerometer measurements.
+\itemize{
+\item Higher values (e.g., 0.2-0.3) trust the accelerometer more, leading to faster convergence but potentially more noise
+\item Lower values (e.g., 0.01-0.05) trust the gyroscope more, resulting in smoother but potentially slower convergence
+}
+Only used when \code{orientation.algorithm = "madgwick"}.}
 
 \item{dba.window}{Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.}
 
@@ -100,50 +127,95 @@ Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th pe
 \item{downsample.to}{Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 Use NULL to retain the original resolution. Defaults to 1.}
 
+\item{pitch.warning.threshold}{Numeric. Threshold (in degrees) for mean pitch values that trigger orientation warnings.
+Default: 45 (will warn if mean |pitch| > 45 degrees).}
+
+\item{roll.warning.threshold}{Numeric. Threshold (in degrees) for mean roll values that trigger orientation warnings.
+Default: 45 (will warn if mean |roll| > 45 degrees).}
+
+\item{check.time.anomalies}{Logical. Whether to check for and remove temporal gaps/discontinuities in the data.
+Default: TRUE.}
+
+\item{timezone}{Character string specifying the timezone for all datetime conversions.
+Must be one of the valid timezones from \code{OlsonNames()}. Defaults to "UTC" (Coordinated Universal Time).}
+
+\item{data.table.threads}{Integer or NULL. Specifies the number of threads
+that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
+Notes:
+\itemize{
+\item Optimal thread count depends on your CPU cores and data size
+\item More threads use more RAM but can significantly speed up large operations
+\item Can be permanently set via \code{data.table::setDTthreads()}
+\item Current thread count: \code{data.table::getDTthreads()}
+}}
+
 \item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
 }
 \value{
 A list where each element contains the processed sensor data for an individual folder.
-If PSAT data exists, additional processing for PSAT locations will be included.
+If location data from Wildlife Computers tags (e.g., MiniPATs, MK10s, SPOTs) is available,
+it will be integrated and processed accordingly.
 }
 \description{
-This function imports and processes archival tag data from specified directories, supporting
-sensor data for multiple individuals. It utilizes the fast \code{data.table::fread} function to
-efficiently import CSV files. The function automatically computes several key metrics related to
-acceleration, orientation, and linear motion based on accelerometer, magnetometer, and gyroscope time series
-(see the Details section below for a list of metrics).
-Additionally, the function can automatically integrate and merge positions obtained from Wildlife Computers tags
-(e.g., MiniPATs, MK10s, and SPOT tags). The tag data should be included in a separate
-folder within each individual's directory for correct integration. To handle large datasets, the function provides
-the option to downsample the data to a specified frequency, reducing the data resolution and volume after the metrics
-are calculated. This is particularly useful when working with high-frequency data from sensors, making it more
-manageable for further analysis.
+This function imports and processes high-resolution archival tag data from specified directories,
+supporting sensor time series from multiple individuals. It utilizes \code{data.table::fread()} for fast
+CSV reading and automatically computes a wide range of kinematic and orientation metrics from
+accelerometer, magnetometer, and gyroscope signals (see the \emph{Details} section below for a complete list).
+Orientation is estimated by default using the tilt-compensated compass method, which fuses accelerometer
+and magnetometer data to determine body orientation relative to gravity and magnetic north.
+Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
+A full 3D magnetic calibration is applied prior to orientation estimation, including both
+hard iron (offset) and soft iron (scaling and misalignment) corrections.
+Optionally, the function also integrates location data from Wildlife Computers tags
+(MiniPATs, MK10s, SPOTs) if available. These should be provided in a dedicated subfolder
+(e.g., "SPOT") under each individual's directory. Deployment and pop-up coordinates are
+also extracted from metadata (if available) and included in the output dataset.
+After metric computation, the data can be downsampled to reduce its resolution and
+size for downstream analysis.
+Note: Python and the associated libraries \code{AHRS} and \code{numpy} (accessible via \code{reticulate}) are required
+if orientation is estimated using the Madgwick filter.
 }
 \details{
-The following key metrics are automatically calculated:
+This function computes a suite of movement and orientation metrics from high-frequency tri-axial sensor data,
+including acceleration, orientation, and linear motion parameters. It also performs automatic magnetic calibration
+to improve heading estimation.
 
 \strong{Acceleration:}
 \itemize{
-\item Total Acceleration: (g) - The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
-\item Vectorial Dynamic Body Acceleration (VeDBA): (g) Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
-\item Overall Dynamic Body Acceleration (ODBA): (g) A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
+\item Total Acceleration (g): The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
+\item Vectorial Dynamic Body Acceleration (VeDBA) (g): Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
+\item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
 \item Burst Swimming Events: Identifies periods of high acceleration based on a given acceleration magnitude percentile, which can be used to detect burst swimming behavior. This metric is binary, indicating whether the acceleration exceeds the threshold.
 }
 
 \strong{Orientation:}
+
+Computed using sensor fusion algorithms:
 \itemize{
-\item Roll: (degrees) The rotational movement of the animal around its longitudinal (x) axis, calculated using accelerometer and gyroscope data.
-\item Pitch: (degrees) The rotational movement of the animal around its lateral (y) axis, computed from accelerometer and gyroscope measurements.
-\item Heading: (degrees) The directional orientation of the animal, derived from the magnetometer data, representing the compass heading.
-The heading is corrected according to the magnetic declination value estimated based on the tagging location of each animal to account for local magnetic variation.
+\item {Madgwick filter} (default): 9-axis fusion (accelerometer + gyroscope + magnetometer) using quaternion-based estimation.
+\item {Tilt-compensated compass}: 6-axis fallback (accelerometer + gyroscope) when magnetometer unavailable.
+}
+Output includes:
+\itemize{
+\item Roll (degrees): Rotational movement of the animal around its longitudinal (x) axis.
+\item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
+\item Heading (degrees): Directional orientation of the animal, representing the compass heading.
+Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
 }
 
-\strong{Linear motion:}
+\strong{Linear Motion:}
 \itemize{
-\item Surge: (g) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
-\item Sway: (g) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
-\item Heave: (g) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
-\item Vertical Speed: (m/s) The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
+\item Surge (g): The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
+\item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
+\item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
+\item Vertical Speed (m/s): The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
 Calculated as the difference in depth measurements divided by the time interval
+}
+
+\strong{Python Requirements}
+\itemize{
+\item Requires the \code{reticulate} R package for interfacing with Python.
+\item The active Python environment must include the \code{AHRS} and \code{numpy} modules.
+\item If unavailable, the function will return an informative error with installation guidance.
 }
 }

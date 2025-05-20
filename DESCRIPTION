@@ -16,8 +16,10 @@ Imports:
 	graphics,
 	grDevices,
 	data.table,
+	parallel,
 	dplyr,
 	plyr,
+	reticulate,
 	lubridate,
 	magick,
 	changepoint,
@@ -28,13 +30,17 @@ Imports:
 Suggests:
 	foreach,
 	doSNOW,
-	parallel,
 	randomForest,
 	pROC,
 	moments,
 	entropy,
 	tesseract,
-	WaveletComp
+	WaveletComp,
+	geosphere,
+	maps,
+	mapdata,
+	prettymapr,
+	leaflet
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 

@@ -4,27 +4,32 @@
 
 #' Import and Process Archival Tag Data
 #'
-#' This function imports and processes archival tag data from specified directories, supporting
-#' sensor data for multiple individuals. It utilizes the fast `data.table::fread` function to
-#' efficiently import CSV files. The function automatically computes several key metrics related to
-#' acceleration, orientation, and linear motion based on accelerometer, magnetometer, and gyroscope time series
-#' (see the Details section below for a list of metrics).
-#' Additionally, the function can automatically integrate and merge positions obtained from Wildlife Computers tags
-#' (e.g., MiniPATs, MK10s, and SPOT tags). The tag data should be included in a separate
-#' folder within each individual's directory for correct integration. To handle large datasets, the function provides
-#' the option to downsample the data to a specified frequency, reducing the data resolution and volume after the metrics
-#' are calculated. This is particularly useful when working with high-frequency data from sensors, making it more
-#' manageable for further analysis.
+#' This function imports and processes high-resolution archival tag data from specified directories,
+#' supporting sensor time series from multiple individuals. It utilizes `data.table::fread()` for fast
+#' CSV reading and automatically computes a wide range of kinematic and orientation metrics from
+#' accelerometer, magnetometer, and gyroscope signals (see the *Details* section below for a complete list).
+#' Orientation is estimated by default using the tilt-compensated compass method, which fuses accelerometer
+#' and magnetometer data to determine body orientation relative to gravity and magnetic north.
+#' Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
+#' A full 3D magnetic calibration is applied prior to orientation estimation, including both
+#' hard iron (offset) and soft iron (scaling and misalignment) corrections.
+#' Optionally, the function also integrates location data from Wildlife Computers tags
+#' (MiniPATs, MK10s, SPOTs) if available. These should be provided in a dedicated subfolder
+#' (e.g., "SPOT") under each individual's directory. Deployment and pop-up coordinates are
+#' also extracted from metadata (if available) and included in the output dataset.
+#' After metric computation, the data can be downsampled to reduce its resolution and
+#' size for downstream analysis.
+#' Note: Python and the associated libraries `AHRS` and `numpy` (accessible via `reticulate`) are required
+#' if orientation is estimated using the Madgwick filter.
 #'
 #' @param data.folders Character vector. Paths to the folders containing data to be processed.
-#' Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly PSAT data.
+#' Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly
+#' additional (Wildlife Computers) tag data.
 #' @param sensor.subdirectory Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
 #' This subdirectory should include the sensor CSV files for the corresponding animal.
 #' @param wc.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
 #' (e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
 #' This subdirectory should contain the "Locations.csv" file with position data from the tag.
-#' @param wc.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains PSAT data, or NULL to auto-detect PSAT folders (default: NULL).
-#' This subdirectory should contain the "Location.csv" file with any fastloc position data from the PSAT.
 #' @param save.files Logical. If `TRUE`, the processed data for each ID will be saved as RDS files
 #' during the iteration process. This ensures that progress is saved incrementally, which can
 #' help prevent data loss if the process is interrupted or stops midway. Default is `FALSE`.
@@ -38,23 +43,35 @@
 #' Must contain at least columns for ID and tag type.
 #' @param id.col Character. Column name for ID in `id.metadata` (default: "ID").
 #' @param tag.col Character. Column name for the tag type in `id.metadata` (default: "tag").
-#' @param lon.col Character. Column name for longitude in sensor data (default: "lon").
-#' @param lat.col Character. Column name for latitude in sensor data (default: "lat").
-#' @param tagdate.col Character. Column name for the tagging date in `id.metadata` (default: "tagging_date").
+#' @param deploy.date.col Character. Column name for the tagging date in `id.metadata` (default: "tagging_date").
+#' @param deploy.lon.col Character. Column name for longitude in sensor data (default: "deploy_lon").
+#' @param deploy.lat.col Character. Column name for latitude in sensor data (default: "deploy_lat").
+#' @param pop.lon.col Character. Column name for popup longitude in sensor data (default: "popup_lon").
+#' @param pop.lat.col Character. Column name for popup latitude in sensor data (default: "popup_lat").
+#' @param pop.date.col Character. Column name for the popup date in `id.metadata` (default: "popup_date").
 #' @param axis.mapping Optional. A data frame containing the axis transformations for the IMU (Inertial Measurement Unit).
-#' This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame.
+#' This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame
+#' or to mark faulty sensor data as NA.
 #' The data frame should have three columns:
 #' \itemize{
-#'   \item \strong{type}: A column specifying the tag type (`CAM` vs `CMD`).
-#'   \item \strong{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
-#'   \item \strong{from}: A column indicating the original axis in the sensor's coordinate system.
-#'   \item \strong{to}: A column specifying the target axis in the desired coordinate system.
+#'   \item \emph{type}: A column specifying the tag type (`CAM` vs `CMD`).
+#'   \item \emph{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
+#'   \item \emph{from}: A column indicating the original axis in the sensor's coordinate system.
+#'   \item \emph{to}: A column specifying the target axis in the desired coordinate system.
 #' }
 #' Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.
-#' @param sensor.smoothing.factor Optional. A factor that determines the size of the moving window (in timesteps)
-#' used to smooth raw sensor signals, including acceleration, gyroscope, and magnetometer data.
-#' The window size is calculated as `sampling.frequence / smoothing.factor`. A smaller value results
-#' in greater smoothing. Set to NULL to disable smoothing. Defaults to 4.
+#' @param orientation.algorithm Orientation estimation algorithm:
+#'   \itemize{
+#'     \item \code{"tilt_compass"} (default): Lightweight 6-axis tilt-compensated compass.
+#'     \item \code{"madgwick"}: High-accuracy 9-axis sensor fusion. Requires Python \code{AHRS} module.
+#'   }
+#' @param madgwick.beta Numeric. The Madgwick filter's gain parameter (default: 0.1).
+#' This parameter controls the trade-off between gyroscope and accelerometer measurements.
+#'   \itemize{
+#'     \item Higher values (e.g., 0.2-0.3) trust the accelerometer more, leading to faster convergence but potentially more noise
+#'     \item Lower values (e.g., 0.01-0.05) trust the gyroscope more, resulting in smoother but potentially slower convergence
+#'   }
+#'   Only used when \code{orientation.algorithm = "madgwick"}.
 #' @param dba.window Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.
 #' @param dba.smoothing Optional. Smoothing window (in seconds) for VeDBA/ODBA metrics.
 #' Uses arithmetic mean. Set to NULL to disable. Default: 2.
@@ -68,39 +85,73 @@
 #' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
 #' @param downsample.to Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 #' Use NULL to retain the original resolution. Defaults to 1.
+#' @param pitch.warning.threshold Numeric. Threshold (in degrees) for mean pitch values that trigger orientation warnings.
+#' Default: 45 (will warn if mean |pitch| > 45 degrees).
+#' @param roll.warning.threshold Numeric. Threshold (in degrees) for mean roll values that trigger orientation warnings.
+#' Default: 45 (will warn if mean |roll| > 45 degrees).
+#' @param check.time.anomalies Logical. Whether to check for and remove temporal gaps/discontinuities in the data.
+#' Default: TRUE.
+#' @param timezone Character string specifying the timezone for all datetime conversions.
+#' Must be one of the valid timezones from \code{OlsonNames()}. Defaults to "UTC" (Coordinated Universal Time).
+#' @param data.table.threads Integer or NULL. Specifies the number of threads
+#' that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
+#' Notes:
+#'  \itemize{
+#'          \item Optimal thread count depends on your CPU cores and data size
+#'          \item More threads use more RAM but can significantly speed up large operations
+#'          \item Can be permanently set via \code{data.table::setDTthreads()}
+#'          \item Current thread count: \code{data.table::getDTthreads()}
+#'        }
 #' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.
 #'
 #' @details
-#' The following key metrics are automatically calculated:
+#' This function computes a suite of movement and orientation metrics from high-frequency tri-axial sensor data,
+#' including acceleration, orientation, and linear motion parameters. It also performs automatic magnetic calibration
+#' to improve heading estimation.
 #'
 #' \strong{Acceleration:}
 #' \itemize{
-#'   \item Total Acceleration: (g) - The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
-#'   \item Vectorial Dynamic Body Acceleration (VeDBA): (g) Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
-#'   \item Overall Dynamic Body Acceleration (ODBA): (g) A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
+#'   \item Total Acceleration (g): The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
+#'   \item Vectorial Dynamic Body Acceleration (VeDBA) (g): Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
+#'   \item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
 #'   \item Burst Swimming Events: Identifies periods of high acceleration based on a given acceleration magnitude percentile, which can be used to detect burst swimming behavior. This metric is binary, indicating whether the acceleration exceeds the threshold.
 #' }
 #'
 #' \strong{Orientation:}
+#'
+#' Computed using sensor fusion algorithms:
 #' \itemize{
-#'   \item Roll: (degrees) The rotational movement of the animal around its longitudinal (x) axis, calculated using accelerometer and gyroscope data.
-#'   \item Pitch: (degrees) The rotational movement of the animal around its lateral (y) axis, computed from accelerometer and gyroscope measurements.
-#'   \item Heading: (degrees) The directional orientation of the animal, derived from the magnetometer data, representing the compass heading.
-#'         The heading is corrected according to the magnetic declination value estimated based on the tagging location of each animal to account for local magnetic variation.
+#'   \item {Madgwick filter} (default): 9-axis fusion (accelerometer + gyroscope + magnetometer) using quaternion-based estimation.
+#'   \item {Tilt-compensated compass}: 6-axis fallback (accelerometer + gyroscope) when magnetometer unavailable.
+#' }
+#' Output includes:
+#' \itemize{
+#'   \item Roll (degrees): Rotational movement of the animal around its longitudinal (x) axis.
+#'   \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
+#'   \item Heading (degrees): Directional orientation of the animal, representing the compass heading.
+#'         Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
 #' }
 #'
-#' \strong{Linear motion:}
+#' \strong{Linear Motion:}
 #' \itemize{
-#'   \item Surge: (g) The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
-#'   \item Sway: (g) The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
-#'   \item Heave: (g) The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
-#'   \item Vertical Speed: (m/s) The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
+#'   \item Surge (g): The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
+#'   \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
+#'   \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
+#'   \item Vertical Speed (m/s): The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
 #'   Calculated as the difference in depth measurements divided by the time interval
+#' }
+#'
+#' \strong{Python Requirements}
+#' \itemize{
+#'   \item Requires the \code{reticulate} R package for interfacing with Python.
+#'   \item The active Python environment must include the \code{AHRS} and \code{numpy} modules.
+#'   \item If unavailable, the function will return an informative error with installation guidance.
 #' }
 #'
 #'
 #' @return A list where each element contains the processed sensor data for an individual folder.
-#'         If PSAT data exists, additional processing for PSAT locations will be included.
+#' If location data from Wildlife Computers tags (e.g., MiniPATs, MK10s, SPOTs) is available,
+#' it will be integrated and processed accordingly.
 #' @export
 
 
@@ -113,11 +164,15 @@ processTagData <- function(data.folders,
                            id.metadata,
                            id.col = "ID",
                            tag.col = "tag",
-                           lon.col = "lon",
-                           lat.col = "lat",
-                           tagdate.col = "tagging_date",
+                           deploy.date.col = "tagging_date",
+                           deploy.lon.col = "deploy_lon",
+                           deploy.lat.col = "deploy_lat",
+                           pop.date.col = "popup_data",
+                           pop.lon.col = "popup_lon",
+                           pop.lat.col = "popup_lat",
                            axis.mapping = NULL,
-                           sensor.smoothing.factor = 5,
+                           orientation.algorithm = "tilt_compass",
+                           madgwick.beta = 0.02,
                            dba.window = 3,
                            dba.smoothing = 2,
                            orientation.smoothing = 1,
@@ -125,6 +180,11 @@ processTagData <- function(data.folders,
                            speed.smoothing = 2,
                            burst.quantiles = c(0.95, 0.99),
                            downsample.to = 1,
+                           pitch.warning.threshold = 45,
+                           roll.warning.threshold = 45,
+                           check.time.anomalies = TRUE,
+                           timezone = "UTC",
+                           data.table.threads = NULL,
                            verbose = TRUE) {
 
 
@@ -170,10 +230,19 @@ processTagData <- function(data.folders,
   # check if specified columns exists in id.metadata
   if(!id.col %in% names(id.metadata)) stop(paste("The specified id.col ('", id.col, "') was not found in id.metadata.", sep = ""))
   if(!tag.col %in% names(id.metadata)) stop(paste("The specified tag.col ('", tag.col, "') was not found in id.metadata.", sep = ""))
-  if(!lon.col %in% names(id.metadata)) stop(paste("The specified lon.col ('", lon.col, "') was not found in id.metadata.", sep = ""))
-  if(!lat.col %in% names(id.metadata)) stop(paste("The specified lat.col ('", lat.col, "') was not found in id.metadata.", sep = ""))
-  if(!tagdate.col %in% names(id.metadata)) stop(paste("The specified tagdate.col ('", tagdate.col, "') was not found in id.metadata.", sep = ""))
+  if(!deploy.date.col %in% names(id.metadata)) stop(paste("The specified deploy.date.col ('", deploy.date.col, "') was not found in id.metadata.", sep = ""))
+  if(!deploy.lon.col %in% names(id.metadata)) stop(paste("The specified deploy.lon.col ('", deploy.lon.col, "') was not found in id.metadata.", sep = ""))
+  if(!deploy.lat.col %in% names(id.metadata)) stop(paste("The specified deploy.lat.col ('", deploy.lat.col, "') was not found in id.metadata.", sep = ""))
+  if(!pop.date.col %in% names(id.metadata)) stop(paste("The specified pop.date.col ('", pop.date.col, "') was not found in id.metadata.", sep = ""))
+  if(!pop.lon.col %in% names(id.metadata)) stop(paste("The specified pop.lon.col ('", pop.lon.col, "') was not found in id.metadata.", sep = ""))
+  if(!pop.lat.col %in% names(id.metadata)) stop(paste("The specified pop.lat.col ('", pop.lat.col, "') was not found in id.metadata.", sep = ""))
 
+  # check if deploy.date.col and pop.date.col are POSIXct
+  if (!inherits(id.metadata[[deploy.date.col]], "POSIXct")) stop(paste0("Column '", deploy.date.col, "' must be of class POSIXct."), call. = FALSE)
+  if (!inherits(id.metadata[[pop.date.col]], "POSIXct")) stop(paste0("Column '", pop.date.col, "' must be of class POSIXct."), call. = FALSE)
+
+  # validate timezone input
+  if (!timezone %in% OlsonNames()) stop("Invalid timezone. Use OlsonNames() to see valid options.", call. = FALSE)
 
   # validate orientation.mapping
   if(!is.null(axis.mapping)){
@@ -190,7 +259,7 @@ processTagData <- function(data.folders,
   }
 
   # validate smoothing and moving window parameters
-  if(!is.numeric(sensor.smoothing.factor)) stop("`sensor.smoothing.factor` must be a numeric value.", call. = FALSE)
+  if(!orientation.algorithm %in% c("madgwick", "tilt_compass")) stop("'orientation.algorithm' must be either 'madgwick' or 'tilt_compass'", call. = FALSE)
   if(!is.numeric(dba.window) || dba.window <= 0) stop("`dba.window` must be a positive numeric value.", call. = FALSE)
   if(!is.numeric(orientation.smoothing) || orientation.smoothing <= 0) stop("`orientation.smoothing` must be a positive numeric value.", call. = FALSE)
   if(!is.numeric(motion.smoothing) || motion.smoothing <= 0) stop("`motion.smoothing` must be a positive numeric value.", call. = FALSE)
@@ -205,9 +274,45 @@ processTagData <- function(data.folders,
   # feedback for save files mode
   if (!is.logical(save.files)) stop("`save.files` must be a logical value (TRUE or FALSE).", call. = FALSE)
 
+  # validate data.table threads if specified
+  if (!is.null(data.table.threads)) {
+    if (!is.numeric(data.table.threads) || data.table.threads < 1 || data.table.threads > parallel::detectCores()) {
+      stop("data.table.threads must be between 1 and ", parallel::detectCores(), call. = FALSE)
+    }
+  }
+
   # feedback for verbose mode
   if (!is.logical(verbose)) stop("`verbose` must be a logical value (TRUE or FALSE).", call. = FALSE)
 
+
+  ##############################################################################
+  # Python checks #############################################################
+  ##############################################################################
+
+  if (orientation.algorithm == "madgwick") {
+
+    # check that 'reticulate' is installed
+    if (!requireNamespace("reticulate", quietly = TRUE)) {
+      stop("The 'reticulate' package is required but not installed. Please install it using install.packages('reticulate') or switch to orientation.algorithm='tilt'.", call. = FALSE)
+    }
+
+    # load reticulate
+    reticulate::use_python(Sys.which("python"), required = FALSE)
+
+    # check that Python is available
+    if (!reticulate::py_available(initialize = TRUE)) {
+      stop("Python is not available in the current environment. Please configure Python using reticulate::use_python().")
+    }
+
+    # check that 'ahrs' and 'numpy' are available in the Python environment
+    py_modules <- reticulate::py_list_packages()
+    if (!"AHRS" %in% py_modules$package) {
+      stop("The Python package 'AHRS' is not installed. Please run: reticulate::py_install('ahrs')")
+    }
+    if (!"numpy" %in% py_modules$package) {
+      stop("The Python package 'numpy' is not installed. Please run: reticulate::py_install('numpy')")
+    }
+  }
 
   ##############################################################################
   # Retrieve directory files ###################################################
@@ -290,6 +395,12 @@ processTagData <- function(data.folders,
                    "Magnetometer X [\xb5T]", "Magnetometer Y [\xb5T]", "Magnetometer Z [\xb5T]", "Temperature (imu) [\xb0C]",
                    "Temperature (depth) [\xb0C]", "Temp. (magnet.) [\xb0C]", "Depth (200bar) 1 [m]", "Depth (200bar) [m]", "Camera time")
 
+  # set data.table threads if specified
+  if (!is.null(data.table.threads)) {
+    original_threads <- data.table::getDTthreads()
+    data.table::setDTthreads(threads = data.table.threads)
+    on.exit(data.table::setDTthreads(threads = original_threads), add = TRUE)
+  }
 
   ##############################################################################
   # Process data for each folder ###############################################
@@ -376,7 +487,7 @@ processTagData <- function(data.folders,
     data.table::setnames(sensor_data, c("date", "time", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "temp", "depth"))
 
     # convert datetime to POSIXct
-    sensor_data[, datetime := as.POSIXct(paste(date, time), format = "%d.%m.%Y %H:%M:%OS", tz = "UTC") + 0.0001]
+    sensor_data[, datetime := lubridate::fast_strptime(paste(date, time), "%d.%m.%Y %H:%M:%OS", tz = timezone) + 0.0001]
 
     # extract sample number
     sensor_data[, sample := as.numeric(substr(time, 10, 11))]
@@ -387,8 +498,24 @@ processTagData <- function(data.folders,
     # add ID column
     sensor_data[, ID := id]
 
+    # calculate sampling frequency
+    sampling_freq <- nrow(sensor_data)/length(unique(lubridate::floor_date(sensor_data$datetime, "sec")))
+    sampling_freq <- plyr::round_any(sampling_freq, 5)
+
     # if camera_start is not NULL, extract the corresponding datetime
     if (!is.null(camera_start)) {camera_start <- sensor_data[camera_start, datetime]}
+
+
+    ############################################################################
+    # Integrate known locations ################################################
+    ############################################################################
+
+    # create empty columns for "PTT", "datetime", "type", "lat", "lon" with NA values
+    sensor_data[, `:=`(PTT = NA_character_,
+                       position_type = NA_character_,
+                       lat = NA_real_,
+                       lon = NA_real_,
+                       quality = NA_character_)]
 
     # process WC location data if available
     if (!is.na(locations_file) && file.exists(locations_file)) {
@@ -396,21 +523,62 @@ processTagData <- function(data.folders,
       if(verbose) cat("Importing location data from Wildlife Computers tag...\n")
       # import locations data
       locs_data <- data.table::fread(wc_files[i], select = c("Ptt", "Date", "Type", "Latitude", "Longitude", "Quality"))
-      locs_data[, Date := as.POSIXct(Date, format = "%H:%M:%OS %d-%b-%Y", tz = "UTC")]
-      data.table::setnames(locs_data, c("PTT", "timebin", "position_type", "lat", "lon", "quality"))
-      # remove fractional seconds from PSAT locs datetimes
-      locs_data[, timebin := as.POSIXct(floor(as.numeric(timebin)), origin = "1970-01-01", tz = "UTC")]
-      # remove rows with duplicate 'timebin' values
-      locs_data <- locs_data[!duplicated(timebin)]
-      # add "timebin" column with datetime rounded to the nearest second (floor)
-      sensor_data[, timebin := as.POSIXct(floor(as.numeric(datetime)), origin = "1970-01-01", tz = "UTC")]
-      # merge PSAT positions with sensor data
-      sensor_data <- merge(sensor_data, locs_data, by = "timebin", all.x = TRUE)
-      # remove the "timebin" column
-      sensor_data[, timebin := NULL]
-    } else {
-      # create empty columns for "PTT", "datetime", "type", "lat", "lon" with NA values
-      sensor_data[, `:=`(PTT = NA, position_type = NA, lat = NA, lon = NA, quality = NA)]
+      locs_data[, Date := as.POSIXct(Date, format = "%H:%M:%OS %d-%b-%Y", tz = timezone)]
+      data.table::setnames(locs_data, c("PTT", "datetime", "position_type", "lat", "lon", "quality"))
+      # remove rows with duplicate 'datetime' values
+      locs_data <- locs_data[!duplicated(datetime)]
+      # find the closest match for each location
+      matched_indices <- sapply(locs_data$datetime, function(x) {
+        which.min(abs(as.numeric(sensor_data$datetime) - as.numeric(x)))
+      })
+      # assign values only to the closest matching rows
+      for (j in seq_along(matched_indices)) {
+        idx <- matched_indices[j]
+        sensor_data[idx, `:=`(PTT = locs_data$PTT[j],
+                              position_type = locs_data$position_type[j],
+                              lat = locs_data$lat[j],
+                              lon = locs_data$lon[j],
+                              quality = locs_data$quality[j])]
+      }
+    }
+
+
+    # process location data from metadata if available
+    metadata_locs <- list()
+    # deployment location
+    if (!is.na(animal_info[[deploy.date.col]]) && !is.na(animal_info[[deploy.lon.col]]) && !is.na(animal_info[[deploy.lat.col]])) {
+      metadata_locs[[length(metadata_locs) + 1]] <- data.table::data.table(
+        datetime = animal_info[[deploy.date.col]],
+        position_type = "Metadata [deployment]",
+        lat = animal_info[[deploy.lat.col]],
+        lon = animal_info[[deploy.lon.col]])
+    }
+    # pop-up location
+    if (!is.na(animal_info[[pop.date.col]]) && !is.na(animal_info[[pop.lon.col]]) && !is.na(animal_info[[pop.lat.col]])) {
+      metadata_locs[[length(metadata_locs) + 1]] <- data.table::data.table(
+        datetime = animal_info[[pop.date.col]],
+        position_type = "Metadata [popup]",
+        lat = animal_info[[pop.lat.col]],
+        lon = animal_info[[pop.lon.col]])
+    }
+    # if there's at least one location to integrate
+    if (length(metadata_locs) > 0) {
+      # provide feedback to the user if verbose mode is enabled
+      if (verbose) cat("Integrating deployment and/or pop-up locations from metadata...\n")
+      metadata_locs_dt <- data.table::rbindlist(metadata_locs)
+      # find closest match in sensor_data
+      matched_indices <- sapply(metadata_locs_dt$datetime, function(x) {
+        which.min(abs(as.numeric(sensor_data$datetime) - as.numeric(x)))
+      })
+      # assign metadata locations to sensor_data
+      for (j in seq_along(matched_indices)) {
+        idx <- matched_indices[j]
+        sensor_data[idx, `:=`(
+          position_type = metadata_locs_dt$position_type[j],
+          lat = metadata_locs_dt$lat[j],
+          lon = metadata_locs_dt$lon[j]
+          )]
+      }
     }
 
 
@@ -447,7 +615,10 @@ processTagData <- function(data.folders,
         for (row in 1:nrow(tag_mapping)) {
           from_axis <- tag_mapping$from[row]
           to_axis <- tag_mapping$to[row]
-          if (grepl("^\\-", to_axis)) {
+          if (to_axis == "NA") {
+            # special case: set the original axis to NA
+            temp_data[[from_axis]] <- NA_real_
+          } else if (grepl("^\\-", to_axis)) {
             # sign change
             axis_name <- sub("^\\-", "", to_axis)
             temp_data[[axis_name]] <- -sensor_data[[from_axis]]
@@ -464,37 +635,42 @@ processTagData <- function(data.folders,
 
 
     ############################################################################
-    # Smooth sensor signals (optional for noise reduction) #####################
+    # Calibrate magnetometer ###################################################
     ############################################################################
 
-    # calculate sampling frequency
-    sampling_freq <- nrow(sensor_data)/length(unique(lubridate::floor_date(sensor_data$datetime, "sec")))
-    sampling_freq <- plyr::round_any(sampling_freq, 5)
+    # extract raw magnetometer data
+    mag_data <- as.matrix(sensor_data[, .(mx, my, mz)])
 
-    # smooth signals using a moving average
-    if(!is.null(sensor.smoothing.factor)) {
+    # estimate hard-iron offset (mean of the data)
+    hard_iron_offset <- colMeans(mag_data)
 
-      # provide feedback to the user if verbose mode is enabled
-      if(verbose) cat("Smoothing sensor signals...\n")
+    # apply hard-iron correction
+    mag_corrected <- sweep(mag_data, 2, hard_iron_offset)
 
-      # set window size
-      smoothing_window <- round(sampling_freq / sensor.smoothing.factor)
+    # estimate soft-iron distortion (fit ellipsoid)
+    # compute covariance matrix
+    cov_matrix <- cov(mag_corrected)
 
-      # smooth raw accelerometer values
-      sensor_data[, ax := data.table::frollmean(ax, n = smoothing_window, fill = NA, align = "center")]
-      sensor_data[, ay := data.table::frollmean(ay, n = smoothing_window, fill = NA, align = "center")]
-      sensor_data[, az := data.table::frollmean(az, n = smoothing_window, fill = NA, align = "center")]
+    # perform eigen decomposition
+    eig <- eigen(cov_matrix)
+    V <- eig$vectors   # eigenvectors (axes)
+    D_inv <- diag(1 / sqrt(eig$values))
+    # compute the transformation matrix
+    soft_iron_matrix <- V %*% D_inv %*% t(V)
 
-      # smooth raw gyroscope values
-      sensor_data[, gx := data.table::frollmean(gx, n = smoothing_window, fill = NA, align = "center")]
-      sensor_data[, gy := data.table::frollmean(gy, n = smoothing_window, fill = NA, align = "center")]
-      sensor_data[, gz := data.table::frollmean(gz, n = smoothing_window, fill = NA, align = "center")]
+    # apply soft-iron correction
+    mag_calibrated <- t(soft_iron_matrix %*% t(mag_corrected))
 
-      # smooth magnetometer values
-      sensor_data[, mx := data.table::frollmean(mx, n = smoothing_window, fill = NA, align = "center")]
-      sensor_data[, my := data.table::frollmean(my, n = smoothing_window, fill = NA, align = "center")]
-      sensor_data[, mz := data.table::frollmean(mz, n = smoothing_window, fill = NA, align = "center")]
-   }
+    # normalize the calibrated data (unit sphere)
+    mag_calibrated <- mag_calibrated / sqrt(rowSums(mag_calibrated^2))
+
+    # update original columns
+    sensor_data[, `:=`(mx = mag_calibrated[,1], my = mag_calibrated[,2], mz = mag_calibrated[,3])]
+
+    # clean up
+    rm(mag_data, mag_corrected, cov_matrix, eig, V, D_inv, soft_iron_matrix, mag_calibrated)
+    gc()
+
 
     ############################################################################
     # Calculate acceleration metrics ###########################################
@@ -503,12 +679,18 @@ processTagData <- function(data.folders,
     # provide feedback to the user if verbose mode is enabled
     if(verbose) cat("Calculating acceleration metrics...\n")
 
-    # convert acceleration axes from m/2 to Gs
-    if(tag_model != "CEIIA"){
-      sensor_data[, ax := ax / 9.80665]
-      sensor_data[, ay := ay / 9.80665]
-      sensor_data[, az := az / 9.80665]
+    # check if acceleration values are likely in m/s2
+    median_acc <- median(sqrt(sensor_data$ax^2 + sensor_data$ay^2 + sensor_data$az^2), na.rm = TRUE)
+
+    # convert to g if needed
+    if (median_acc > 6) {
       if(verbose) cat(paste0("Acceleration values converted from m/s", "\U00B2", " to g.\n"))
+      sensor_data[, `:=`(
+        ax = ax / 9.80665,
+        ay = ay / 9.80665,
+        az = az / 9.80665)]
+    } else {
+      if(verbose) cat("Acceleration values already appear to be in g. No conversion applied.\n")
     }
 
     # calculate total acceleration
@@ -602,32 +784,115 @@ processTagData <- function(data.folders,
     # Calculate orientation metrics ############################################
     ############################################################################
 
-    # provide feedback to the user if verbose mode is enabled
-    if (verbose) cat("Calculating orientation metrics...\n")
+    # convert gyroscope values from mrad/s to rad/s
+    sensor_data[, `:=`(gx = gx / 1000, gy = gy / 1000, gz = gz / 1000)]
 
-    # calculate roll and pitch angles
-    sensor_data[, roll := atan2(ay, az)]
-    sensor_data[, pitch := atan2(-ax, sqrt(ay^2 + az^2))]
 
-    # correct the magnetometer readings using the roll and pitch angles (tilt-compensated magnetic field vector)
-    mx_comp <- sensor_data$mx*cos(sensor_data$pitch) + sensor_data$mz*sin(sensor_data$pitch)
-    my_comp <- sensor_data$mx*sin(sensor_data$roll)*sin(sensor_data$pitch) + sensor_data$my*cos(sensor_data$roll) - sensor_data$mz*sin(sensor_data$roll)*cos(sensor_data$pitch)
+    #############################################################
+    # Python Madgwick filter ####################################
+    if(orientation.algorithm == "madgwick"){
 
-    # convert roll and pitch from radians to degrees
-    sensor_data[, roll := roll * (180 / pi)]
-    sensor_data[, pitch := pitch * (180 / pi)]
+      # provide feedback to the user if verbose mode is enabled
+      if (verbose) cat("Calculating orientation metrics using Madgwick filter...\n")
 
-    # calculate the heading and convert from radians to degrees
-    sensor_data[, heading := atan2(my_comp, mx_comp) * (180 / pi)]
+      # load Python packages
+      ahrs <- reticulate::import("ahrs", delay_load = TRUE)
+      np <- reticulate::import("numpy", delay_load = TRUE)
+
+      # prepare sensor data matrices
+      acc_data <- as.matrix(sensor_data[, .(ax, ay, az)])
+      gyr_data <- as.matrix(sensor_data[, .(gx, gy, gz)])
+      mag_data <- as.matrix(sensor_data[, .(mx, my, mz)])
+
+      # convert to numpy arrays
+      acc_np <- np$array(acc_data)
+      gyr_np <- np$array(gyr_data)
+      mag_np <- np$array(mag_data)
+
+      # run the full Madgwick filter (MARG: acc + gyro + mag)
+      madgwick <- ahrs$filters$Madgwick(gyr = gyr_np, acc = acc_np, mag = mag_np,
+                                        frequency = sampling_freq, beta = madgwick.beta)
+
+      # extract quaternions [w, x, y, z]
+      Q <- madgwick$Q
+
+      # convert quaternions to yaw, pitch, and roll in degrees
+      w <- Q[, 1]
+      x <- Q[, 2]
+      y <- Q[, 3]
+      z <- Q[, 4]
+
+      # yaw (heading, Z axis) - wrap to [0, 360)
+      yaw <- atan2(2 * (w * z + x * y), 1 - 2 * (y^2 + z^2))
+      yaw_deg <- (yaw * 180 / pi) %% 360
+
+      # pitch (Y axis) - clamp to [-1, 1]
+      pitch <- asin(pmax(pmin(2 * (w * y - z * x), 1.0), -1.0))
+      pitch_deg <- pitch * 180 / pi
+
+      # roll (X axis)
+      roll <- atan2(2 * (w * x + y * z), 1 - 2 * (x^2 + y^2))
+      roll_deg <- roll * 180 / pi
+
+      # add to sensor_data table
+      sensor_data[, `:=`(
+        heading = yaw_deg,
+        pitch = pitch_deg,
+        roll = roll_deg
+      )]
+
+      # delete Python objects and force garbage collection
+      to_remove <- c("madgwick", "acc_np", "gyr_np", "mag_np",
+                     "Q", "w", "x", "y", "z", "yaw", "pitch", "roll",
+                     "yaw_deg", "pitch_deg", "roll_deg")
+      rm(list = intersect(to_remove, ls()))
+      py_gc <- reticulate::import("gc")
+      invisible(py_gc$collect())
+      gc()
+
+    #############################################################
+    # else, default to the tilt-compensated compass method ######
+    } else {
+
+      # provide feedback to the user if verbose mode is enabled
+      if (verbose) cat("Calculating tilt-compensated orientation metrics...\n")
+
+      # add small constant to prevent division by zero
+      epsilon <- 1e-7
+
+      # compute normalized accelerometer vectors
+      acc_norm <- sqrt(sensor_data$ax^2 + sensor_data$ay^2 + sensor_data$az^2 + epsilon)
+      ax_norm <- sensor_data$ax / acc_norm
+      ay_norm <- sensor_data$ay / acc_norm
+      az_norm <- sensor_data$az / acc_norm
+
+      # calculate roll and pitch angles
+      sensor_data[, `:=`(
+        roll = atan2(ay_norm, sign(az_norm) * sqrt(az_norm^2 + epsilon * ax_norm^2)),
+        pitch = atan2(-ax_norm, sqrt(ay_norm^2 + az_norm^2 + epsilon))
+      )]
+
+      # correct the magnetometer readings using the roll and pitch angles (tilt-compensated magnetic field vector)
+      mx_comp <- sensor_data$mx*cos(sensor_data$pitch) + sensor_data$mz*sin(sensor_data$pitch)
+      my_comp <- sensor_data$mx*sin(sensor_data$roll)*sin(sensor_data$pitch) + sensor_data$my*cos(sensor_data$roll) - sensor_data$mz*sin(sensor_data$roll)*cos(sensor_data$pitch)
+
+      # convert roll and pitch from radians to degrees
+      sensor_data[, roll := roll * (180 / pi)]
+      sensor_data[, pitch := pitch * (180 / pi)]
+
+      # calculate the heading and convert from radians to degrees (accounting for gimbal lock)
+      sensor_data[, heading := {ifelse(abs(pitch) > 89.5, NA_real_, atan2(my_comp, mx_comp) * (180/pi))}]
+    }
+
+    #############################################################
+    #############################################################
 
     # get magnetic declination value (in degrees)
-    declination_deg <- oce::magneticField(longitude=animal_info[[lon.col]], latitude=animal_info[[lat.col]], time=animal_info[[tagdate.col]])$declination
+    declination_deg <- oce::magneticField(longitude=animal_info[[deploy.lon.col]], latitude=animal_info[[deploy.lat.col]], time=animal_info[[deploy.date.col]])$declination
     declination_deg <- round(declination_deg, 2)
 
-    # correct for magnetic declination to get true heading and ensure it's in the 0-359 range
-    sensor_data[, heading := heading + declination_deg]
-    sensor_data[, heading := ifelse(heading < 0, heading + 360, heading)]
-    sensor_data[, heading := ifelse(heading >= 360, heading - 360, heading)]
+    # apply magnetic declination correction to convert from magnetic north to geographic north
+    sensor_data[, heading := (heading + declination_deg) %% 360]
 
     # apply a moving circular mean to smooth the metrics time series
     if(!is.null(orientation.smoothing)) {
@@ -636,6 +901,22 @@ processTagData <- function(data.folders,
       sensor_data[, pitch := .rollingCircularMean(pitch, window = window_size,  range = c(-90, 90))]
       sensor_data[, heading := .rollingCircularMean(heading, window = window_size, range = c(0, 360))]
     }
+
+
+    # check for potential axis issues (misalignment, swaps, or sign flips)
+    mean_pitch <- mean(sensor_data$pitch, na.rm = TRUE)
+    mean_roll  <- mean(sensor_data$roll, na.rm = TRUE)
+    pitch_anomaly_detected <- FALSE
+    roll_anomaly_detected <- FALSE
+    if (abs(mean_pitch) > 45){
+      message("Potential orientation anomaly: Mean pitch = ", round(mean_pitch, 1), "\u00B0 (expected ~0\u00B0)")
+      pitch_anomaly_detected <- TRUE
+    }
+    if (abs(mean_roll) > 45){
+      message("Potential orientation anomaly: Mean roll  = ", round(mean_roll, 1), "\u00B0 (expected ~0\u00B0)")
+      roll_anomaly_detected <- TRUE
+    }
+    warning(paste(id, "-", "Potential orientation anomalies detected. Double check sensor alignment and calibration"))
 
 
     ############################################################################
@@ -675,15 +956,33 @@ processTagData <- function(data.folders,
         downsample_interval <- 1 / downsample.to
 
         # round datetime to the nearest downsample interval
-        sensor_data[, datetime := floor(as.numeric(datetime) / downsample_interval) * downsample_interval]
-        sensor_data[, datetime := as.POSIXct(datetime, origin = "1970-01-01", tz = "UTC")]
+        first_time <- sensor_data$datetime[1]
+        sensor_data[, datetime := first_time + floor(as.numeric(datetime - first_time) / downsample_interval) * downsample_interval]
 
         # temporarily suppress console output (redirect to a temporary file)
         sink(tempfile())
 
-        #  aggregate data into the specified interval
-        processed_data <- sensor_data[, lapply(.SD, function(x) if (is.numeric(x)) mean(x, na.rm = TRUE) else data.table::first(x)),
-                                      by = datetime, .SDcols = c(metrics, position_cols)]
+        # split columns into different types for appropriate downsampling
+        orientation_cols <- c("roll", "pitch", "heading")
+        numeric_cols <- setdiff(metrics, orientation_cols)
+
+        # downsample orientation angles with circular mean and proper ranges
+        orientation_data <- sensor_data[, {
+          list(roll = .circularMean(roll, range = c(-180, 180)),
+               pitch = .circularMean(pitch, range = c(-90, 90)),
+               heading = .circularMean(heading, range = c(0, 360)))
+        }, by = datetime]
+
+        # downsample numeric metrics with arithmetic mean
+        numeric_data <- sensor_data[, lapply(.SD, function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)),
+                                    by = datetime, .SDcols = numeric_cols]
+
+        # get first value for location columns
+        position_data <- sensor_data[, lapply(.SD, data.table::first), by = datetime, .SDcols = position_cols]
+
+        # merge all downsampled data (ensure no missing timestamps)
+        processed_data <- merge(orientation_data, numeric_data, by = "datetime", all.x = TRUE)
+        processed_data <- merge(processed_data, position_data, by = "datetime", all.x = TRUE)
 
         # re-add ID column
         processed_data[, ID := id]
@@ -695,8 +994,9 @@ processTagData <- function(data.folders,
         if(!is.null(burst.quantiles)){
           burst_cols <- paste0("burst", burst.quantiles * 100)
           processed_bursts <- sensor_data[, lapply(.SD, sum, na.rm = TRUE), by = datetime, .SDcols = burst_cols]
+          processed_bursts[, (burst_cols) := lapply(.SD, function(x) as.integer(x > 0)), .SDcols = burst_cols]
           # combine the two aggregated datasets
-          processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE)
+          processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE,  sort = FALSE)
         }
       }
 
@@ -718,18 +1018,15 @@ processTagData <- function(data.folders,
     last_datetime <- max(processed_data$datetime)
 
     # check for temporal discontinuities
-    processed_data <- checkTimeGaps(data = processed_data,
-                                    time.diff.threshold = 0.01,
-                                    verbose = verbose)
-
+    if(check.time.anomalies) {
+      processed_data <- checkTimeGaps(data = processed_data,
+                                      time.diff.threshold = 0.01,
+                                      verbose = verbose)
+    }
 
     ############################################################################
     # Store processed data #####################################################
     ############################################################################
-
-    # provide feedback to the user if verbose mode is enabled
-    if (verbose) cat("Done! Data processed successfully.\n")
-
 
     # define sensor-specific rounding rules (units in brackets)
     rounding_specs <- list(
@@ -764,15 +1061,24 @@ processTagData <- function(data.folders,
     attr(processed_data, 'original.sampling.frequency') <- sampling_freq
     attr(processed_data, 'processed.sampling.frequency') <- sampling_rate
     attr(processed_data, 'magnetic.declination') <- declination_deg
-    attr(processed_data, 'sensor.smoothing.factor') <- sensor.smoothing.factor
+    attr(processed_data, 'orientation.algorithm') <- orientation.algorithm
     attr(processed_data, 'dba.window') <- dba.window
     attr(processed_data, 'dba.smoothing') <- dba.smoothing
     attr(processed_data, 'orientation.smoothing') <- orientation.smoothing
+    attr(processed_data, 'madgwick.beta') <- madgwick.beta
     attr(processed_data, 'motion.smoothing') <- motion.smoothing
     attr(processed_data, 'speed.smoothing') <- speed.smoothing
     attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
     attr(processed_data, 'camera.start') <- camera_start
+    attr(processed_data, 'pitch.warning.threshold') <- pitch.warning.threshold
+    attr(processed_data, 'roll.warning.threshold') <- roll.warning.threshold
+    attr(processed_data, 'pitch.anomaly.detected') <- pitch_anomaly_detected
+    attr(processed_data, 'roll.anomaly.detected') <- roll_anomaly_detected
+    attr(processed_data, 'timezone') <- timezone
     attr(processed_data, 'processing.date') <- Sys.time()
+
+    # provide feedback to the user if verbose mode is enabled
+    if (verbose) cat("Done! Data processed successfully.\n")
 
     # save the processed data as an RDS file
     if(save.files){

@@ -72,8 +72,10 @@ renderOverlayVideo <- function(video.file,
                                vedba.window = 30,
                                vertical.speed.window = 30,
                                tailbeat.window = 30,
+                               pseudo.track.window = 30,
                                text.color = "black",
                                sensor.val.color = "red3",
+                               epsg.code = NULL,
                                jpeg.quality = 3,
                                video.compression = "h265",
                                crf = 28,
@@ -117,6 +119,7 @@ renderOverlayVideo <- function(video.file,
   if (vedba.window <= 0 || !is.numeric(vedba.window)) stop("'vedba.window' must be a positive number.", call. = FALSE)
   if (vertical.speed.window <= 0 || !is.numeric(vertical.speed.window)) stop("'vertical.speed.window' must be a positive number.", call. = FALSE)
   if (tailbeat.window <= 0 || !is.numeric(tailbeat.window)) stop("'tailbeat.window' must be a positive number.", call. = FALSE)
+  if (pseudo.track.window <= 0 || !is.numeric(pseudo.track.window)) stop("'pseudo.track.window' must be a positive number.", call. = FALSE)
   if (cores <= 0 || !is.numeric(cores) || cores %% 1 != 0) stop("'cores' must be a positive integer.", call. = FALSE)
 
   # validate parallel computing packages
@@ -154,6 +157,7 @@ renderOverlayVideo <- function(video.file,
   ##############################################################################
 
   selected_video <- video.metadata[video.metadata$video==basename(video.file),]
+  if (nrow(selected_video) == 0) stop("No matching video found in 'video.metadata' for file: ", basename(video.file))
   id <- as.character(selected_video$ID)
   start <- selected_video$start
   end <-  selected_video$end
@@ -210,6 +214,8 @@ renderOverlayVideo <- function(video.file,
   if (dir.exists(processed_directory)) unlink(processed_directory, recursive = TRUE)
   dir.create(processed_directory, recursive = TRUE)
 
+  # check if pseudo track data is available
+  has_pseudo_track <- all(c("pseudo_lat", "pseudo_lon", "dead_reckon_vx", "dead_reckon_vy", "dead_reckon_vz") %in% colnames(sensor.data))
 
   ##############################################################################
   # 1 - Extract frames #########################################################
@@ -321,7 +327,8 @@ renderOverlayVideo <- function(video.file,
       .processFrames(i, start, frame_rate, sensor.data,
                      frames_directory, overlays_directory, processed_directory,
                      overlay.side, depth.window, vedba.window, vertical.speed.window,
-                     tailbeat.window, text.color, sensor.val.color)
+                     tailbeat.window, pseudo.track.window, has_pseudo_track,
+                     text.color, sensor.val.color, epsg.code)
 
       # update progress bar
       setTxtProgressBar(pb, i)
@@ -367,7 +374,8 @@ renderOverlayVideo <- function(video.file,
      .processFrames(i, start, frame_rate, sensor.data,
                     frames_directory, overlays_directory, processed_directory,
                     overlay.side, depth.window, vedba.window, vertical.speed.window,
-                    tailbeat.window, text.color, sensor.val.color)
+                    tailbeat.window, pseudo.track.window, has_pseudo_track,
+                    text.color, sensor.val.color, epsg.code)
    }
 
    # close progress bar
@@ -461,7 +469,8 @@ renderOverlayVideo <- function(video.file,
 .processFrames <- function(i, start, frame_rate, sensor_data,
                            frames_directory, overlays_directory, processed_directory,
                            overlay.side, depth.window, vedba.window, vertical.speed.window,
-                           tailbeat.window, text.color, sensor.val.color){
+                           tailbeat.window, pseudo.track.window, has_pseudo_track,
+                           text.color, sensor.val.color, epsg.code){
 
   # define paths
   frame_path <- sprintf("%s/frame_%06d.jpg", frames_directory, i)
@@ -479,16 +488,29 @@ renderOverlayVideo <- function(video.file,
   frame <- magick::image_read(frame_path)
 
   # open a PNG device with transparency
-  png(filename = overlay_path, width = 1100, height = 2000, bg = "transparent", res = 300)
+  if(has_pseudo_track) {
+    png(filename = overlay_path, width = 1100, height = 2300, bg = "transparent", res = 300)
+  }else{
+    png(filename = overlay_path, width = 1100, height = 2000, bg = "transparent", res = 300)
+  }
 
-  # set up layout
-  mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8), nrow=6, byrow=TRUE)
-  layout(mat, heights=c(2,1,1,1,1,1))
-  par(mar = c(1, 1, 1, 1), oma = c(0, 0, 1.5, 0), xpd = NA)
+  # adjust layout matrix to accommodate 3D plot if pseudo track data exists
+  if(has_pseudo_track) {
+    #mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8,9,9,9,9,9,9), nrow=8, byrow=TRUE)
+    #layout(mat, heights=c(2,1,1,1,1,1,5,1))
+    mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8,9,9,9), nrow=7, byrow=TRUE)
+    layout(mat, heights=c(2.5, 1.4, 1.4, 1.4, 1.4, 3.2, 0.3))
+  } else {
+    mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8), nrow=6, byrow=TRUE)
+    layout(mat, heights=c(2,1,1,1,1,1))
+  }
+
+  # set up plot settings
+  par(mar = c(1, 1, 1, 1), oma = c(0, 0, 1, 0), xpd = NA)
 
 
   #################################################################
-  # plot orientation dials ########################################
+  # Plot orientation dials ########################################
 
   orientation_metrics <- c("heading", "pitch", "roll")
   for(m in orientation_metrics){
@@ -536,7 +558,7 @@ renderOverlayVideo <- function(video.file,
 
 
   #################################################################
-  # plot depth graph ##############################################
+  # Plot depth graph ##############################################
 
   # filter sensor_data for the time window
   window_data <- sensor_data[abs(as.numeric(difftime(sensor_data$datetime, current_time, units = "secs"))) <= depth.window, ]
@@ -562,7 +584,7 @@ renderOverlayVideo <- function(video.file,
 
 
   #################################################################
-  # plot VeDBA graph ##############################################
+  # Plot VeDBA graph ##############################################
 
   # filter sensor_data for the time window
   window_data <- sensor_data[abs(as.numeric(difftime(sensor_data$datetime, current_time, units = "secs"))) <= vedba.window, ]
@@ -583,61 +605,341 @@ renderOverlayVideo <- function(video.file,
        las=1, cex.axis=0.7, xpd=FALSE)
   box()
 
+
   #################################################################
-  # plot vertical speed graph #####################################
+  # Plot vertical speed graph #####################################
 
   # filter sensor_data for the time window
   window_data <- sensor_data[abs(as.numeric(difftime(sensor_data$datetime, current_time, units = "secs"))) <= vertical.speed.window, ]
 
+  # create positive and negative subsets for different colors
+  positive_speed <- window_data$vertical_speed >= 0
+  negative_speed <- window_data$vertical_speed < 0
+
+  # set plotting limits with inverted Y-axis
+  y_range <- range(window_data$vertical_speed, na.rm = TRUE)
+  ylim_vals <- rev(y_range)
+
+  # create empty plot
+  plot(window_data$datetime, window_data$vertical_speed, type = "n", ylim = ylim_vals,
+       axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i")
+  usr <- par("usr")
+
+  # add polygon for positive values (below zero, since they represent descent)
+  if (any(positive_speed, na.rm = TRUE)) {
+    pos_data <- window_data[positive_speed, ]
+    # ensure that the polygon goes from y = 0 to the plot's upper limit (usr[4])
+    polygon(x = c(usr[1], as.numeric(pos_data$datetime), usr[2]),
+            y = c(pmax(0, usr[4]), pos_data$vertical_speed, c(pmax(0, usr[4]))),
+            col = adjustcolor("salmon", alpha.f = 0.4), border = NA)
+  }
+
+  # add polygon for negative values (above zero, since they represent ascent)
+  if (any(negative_speed, na.rm = TRUE)) {
+    neg_data <- window_data[negative_speed, ]
+    # ensure that the polygon goes from y = 0 to the plot's lower limit (usr[3])
+    polygon(x = c(usr[1], as.numeric(neg_data$datetime), usr[2]),
+            y = c(min(0, usr[3]), neg_data$vertical_speed, min(0, usr[3])),
+            col = adjustcolor("cyan2", alpha.f = 0.4), border = NA)
+  }
+
+  # add zero line if it falls within the plotting area
+  if (0 >= usr[4] && 0 <= usr[3]) {
+    segments(x0 = usr[1], y0 = 0, x1 = usr[2], y1 = 0, col = "black", lty = 2)
+  }
+
   # plot vertical speed time series
-  plot(window_data$datetime, window_data$vertical_speed, type = "n", xlab = "", xaxs="i",
-       axes = FALSE, ylim = range(window_data$vertical_speed, na.rm = TRUE))
-  polygon(
-    x = c(window_data$datetime, rev(window_data$datetime)),
-    y = c(window_data$vertical_speed, rep(par("usr")[3], nrow(window_data))),
-    col = adjustcolor("white", alpha.f=0.5), border = NA)
   lines(window_data$datetime, window_data$vertical_speed, col = "black", lwd = 1)
-  segments(x0 = frame_data$datetime, y0 = par("usr")[3], y1 = frame_data$vertical_speed, col = "red", lwd = 1.8)
+
+  # add vertical line for current speed
+  if(frame_data$vertical_speed>0){
+    segments(x0 = frame_data$datetime, y0 = max(0, usr[4]), y1 = frame_data$vertical_speed, col = "red", lwd = 1.8)
+  }else{
+    segments(x0 = frame_data$datetime, y0 = min(0, usr[3]), y1 = frame_data$vertical_speed, col = "red", lwd = 1.8)
+  }
   points(frame_data$datetime, frame_data$vertical_speed, col = "red", pch = 16, cex = 1)
   title(main = "Vertical Speed", line = 1.6, xpd = NA, cex.main = 1.2, col.main = text.color)
   title(main=sprintf("%.1f m/s", frame_data$vertical_speed), font.main=1, line=0.55, cex.main=1.05, xpd=NA, col.main=sensor.val.color)
-  axis(side=2, at=pretty(range(window_data$vertical_speed, na.rm=TRUE)), labels=pretty(range(window_data$vertical_speed, na.rm=TRUE)),
+  axis(side=2, at=pretty(range(window_data$vertical_speed, na.rm=TRUE)), labels=sprintf("%.1f", pretty(range(window_data$vertical_speed, na.rm=TRUE))),
        las=1, cex.axis=0.7, xpd=FALSE)
   box()
 
 
   #################################################################
-  # plot tail beat frequency graph ################################
+  # Plot tail beat frequency graph ################################
 
   # filter sensor_data for the time window
   window_data <- sensor_data[abs(as.numeric(difftime(sensor_data$datetime, current_time, units = "secs"))) <= tailbeat.window, ]
 
-  # plot TBF time series
-  if(any(!is.na(window_data))){
-    plot(window_data$datetime, window_data$tbf_hz, type = "n", xlab = "", xaxs="i",
-         axes = FALSE, ylim = range(window_data$tbf_hz, na.rm = TRUE))
-    polygon(
-      x = c(window_data$datetime, rev(window_data$datetime)),
-      y = c(window_data$tbf_hz, rep(par("usr")[3], nrow(window_data))),
-      col = adjustcolor("white", alpha.f=0.5), border = NA)
-    lines(window_data$datetime, window_data$tbf_hz, col = "black", lwd = 1)
-    segments(x0 = frame_data$datetime, y0 = par("usr")[3], y1 = frame_data$tbf_hz, col = "red", lwd = 1.8)
-    points(frame_data$datetime, frame_data$tbf_hz, col = "red", pch = 16, cex = 1)
-    title(main = "Tail Beat Frequency", line = 1.6, xpd = NA, cex.main = 1.2,  col.main = text.color)
-    if(!is.na(frame_data$tbf_hz)) title(main=sprintf("%.1f Hz", frame_data$tbf_hz), font.main=1, line=0.55, cex.main=1.05, xpd=NA, col.main=sensor.val.color)
-    axis(side=2, at=pretty(range(window_data$tbf_hz, na.rm=TRUE)), labels=pretty(range(window_data$tbf_hz, na.rm=TRUE)),
-         las=1, cex.axis=0.7, xpd=FALSE)
-    box()
-  }else{
-    plot.new()
+  # set up plot area
+  plot(window_data$datetime, window_data$tbf_hz, type = "n", ylim = range(0, window_data$tbf_hz, na.rm = TRUE),
+       xlab = "", ylab = "", xaxs = "i", yaxs = "i", axes = FALSE)
+
+  # get user coordinates for the plot
+  usr <- par("usr")
+
+  # run-length encoding to identify valid (non-NA) sections
+  rle_data <- rle(!is.na(window_data$tbf_hz))
+
+  if(any(rle_data$values)){
+    index <- 1
+    # loop through the runs to plot polygons for each valid segment
+    for (i in 1:length(rle_data$lengths)) {
+      # Only consider runs of valid data (length > 0 and TRUE for non-NA)
+      if (rle_data$values[i]) {
+        # get the indices for the valid data run
+        valid_indices <- index:(index + rle_data$lengths[i] - 1)
+        # extract valid data points
+        valid_data <- window_data[valid_indices, ]
+        # draw polygon for the valid section of data
+        polygon(x = c(valid_data$datetime[1], valid_data$datetime, valid_data$datetime[length(valid_data$datetime)]),
+                y = c(0, valid_data$tbf_hz, 0), col = adjustcolor("white", alpha.f = 0.5), border = "black")
+        # update the index to the next section
+        index <- index + rle_data$lengths[i]
+      } else {
+        # skip over the missing values in the data
+        index <- index + rle_data$lengths[i]
+      }
+    }
   }
 
+  # only add current point if not NA
+  if (!is.na(frame_data$tbf_hz)) {
+    segments(x0 = frame_data$datetime, y0 = 0, y1 = frame_data$tbf_hz, col = "red", lwd = 1.8)
+    points(frame_data$datetime, frame_data$tbf_hz, col = "red", pch = 16, cex = 1)
+    title(main = sprintf("%.1f Hz", frame_data$tbf_hz), font.main = 1, line = 0.55, cex.main = 1.05, xpd = NA, col.main = sensor.val.color)
+  }
+
+  # add titles and axes
+  title(main = "Tail Beat Frequency", line = 1.6, xpd = NA, cex.main = 1.2, col.main = text.color)
+  axis(side = 2, at = pretty(c(0, max(window_data$tbf_hz, na.rm = TRUE))), labels = sprintf("%.2f",pretty(c(0, max(window_data$tbf_hz, na.rm = TRUE)))),
+       las = 1, cex.axis = 0.7, xpd = FALSE)
+  box()
+
+
+
+  #################################################################
+  # Plot 3D pseudo track if available #############################
+
+  if(has_pseudo_track) {
+
+    # calculate depth range from complete track (not just window)
+    depth_range <- range(sensor_data$depth, na.rm = TRUE)
+
+    # filter data for the moving window
+    window_data <- sensor_data[abs(as.numeric(difftime(sensor_data$datetime, current_time, units = "secs"))) <= pseudo.track.window, ]
+
+    # only plot if we have data in the window
+    if(nrow(window_data) > 0) {
+
+      # set margins
+      par(mar = c(0, 0, 0.5, 0), bg = "transparent")
+
+      # find current index based on time
+      current_idx <- which.min(abs(as.numeric(window_data$datetime - current_time)))
+
+      # convert to sf object and project coordinates
+      pseudo_coords <- data.frame(lon = window_data$pseudo_lon, lat = window_data$pseudo_lat)
+      pseudo_sf <- sf::st_as_sf(pseudo_coords, coords = c("lon", "lat"), crs = 4326)
+      pseudo_proj <- sf::st_transform(pseudo_sf, crs = epsg.code)
+      xy_proj <- sf::st_coordinates(pseudo_proj)
+      x_proj <- xy_proj[, 1]
+      y_proj <- xy_proj[, 2]
+
+      # relative coordinates for plotting
+      rel_lon <- x_proj - x_proj[current_idx]
+      rel_lat <- y_proj - y_proj[current_idx]
+      rel_depth <- -window_data$pseudo_depth
+
+      # calculate ranges for each axis
+      x_range <- range(rel_lon, na.rm = TRUE)
+      y_range <- range(rel_lat, na.rm = TRUE)
+      z_range <- range(rel_depth, na.rm = TRUE)
+
+      # find the largest range among x, y, z
+      max_range <- max(diff(x_range), diff(y_range), diff(z_range))
+
+      # adjust all axes to span the same range (centered on their midpoints)
+      x_mid <- mean(x_range)
+      y_mid <- mean(y_range)
+      z_mid <- mean(z_range)
+
+      # apply uniform scaling with padding (e.g., 1.2 for 20% padding)
+      padding <- 1.2
+      xlim <- x_mid + max_range * c(-0.5, 0.5) * padding
+      ylim <- y_mid + max_range * c(-0.5, 0.5) * padding
+      zlim <- z_mid + max_range * c(-0.5, 0.5) * padding
+
+      # ensure depth increases downward (if needed)
+      zlim <- sort(zlim, decreasing = TRUE)
+
+      # calculate current heading (convert from compass bearing to math angle)
+      #current_heading <- (90 - frame_data$heading) %% 360  # Convert to math angle (0=east, 90=north)
+      #theta_angle <- current_heading  # This will control the pan (horizontal rotation)
+      theta_angle <-  (90 - frame_data$heading) %% 360
+
+      # fixed pitch angle (35 degrees is a good default for 3D perspective)
+      phi_angle <- 35
+
+      # generate color palette using complete track range
+      depth_pal <- rev(viridis::viridis(100))
+      #depth_pal <- colorRampPalette(c("blue", "cyan", "yellow"))(100)
+      depth_colors <- depth_pal[cut(window_data$depth, breaks = seq(depth_range[1], depth_range[2], length.out = 101),
+                                    include.lowest = TRUE)]
+
+
+      ##############################################################
+      # create empty plot with custom view #########################
+
+      # draw empty persp box
+      pmat <- plot3D::perspbox(x = rel_lon[current_idx], y = rel_lat[current_idx], z = rel_depth[current_idx],
+                               xlab = "Longitude", ylab = "Latitude", zlab = "Depth",
+                               xlim = xlim, ylim = ylim, zlim = zlim, box = FALSE,
+                               theta = theta_angle, phi = phi_angle,
+                               colkey = FALSE)
+
+      # function to draw panels
+      panelfunc <- function(x, y, z) {
+        XY <- plot3D::trans3D(x, y, z, pmat = pmat)
+        polygon(XY$x, XY$y, col = adjustcolor("black", alpha.f = 0.3), border = "black", lwd = 1.5)
+      }
+
+      # bottom panel (always static)
+      panelfunc(
+        x = c(xlim[1], xlim[1], xlim[2], xlim[2]),
+        y = c(ylim[1], ylim[2], ylim[2], ylim[1]),
+        z = rep(zlim[2], 4)
+      )
+
+      # left and back panels: switch based on theta_angle
+      # determine "left" and "back" based on heading quadrant
+      theta_normalized <- theta_angle %% 360
+      theta_normalized <- theta_angle
+      if (theta_normalized >= 45 && theta_normalized < 135) {
+        # Heading ~ East: Left = South, Back = West
+        panelfunc(x = rep(xlim[1], 4), y = c(ylim[1], ylim[1], ylim[2], ylim[2]), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Left (South)
+        panelfunc(x = c(xlim[1], xlim[1], xlim[2], xlim[2]), y = rep(ylim[1], 4), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Back (West)
+      } else if (theta_normalized >= 135 && theta_normalized < 225) {
+        # Heading ~ South: Left = West, Back = North
+        panelfunc(x = rep(xlim[1], 4), y = c(ylim[1], ylim[1], ylim[2], ylim[2]), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Left (West)
+        panelfunc(x = c(xlim[1], xlim[1], xlim[2], xlim[2]), y = rep(ylim[2], 4), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Back (North)
+      } else if (theta_normalized >= 225 && theta_normalized < 315) {
+        # Heading ~ West: Left = North, Back = East
+        panelfunc(x = rep(xlim[2], 4), y = c(ylim[1], ylim[1], ylim[2], ylim[2]), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Left (North)
+        panelfunc(x = c(xlim[1], xlim[1], xlim[2], xlim[2]), y = rep(ylim[2], 4), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Back (East)
+      } else {
+        # Heading ~ North: Left = East, Back = South
+        panelfunc(x = rep(xlim[2], 4), y = c(ylim[1], ylim[1], ylim[2], ylim[2]), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Left (East)
+        panelfunc(x = c(xlim[1], xlim[1], xlim[2], xlim[2]), y = rep(ylim[1], 4), z = c(zlim[1], zlim[2], zlim[2], zlim[1])) # Back (South)
+      }
+
+
+      ##############################################################
+      # add bottom compass and cardinal marks #######################
+
+      # compass settings
+      compass_center_x <- mean(xlim)
+      compass_center_y <- mean(ylim)
+      compass_radius <- min(diff(xlim), diff(ylim)) * 0.5  # reach edge
+      z_bottom <- zlim[2]
+
+      # create full circle at bottom plane
+      angle_seq <- seq(0, 2 * pi, length.out = 200)
+      circle_x <- compass_center_x + compass_radius * cos(angle_seq)
+      circle_y <- compass_center_y + compass_radius * sin(angle_seq)
+      circle_z <- rep(z_bottom, length(angle_seq))
+
+      # draw the circle (compass background)
+      plot3D::polygon3D(x = circle_x, y = circle_y, z = circle_z,
+                        col = rgb(0, 0, 0, 0.05), border = NA, add = TRUE)
+
+      # Define angles for cardinal directions (in radians)
+      north_angle <- pi / 2    # 90°
+      east_angle <- 0          # 0°
+      south_angle <- 3 * pi /2 # 270°
+      west_angle <- pi         # 180°
+
+      tick_length <- compass_radius * 0.1
+
+      # function to add a tick mark and label
+      add_compass_mark <- function(angle, label, color = "black") {
+        # start and end points for tick mark
+        tick_x1 <- compass_center_x + compass_radius * cos(angle)
+        tick_y1 <- compass_center_y + compass_radius * sin(angle)
+        tick_z1 <- z_bottom
+        tick_x0 <- compass_center_x + (compass_radius - tick_length) * cos(angle)
+        tick_y0 <- compass_center_y + (compass_radius - tick_length) * sin(angle)
+        tick_z0 <- z_bottom
+
+        # draw the tick mark
+        plot3D::segments3D(x0 = tick_x0, y0 = tick_y0, z0 = tick_z0,
+                           x1 = tick_x1, y1 = tick_y1, z1 = tick_z1,
+                           col = color, lwd = 3, add = TRUE)
+
+        # add label just outside the circle
+        label_offset <- compass_radius * 0.25
+        label_x <- compass_center_x + (compass_radius + label_offset) * cos(angle)
+        label_y <- compass_center_y + (compass_radius + label_offset) * sin(angle)
+        label_z <- z_bottom
+        plot3D::text3D(x = label_x, y = label_y, z = label_z, labels = label,
+                       add = TRUE, col = color, cex = 1)
+      }
+
+      # add all four cardinal directions
+      add_compass_mark(north_angle, "N", "red")  # North (special color)
+      add_compass_mark(east_angle, "E")          # East
+      add_compass_mark(south_angle, "S")         # South
+      add_compass_mark(west_angle, "W")          # West
+
+
+      ##############################################################
+      # add traveled path with solid colors ########################
+      if(current_idx > 1) {
+        plot3D::segments3D(
+          x0 = rel_lon[1:(current_idx-1)],
+          y0 = rel_lat[1:(current_idx-1)],
+          z0 = rel_depth[1:(current_idx-1)],
+          x1 = rel_lon[2:current_idx],
+          y1 = rel_lat[2:current_idx],
+          z1 = rel_depth[2:current_idx],
+          col = depth_colors[1:(current_idx-1)],
+          lwd = 3, add = TRUE
+        )
+      }
+
+      ##############################################################
+      # add upcoming path with transparency ########################
+      if(current_idx < nrow(window_data)) {
+        plot3D::segments3D(
+          x0 = rel_lon[current_idx:(nrow(window_data)-1)],
+          y0 = rel_lat[current_idx:(nrow(window_data)-1)],
+          z0 = rel_depth[current_idx:(nrow(window_data)-1)],
+          x1 = rel_lon[(current_idx+1):nrow(window_data)],
+          y1 = rel_lat[(current_idx+1):nrow(window_data)],
+          z1 = rel_depth[(current_idx+1):nrow(window_data)],
+          col = adjustcolor(depth_colors[current_idx:(nrow(window_data)-1)], alpha.f = 0.3),
+          lwd = 3, add = TRUE
+        )
+      }
+
+      ##############################################################
+      # add animal position as red point ###########################
+      plot3D::points3D(x = rel_lon[current_idx], y = rel_lat[current_idx], z = rel_depth[current_idx],
+                       col = "red", pch = 19, cex = 2.4, add = TRUE, alpha = 1)
+
+
+      ##############################################################
+      # add title ##################################################
+      title(main = "Pseudo Track", line = 0.2, cex.main = 1.2, col.main = text.color)
+    }
+
+  }
 
   #################################################################
   # add current timestamp #########################################
 
   # set margins
-  par(mar = c(1, 0, 1, 0))
+  par(mar = c(0, 0, 1, 0))
 
   # create empty plot
   plot(0, 0, type = "n", ylim = c(-1, 1), axes = FALSE, ann = FALSE, asp = 1)
@@ -645,11 +947,11 @@ renderOverlayVideo <- function(video.file,
   # calculate positions 10% and 25% from the left edge
   width_range <- par("usr")[2] - par("usr")[1]
   left_pos1 <- par("usr")[1] + width_range * 0.10
-  left_pos2 <- par("usr")[1] + width_range * 0.35
+  left_pos2 <- par("usr")[1] + width_range * 0.32
   # add time as text annotation
-  text(x = left_pos1, y = 0.2, labels = "Sensor Time:", cex = 1.3, xpd = NA, font = 2, adj=c(0,0))
+  text(x = left_pos1, y = 0.2, labels = "Sensor Time:", cex = 1.1, xpd = NA, font = 2, adj=c(0,0))
   text(x = left_pos2, y = 0.2, labels = format(frame_data$datetime, "%H:%M:%OS3", tz="UTC"),
-       col = text.color, cex = 1.1, xpd = NA, adj=c(0,0))
+       col = text.color, cex = 0.9, xpd = NA, adj=c(0,0))
 
 
   #################################################################
@@ -667,7 +969,7 @@ renderOverlayVideo <- function(video.file,
 
   # set the width and height of the overlay image
   overlay_width <- 500
-  overlay_height <- 950
+  overlay_height <- 1200
 
   # resize the overlay image before compositing
   overlay_img_resized <- magick::image_scale(overlay_img, paste0(overlay_width, "x", overlay_height))
@@ -694,7 +996,6 @@ renderOverlayVideo <- function(video.file,
   # save the combined image
   magick::image_write(combined_img, final_frame_path)
 }
-
 
 
 #######################################################################################################

@@ -124,27 +124,96 @@ NULL
   if (!is.numeric(window) || window <= 0 || window != as.integer(window)) stop("'window' must be a positive integer.", call. = FALSE)
   if (length(range) != 2 || !is.numeric(range)) stop("Input 'range' must be a numeric vector of length 2.", call. = FALSE)
 
-  # extract range bounds
+  # handle all-NA case early
+  if (all(is.na(angles))) return(rep(NA_real_, length(angles)))
+
+  # extract range info
   lower_bound <- range[1]
   upper_bound <- range[2]
   range_width <- upper_bound - lower_bound
 
-  # convert angles to radians and compute sine and cosine
-  sin_angles <- sin(angles * pi / 180)
-  cos_angles <- cos(angles * pi / 180)
+  # convert angles to radians
+  angles_rad <- angles * pi / 180
 
-  # use data.table::frollsum to calculate rolling sums for sine and cosine
-  roll_sin_sum <- data.table::frollsum(sin_angles, n = window, fill = NA, align = "center")
-  roll_cos_sum <- data.table::frollsum(cos_angles, n = window, fill = NA, align = "center")
+  # pad sin and cos signals separately
+  pad_len <- floor(window / 2)
 
-  # compute circular mean in radians
-  circular_mean_deg <- atan2(roll_sin_sum, roll_cos_sum) * (180 / pi)
+  sin_angles <- sin(angles_rad)
+  cos_angles <- cos(angles_rad)
 
-  # adjust to specified range
-  circular_mean_deg <- (circular_mean_deg - lower_bound) %% range_width + lower_bound
+  pad_sin <- c(rep(sin_angles[!is.na(sin_angles)][1], pad_len), sin_angles, rep(sin_angles[!is.na(sin_angles)][length(sin_angles[!is.na(sin_angles)])], pad_len))
+  pad_cos <- c(rep(cos_angles[!is.na(cos_angles)][1], pad_len), cos_angles, rep(cos_angles[!is.na(cos_angles)][length(cos_angles[!is.na(cos_angles)])], pad_len))
 
-  return(circular_mean_deg)
+  # compute rolling sums on padded data
+  roll_sin_sum <- data.table::frollsum(pad_sin, n = window, align = "center", na.rm = TRUE)
+  roll_cos_sum <- data.table::frollsum(pad_cos, n = window, align = "center", na.rm = TRUE)
+
+  # trim to original length
+  roll_sin_sum <- roll_sin_sum[(pad_len + 1):(length(angles) + pad_len)]
+  roll_cos_sum <- roll_cos_sum[(pad_len + 1):(length(angles) + pad_len)]
+
+  # compute circular mean
+  mean_rad <- atan2(roll_sin_sum, roll_cos_sum)
+  mean_deg <- mean_rad * 180 / pi
+
+  # wrap to desired range
+  wrapped <- ((mean_deg - lower_bound) %% range_width) + lower_bound
+  return(wrapped)
 }
+
+
+##################################################################################################
+## Calculate  group-wise circular mean  ##########################################################
+
+#' Calculate the circular (angular) mean of a set of angles
+#'
+#' @description
+#' Computes the mean direction of a numeric vector of angular data, expressed in degrees.
+#' This function accounts for the circular nature of angles (i.e., wrapping at 360 or 180 degrees),
+#' ensuring that values near discontinuities (e.g., -179 and 179 degrees) are averaged correctly.
+#'
+#' @param angles A numeric vector of angles (in degrees). Missing values (`NA`) are ignored in the computation.
+#' @param range A numeric vector of length 2 specifying the desired output range (e.g., `c(0, 360)` or `c(-180, 180)`).
+#' The first value defines the lower bound and the second the upper bound of the output interval.
+#'
+#' @details
+#' The circular mean is calculated by converting the input angles to radians, computing the mean sine and cosine values,
+#' and deriving the resulting angle using the `atan2` function. The result is returned in degrees and wrapped to fall
+#' within the user-specified range. If all values in `angles` are `NA`, the function returns `NA_real_`.
+#'
+#' @return A single numeric value representing the circular mean (in degrees), adjusted to the specified range.
+#'
+#' @note This function is intended for internal use within the `nautilus` package.
+#'
+#' @keywords internal
+#' @noRd
+
+.circularMean <- function(angles, range = c(-180, 180)) {
+
+   # validate input
+  if (!is.numeric(angles)) stop("'angles' must be numeric.", call. = FALSE)
+  if (length(range) != 2 || diff(range) <= 0) stop("'range' must be [min, max] where min < max.", call. = FALSE)
+
+  # handle NA
+  if (all(is.na(angles))) return(NA_real_)
+
+  # convert to radians
+  angles_rad <- angles * pi / 180
+
+  # compute mean sin and cos
+  mean_sin <- mean(sin(angles_rad), na.rm = TRUE)
+  mean_cos <- mean(cos(angles_rad), na.rm = TRUE)
+
+  # compute circular mean
+  mean_rad <- atan2(mean_sin, mean_cos)
+  mean_deg <- mean_rad * 180 / pi
+
+  # wrap to specified range
+  range_width <- diff(range)
+  wrapped <- ((mean_deg - range[1]) %% range_width) + range[1]
+  wrapped
+}
+
 
 
 ##################################################################################################

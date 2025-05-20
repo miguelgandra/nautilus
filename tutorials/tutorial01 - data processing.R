@@ -28,7 +28,7 @@
 # Directory Structure ##########################################################
 ################################################################################
 
-# To ensure the functions works correctly, organize the data into a root directory containing
+# To ensure the functions work correctly, organize the data into a root directory containing
 # one subdirectory for each tagged animal. Each animal's subdirectory must include:
 #
 # 1. Multi-Sensor Tag Data Folder (Default: "CMD")
@@ -36,12 +36,13 @@
 #    - The default name is "CMD," but it can be customized using the 'sensor.folders' argument.
 #    - Files should include depth, accelerometer, gyroscope, magnetometer data in CSV format.
 #
-# 2. PSAT Data Folder (Optional)
-#    - For integrating positions from pop-up satellite archival tags (PSATs).
-#    - The name can be specified using the 'psat.folders' argument or left as NULL for auto-detection.
-#    - This folder must contain a "Location.csv" file with Fastloc GPS or geolocation data.
+# 2. Wildlife Computers Tag Data Folder (Optional)
+#    - For integrating positions from Wildlife Computers tags (MiniPAT/MK10/SPOT).
+#    - The name can be specified using the 'wc.subdirectory' argument or left as NULL for auto-detection.
+#    - This folder must contain location data files in the standard Wildlife Computers format.
 #
 # Each animal folder name must match the "ID" in the metadata file ('id.metadata').
+
 
 
 ################################################################################
@@ -76,9 +77,16 @@ colnames(animal_metadata) <- c("ID", "deploy_date", "deploy_site", "deploy_lon",
                                "recover_time", "recover_lon", "recover_lat", "popup_date",
                                "popup_lat", "popup_lon")
 
+# Extract year from POSIXct deploy_date
+animal_metadata$deploy_year <- as.integer(format(animal_metadata$deploy_date, "%Y"))
+
 # Standardize tag labels
 animal_metadata$tag[animal_metadata$tag=="4k"] <- "4K"
 animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
+
+# Update CEIIA tags with year suffix for 2022 deployments
+animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022] <- "CEIIA_2022"
+
 
 
 ################################################################################
@@ -87,7 +95,8 @@ animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 
 # Configure the axes mapping for IMU (Inertial Measurement Unit) data.
 # It specifies how raw sensor axes (accelerometer, magnetometer, gyroscope) are
-# mapped for different tags, so they match the NED (North-East-Down) coordinate system.
+# mapped for different tags to match the NED (North-East-Down) coordinate system,
+# or marked as NA for known faulty sensors.
 # The "type" is automatically determined based on the ID names:
 # - If the ID name includes the substring "CAM", it will be classified as type "CAM".
 # - If no such match is found, the type will default to "CMD".
@@ -109,16 +118,24 @@ axes_config[1, ] <- c("CAM", "CATS", "ax", "-ax")
 axes_config[2, ] <- c("CAM", "CATS", "ay", "-ay")
 axes_config[3, ] <- c("CAM", "CATS", "az", "-az")
 
-# Mapping for CEiiA CAM TAG
+# Mapping for CEiiA CAM TAG (general)
 axes_config[4, ] <- c("CAM", "CEIIA", "ax", "az")
 axes_config[5, ] <- c("CAM", "CEIIA", "ay", "-ax")
 axes_config[6, ] <- c("CAM", "CEIIA", "az", "ay")
 axes_config[7, ] <- c("CAM", "CEIIA", "mx", "mz")
 axes_config[8, ] <- c("CAM", "CEIIA", "mz", "-mx")
 
+# Special mapping for CEiiA CAM TAG 2022 (faulty mag and gyr sensors)
+axes_config[9, ] <- c("CAM", "CEIIA_2022", "mx", "NA")
+axes_config[10, ] <- c("CAM", "CEIIA_2022", "my", "NA")
+axes_config[11, ] <- c("CAM", "CEIIA_2022", "mz", "NA")
+axes_config[12, ] <- c("CAM", "CEIIA_2022", "gx", "NA")
+axes_config[13, ] <- c("CAM", "CEIIA_2022", "gy", "NA")
+axes_config[14, ] <- c("CAM", "CEIIA_2022", "gz", "NA")
+
 # Mapping for CATS mini-Diary TAG (CMD)
-axes_config[9, ] <- c("CMD", "CATS", "ax", "-ay")
-axes_config[10, ] <- c("CMD", "CATS", "ay", "-ax")
+axes_config[15, ] <- c("CMD", "CATS", "ax", "-ay")
+axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
 
 
 
@@ -146,15 +163,22 @@ data_list <- processTagData(data.folders = data_folders,
                             id.metadata = animal_metadata,
                             id.col = "ID",
                             tag.col = "tag",
-                            lon.col = "deploy_lon",
-                            lat.col = "deploy_lat",
-                            tagdate.col = "deploy_date",
+                            deploy.date.col = "deploy_date",
+                            deploy.lon.col = "deploy_lon",
+                            deploy.lat.col = "deploy_lat",
+                            pop.date.col = "popup_date",
+                            pop.lon.col = "popup_lon",
+                            pop.lat.col = "popup_lat",
                             axis.mapping = axes_config,
-                            sensor.smoothing.factor = 4,
+                            orientation.algorithm = "tilt_compass",
                             dba.window = 6,
-                            smoothing.window = 1,
+                            dba.smoothing = 2,
+                            orientation.smoothing = 1,
+                            motion.smoothing = 1,
+                            speed.smoothing = 2,
                             burst.quantiles = c(0.95, 0.99),
                             downsample.to = 20,
+                            data.table.threads = 6,
                             verbose = TRUE)
 
 
@@ -290,14 +314,15 @@ filtered_list <- lapply(filtered_list, function(x) {
 # The input dataset must have a sampling frequency at least twice the chosen
 # max.freq.Hz (Nyquist theorem). For reliable results, we recommend the sampling
 # frequency be at least 4× higher than max.freq.Hz. For example, with max.freq.Hz = 2,
-# the data should be sampled at ≥8 Hz (though ≥4 Hz would meet Nyquist minimum).
+# the data should be sampled at ≥ 8 Hz (though ≥ 4 Hz would meet Nyquist minimum).
 
-filtered_list <- calculateTailBeats(data = data_ms[1],
+filtered_list <- calculateTailBeats(data = filtered_list,
                                     output.dir = "./plots/tail beat frequencies",
                                     motion.col = "surge",
                                     ridge.only = FALSE,
                                     min.freq.Hz = 0.02,
                                     max.freq.Hz = 2,
+                                    smooth.window = 5,
                                     power.ratio.threshold = 2,
                                     max.interp.gap = 10,
                                     cores = 1)
