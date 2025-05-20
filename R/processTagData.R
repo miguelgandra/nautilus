@@ -911,12 +911,13 @@ processTagData <- function(data.folders,
     if (abs(mean_pitch) > 45){
       message("Potential orientation anomaly: Mean pitch = ", round(mean_pitch, 1), "\u00B0 (expected ~0\u00B0)")
       pitch_anomaly_detected <- TRUE
+      warning(paste(id, "-", "Potential pitch anomaly detected. Double check sensor alignment and calibration"), call. = FALSE)
     }
     if (abs(mean_roll) > 45){
       message("Potential orientation anomaly: Mean roll  = ", round(mean_roll, 1), "\u00B0 (expected ~0\u00B0)")
       roll_anomaly_detected <- TRUE
+      warning(paste(id, "-", "Potential roll anomaly detected. Double check sensor alignment and calibration"), call. = FALSE)
     }
-    warning(paste(id, "-", "Potential orientation anomalies detected. Double check sensor alignment and calibration"))
 
 
     ############################################################################

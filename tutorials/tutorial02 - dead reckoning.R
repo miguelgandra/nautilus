@@ -61,23 +61,6 @@ filtered_list <- filtered_list[48:51]
 gc()
 
 
-################################################################################
-## TEMPORARY - remove duplicated locations #####################################
-################################################################################
-
-filtered_list <- lapply(filtered_list, function(dt) {
-  # round datetime to seconds (as integer)
-  rounded_sec <- as.integer(dt$datetime)
-  # identify valid location rows
-  valid_pos <- !is.na(dt$lat) & !is.na(dt$lon)
-  # among valid positions, mark duplicates within same second
-  dup_pos <- duplicated(rounded_sec[valid_pos])
-  # nullify all but the first position within each second
-  dt[which(valid_pos)[dup_pos], c("lat", "lon", "position_type", "quality") := NA]
-  dt
-})
-
-gc()
 
 ################################################################################
 # Filter Fastloc locations #####################################################

@@ -47,11 +47,12 @@ devtools::install_github("miguelgandra/nautilus")
 
 ## Tutorial Scripts
 
-Two tutorial scripts are available to help you get started:
+Three tutorial scripts are available to help you get started:
 - Tutorial 01: Import, process, and analyze archival tag data.
-- Tutorial 02: Reencode .MOV video files to HEVC format for improved compression efficiency and retrieve video metadata.
+- Tutorial 02: Filter locations and estimate pseudo-tracks using dead reckoning. 
+- Tutorial 03: Reencode .MOV video files to HEVC format for improved compression efficiency and retrieve video metadata.
 
-Both tutorials can be found in the tutorials/ directory of the package.
+All tutorial scripts are available in the `tutorials/` directory of the package.
 
 
 ## Documentation

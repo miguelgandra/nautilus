@@ -148,6 +148,11 @@ axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
 # bottlenecks when processing many large datasets. By setting "save.files = TRUE",
 # the processed files will be saved to the output folder.
 
+# For detailed information on all available arguments and the computed metrics,
+# please consult the function documentation by running:
+# ?processTagData
+
+
 # Define the folder containing tag data
 data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FALSE)
 
