@@ -19,7 +19,7 @@ Imports:
 	parallel,
 	dplyr,
 	plyr,
-	reticulate,
+	sf,
 	lubridate,
 	magick,
 	changepoint,
@@ -30,6 +30,7 @@ Imports:
 Suggests:
 	foreach,
 	doSNOW,
+	reticulate,
 	randomForest,
 	pROC,
 	moments,
@@ -40,7 +41,8 @@ Suggests:
 	maps,
 	mapdata,
 	prettymapr,
-	leaflet
+	leaflet,
+	plot3D
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
 

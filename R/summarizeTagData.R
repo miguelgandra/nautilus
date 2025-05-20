@@ -215,11 +215,11 @@ summarizeTagData <- function(data,
   deploy_duration <- round(as.numeric(difftime(deploy_end, deploy_start, units="hours")), 2)
 
   # get maximum depth and temperature range
-  mean_depth <- round(data_individual[, mean(depth, na.rm = TRUE)], 0)
-  max_depth <- round(data_individual[, max(depth, na.rm = TRUE)], 0)
-  mean_temp <- round(data_individual[, mean(temp, na.rm = TRUE)], 1)
-  min_temp <- round(data_individual[, min(temp, na.rm = TRUE)], 1)
-  max_temp <- round(data_individual[, max(temp, na.rm = TRUE)], 1)
+  mean_depth <- round(data_individual[, mean(.SD[[1]], na.rm = TRUE), .SDcols = "depth"], 0)
+  max_depth <- round(data_individual[, max(.SD[[1]], na.rm = TRUE), .SDcols = "depth"], 0)
+  mean_temp <- round(data_individual[, mean(.SD[[1]], na.rm = TRUE), .SDcols = "temp"], 1)
+  min_temp <- round(data_individual[, min(.SD[[1]], na.rm = TRUE), .SDcols = "temp"], 1)
+  max_temp <- round(data_individual[, max(.SD[[1]], na.rm = TRUE), .SDcols = "temp"], 1)
 
   # extract attributes with fallback to NA if not available
   sampling_freq <- if ("original.sampling.frequency" %chin% names(attributes(data_individual))) {
@@ -234,8 +234,9 @@ summarizeTagData <- function(data,
   }
 
   # count positions
-  fastloc_positions <- data_individual[position_type == "FastGPS", .N]
-  user_positions <- data_individual[position_type == "User", .N]
+  fastloc_positions <- data_individual[get("position_type") == "FastGPS", .N]
+  user_positions <- data_individual[get("position_type") == "User", .N]
+
 
   # merge summary data into a data frame
   summary <- data.frame(

@@ -28,6 +28,11 @@
 #'   Defaults to 30 seconds.
 #' @param vertical.speed.window The time window (in seconds) for calculating vertical speed. Defaults to 30 seconds.
 #' @param tailbeat.window The time window (in seconds) for calculating and visualizing tail beat frequency. Defaults to 30 seconds.
+#' @param pseudo.track.window Time window (in seconds) for displaying dead-reckoned movement path.
+#' Controls how much historical movement is shown in the 3D track visualization. Defaults to 30 seconds.
+#' Requires pseudo track columns (pseudo_lat, pseudo_lon) in sensor.data.
+#' @param epsg.code The EPSG code for the coordinate reference system (CRS) to use when projecting
+#' pseudo track coordinates for visualization. Required if pseudo track data is available in the sensor data.
 #' @param text.color The color of the overlay text. Defaults to "black".
 #' @param sensor.val.color The color used to display sensor values. Defaults to "red3".
 #' @param jpeg.quality An integer specifying the quality of the extracted JPEG frames.
@@ -73,9 +78,9 @@ renderOverlayVideo <- function(video.file,
                                vertical.speed.window = 30,
                                tailbeat.window = 30,
                                pseudo.track.window = 30,
+                               epsg.code = NULL,
                                text.color = "black",
                                sensor.val.color = "red3",
-                               epsg.code = NULL,
                                jpeg.quality = 3,
                                video.compression = "h265",
                                crf = 28,
@@ -782,7 +787,7 @@ renderOverlayVideo <- function(video.file,
       phi_angle <- 35
 
       # generate color palette using complete track range
-      depth_pal <- rev(viridis::viridis(100))
+      depth_pal <- rev(.viridis_pal(100))
       #depth_pal <- colorRampPalette(c("blue", "cyan", "yellow"))(100)
       depth_colors <- depth_pal[cut(window_data$depth, breaks = seq(depth_range[1], depth_range[2], length.out = 101),
                                     include.lowest = TRUE)]

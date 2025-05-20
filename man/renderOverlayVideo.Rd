@@ -19,9 +19,9 @@ renderOverlayVideo(
   vertical.speed.window = 30,
   tailbeat.window = 30,
   pseudo.track.window = 30,
+  epsg.code = NULL,
   text.color = "black",
   sensor.val.color = "red3",
-  epsg.code = NULL,
   jpeg.quality = 3,
   video.compression = "h265",
   crf = 28,
@@ -61,6 +61,13 @@ Defaults to 30 seconds.}
 \item{vertical.speed.window}{The time window (in seconds) for calculating vertical speed. Defaults to 30 seconds.}
 
 \item{tailbeat.window}{The time window (in seconds) for calculating and visualizing tail beat frequency. Defaults to 30 seconds.}
+
+\item{pseudo.track.window}{Time window (in seconds) for displaying dead-reckoned movement path.
+Controls how much historical movement is shown in the 3D track visualization. Defaults to 30 seconds.
+Requires pseudo track columns (pseudo_lat, pseudo_lon) in sensor.data.}
+
+\item{epsg.code}{The EPSG code for the coordinate reference system (CRS) to use when projecting
+pseudo track coordinates for visualization. Required if pseudo track data is available in the sensor data.}
 
 \item{text.color}{The color of the overlay text. Defaults to "black".}
 
