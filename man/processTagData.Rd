@@ -21,6 +21,8 @@ processTagData(
   pop.lon.col = "popup_lon",
   pop.lat.col = "popup_lat",
   axis.mapping = NULL,
+  hard.iron.calibration = TRUE,
+  soft.iron.calibration = TRUE,
   orientation.algorithm = "tilt_compass",
   madgwick.beta = 0.02,
   dba.window = 3,
@@ -93,6 +95,12 @@ The data frame should have three columns:
 }
 Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.}
 
+\item{hard.iron.calibration}{Logical. Whether to apply hard-iron calibration (offset correction) to magnetometer data.
+Default is TRUE.}
+
+\item{soft.iron.calibration}{Logical. Whether to apply soft-iron calibration (scaling and misalignment correction) to magnetometer data.
+Default is TRUE.}
+
 \item{orientation.algorithm}{Orientation estimation algorithm:
 \itemize{
 \item \code{"tilt_compass"} (default): Lightweight 6-axis tilt-compensated compass.
@@ -164,7 +172,7 @@ accelerometer, magnetometer, and gyroscope signals (see the \emph{Details} secti
 Orientation is estimated by default using the tilt-compensated compass method, which fuses accelerometer
 and magnetometer data to determine body orientation relative to gravity and magnetic north.
 Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
-A full 3D magnetic calibration is applied prior to orientation estimation, including both
+A full 3D magnetic calibration can be applied prior to orientation estimation, including both
 hard iron (offset) and soft iron (scaling and misalignment) corrections.
 Optionally, the function also integrates location data from Wildlife Computers tags
 (MiniPATs, MK10s, SPOTs) if available. These should be provided in a dedicated subfolder
@@ -192,8 +200,15 @@ to improve heading estimation.
 
 Computed using sensor fusion algorithms:
 \itemize{
-\item {Madgwick filter} (default): 9-axis fusion (accelerometer + gyroscope + magnetometer) using quaternion-based estimation.
-\item {Tilt-compensated compass}: 6-axis fallback (accelerometer + gyroscope) when magnetometer unavailable.
+\item {Tilt-compensated compass} (default): A lightweight 6-axis fusion (accelerometer + magnetometer)
+to compute roll, pitch, and heading. The method first calculates tilt angles from accelerometer data,
+then compensates the magnetometer readings using these angles to compute a more accurate heading.
+This approach avoids gyroscope drift but may be affected by magnetic disturbances.
+\item {Madgwick filter}: A 9-axis fusion algorithm (accelerometer + gyroscope + magnetometer)
+implementing Sebastian Madgwick's quaternion-based gradient descent
+approach. This provides absolute orientation reference by incorporating
+Earth's magnetic field and is more robust to transient disturbances,
+at the cost of higher computational complexity.
 }
 Output includes:
 \itemize{

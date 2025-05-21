@@ -188,32 +188,18 @@ NULL
 #' @keywords internal
 #' @noRd
 
-.circularMean <- function(angles, range = c(-180, 180)) {
 
-   # validate input
-  if (!is.numeric(angles)) stop("'angles' must be numeric.", call. = FALSE)
-  if (length(range) != 2 || diff(range) <= 0) stop("'range' must be [min, max] where min < max.", call. = FALSE)
+.circularMean <- function(angles, range) {
 
-  # handle NA
-  if (all(is.na(angles))) return(NA_real_)
+  # fast NA check and return
+  angles <- angles[!is.na(angles)]
+  if (!length(angles)) return(NA_real_)
 
-  # convert to radians
+  # convert to radians, compute circular mean and wrap to specified range
   angles_rad <- angles * pi / 180
-
-  # compute mean sin and cos
-  mean_sin <- mean(sin(angles_rad), na.rm = TRUE)
-  mean_cos <- mean(cos(angles_rad), na.rm = TRUE)
-
-  # compute circular mean
-  mean_rad <- atan2(mean_sin, mean_cos)
-  mean_deg <- mean_rad * 180 / pi
-
-  # wrap to specified range
-  range_width <- diff(range)
-  wrapped <- ((mean_deg - range[1]) %% range_width) + range[1]
-  wrapped
+  mean_deg <- atan2(mean(sin(angles_rad)), mean(cos(angles_rad))) * 180 / pi
+  ((mean_deg - range[1]) %% (range[2] - range[1])) + range[1]
 }
-
 
 
 ##################################################################################################

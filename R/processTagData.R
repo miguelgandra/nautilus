@@ -11,7 +11,7 @@
 #' Orientation is estimated by default using the tilt-compensated compass method, which fuses accelerometer
 #' and magnetometer data to determine body orientation relative to gravity and magnetic north.
 #' Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
-#' A full 3D magnetic calibration is applied prior to orientation estimation, including both
+#' A full 3D magnetic calibration can be applied prior to orientation estimation, including both
 #' hard iron (offset) and soft iron (scaling and misalignment) corrections.
 #' Optionally, the function also integrates location data from Wildlife Computers tags
 #' (MiniPATs, MK10s, SPOTs) if available. These should be provided in a dedicated subfolder
@@ -60,6 +60,10 @@
 #'   \item \emph{to}: A column specifying the target axis in the desired coordinate system.
 #' }
 #' Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.
+#' @param hard.iron.calibration Logical. Whether to apply hard-iron calibration (offset correction) to magnetometer data.
+#' Default is TRUE.
+#' @param soft.iron.calibration Logical. Whether to apply soft-iron calibration (scaling and misalignment correction) to magnetometer data.
+#' Default is TRUE.
 #' @param orientation.algorithm Orientation estimation algorithm:
 #'   \itemize{
 #'     \item \code{"tilt_compass"} (default): Lightweight 6-axis tilt-compensated compass.
@@ -121,8 +125,15 @@
 #'
 #' Computed using sensor fusion algorithms:
 #' \itemize{
-#'   \item {Madgwick filter} (default): 9-axis fusion (accelerometer + gyroscope + magnetometer) using quaternion-based estimation.
-#'   \item {Tilt-compensated compass}: 6-axis fallback (accelerometer + gyroscope) when magnetometer unavailable.
+#'   \item {Tilt-compensated compass} (default): A lightweight 6-axis fusion (accelerometer + magnetometer)
+#'   to compute roll, pitch, and heading. The method first calculates tilt angles from accelerometer data,
+#'   then compensates the magnetometer readings using these angles to compute a more accurate heading.
+#'   This approach avoids gyroscope drift but may be affected by magnetic disturbances.
+#'   \item {Madgwick filter}: A 9-axis fusion algorithm (accelerometer + gyroscope + magnetometer)
+#'   implementing Sebastian Madgwick's quaternion-based gradient descent
+#'   approach. This provides absolute orientation reference by incorporating
+#'   Earth's magnetic field and is more robust to transient disturbances,
+#'   at the cost of higher computational complexity.
 #' }
 #' Output includes:
 #' \itemize{
@@ -171,6 +182,8 @@ processTagData <- function(data.folders,
                            pop.lon.col = "popup_lon",
                            pop.lat.col = "popup_lat",
                            axis.mapping = NULL,
+                           hard.iron.calibration = TRUE,
+                           soft.iron.calibration = TRUE,
                            orientation.algorithm = "tilt_compass",
                            madgwick.beta = 0.02,
                            dba.window = 3,
@@ -641,25 +654,45 @@ processTagData <- function(data.folders,
     # extract raw magnetometer data
     mag_data <- as.matrix(sensor_data[, .(mx, my, mz)])
 
-    # estimate hard-iron offset (mean of the data)
-    hard_iron_offset <- colMeans(mag_data)
+    # initialize calibrated data with raw data
+    mag_calibrated <- mag_data
 
-    # apply hard-iron correction
-    mag_corrected <- sweep(mag_data, 2, hard_iron_offset)
+    # provide feedback to the user if verbose mode is enabled
+    if (verbose && (hard.iron.calibration || soft.iron.calibration)) {
+      hi <- as.integer(hard.iron.calibration)
+      si <- as.integer(soft.iron.calibration)
+      if (hi == 1 && si == 1) {
+        type <- "both hard-iron and soft-iron"
+      } else if (hi == 1 && si == 0) {
+        type <- "hard-iron"
+      } else if (hi == 0 && si == 1) {
+        type <- "soft-iron"
+      } else {
+        type <- NULL
+      }
+      cat("Applying", type, "magnetic calibration...\n")
+    }
 
-    # estimate soft-iron distortion (fit ellipsoid)
-    # compute covariance matrix
-    cov_matrix <- cov(mag_corrected)
+    # apply hard-iron calibration if enabled
+    if (hard.iron.calibration) {
+      # estimate hard-iron offset using midpoint method (average of max and min)
+      hard_iron_offset <- 0.5 * (apply(mag_data, 2, max, na.rm = TRUE) + apply(mag_data, 2, min, na.rm = TRUE))
+      mag_calibrated <- sweep(mag_data, 2, hard_iron_offset)
+    }
 
-    # perform eigen decomposition
-    eig <- eigen(cov_matrix)
-    V <- eig$vectors   # eigenvectors (axes)
-    D_inv <- diag(1 / sqrt(eig$values))
-    # compute the transformation matrix
-    soft_iron_matrix <- V %*% D_inv %*% t(V)
-
-    # apply soft-iron correction
-    mag_calibrated <- t(soft_iron_matrix %*% t(mag_corrected))
+    # apply soft-iron calibration if enabled
+    if (soft.iron.calibration) {
+      # estimate soft-iron distortion (fit ellipsoid)
+      cov_matrix <- cov(mag_calibrated)
+      # perform eigen decomposition
+      eig <- eigen(cov_matrix)
+      V <- eig$vectors
+      D_inv <- diag(1 / sqrt(eig$values))
+      # compute the transformation matrix
+      soft_iron_matrix <- V %*% D_inv %*% t(V)
+      # apply soft-iron correction
+      mag_calibrated <- t(soft_iron_matrix %*% t(mag_calibrated))
+    }
 
     # normalize the calibrated data (unit sphere)
     mag_calibrated <- mag_calibrated / sqrt(rowSums(mag_calibrated^2))
@@ -667,8 +700,9 @@ processTagData <- function(data.folders,
     # update original columns
     sensor_data[, `:=`(mx = mag_calibrated[,1], my = mag_calibrated[,2], mz = mag_calibrated[,3])]
 
-    # clean up
-    rm(mag_data, mag_corrected, cov_matrix, eig, V, D_inv, soft_iron_matrix, mag_calibrated)
+    # clean up - remove all potential objects
+    objs_to_remove <- c("mag_data", "mag_corrected", "cov_matrix", "eig", "V", "D_inv", "soft_iron_matrix", "mag_calibrated", "hard_iron_offset")
+    rm(list = intersect(objs_to_remove, ls()))
     gc()
 
 
@@ -925,7 +959,9 @@ processTagData <- function(data.folders,
     ############################################################################
 
     # select columns to keep
-    metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "accel","odba","vedba","roll", "pitch", "heading", "surge", "sway", "heave", "vertical_speed")
+    metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
+                 "accel","odba","vedba","roll", "pitch", "heading",
+                 "surge", "sway", "heave", "vertical_speed")
     position_cols <- c("PTT", "position_type", "lat", "lon", "quality")
 
     # store current sampling frequency
@@ -963,42 +999,38 @@ processTagData <- function(data.folders,
         # temporarily suppress console output (redirect to a temporary file)
         sink(tempfile())
 
-        # split columns into different types for appropriate downsampling
+        # define columns
         orientation_cols <- c("roll", "pitch", "heading")
         numeric_cols <- setdiff(metrics, orientation_cols)
 
-        # downsample orientation angles with circular mean and proper ranges
-        orientation_data <- sensor_data[, {
-          list(roll = .circularMean(roll, range = c(-180, 180)),
-               pitch = .circularMean(pitch, range = c(-90, 90)),
-               heading = .circularMean(heading, range = c(0, 360)))
-        }, by = datetime]
+        # aggregate numeric metrics using arithmetic mean
+        processed_data <- sensor_data[, lapply(.SD, mean, na.rm=TRUE), by = datetime, .SDcols = numeric_cols]
 
-        # downsample numeric metrics with arithmetic mean
-        numeric_data <- sensor_data[, lapply(.SD, function(x) if (all(is.na(x))) NA_real_ else mean(x, na.rm = TRUE)),
-                                    by = datetime, .SDcols = numeric_cols]
+        # aggregate orientation metrics using circular mean
+        processed_roll <- sensor_data[, .(roll = .circularMean(roll, range = c(-180, 180))), by = datetime]
+        processed_pitch <- sensor_data[, .(pitch = .circularMean(pitch, range = c(-90, 90))), by = datetime]
+        processed_heading <- sensor_data[, .(heading = .circularMean(heading, range = c(0, 360))), by = datetime]
 
-        # get first value for location columns
-        position_data <- sensor_data[, lapply(.SD, data.table::first), by = datetime, .SDcols = position_cols]
+        # aggregate location column using first value
+        processed_positions <- sensor_data[, lapply(.SD, first), by = datetime, .SDcols = position_cols]
 
-        # merge all downsampled data (ensure no missing timestamps)
-        processed_data <- merge(orientation_data, numeric_data, by = "datetime", all.x = TRUE)
-        processed_data <- merge(processed_data, position_data, by = "datetime", all.x = TRUE)
+        # combine aggregated datasets
+        processed_data <- Reduce(function(x, y) merge(x, y, by = "datetime", sort = FALSE),
+                                 list(processed_data, processed_roll, processed_pitch, processed_heading, processed_positions))
+
+        # sum burst swimming events (based on specified percentiles)
+        if(!is.null(burst.quantiles)){
+          burst_cols <- paste0("burst", burst.quantiles * 100)
+          processed_bursts <- sensor_data[, lapply(.SD, function(x) as.integer(sum(as.numeric(x), na.rm = TRUE) > 0)), by = datetime, .SDcols = burst_cols]
+          # combine the two aggregated datasets
+          processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE)
+        }
 
         # re-add ID column
         processed_data[, ID := id]
 
         # restore normal output
         sink()
-
-        # sum burst swimming events (based on specified percentiles)
-        if(!is.null(burst.quantiles)){
-          burst_cols <- paste0("burst", burst.quantiles * 100)
-          processed_bursts <- sensor_data[, lapply(.SD, sum, na.rm = TRUE), by = datetime, .SDcols = burst_cols]
-          processed_bursts[, (burst_cols) := lapply(.SD, function(x) as.integer(x > 0)), .SDcols = burst_cols]
-          # combine the two aggregated datasets
-          processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE,  sort = FALSE)
-        }
       }
 
     } else{
@@ -1061,12 +1093,14 @@ processTagData <- function(data.folders,
     attr(processed_data, 'original.rows') <- rows
     attr(processed_data, 'original.sampling.frequency') <- sampling_freq
     attr(processed_data, 'processed.sampling.frequency') <- sampling_rate
-    attr(processed_data, 'magnetic.declination') <- declination_deg
+    attr(processed_data, 'hard.iron.calibration') <- hard.iron.calibration
+    attr(processed_data, 'soft.iron.calibration') <- soft.iron.calibration
     attr(processed_data, 'orientation.algorithm') <- orientation.algorithm
+    attr(processed_data, 'madgwick.beta') <- madgwick.beta
+    attr(processed_data, 'magnetic.declination') <- declination_deg
     attr(processed_data, 'dba.window') <- dba.window
     attr(processed_data, 'dba.smoothing') <- dba.smoothing
     attr(processed_data, 'orientation.smoothing') <- orientation.smoothing
-    attr(processed_data, 'madgwick.beta') <- madgwick.beta
     attr(processed_data, 'motion.smoothing') <- motion.smoothing
     attr(processed_data, 'speed.smoothing') <- speed.smoothing
     attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
