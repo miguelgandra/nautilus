@@ -6,7 +6,7 @@
 # This script provides a step-by-step guide for using the "nautilus" R package to
 # efficiently import and process archival tag data. It demonstrates the following features:
 #
-# ---> Import and process archival tag data from multiple animals.
+# ---> Import, standardize and process archival tag data from multiple animals.
 # ---> Automatically compute key metrics on acceleration, orientation, and linear motion.
 # ---> Integrate and merge location data derived from PSATs (pop-up satellite archival tags)
 # ---> Optionally downsample high-frequency sensor data to reduce volume and enhance manageability.
@@ -31,10 +31,10 @@
 # To ensure the functions work correctly, organize the data into a root directory containing
 # one subdirectory for each tagged animal. Each animal's subdirectory must include:
 #
-# 1. Multi-Sensor Tag Data Folder (Default: "CMD")
-#    - This folder contains time-series data collected by the multi-sensor tag.
-#    - The default name is "CMD," but it can be customized using the 'sensor.folders' argument.
-#    - Files should include depth, accelerometer, gyroscope, magnetometer data in CSV format.
+# 1. Multi-Sensor Tag Data Folder (default: "CMD")
+#    - Contains a CSV file with time-series data from multi-sensor tags
+#      (e.g., depth, accelerometer, gyroscope, magnetometer).
+#    - The folder name defaults to "CMD" but can be customized via the 'sensor.folders' argument.
 #
 # 2. Wildlife Computers Tag Data Folder (Optional)
 #    - For integrating positions from Wildlife Computers tags (MiniPAT/MK10/SPOT).
@@ -42,7 +42,22 @@
 #    - This folder must contain location data files in the standard Wildlife Computers format.
 #
 # Each animal folder name must match the "ID" in the metadata file ('id.metadata').
-
+#
+#
+# Example directory layout:
+# Root_Directory/
+# ├── ID_01/
+# │   ├── CMD/
+# │   │   └── xxxxx-Multisensor22Splash52.csv
+# │   └── SPOT/
+# │       ├── xxxxx-Locations.csv
+# │       └── other Wildlife Computers files
+# └── ID_02/
+#     ├── CMD/
+#     │   └── xxxxx-CamaraCMD134Spot98.csv
+#     └── MK10/
+#         ├── xxxxx-Locations.csv
+#         └── other Wildlife Computers files
 
 
 ################################################################################
@@ -66,16 +81,16 @@ animal_metadata <- readxl::read_excel("./PINTADO_metadata_multisensor.xlsx")
 
 # Select relevant columns
 selected_cols <- c("id", "dateTime", "site", "longitudeD", "latitudeD",
-                   "sex", "size", "Nmax", "typeCMD", "PakageID", "satPtt",
+                   "sex", "size", "Nmax", "typeCMD", "PakageID", "satPtt", "padWheel",
                    "recoveryDate", "recoveryTime", "lonRecov", "latRecov",
                    "popupDatetime", "latPop", "lonPop")
 animal_metadata <- as.data.frame(animal_metadata)[,selected_cols]
 
 # Update column names to standardized format for further processing
 colnames(animal_metadata) <- c("ID", "deploy_date", "deploy_site", "deploy_lon", "deploy_lat",
-                               "sex", "size", "n_animals", "tag", "packageID", "satPtt", "recover_date",
-                               "recover_time", "recover_lon", "recover_lat", "popup_date",
-                               "popup_lat", "popup_lon")
+                               "sex", "size", "n_animals", "tag", "package_id", "satPtt", "paddle_wheel",
+                               "recover_date", "recover_time", "recover_lon", "recover_lat",
+                               "popup_date", "popup_lat", "popup_lon")
 
 # Extract year from POSIXct deploy_date
 animal_metadata$deploy_year <- as.integer(format(animal_metadata$deploy_date, "%Y"))
@@ -138,6 +153,192 @@ axes_config[15, ] <- c("CMD", "CATS", "ax", "-ay")
 axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
 
 
+################################################################################
+# Configure Custom Column Import Mapping #######################################
+################################################################################
+
+# In cases where your biologging data uses non-standard column names or units,
+# you can specify a custom import column mapping, via the 'import.mapping' parameter
+# of the importTagData() function. This specifies how raw data columns (with their
+# original names and units) are mapped to standardized sensor names and units used
+# in the analysis pipeline.
+#
+# The mapping must include three columns:
+# - colname: Exact column name as it appears in the CSV file
+# - sensor: Standardized sensor name (see valid options below)
+# - units: Measurement units (must match supported unit types)
+#
+# Valid sensor names:
+# - Time: "date", "time", "datetime"
+# - Motion: "ax", "ay", "az" (accelerometer)
+#           "gx", "gy", "gz" (gyroscope)
+#           "mx", "my", "mz" (magnetometer)
+# - Environmental: "depth", "temp"
+#
+# Valid units:
+# - Time: "UTC"
+# - Acceleration: "m/s2", "g"
+# - Rotation: "mrad/s", "rad/s", "deg/s"
+# - Magnetic: "uT"
+# - Temperature: "C"
+# - Depth: "m"
+# - Unitless: "" (empty string)
+
+# # Create the data frame for import mapping
+# import_config <- data.frame(
+#   colname = character(),
+#   sensor = character(),
+#   units = character(),
+#   stringsAsFactors = FALSE
+# )
+#
+# # Mapping for Custom CSV format (Example)
+# import_config[26, ] <- c("UTC_Time", "datetime", "UTC")
+# import_config[27, ] <- c("ACC_X", "ax", "g")
+# import_config[28, ] <- c("ACC_Y", "ay", "g")
+# import_config[29, ] <- c("ACC_Z", "az", "g")
+# import_config[30, ] <- c("GYRO_X", "gx", "rad/s")
+# import_config[31, ] <- c("GYRO_Y", "gy", "rad/s")
+# import_config[32, ] <- c("GYRO_Z", "gz", "rad/s")
+# import_config[33, ] <- c("MAG_X", "mx", "uT")
+# import_config[34, ] <- c("MAG_Y", "my", "uT")
+# import_config[35, ] <- c("MAG_Z", "mz", "uT")
+# import_config[36, ] <- c("TEMP", "temp", "C")
+# import_config[37, ] <- c("PRESSURE", "depth", "m")
+
+
+################################################################################
+# Import tag data #############################################################
+################################################################################
+
+# For detailed information on all available arguments, please consult the function
+# documentation by running: ?importTagData
+
+# Define the folder containing tag data
+data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FALSE)
+
+# Select or exclude specific folders within the source data folder (if needed)
+data_folders <- data_folders[1:58]
+
+# Import and standardize tag data using the "importTagData" function
+data_list <- importTagData(data.folders = data_folders,
+                           sensor.subdirectory = "CMD",
+                           import.mapping = NULL,
+                           axis.mapping = axes_config,
+                           return.data = FALSE,
+                           save.files = TRUE,
+                           output.folder = "./data processed/imported/",
+                           id.metadata = animal_metadata,
+                           id.col = "ID",
+                           tag.col = "tag",
+                           deploy.date.col = "deploy_date",
+                           deploy.lon.col = "deploy_lon",
+                           deploy.lat.col = "deploy_lat",
+                           pop.date.col = "popup_date",
+                           pop.lon.col = "popup_lon",
+                           pop.lat.col = "popup_lat",
+                           paddle.wheel.col = "paddle_wheel",
+                           timezone = "UTC",
+                           verbose = TRUE)
+
+
+################################################################################
+## Import paddle wheel calibration values ######################################
+################################################################################
+
+# Some tags have a magnetic paddle wheel that spins as the animal swims,
+# enabling speed estimation from rotation frequency. processTagData()
+# extracts these frequencies by applying a Fast Fourier Transform (FFT)
+# to overlapping windows of magnetometer z-axis data to identify the dominant
+# frequency, which is then converted to speed using a tag-specific calibration
+# slope (assuming a zero y-intercept).
+
+# This file holds calibration slopes and model fit metrics from linear regressions
+# relating known speeds to paddle rotation frequencies. It must be provided to
+# processTagData() to convert raw frequencies into actual speed estimates.
+# Required columns: "year", "package_id", and "slope".
+
+# Since not all deployments have associated calibration values, we apply the following
+# logic to fill missing values:
+# 1. For each tag (identified by package_id), available slopes from different years
+#    are used to interpolate or extrapolate missing years using linear interpolation.
+# 2. When no slope values are available for a given package_id, the global average
+#    slope across all calibrated tags is used as a fallback. This baseline is then
+#    adjusted for each deployment year using a user-defined annual slope increase,
+#    accounting for the expected decline in paddle wheel performance over time.
+
+
+# Import available speed regression values
+calibration_regression <- read.csv("./paddle wheel calibration/Velocity_RotationHz_Regression.csv")
+colnames(calibration_regression) <- c("year", "package_id", "slope", "r.squared", "adj.r.squared")
+calibration_regression_sorted <- calibration_regression[order(calibration_regression$package_id, calibration_regression$year), ]
+
+# Define the expected increase in slope per year due to paddle wheel performance decline.
+# This value reflects how much the slope is expected to increase annually.
+# A positive value means it takes more Hz to achieve the same m/s, implying reduced efficiency.
+yearly_slope_increase <- 0.01
+
+# Filter for tags with paddle wheels
+paddle_metadata <- animal_metadata[animal_metadata$paddle_wheel == TRUE, ]
+# Keep only unique combinations of deploy_year and package_id
+expected_grid <- unique(paddle_metadata[, c("deploy_year", "package_id")])
+colnames(expected_grid)[colnames(expected_grid) == "deploy_year"] <- "year"
+
+# Merge with actual data and sort by package_id and year
+paddle_calibration <- merge(expected_grid, calibration_regression, all.x = TRUE)
+paddle_calibration <- paddle_calibration[order(paddle_calibration$package_id, paddle_calibration$year), ]
+
+# Create a 'processed_slope' column to store our final, filled values
+paddle_calibration$processed_slope <- NA
+
+# Find the first calibration year and its corresponding slope for each unique package_id
+first_calibration_per_tag <- calibration_regression_sorted[!duplicated(calibration_regression_sorted$package_id), ]
+# Calculate the mean of these first-year slopes
+global_avg_slope <- mean(first_calibration_per_tag$slope, na.rm = TRUE)
+
+# Get a list of all unique package IDs
+all_package_ids <- unique(paddle_calibration$package_id)
+
+# Loop through each unique package ID for interpolation
+for (pkg_id in all_package_ids) {
+  idx_pkg <- which(paddle_calibration$package_id == pkg_id)
+  current_years <- paddle_calibration$year[idx_pkg]
+  current_slopes_original <- paddle_calibration$slope[idx_pkg]
+  known_years <- current_years[!is.na(current_slopes_original)]
+  known_slopes <- current_slopes_original[!is.na(current_slopes_original)]
+  if (length(known_years) == 0) {
+    # Case 1: No known slopes for this package ID at all.
+    # Use the global average as a baseline and apply the general yearly trend.
+    for (i in seq_along(current_years)) {
+      year_offset <- current_years[i] - min(current_years)
+      paddle_calibration$processed_slope[idx_pkg[i]] <- global_avg_slope + (year_offset * yearly_slope_increase)
+    }
+  } else if (length(known_years) == 1) {
+    # Case 2: Exactly one known slope for this package ID.
+    # Use this single known slope as a baseline for its specific year,
+    # and adjust other years for this tag using the custom yearly trend.
+    known_year_single <- known_years[1]
+    known_slope_single <- known_slopes[1]
+    for (i in seq_along(current_years)) {
+      year_offset <- current_years[i] - known_year_single
+      paddle_calibration$processed_slope[idx_pkg[i]] <- known_slope_single + (year_offset * yearly_slope_increase)
+    }
+  } else {
+    # Case 3: Two or more known slopes for this package ID.
+    # Perform linear interpolation/extrapolation using 'approx'.
+    # This case relies on the observed trend for that specific tag if available,
+    # as it's the most data-driven approach for that tag.
+    interp_values <- zoo::approx(x = known_years, y = known_slopes, xout = current_years,
+                            method = "linear", rule = 2)$y
+    paddle_calibration$processed_slope[idx_pkg] <- interp_values
+  }
+}
+
+# Replace the original column with the processed values
+paddle_calibration$slope <- paddle_calibration$processed_slope
+paddle_calibration$processed_slope <- NULL
+
+
 
 ################################################################################
 # Process tag data #############################################################
@@ -152,33 +353,21 @@ axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
 # please consult the function documentation by running:
 # ?processTagData
 
-
-# Define the folder containing tag data
-data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FALSE)
-
-# Select or exclude specific folders within the source data folder (if needed)
-data_folders <- data_folders[1:23]
-#data_folders <- data_folders[24:58]
+# Load the previously imported files
+data_files <- list.files("./data processed/imported", full.names = TRUE)
 
 
-# Process tag data using the "processTagData" function from the "nautilus" package
-data_list <- processTagData(data.folders = data_folders,
+# Process tag data using the "processTagData" function
+data_list <- processTagData(data = data_files,
+                            return.data = FALSE,
                             save.files = TRUE,
                             output.folder = "./data processed/complete/20Hz",
                             downsample.to = 20,
-                            id.metadata = animal_metadata,
-                            id.col = "ID",
-                            tag.col = "tag",
-                            deploy.date.col = "deploy_date",
-                            deploy.lon.col = "deploy_lon",
-                            deploy.lat.col = "deploy_lat",
-                            pop.date.col = "popup_date",
-                            pop.lon.col = "popup_lon",
-                            pop.lat.col = "popup_lat",
-                            axis.mapping = axes_config,
                             hard.iron.calibration = TRUE,
                             soft.iron.calibration = FALSE,
                             orientation.algorithm = "tilt_compass",
+                            calculate.paddle.speed = TRUE,
+                            speed.calibration.values = paddle_calibration,
                             dba.window = 6,
                             dba.smoothing = 2,
                             orientation.smoothing = 1,
@@ -189,53 +378,39 @@ data_list <- processTagData(data.folders = data_folders,
 
 
 ################################################################################
-# Optional - Load processed files ##############################################
-################################################################################
-
-# NOTE: If the datasets were processed in batches, the `data_files` list may not
-# contain all the data. This step allows reloading all or specific datasets that
-# were previously saved, so you can continue with the filtering and analysis steps.
-# If all datasets were successfully processed and stored in the `data_list` object
-# during the execution of the `processTagData` function, this step is not required.
-
-# Retrieve the list of processed files
-data_files <- list.files("./data processed/complete/20Hz", full.names = TRUE)
-
-# Initialize a list to store the loaded datasets
-data_list <- vector("list", length(data_files))
-
-# Loop through each file, load the data, and assign names based on animal ID
-for(i in 1:length(data_files)){
-  data_list[[i]] <- readRDS(data_files[i])
-  names(data_list)[i] <- attributes(data_list[[i]])$id
-}
-
-
-
-################################################################################
 # Filter out pre- and post-deployment data #####################################
 ################################################################################
 
-# Filter tag data to exclude pre- and post-deployment periods based on
-# depth and variance thresholds. This step ensures that only relevant
-# deployment data is kept for analysis. Additionally, diagnostic plots
-# will be generated for each filtered dataset to visually assess the
-# data quality and trends.
+# The `filterDeploymentData` function offers two ways to define the deployment period:
+# 1. Automated Depth-Based Detection:
+#    It uses binary segmentation to analyze changes in depth and variance,
+#    identifying the most likely attachment and popup times. This is the
+#    default behavior if no custom times are provided.
+# 2. Custom Deployment Times:
+#    Users can provide a data.frame with specific start and end datetimes
+#    for each individual ID via the 'custom.deployment.times' argument.
+#    This option overrides the depth-based detection and truncates the data
+#    precisely to the specified intervals.
 
-# Process data in subsets to manage memory usage and avoid memory overload errors
-data_ms <- data_list[1:21]
-data_cam <- data_list[22:53]
-rm(data_list); gc()
+# Diagnostic plots are generated for each filtered dataset to visually assess
+# the effectiveness of the filtering and review data quality and trends
+# within the identified deployment window.
+
+# Load the previously processed/downsampled files
+data_files <- list.files("./data processed/complete/20Hz", full.names = TRUE)
 
 # Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
-filter_results <- filterDeploymentData(data = data_ms,
+filter_results <- filterDeploymentData(data = data_files,
+                                       custom.deployment.times = NULL,
                                        depth.threshold = 3.5,
                                        variance.threshold = 6,
                                        max.changepoints = 6,
+                                       display.plots = FALSE,
+                                       save.plots = TRUE,
                                        plot.metrics = c("pitch", "roll"),
                                        plot.metrics.labels = c("Pitch (\u00BA)", "Roll (\u00BA)"),
-                                       display.plots = FALSE,
-                                       save.plots = TRUE)
+                                       return.data = TRUE,
+                                       save.files = FALSE)
 
 # Extract the filtered data from the results
 filtered_list <- filter_results$filtered_data
@@ -322,7 +497,7 @@ filtered_list <- lapply(filtered_list, function(x) {
 # frequency be at least 4× higher than max.freq.Hz. For example, with max.freq.Hz = 2,
 # the data should be sampled at ≥ 8 Hz (though ≥ 4 Hz would meet Nyquist minimum).
 
-filtered_list <- calculateTailBeats(data = filtered_list,
+filtered_list <- calculateTailBeats(data = data_list,
                                     output.dir = "./plots/tail beat frequencies",
                                     motion.col = "surge",
                                     ridge.only = FALSE,

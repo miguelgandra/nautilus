@@ -6,31 +6,29 @@
 \usage{
 filterDeploymentData(
   data,
-  depth.threshold = 3.5,
-  variance.threshold = 6,
-  max.changepoints = 6,
   id.col = "ID",
   datetime.col = "datetime",
   depth.col = "depth",
+  custom.deployment.times = NULL,
+  depth.threshold = 3.5,
+  variance.threshold = 6,
+  max.changepoints = 6,
+  display.plots = FALSE,
+  save.plots = TRUE,
   plot.metrics = c("pitch", "sway"),
   plot.metrics.labels = NULL,
-  display.plots = FALSE,
-  save.plots = TRUE
+  return.data = TRUE,
+  save.files = FALSE,
+  output.folder = NULL,
+  output.suffix = NULL
 )
 }
 \arguments{
-\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
-containing data from multiple animals. The output of the \link{processTagData} function is recommended, as it formats
-the data appropriately for further analysis.}
-
-\item{depth.threshold}{A numeric value specifying the minimum mean depth to classify a segment as part of
-the deployment period (default is 3.5).}
-
-\item{variance.threshold}{A numeric value specifying the minimum variance in depth measurements to classify
-a segment as part of the deployment period. Segments with variance below this value are considered spurious (default is 6).}
-
-\item{max.changepoints}{An integer specifying the maximum number of changepoints to detect (default is 6).
-This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function.}
+\item{data}{A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
+containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
+\code{.rds} files, each containing data for a single individual. When a character vector is provided,
+files are loaded sequentially to optimize memory use. The output of the \link{processTagData} function
+is strongly recommended, as it formats the data appropriately for all downstream analysis.}
 
 \item{id.col}{A string representing the column name for the ID field (default is "ID").}
 
@@ -40,12 +38,20 @@ This column must be in "POSIXct" format for proper processing (default is "datet
 \item{depth.col}{A string specifying the name of the column that contains depth measurements. Depth data is
 used for detecting deployment periods (default is "depth").}
 
-\item{plot.metrics}{A character vector of column names indicating additional metrics (e.g., acceleration or pitch)
-to include in the visualization. These metrics are plotted alongside the depth data to aid in visually reviewing
-the deployment period assignments (default is \code{c("pitch", "sway")}).}
+\item{custom.deployment.times}{An optional \code{data.frame} or \code{data.table} with three columns: \code{ID}, \code{start}, and \code{end}.
+This allows users to manually specify deployment periods for each individual, overriding the depth-based detection.
+\code{start} and \code{end} must be in "POSIXct" format. If provided, \code{depth.threshold}, \code{variance.threshold},
+and \code{max.changepoints} will be ignored. Default is \code{NULL}.}
 
-\item{plot.metrics.labels}{A character vector specifying custom titles for the metrics plotted in the output.
-If set to NULL, the column names provided in \code{plot.metrics} will be used as labels (default is NULL).}
+\item{depth.threshold}{A numeric value specifying the minimum mean depth to classify a segment as part of
+the deployment period (default is 3.5). This parameter is ignored if \code{custom.deployment.times} is provided.}
+
+\item{variance.threshold}{A numeric value specifying the minimum variance in depth measurements to classify
+a segment as part of the deployment period. Segments with variance below this value are considered spurious (default is 6).
+This parameter is ignored if \code{custom.deployment.times} is provided.}
+
+\item{max.changepoints}{An integer specifying the maximum number of changepoints to detect (default is 6).
+This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored if \code{custom.deployment.times} is provided.}
 
 \item{display.plots}{A logical value indicating whether the diagnostic plots should be displayed.
 These plots generate diagnostic visuals showing depth and additional metrics,
@@ -61,25 +67,58 @@ The saved plots can later be displayed using \code{replayPlot()}.
 These plots generate diagnostic visuals showing depth and additional metrics, assisting users in reviewing the extracted deployment periods.
 If set to \code{FALSE}, no plots will be saved.
 Default is \code{FALSE}.}
+
+\item{plot.metrics}{A character vector of column names indicating additional metrics (e.g., acceleration or pitch)
+to include in the visualization. These metrics are plotted alongside the depth data to aid in visually reviewing
+the deployment period assignments (default is \code{c("pitch", "sway")}).}
+
+\item{plot.metrics.labels}{A character vector specifying custom titles for the metrics plotted in the output.
+If set to NULL, the column names provided in \code{plot.metrics} will be used as labels (default is NULL).}
+
+\item{return.data}{Logical. Controls whether the function returns the processed data
+as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+(or both). Default is \code{TRUE}.}
+
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
+during the iteration process. This ensures that progress is saved incrementally, which can
+help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+
+\item{output.folder}{Character. Path to the folder where the processed files will be saved.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
+in the data folder corresponding to each ID. Default is \code{NULL}.}
+
+\item{output.suffix}{Character. A suffix to append to the file name when saving.
+This parameter is only used if \code{save.files = TRUE}.}
 }
 \value{
-A filtered data frame containing the deployment period between the detected attachment and popup times.
+The function always returns a consistent named list structure when there are results:
+\itemize{
+\item If both data and plots are available: Returns a list with \code{filtered_data} and \code{plots} elements
+\item If only data is available: Returns a list with just the \code{filtered_data} element
+\item If only plots are available: Returns a list with just the \code{plots} element
+\item If nothing is available (both \code{return.data} and \code{save.plots} are FALSE): Returns \code{NULL} invisibly
+}
+Note that data will be saved to disk if \code{save.files = TRUE}, regardless of the return value.
 }
 \description{
-This function identifies deployment periods by analyzing changes in depth data using binary segmentation
-to detect change points in both mean and variance. It then extracts the periods between the pre-deployment
-and post-deployment phases based on the specified datetime range.
-}
-\details{
-The function uses a binary segmentation method (\code{cpt.meanvar}) to detect changes in depth and variance,
-and it allows users to specify the maximum number of changepoints detected.
+This function identifies and extracts actual deployment periods from high-resolution biologging data.
+It offers two primary methods for defining these periods: an \strong{automated depth-based approach}
+or the option to \strong{supply custom start and end times} for each individual.
 
-If the sampling frequency is greater than 1 Hz, the function downsamples the data to 1 Hz by rounding
-datetime values to the nearest second and computing the mean for each second. This is done to improve speed
-and avoid memory bottlenecks when handling large datasets.
+When using the automated depth-based approach, the function analyzes changes in depth data
+using binary segmentation (\code{cpt.meanvar}) to detect change points in both mean and variance.
+It then extracts the periods between the pre-deployment and post-deployment phases
+based on the specified depth and variance thresholds.
 
-The function also provides options to visualize the data with custom plot options.
+For datasets with a sampling frequency greater than 1 Hz, the function automatically
+downsamples the data to 1 Hz. This is achieved by rounding datetime values to the nearest second
+and computing the mean for each second, significantly improving processing speed and
+preventing memory bottlenecks when handling large datasets.
+
+The function also provides robust options to visualize the identified deployment periods
+with custom plot options, including additional behavioral metrics, to aid in visual review and validation.
 }
 \seealso{
-\link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
+\link{importTagData},, \link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
 }

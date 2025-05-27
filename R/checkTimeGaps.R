@@ -81,7 +81,7 @@ checkTimeGaps <- function(data,
   ##############################################################################
 
   # provide feedback to the user if verbose mode is enabled
-  if (verbose) cat("Checking for temporal gaps in the data...\n")
+  if (verbose) cat("---> Checking for temporal gaps in the data\n")
 
   # calculate time difference between consecutive datetimes in seconds
   data$time_diff <- c(NA, diff(as.numeric(data[[datetime.col]])))
@@ -131,7 +131,7 @@ checkTimeGaps <- function(data,
       # calculate and print the number of rows discarded before the time gap
       discarded_interval <- round(difftime(data[[datetime.col]][1], data[[datetime.col]][pre_deploy_cutoff]), 1)
       # provide feedback about the number of discarded rows
-      if (verbose) message(sprintf("Time gaps found (%d): first %d rows discarded (%.1f %s).\n",
+      if (verbose) message(sprintf("Time gaps found (%d): first %d rows discarded (%.1f %s).",
                                length(pre_deploy_gaps), pre_deploy_cutoff, discarded_interval, attr(discarded_interval, "units")))
     }
 
@@ -141,7 +141,7 @@ checkTimeGaps <- function(data,
       post_deploy_cutoff <- min(post_deploy_gaps)
       # calculate and print the number of rows discarded after the time gap
       discarded_interval <- round(difftime(data[[datetime.col]][post_deploy_cutoff], data[[datetime.col]][nrow(data)]), 1)
-      if (verbose) message(sprintf("Time gaps found (%d): last %d rows discarded (%.1f %s).\n",
+      if (verbose) message(sprintf("Time gaps found (%d): last %d rows discarded (%.1f %s).",
                                length(post_deploy_gaps), nrow(data) - post_deploy_cutoff, discarded_interval, attr(discarded_interval, "units")))
     }
 

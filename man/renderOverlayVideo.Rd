@@ -25,7 +25,7 @@ renderOverlayVideo(
   jpeg.quality = 3,
   video.compression = "h265",
   crf = 28,
-  cores = 1
+  n.cores = 1
 )
 }
 \arguments{
@@ -93,7 +93,7 @@ The CRF range is from 0 to 51, where:
 \item A higher value (closer to 51) will result in lower quality and smaller file sizes.
 }}
 
-\item{cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
+\item{n.cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
 }
 \value{
 A video file with synchronized sensor overlays saved to the specified \code{output.file}.

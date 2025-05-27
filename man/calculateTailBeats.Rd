@@ -16,7 +16,7 @@ calculateTailBeats(
   ridge.only = FALSE,
   power.ratio.threshold = NULL,
   max.interp.gap = 10,
-  cores = 1,
+  n.cores = 1,
   plot = TRUE,
   output.dir = NULL,
   png.width = 24,
@@ -54,7 +54,7 @@ for a frequency to be considered valid. NULL disables this filter. Default is NU
 \item{max.interp.gap}{Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 Set to NULL to disable interpolation. Default is 10 seconds.}
 
-\item{cores}{Number of CPU cores for parallel processing (default = 1)}
+\item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
 
 \item{plot}{Logical. Whether to generate plots. Default is TRUE.}
 

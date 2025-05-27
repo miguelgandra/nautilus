@@ -28,7 +28,7 @@
 #' for a frequency to be considered valid. NULL disables this filter. Default is NULL.
 #' @param max.interp.gap Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 #' Set to NULL to disable interpolation. Default is 10 seconds.
-#' @param cores Number of CPU cores for parallel processing (default = 1)
+#' @param n.cores Number of CPU cores for parallel processing (default = 1)
 #' @param plot Logical. Whether to generate plots. Default is TRUE.
 #' @param output.dir Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
 #'                   Default is NULL (plots shown in R graphics device).
@@ -100,7 +100,7 @@ calculateTailBeats <- function(data,
                                ridge.only = FALSE,
                                power.ratio.threshold = NULL,
                                max.interp.gap = 10,
-                               cores = 1,
+                               n.cores = 1,
                                plot = TRUE,
                                output.dir = NULL,
                                png.width = 24,
@@ -174,12 +174,12 @@ calculateTailBeats <- function(data,
   }
 
   # validate parallel computing packages
-  if (cores>1){
+  if (n.cores>1){
     if(!requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
     if(!requireNamespace("doSNOW", quietly=TRUE)) stop("The 'doSNOW' package is required for parallel computing but is not installed. Please install 'doSNOW' using install.packages('doSNOW') and try again.", call. = FALSE)
     if(!requireNamespace("parallel", quietly=TRUE)){
       stop("The 'parallel' package is required for parallel computing but is not installed. Please install 'parallel' using install.packages('parallel') and try again.", call. = FALSE)
-    }else if(parallel::detectCores()<cores){
+    }else if(parallel::detectCores()<n.cores){
       stop(paste("Please choose a different number of cores for parallel computing (only", parallel::detectCores(), "available)."), call. = FALSE)
     }
   }
@@ -286,7 +286,7 @@ calculateTailBeats <- function(data,
       png.width = png.width,
       png.height = png.height,
       png.res = png.res,
-      cores = cores
+      n.cores = n.cores
     )
 
     # Add space between individuals
@@ -327,7 +327,7 @@ calculateTailBeats <- function(data,
 .runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col,
                     min.freq.Hz, max.freq.Hz, max.rows.per.batch, ridge.only,
                     power.ratio.threshold, smooth.window, max.interp.gap, plot,
-                    output.dir, png.width, png.height, png.res, cores = 1) {
+                    output.dir, png.width, png.height, png.res, n.cores = 1) {
 
   # extract relevant columns and rename
   data_individual <- data.frame(
@@ -400,7 +400,7 @@ calculateTailBeats <- function(data,
   # Process in batches (sequential) ###################################
   #####################################################################
 
-  if (cores == 1) {
+  if (n.cores == 1) {
 
     # initiate progress bar
     pb <- txtProgressBar(min = 0, max = n_batches, style = 3, width = 50, char = "=")
@@ -460,7 +460,7 @@ calculateTailBeats <- function(data,
     } else {
 
       # register parallel backend with the specified number of cores
-      cl <- parallel::makeCluster(cores)
+      cl <- parallel::makeCluster(n.cores)
       doSNOW::registerDoSNOW(cl)
       # ensure the cluster is properly stopped when the function exits
       on.exit(parallel::stopCluster(cl))

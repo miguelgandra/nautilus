@@ -19,7 +19,7 @@
 #' @param datetime.col A character string specifying the column in `data` containing datetime information.
 #' @param response.col (Optional) A character string specifying the column in `data` containing response or annotated labels (e.g., feeding events).
 #' It must be binary (i.e., containing values 0 or 1).
-#' @param cores The number of processor cores to use for parallel computation. Defaults to 1 (single-core).
+#' @param n.cores The number of processor cores to use for parallel computation. Defaults to 1 (single-core).
 
 #'
 #' @details
@@ -58,7 +58,7 @@ extractFeatures <- function(data,
                             aggregate = FALSE,
                             datetime.col = "datetime",
                             response.col = NULL,
-                            cores = 1){
+                            n.cores = 1){
 
   ##############################################################################
   # Initial checks #############################################################
@@ -105,12 +105,12 @@ extractFeatures <- function(data,
   }
 
   # validate parallel computing packages
-  if (cores>1){
+  if (n.cores>1){
     if(!requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
     if(!requireNamespace("doSNOW", quietly=TRUE)) stop("The 'doSNOW' package is required for parallel computing but is not installed. Please install 'doSNOW' using install.packages('doSNOW') and try again.", call. = FALSE)
     if(!requireNamespace("parallel", quietly=TRUE)){
       stop("The 'parallel' package is required for parallel computing but is not installed. Please install 'parallel' using install.packages('parallel') and try again.", call. = FALSE)
-    }else if(parallel::detectCores()<cores){
+    }else if(parallel::detectCores()<n.cores){
       stop(paste("Please choose a different number of cores for parallel computing (only", parallel::detectCores(), "available)."), call. = FALSE)
     }
   }
@@ -150,11 +150,11 @@ extractFeatures <- function(data,
 
 
   # initialize parallel backend
-  if(cores > 1){
+  if(n.cores > 1){
     # print message
-    cat(paste0("Starting parallel computation: ", cores, " cores\n\n"))
+    cat(paste0("Starting parallel computation: ", n.cores, " cores\n\n"))
     # register parallel backend with the specified number of cores
-    cl <- parallel::makeCluster(cores)
+    cl <- parallel::makeCluster(n.cores)
     doSNOW::registerDoSNOW(cl)
     # ensure the cluster is properly stopped when the function exits
     on.exit(parallel::stopCluster(cl))
@@ -215,7 +215,7 @@ extractFeatures <- function(data,
 
     ###############################################################
     # sequential processing #######################################
-    if(cores == 1){
+    if(n.cores == 1){
 
       # initialize progress bar
       pb <- txtProgressBar(min=0, max=nrow(parameter_grid), initial=0, style=3)
@@ -233,7 +233,7 @@ extractFeatures <- function(data,
 
     ###############################################################
     # parallel processing   #######################################
-    if(cores > 1){
+    if(n.cores > 1){
 
       # initialize progress bar
       pb <- txtProgressBar(min=0, max=nrow(parameter_grid), initial=0, style=3)

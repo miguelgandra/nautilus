@@ -13,7 +13,7 @@ extractFeatures(
   aggregate = FALSE,
   datetime.col = "datetime",
   response.col = NULL,
-  cores = 1
+  n.cores = 1
 )
 }
 \arguments{
@@ -35,7 +35,7 @@ The actual number of steps in the window is determined based on the sampling int
 \item{response.col}{(Optional) A character string specifying the column in \code{data} containing response or annotated labels (e.g., feeding events).
 It must be binary (i.e., containing values 0 or 1).}
 
-\item{cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
+\item{n.cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
 }
 \value{
 A list of data frames, each corresponding to an individual animal, containing the calculated features for the specified

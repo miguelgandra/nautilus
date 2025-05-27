@@ -2,98 +2,43 @@
 % Please edit documentation in R/processTagData.R
 \name{processTagData}
 \alias{processTagData}
-\title{Import and Process Archival Tag Data}
+\title{Process Archival Tag Data}
 \usage{
 processTagData(
-  data.folders,
-  sensor.subdirectory = "CMD",
-  wc.subdirectory = NULL,
-  save.files = FALSE,
-  output.folder = NULL,
-  output.suffix = NULL,
-  id.metadata,
-  id.col = "ID",
-  tag.col = "tag",
-  deploy.date.col = "tagging_date",
-  deploy.lon.col = "deploy_lon",
-  deploy.lat.col = "deploy_lat",
-  pop.date.col = "popup_data",
-  pop.lon.col = "popup_lon",
-  pop.lat.col = "popup_lat",
-  axis.mapping = NULL,
+  data,
+  downsample.to = 1,
   hard.iron.calibration = TRUE,
   soft.iron.calibration = TRUE,
   orientation.algorithm = "tilt_compass",
   madgwick.beta = 0.02,
-  dba.window = 3,
-  dba.smoothing = 2,
   orientation.smoothing = 1,
-  motion.smoothing = 1,
-  speed.smoothing = 2,
-  burst.quantiles = c(0.95, 0.99),
-  downsample.to = 1,
   pitch.warning.threshold = 45,
   roll.warning.threshold = 45,
+  dba.window = 3,
+  dba.smoothing = 2,
+  motion.smoothing = 1,
+  speed.smoothing = 2,
+  calculate.paddle.speed = FALSE,
+  speed.calibration.values = NULL,
+  burst.quantiles = c(0.95, 0.99),
   check.time.anomalies = TRUE,
-  timezone = "UTC",
+  return.data = TRUE,
+  save.files = FALSE,
+  output.folder = NULL,
+  output.suffix = NULL,
   data.table.threads = NULL,
   verbose = TRUE
 )
 }
 \arguments{
-\item{data.folders}{Character vector. Paths to the folders containing data to be processed.
-Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly
-additional (Wildlife Computers) tag data.}
+\item{data}{A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
+containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
+\code{.rds} files, each containing data for a single individual. When a character vector is provided,
+files are loaded sequentially to optimize memory use. The output of the \link{importTagData} function
+is strongly recommended, as it formats the data appropriately for all downstream analysis.}
 
-\item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
-This subdirectory should include the sensor CSV files for the corresponding animal.}
-
-\item{wc.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
-(e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
-This subdirectory should contain the "Locations.csv" file with position data from the tag.}
-
-\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
-during the iteration process. This ensures that progress is saved incrementally, which can
-help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
-
-\item{output.folder}{Character. Path to the folder where the processed files will be saved.
-This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
-in the data folder corresponding to each ID. Default is \code{NULL}.}
-
-\item{output.suffix}{Character. A suffix to append to the file name when saving.
-This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, a suffix based on the sampling
-rate (e.g., \verb{-100Hz}) will be used. Default is \code{NULL}.}
-
-\item{id.metadata}{Data frame. Metadata about the IDs to associate with the processed data.
-Must contain at least columns for ID and tag type.}
-
-\item{id.col}{Character. Column name for ID in \code{id.metadata} (default: "ID").}
-
-\item{tag.col}{Character. Column name for the tag type in \code{id.metadata} (default: "tag").}
-
-\item{deploy.date.col}{Character. Column name for the tagging date in \code{id.metadata} (default: "tagging_date").}
-
-\item{deploy.lon.col}{Character. Column name for longitude in sensor data (default: "deploy_lon").}
-
-\item{deploy.lat.col}{Character. Column name for latitude in sensor data (default: "deploy_lat").}
-
-\item{pop.date.col}{Character. Column name for the popup date in \code{id.metadata} (default: "popup_date").}
-
-\item{pop.lon.col}{Character. Column name for popup longitude in sensor data (default: "popup_lon").}
-
-\item{pop.lat.col}{Character. Column name for popup latitude in sensor data (default: "popup_lat").}
-
-\item{axis.mapping}{Optional. A data frame containing the axis transformations for the IMU (Inertial Measurement Unit).
-This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame
-or to mark faulty sensor data as NA.
-The data frame should have three columns:
-\itemize{
-\item \emph{type}: A column specifying the tag type (\code{CAM} vs \code{CMD}).
-\item \emph{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
-\item \emph{from}: A column indicating the original axis in the sensor's coordinate system.
-\item \emph{to}: A column specifying the target axis in the desired coordinate system.
-}
-Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.}
+\item{downsample.to}{Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
+Use NULL to retain the original resolution. Defaults to 1.}
 
 \item{hard.iron.calibration}{Logical. Whether to apply hard-iron calibration (offset correction) to magnetometer data.
 Default is TRUE.}
@@ -107,21 +52,27 @@ Default is TRUE.}
 \item \code{"madgwick"}: High-accuracy 9-axis sensor fusion. Requires Python \code{AHRS} module.
 }}
 
-\item{madgwick.beta}{Numeric. The Madgwick filter's gain parameter (default: 0.1).
+\item{madgwick.beta}{Numeric. The Madgwick filter's gain parameter (default: 0.02).
 This parameter controls the trade-off between gyroscope and accelerometer measurements.
 \itemize{
 \item Higher values (e.g., 0.2-0.3) trust the accelerometer more, leading to faster convergence but potentially more noise
-\item Lower values (e.g., 0.01-0.05) trust the gyroscope more, resulting in smoother but potentially slower convergence
+.    \item Lower values (e.g., 0.01-0.05) trust the gyroscope more, resulting in smoother but potentially slower convergence
 }
 Only used when \code{orientation.algorithm = "madgwick"}.}
+
+\item{orientation.smoothing}{Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
+Uses circular mean. Set to NULL to disable. Default: 1.}
+
+\item{pitch.warning.threshold}{Numeric. Threshold (in degrees) for median pitch values that trigger orientation warnings.
+Default: 45 (will warn if median |pitch| > 45 degrees).}
+
+\item{roll.warning.threshold}{Numeric. Threshold (in degrees) for median roll values that trigger orientation warnings.
+Default: 45 (will warn if median |roll| > 45 degrees).}
 
 \item{dba.window}{Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.}
 
 \item{dba.smoothing}{Optional. Smoothing window (in seconds) for VeDBA/ODBA metrics.
 Uses arithmetic mean. Set to NULL to disable. Default: 2.}
-
-\item{orientation.smoothing}{Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
-Uses circular mean. Set to NULL to disable. Default: 1.}
 
 \item{motion.smoothing}{Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
 Uses arithmetic mean. Set to NULL to disable. Default: 1.}
@@ -129,23 +80,39 @@ Uses arithmetic mean. Set to NULL to disable. Default: 1.}
 \item{speed.smoothing}{Optional. Smoothing window (in seconds) for vertical speed.
 Uses arithmetic mean. Set to NULL to disable. Default: 2.}
 
+\item{calculate.paddle.speed}{Logical. If TRUE and the tag was equipped with a paddle wheel,
+estimates animal speed based on paddle wheel rotation frequency. Default is FALSE.}
+
+\item{speed.calibration.values}{A data.frame containing paddle wheel calibration values for speed estimation.
+Must contain at least three columns:
+\itemize{
+\item \code{year}: The year the calibration was performed (integer)
+\item \code{package_id}: The package identifier matching the tag's attribute (character)
+\item \code{slope}: The calibration slope value (numeric)
+}
+This parameter is only used when \code{calculate.paddle.speed = TRUE}. Default is NULL.}
+
 \item{burst.quantiles}{Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).}
-
-\item{downsample.to}{Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
-Use NULL to retain the original resolution. Defaults to 1.}
-
-\item{pitch.warning.threshold}{Numeric. Threshold (in degrees) for mean pitch values that trigger orientation warnings.
-Default: 45 (will warn if mean |pitch| > 45 degrees).}
-
-\item{roll.warning.threshold}{Numeric. Threshold (in degrees) for mean roll values that trigger orientation warnings.
-Default: 45 (will warn if mean |roll| > 45 degrees).}
 
 \item{check.time.anomalies}{Logical. Whether to check for and remove temporal gaps/discontinuities in the data.
 Default: TRUE.}
 
-\item{timezone}{Character string specifying the timezone for all datetime conversions.
-Must be one of the valid timezones from \code{OlsonNames()}. Defaults to "UTC" (Coordinated Universal Time).}
+\item{return.data}{Logical. Controls whether the function returns the processed data
+as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+(or both). Default is \code{TRUE}.}
+
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
+during the iteration process. This ensures that progress is saved incrementally, which can
+help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+
+\item{output.folder}{Character. Path to the folder where the processed files will be saved.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
+in the data folder corresponding to each ID. Default is \code{NULL}.}
+
+\item{output.suffix}{Character. A suffix to append to the file name when saving.
+This parameter is only used if \code{save.files = TRUE}.}
 
 \item{data.table.threads}{Integer or NULL. Specifies the number of threads
 that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
@@ -160,26 +127,31 @@ Notes:
 \item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
 }
 \value{
-A list where each element contains the processed sensor data for an individual folder.
-If location data from Wildlife Computers tags (e.g., MiniPATs, MK10s, SPOTs) is available,
-it will be integrated and processed accordingly.
+If \code{return.data = TRUE}, returns a list where each element contains the
+processed sensor data for an individual folder. If \code{return.data = FALSE},
+returns \code{NULL} invisibly. In all cases, data will be saved to disk if
+\code{save.files = TRUE}.
 }
 \description{
-This function imports and processes high-resolution archival tag data from specified directories,
-supporting sensor time series from multiple individuals. It utilizes \code{data.table::fread()} for fast
-CSV reading and automatically computes a wide range of kinematic and orientation metrics from
-accelerometer, magnetometer, and gyroscope signals (see the \emph{Details} section below for a complete list).
+This function processes high-resolution archival tag data, automatically computing a
+wide range of kinematic and orientation metrics from accelerometer, magnetometer,
+and gyroscope signals (see the \emph{Details} section below for a complete list).
+
 Orientation is estimated by default using the tilt-compensated compass method, which fuses accelerometer
 and magnetometer data to determine body orientation relative to gravity and magnetic north.
 Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
+
 A full 3D magnetic calibration can be applied prior to orientation estimation, including both
 hard iron (offset) and soft iron (scaling and misalignment) corrections.
-Optionally, the function also integrates location data from Wildlife Computers tags
-(MiniPATs, MK10s, SPOTs) if available. These should be provided in a dedicated subfolder
-(e.g., "SPOT") under each individual's directory. Deployment and pop-up coordinates are
-also extracted from metadata (if available) and included in the output dataset.
+
+For tags equipped with a magnetic paddle wheel, the function can also estimate swimming speed.
+This is achieved by extracting the dominant rotation frequency from the magnetometer's
+z-axis signal using a Fast Fourier Transform (FFT), which is then converted
+to speed using a tag-specific calibration slope
+
 After metric computation, the data can be downsampled to reduce its resolution and
 size for downstream analysis.
+
 Note: Python and the associated libraries \code{AHRS} and \code{numpy} (accessible via \code{reticulate}) are required
 if orientation is estimated using the Madgwick filter.
 }
@@ -233,4 +205,7 @@ Calculated as the difference in depth measurements divided by the time interval
 \item The active Python environment must include the \code{AHRS} and \code{numpy} modules.
 \item If unavailable, the function will return an informative error with installation guidance.
 }
+}
+\seealso{
+\link{importTagData}, \link{filterDeploymentData}.
 }

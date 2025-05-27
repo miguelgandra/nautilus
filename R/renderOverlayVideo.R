@@ -50,7 +50,7 @@
 #'   - A value of 0 represents lossless encoding, resulting in the highest quality but the largest file size.
 #'   - A value of 28 is considered a good balance between quality and compression for most use cases. This is the default value.
 #'   - A higher value (closer to 51) will result in lower quality and smaller file sizes.
-#' @param cores The number of processor cores to use for parallel computation. Defaults to 1 (single-core).
+#' @param n.cores The number of processor cores to use for parallel computation. Defaults to 1 (single-core).
 #' @return A video file with synchronized sensor overlays saved to the specified \code{output.file}.
 #'
 #' @details
@@ -84,7 +84,7 @@ renderOverlayVideo <- function(video.file,
                                jpeg.quality = 3,
                                video.compression = "h265",
                                crf = 28,
-                               cores = 1){
+                               n.cores = 1){
 
 
 
@@ -125,15 +125,15 @@ renderOverlayVideo <- function(video.file,
   if (vertical.speed.window <= 0 || !is.numeric(vertical.speed.window)) stop("'vertical.speed.window' must be a positive number.", call. = FALSE)
   if (tailbeat.window <= 0 || !is.numeric(tailbeat.window)) stop("'tailbeat.window' must be a positive number.", call. = FALSE)
   if (pseudo.track.window <= 0 || !is.numeric(pseudo.track.window)) stop("'pseudo.track.window' must be a positive number.", call. = FALSE)
-  if (cores <= 0 || !is.numeric(cores) || cores %% 1 != 0) stop("'cores' must be a positive integer.", call. = FALSE)
+  if (n.cores <= 0 || !is.numeric(n.cores) || n.cores %% 1 != 0) stop("'n.cores' must be a positive integer.", call. = FALSE)
 
   # validate parallel computing packages
-  if (cores>1){
+  if (n.cores>1){
     if(!requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
     if(!requireNamespace("doSNOW", quietly=TRUE)) stop("The 'doSNOW' package is required for parallel computing but is not installed. Please install 'doSNOW' using install.packages('doSNOW') and try again.", call. = FALSE)
     if(!requireNamespace("parallel", quietly=TRUE)){
       stop("The 'parallel' package is required for parallel computing but is not installed. Please install 'parallel' using install.packages('parallel') and try again.", call. = FALSE)
-    }else if(parallel::detectCores()<cores){
+    }else if(parallel::detectCores()<n.cores){
       stop(paste("Please choose a different number of cores for parallel computing (only", parallel::detectCores(), "available)."), call. = FALSE)
     }
   }
@@ -317,7 +317,7 @@ renderOverlayVideo <- function(video.file,
   # 3a - Overlay sensor data (single core) #####################################
   ##############################################################################
 
-  if(cores == 1){
+  if(n.cores == 1){
 
     # print progress message
     cat("Creating data overlay graphs...\n")
@@ -350,16 +350,16 @@ renderOverlayVideo <- function(video.file,
   ##############################################################################
 
   # use multiple cores to speed up computations
-  if(cores > 1) {
+  if(n.cores > 1) {
 
     # print progress message
     cat("Generating data overlay graphs...\n")
 
     # print information to console
-    cat(paste0("Starting parallel computation: ", cores, " cores\n"))
+    cat(paste0("Starting parallel computation: ", n.cores, " cores\n"))
 
     # register parallel backend with the specified number of cores
-    cl <- parallel::makeCluster(cores)
+    cl <- parallel::makeCluster(n.cores)
     doSNOW::registerDoSNOW(cl)
 
     # ensure the cluster is properly stopped when the function exits

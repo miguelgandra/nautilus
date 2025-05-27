@@ -90,6 +90,195 @@ NULL
 
 
 ##################################################################################################
+## Convert sensor units  #########################################################################
+
+#' Convert Sensor Values Between Common Measurement Units
+#'
+#' Standardizes sensor measurements by converting between different units, ensuring consistent
+#' units for downstream analysis. All gyroscope values are converted to rad/s and all
+#' acceleration values to g (standard gravity) by default.
+#'
+#' @param value Numeric vector of values to convert
+#' @param from.unit Character string specifying the current unit of measurement.
+#'   Supported acceleration units: "m/s2", "g"
+#'   Supported gyroscope units: "rad/s", "deg/s", "mrad/s"
+#'   Supported temperature units: "C" (Celsius), "F" (Fahrenheit), "K" (Kelvin)
+#'   Supported depth/pressure units: "m" (meters), "dbar" (decibar), "bar")
+#'   Supported magnetic units: "uT" (microtesla), "nT" (nanotesla), "mG" (milligauss)
+#'   Supported speed units: "m/s", "km/h", "knot", "mph"
+#'   Other supported units: "" (unitless)
+#' @param to.unit Character string specifying the target unit of measurement.
+#'   Use "" or NA for unitless values. If NULL, converts to standard units:
+#'   - Accelerometer data → "g"
+#'   - Gyroscope data → "rad/s"
+#'   - Temperature data → "C"
+#'   - Depth/Pressure data → "m"
+#'   - Magnetic data → "uT"
+#'   - Speed data → "m/s"
+#'   - Other data → original units
+#' @param verbose Logical. If `TRUE`, prints messages about the conversions performed.
+#'
+#' @return Numeric vector of converted values with the following guarantees:
+#'   - Acceleration always returned in g (standard gravity, 9.80665 m/s²)
+#'   - Gyroscopic data always returned in rad/s
+#'   - Magnetometer data always returned in µT
+#'   - Temperature always returned in °C
+#'   - Depth always returned in meters
+#'
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+
+
+.convertUnits <- function(value, from.unit, to.unit = NULL, verbose = FALSE) {
+
+  # Ensure input units are character and not empty/NA if not handled by default
+  from.unit <- as.character(from.unit)
+  if (length(from.unit) == 0 || is.na(from.unit) || from.unit == "") {
+    if (verbose) cat(paste0("Warning: `from.unit` is missing or empty. No conversion performed.\n"))
+    return(value)
+  }
+
+  # Handle NULL to.unit by converting to standard units
+  if (is.null(to.unit)) {
+    if (verbose) cat(paste0("Converting from '", from.unit, "' to standard unit.\n"))
+    to.unit <- dplyr::case_when(
+      from.unit %in% c("m/s2", "g") ~ "g",
+      from.unit %in% c("rad/s", "deg/s", "mrad/s") ~ "rad/s",
+      from.unit %in% c("C", "F", "K") ~ "C",
+      from.unit %in% c("m", "dbar", "bar") ~ "m",
+      from.unit %in% c("uT", "nT", "mG") ~ "uT",
+      from.unit %in% c("m/s", "km/h", "knot", "mph") ~ "m/s",
+      TRUE ~ from.unit
+    )
+  } else {
+    to.unit <- as.character(to.unit)
+    if (is.na(to.unit) || to.unit == "") {
+      if (verbose) cat(paste0("Target unit is empty or NA. Returning original values (unitless).\n"))
+      if (!is.numeric(value)) {
+        warning(paste0("Attempting to convert to unitless, but value is not numeric. Returning original values."), call. = FALSE, immediate = TRUE)
+      }
+      return(value)
+    }
+  }
+
+  # Return unchanged if units match
+  if (from.unit == to.unit) {
+    if (verbose) cat(paste0("Units match ('", from.unit, "'). No conversion needed.\n"))
+    return(value)
+  }
+
+  # --- Acceleration conversions ---
+  if (from.unit == "m/s2" && to.unit == "g") {
+    if (verbose) cat(paste0("Converting acceleration from m/s", "\U00B2", " to g.\n"))
+    return(value / 9.80665)
+  } else if (from.unit == "g" && to.unit == "m/s2") {
+    if (verbose) cat(paste0("Converting acceleration from g to m/s", "\U00B2", ".\n"))
+    return(value * 9.80665)
+
+    # --- Gyroscope conversions ---
+  } else if (from.unit == "deg/s" && to.unit == "rad/s") {
+    if (verbose) cat(paste0("Converting gyroscope from deg/s to rad/s.\n"))
+    return(value * pi / 180)
+  } else if (from.unit == "rad/s" && to.unit == "deg/s") {
+    if (verbose) cat(paste0("Converting gyroscope from rad/s to deg/s.\n"))
+    return(value * 180 / pi)
+  } else if (from.unit == "mrad/s" && to.unit == "rad/s") {
+    if (verbose) cat(paste0("Converting gyroscope from mrad/s to rad/s.\n"))
+    return(value / 1000)
+  } else if (from.unit == "rad/s" && to.unit == "mrad/s") {
+    if (verbose) cat(paste0("Converting gyroscope from rad/s to mrad/s.\n"))
+    return(value * 1000)
+  } else if (from.unit == "mrad/s" && to.unit == "deg/s") {
+    if (verbose) cat(paste0("Converting gyroscope from mrad/s to deg/s.\n"))
+    return(value * (180 / pi) / 1000)
+  } else if (from.unit == "deg/s" && to.unit == "mrad/s") {
+    if (verbose) cat(paste0("Converting gyroscope from deg/s to mrad/s.\n"))
+    return(value * (pi / 180) * 1000)
+
+    # --- Temperature conversions ---
+  } else if (from.unit == "C" && to.unit == "F") {
+    if (verbose) cat(paste0("Converting temperature from Celsius to Fahrenheit.\n"))
+    return((value * 9/5) + 32)
+  } else if (from.unit == "F" && to.unit == "C") {
+    if (verbose) cat(paste0("Converting temperature from Fahrenheit to Celsius.\n"))
+    return((value - 32) * 5/9)
+  } else if (from.unit == "C" && to.unit == "K") {
+    if (verbose) cat(paste0("Converting temperature from Celsius to Kelvin.\n"))
+    return(value + 273.15)
+  } else if (from.unit == "K" && to.unit == "C") {
+    if (verbose) cat(paste0("Converting temperature from Kelvin to Celsius.\n"))
+    return(value - 273.15)
+  } else if (from.unit == "F" && to.unit == "K") {
+    if (verbose) cat(paste0("Converting temperature from Fahrenheit to Kelvin.\n"))
+    return((value - 32) * 5/9 + 273.15)
+  } else if (from.unit == "K" && to.unit == "F") {
+    if (verbose) cat(paste0("Converting temperature from Kelvin to Fahrenheit.\n"))
+    return((value - 273.15) * 9/5 + 32)
+
+    # --- Pressure/Depth conversions ---
+  } else if (from.unit == "dbar" && to.unit == "m") {
+    if (verbose) cat(paste0("Converting depth/pressure from decibar to meters (approx.).\n"))
+    return(value)
+  } else if (from.unit == "m" && to.unit == "dbar") {
+    if (verbose) cat(paste0("Converting depth/pressure from meters to decibar (approx.).\n"))
+    return(value)
+  } else if (from.unit == "bar" && to.unit == "m") {
+    if (verbose) cat(paste0("Converting depth/pressure from bar to meters (approx.).\n"))
+    return(value * 10)
+  } else if (from.unit == "m" && to.unit == "bar") {
+    if (verbose) cat(paste0("Converting depth/pressure from meters to bar (approx.).\n"))
+    return(value / 10)
+  } else if (from.unit == "dbar" && to.unit == "bar") {
+    if (verbose) cat(paste0("Converting pressure from decibar to bar.\n"))
+    return(value / 10)
+  } else if (from.unit == "bar" && to.unit == "dbar") {
+    if (verbose) cat(paste0("Converting pressure from bar to decibar.\n"))
+    return(value * 10)
+
+    # --- Magnetic field conversions ---
+  } else if (from.unit == "nT" && to.unit == "uT") {
+    if (verbose) cat(paste0("Converting magnetic field from nanotesla to microtesla.\n"))
+    return(value / 1000)
+  } else if (from.unit == "uT" && to.unit == "nT") {
+    if (verbose) cat(paste0("Converting magnetic field from microtesla to nanotesla.\n"))
+    return(value * 1000)
+  } else if (from.unit == "mG" && to.unit == "uT") {
+    if (verbose) cat(paste0("Converting magnetic field from milligauss to microtesla.\n"))
+    return(value / 10)
+  } else if (from.unit == "uT" && to.unit == "mG") {
+    if (verbose) cat(paste0("Converting magnetic field from microtesla to milligauss.\n"))
+    return(value * 10)
+
+    # --- Speed conversions ---
+  } else if (from.unit == "km/h" && to.unit == "m/s") {
+    if (verbose) cat(paste0("Converting speed from km/h to m/s.\n"))
+    return(value / 3.6)
+  } else if (from.unit == "m/s" && to.unit == "km/h") {
+    if (verbose) cat(paste0("Converting speed from m/s to km/h.\n"))
+    return(value * 3.6)
+  } else if (from.unit == "knot" && to.unit == "m/s") {
+    if (verbose) cat(paste0("Converting speed from knots to m/s.\n"))
+    return(value * 0.514444)
+  } else if (from.unit == "m/s" && to.unit == "knot") {
+    if (verbose) cat(paste0("Converting speed from m/s to knots.\n"))
+    return(value / 0.514444)
+  } else if (from.unit == "mph" && to.unit == "m/s") {
+    if (verbose) cat(paste0("Converting speed from mph to m/s.\n"))
+    return(value * 0.44704)
+  } else if (from.unit == "m/s" && to.unit == "mph") {
+    if (verbose) cat(paste0("Converting speed from m/s to mph.\n"))
+    return(value / 0.44704)
+
+    # --- Fallback for unsupported conversions ---
+  } else {
+    warning(paste("No conversion defined from", from.unit, "to", to.unit,
+                  "- returning original values for column."), call. = FALSE, immediate = TRUE)
+    return(value)
+  }
+}
+
+
+##################################################################################################
 ## Calculate circular rolling mean   #############################################################
 
 #' Calculate circular/angular rolling mean

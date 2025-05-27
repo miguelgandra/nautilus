@@ -22,7 +22,7 @@
   png.width,
   png.height,
   png.res,
-  cores = 1
+  n.cores = 1
 )
 }
 \arguments{
@@ -68,7 +68,7 @@ Default is NULL (plots shown in R graphics device).}
 
 \item{png.res}{Numeric. Resolution of PNG output in ppi (default = 300).}
 
-\item{cores}{Number of CPU cores for parallel processing (default = 1)}
+\item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
 }
 \value{
 data.table with dead-reckoned positions and VPC corrections
