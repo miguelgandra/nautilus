@@ -189,7 +189,10 @@ importTagData <- function(data.folders,
   }
 
   # validate `id.metadata` argument
-  if(!is.data.frame(id.metadata)) stop("`id.metadata` must be a data frame.", call. = FALSE)
+  if(!is.data.frame(id.metadata)) stop("`id.metadata` must be a data frame or data table.", call. = FALSE)
+
+  # convert to data.frame if it is a data.table
+  if (inherits(id.metadata, "data.table")) id.metadata <- as.data.frame(id.metadata)
 
   # validate import.mapping
   if (!is.null(import.mapping)) {
