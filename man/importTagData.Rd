@@ -51,8 +51,8 @@ standard column names for archival G-Pilot and i-Pilot data. When specified, it 
 with three columns:
 \itemize{
 \item \strong{colname}: The exact column name as it appears in the input CSV file.
-\item \strong{sensor}: The standardized sensor name to be used in the processed data. Valid options include: \code{"date"}, \code{"time"}, \code{"datetime"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"}, \code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}.
-\item \strong{units}: The units of the sensor data. Valid options include: \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"}, \code{"m"}, or \code{""} (an empty string) for unitless/dimensionless quantities.
+\item \strong{sensor}: The standardized sensor name to be used in the processed data. Valid options include: \code{"date"}, \code{"time"}, \code{"datetime"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"}, \code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}, \code{"paddle_freq"}, \code{"paddle_speed"}.
+\item \strong{units}: The units of the sensor data. Valid options include: \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"}, \code{"m"}, \code{"Hz"}, \code{"m/s"}, or \code{""} (an empty string) for unitless/dimensionless quantities.
 }
 For date and time columns, use \code{sensor = "datetime"} and \code{units = "UTC"}.}
 

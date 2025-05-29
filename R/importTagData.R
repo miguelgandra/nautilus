@@ -59,8 +59,8 @@
 #' with three columns:
 #' \itemize{
 #'    \item \strong{colname}: The exact column name as it appears in the input CSV file.
-#'    \item \strong{sensor}: The standardized sensor name to be used in the processed data. Valid options include: \code{"date"}, \code{"time"}, \code{"datetime"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"}, \code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}.
-#'    \item \strong{units}: The units of the sensor data. Valid options include: \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"}, \code{"m"}, or \code{""} (an empty string) for unitless/dimensionless quantities.
+#'    \item \strong{sensor}: The standardized sensor name to be used in the processed data. Valid options include: \code{"date"}, \code{"time"}, \code{"datetime"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"}, \code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}, \code{"paddle_freq"}, \code{"paddle_speed"}.
+#'    \item \strong{units}: The units of the sensor data. Valid options include: \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"}, \code{"m"}, \code{"Hz"}, \code{"m/s"}, or \code{""} (an empty string) for unitless/dimensionless quantities.
 #' }
 #' For date and time columns, use `sensor = "datetime"` and `units = "UTC"`.
 #' @param axis.mapping Optional. A data frame containing the axis transformations for the IMU (Inertial Measurement Unit).
@@ -204,7 +204,8 @@ importTagData <- function(data.folders,
       stop("`import.mapping` must be a data frame with columns: 'colname', 'sensor', and 'units'.", call. = FALSE)
     }
     # define valid sensor names
-    valid_sensors <- c("date", "time", "datetime", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "depth", "temp")
+    valid_sensors <- c("date", "time", "datetime", "ax", "ay", "az", "gx", "gy", "gz",
+                       "mx", "my", "mz", "depth", "temp", "paddle_speed", "paddle_freq")
     if (any(!import.mapping$sensor %in% valid_sensors)) {
       invalid_sensors <- unique(import.mapping$sensor[!import.mapping$sensor %in% valid_sensors])
       stop(paste0("Invalid sensor name(s) found in `import.mapping`: ",
@@ -212,7 +213,7 @@ importTagData <- function(data.folders,
                   ". Valid sensor names are: ", paste(valid_sensors, collapse = ", "), "."), call. = FALSE)
     }
     # validate units in import.mapping
-    valid_units <- c("UTC", "m/s2", "g", "mrad/s", "rad/s", "deg/s", "uT", "C", "m", "")
+    valid_units <- c("UTC", "m/s2", "g", "mrad/s", "rad/s", "deg/s", "uT", "C", "m", "m/s", "Hz", "")
     if (any(!import.mapping$units %in% valid_units)) {
       invalid_units <- unique(import.mapping$units[!import.mapping$units %in% valid_units])
       stop(paste0("Invalid unit(s) found in `import.mapping`: ",
@@ -368,7 +369,7 @@ importTagData <- function(data.folders,
   ##############################################################################
 
   # default column mappings 1
-  type1 <- rbind(
+  CATS <- rbind(
     c("Date (UTC)", "date", "UTC"),
     c("Time (UTC)", "time", "UTC"),
     c("Accelerometer X [m/s\u00b2]", "ax", "m/s2"),
@@ -389,7 +390,7 @@ importTagData <- function(data.folders,
   )
 
   # default column mappings 2
-  type2 <- rbind(
+  CEIIA <- rbind(
     c("Date", "datetime", "UTC"),
     c("Ax (g)", "ax", "g"),
     c("Ay (g)", "ay", "g"),
@@ -402,16 +403,14 @@ importTagData <- function(data.folders,
     c("Mz (\u00b5T)", "mz", "uT"),
     c("Temperature (\u00b0C)", "temp", "C"),
     c("Temperature (\u00baC)", "temp", "C"),
-    c("Depth (m)", "depth", "m")
+    c("Depth (m)", "depth", "m"),
+    c("Ticks/s", "paddle_freq", "Hz"),
+    c("Velocity (m/s)", "paddle_speed", "m/s")
   )
 
   # combine all default mappings
-  default_mappings <- as.data.frame(rbind(type1, type2), stringsAsFactors = FALSE)
+  default_mappings <- as.data.frame(rbind(CATS, CEIIA), stringsAsFactors = FALSE)
   colnames(default_mappings) <- c("colname", "sensor", "units")
-
-  # define accepted units
-  valid_units <- c("UTC", "m/s2", "g", "mrad/s", "rad/s", "deg/s", "uT", "C", "m")
-
 
   # determine the actual mapping to use
   if (!is.null(import.mapping)) {
@@ -525,6 +524,8 @@ importTagData <- function(data.folders,
 
     # check if all required sensor columns are present
     required_cols <- c("ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "depth", "temp")
+    optional_cols <- c("paddle_speed", "paddle_freq")
+
     missing_sensor_cols <- setdiff(required_cols, file_mapping$sensor_name_out)
     if (length(missing_sensor_cols) > 0) {
       warning(
@@ -598,6 +599,15 @@ importTagData <- function(data.folders,
       # print the result
       cat("Total rows:", result, "\n")
     }
+
+
+    # check package ID
+    package_id <- NULL
+    if(!is.null(package.id.col)){
+      package_id <- animal_info[[package.id.col]]
+      cat("Package ID:", package_id, "\n")
+    }
+
 
     ############################################################################
     # Convert units ############################################################
@@ -680,6 +690,11 @@ importTagData <- function(data.folders,
 
     # order columns
     col_order <- c("ID", "datetime", required_cols)
+    # ddd optional columns if they exist
+    present_optional <- optional_cols[optional_cols %in% names(sensor_data)]
+    if(length(present_optional) > 0) {
+      col_order <- c(col_order, present_optional)
+    }
     data.table::setcolorder(sensor_data, col_order)
 
 
@@ -831,11 +846,6 @@ importTagData <- function(data.folders,
     has_paddle <- NULL
     if(!is.null(paddle.wheel.col)) has_paddle <- animal_info[[paddle.wheel.col]]
 
-    # check package ID
-    package_id <- NULL
-    if(!is.null(package.id.col)) package_id <- animal_info[[package.id.col]]
-
-
     # create new attributes to save relevant variables
     attr(sensor_data, 'nautilus.version') <- utils::packageVersion("nautilus")
     attr(sensor_data, 'id') <- id
@@ -863,7 +873,7 @@ importTagData <- function(data.folders,
     if(save.files){
 
       # feedback message
-      if (verbose) cat("Saving file...\n")
+      if (verbose) cat("Saving file... ")
 
       # determine the output directory: use the specified output folder or the current data folder
       output_dir <- ifelse(!is.null(output.folder), output.folder, data.folders[i])

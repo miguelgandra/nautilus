@@ -7,11 +7,11 @@
 # efficiently import and process archival tag data. It demonstrates the following features:
 #
 # ---> Import, standardize and process archival tag data from multiple animals.
-# ---> Automatically compute key metrics on acceleration, orientation, and linear motion.
 # ---> Integrate and merge location data derived from PSATs (pop-up satellite archival tags)
+# ---> Automatically filter pre- and post-deployment data to focus on animal attachment periods.
+# ---> Automatically compute key metrics on acceleration, orientation, and linear motion.
 # ---> Optionally downsample high-frequency sensor data to reduce volume and enhance manageability.
 # ---> Clean up spurious data sections before or after large time gaps.
-# ---> Automatically filter pre- and post-deployment data to focus on animal attachment periods.
 # ---> Detect and remove sensor outliers based on abrupt changes or prolonged flat-line readings.
 # ---> Estimate tail beat frequencies based on wavelet analysis.
 # ---> Generate summary statistics on key metrics for all animals.
@@ -211,8 +211,20 @@ axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
 # Import tag data #############################################################
 ################################################################################
 
-# For detailed information on all available arguments, please consult the function
-# documentation by running: ?importTagData
+# This section imports and standardizes raw tag data from multiple deployments
+# using the `importTagData` function.
+#
+# To avoid loading all datasets into memory simultaneously, we set:
+#   - `return.data = FALSE` to prevent storing data in RAM
+#   - `save.files = TRUE` to save each processed dataset directly to disk
+#
+# This way, each individual's data is handled sequentially and saved as an `.rds` file
+# during processing. The final `data_list` object will be empty, but all files will be
+# safely stored in the specified output folder. This workflow is recommended when
+# working with large datasets or limited memory.
+#
+# For details on all available arguments, run: ?importTagData
+
 
 # Define the folder containing tag data
 data_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/data", recursive = FALSE)
@@ -223,11 +235,10 @@ data_folders <- data_folders[1:58]
 # Import and standardize tag data using the "importTagData" function
 data_list <- importTagData(data.folders = data_folders,
                            sensor.subdirectory = "CMD",
+                           wc.subdirectory = NULL,
+                           timezone = "UTC",
                            import.mapping = NULL,
                            axis.mapping = axes_config,
-                           return.data = FALSE,
-                           save.files = TRUE,
-                           output.folder = "./data processed/imported/",
                            id.metadata = animal_metadata,
                            id.col = "ID",
                            tag.col = "tag",
@@ -237,9 +248,84 @@ data_list <- importTagData(data.folders = data_folders,
                            pop.date.col = "popup_date",
                            pop.lon.col = "popup_lon",
                            pop.lat.col = "popup_lat",
+                           package.id.col = "package_id",
                            paddle.wheel.col = "paddle_wheel",
-                           timezone = "UTC",
+                           return.data = FALSE,
+                           save.files = TRUE,
+                           output.folder = "./data processed/imported/",
+                           output.suffix = NULL,
+                           data.table.threads = NULL,
                            verbose = TRUE)
+
+
+################################################################################
+# Filter out pre- and post-deployment data #####################################
+################################################################################
+
+# The `filterDeploymentData` function offers two ways to define the deployment period:
+
+# 1. Automated Depth-Based Detection:
+#    If no manual input is provided, the function applies a binary segmentation
+#    algorithm to detect shifts in depth and its variance. These changes are
+#    used to estimate the most likely attachment and detachment times. This method
+#    is useful for quickly processing multiple individuals without prior knowledge
+#    of exact deployment intervals.
+
+# 2. Custom Deployment Times:
+#    Alternatively, users can supply known deployment windows by passing a
+#    `data.frame` to the `custom.deployment.times` argument. Each row must
+#    contain an `ID`, `start`, and `end` time (as POSIXct objects). This input
+#    overrides the automated detection and allows precise truncation of the
+#    dataset to match known deployment intervals.
+
+# Diagnostic plots are generated for each filtered dataset to visually assess
+# the effectiveness of the filtering and review data quality and trends
+# within the identified deployment window.
+
+
+# Define known deployment intervals (manual input)
+deploy_list <- list(
+  list(ID = "PIN_02", start = as.POSIXct("2019-09-11 12:35:00", tz = "UTC"), end = as.POSIXct("2019-09-12 16:32:00", tz = "UTC")),
+  list(ID = "PIN_09", start = as.POSIXct("2020-08-22 15:20:00", tz = "UTC"), end = as.POSIXct("2020-08-23 00:49:03", tz = "UTC")),
+  list(ID = "PIN_10", start = as.POSIXct("2020-08-23 16:25:00", tz = "UTC"), end = as.POSIXct("2020-08-23 20:48:24", tz = "UTC")),
+  list(ID = "PIN_16", start = as.POSIXct("2022-09-18 17:48:00", tz = "UTC"), end = as.POSIXct("2022-09-19 08:34:00", tz = "UTC")),
+  list(ID = "PIN_23", start = as.POSIXct("2023-08-31 11:00:00", tz = "UTC"), end = as.POSIXct("2023-08-31 21:45:25", tz = "UTC")),
+  list(ID = "PIN_CAM_03", start = as.POSIXct("2023-08-31 11:00:00", tz = "UTC"), end = as.POSIXct("2023-08-31 21:45:25", tz = "UTC")),
+  list(ID = "PIN_CAM_13", start = as.POSIXct("2019-09-27 10:25:00", tz = "UTC"), end = as.POSIXct("2019-09-27 12:46:42", tz = "UTC"))
+)
+deploy_periods <- do.call(rbind, lapply(deploy_list, as.data.frame))
+
+
+# Load the previously processed/downsampled files
+data_files <- list.files("./data processed/imported", full.names = TRUE)
+
+# Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
+filter_results <- filterDeploymentData(data = data_files,
+                                       id.col = "ID",
+                                       datetime.col = "datetime",
+                                       depth.col = "depth",
+                                       custom.deployment.times = deploy_periods,
+                                       depth.threshold = 3.5,
+                                       variance.threshold = 6,
+                                       max.changepoints = 6,
+                                       display.plots = FALSE,
+                                       save.plots = TRUE,
+                                       plot.metrics = c("temp", "ax"),
+                                       plot.metrics.labels = c("Temperature (\u00B0C)", "Acc X (\u00B0)"),
+                                       return.data = FALSE,
+                                       save.files = TRUE,
+                                       output.folder = "./data processed/filtered/",
+                                       output.suffix = NULL)
+
+
+# Save the recorded plots to a PDF file for reviewing the filtered data.
+pdf("./plots/filtered_deployments.pdf", width = 8.5, height = 5)
+for(i in 1:length(filter_results$plots)){
+  replayPlot(filter_results$plots[[i]], reloadPkgs = FALSE)
+}
+dev.off()
+
+
 
 
 ################################################################################
@@ -328,7 +414,7 @@ for (pkg_id in all_package_ids) {
     # Perform linear interpolation/extrapolation using 'approx'.
     # This case relies on the observed trend for that specific tag if available,
     # as it's the most data-driven approach for that tag.
-    interp_values <- zoo::approx(x = known_years, y = known_slopes, xout = current_years,
+    interp_values <- approx(x = known_years, y = known_slopes, xout = current_years,
                             method = "linear", rule = 2)$y
     paddle_calibration$processed_slope[idx_pkg] <- interp_values
   }
@@ -344,92 +430,50 @@ paddle_calibration$processed_slope <- NULL
 # Process tag data #############################################################
 ################################################################################
 
-# NOTE: Specific folders can be selected to process the datasets in batches
-# by defining a list of data folders to process. This can help avoid memory
-# bottlenecks when processing many large datasets. By setting "save.files = TRUE",
-# the processed files will be saved to the output folder.
+# In this section, we process the previously filtered high-resolution datasets.
+# The `processTagData()` function handles raw sensor signals (accelerometer,
+# magnetometer, and gyroscope) and derives a wide array of orientation,
+# kinematic, and motion metrics automatically.
 
-# For detailed information on all available arguments and the computed metrics,
-# please consult the function documentation by running:
-# ?processTagData
+# After computing metrics, data can be downsampled (e.g. to 20 Hz) to reduce
+# resolution and file size for downstream analysis.
+
+# To avoid loading all datasets into memory simultaneously, we set:
+#   - `return.data = FALSE` to prevent storing data in RAM
+#   - `save.files = TRUE` to save each processed dataset directly to disk
+
+# For a complete description of all input arguments and the metrics computed,
+# refer to the function help page:
+#   ?processTagData
+
 
 # Load the previously imported files
 data_files <- list.files("./data processed/imported", full.names = TRUE)
 
-
 # Process tag data using the "processTagData" function
 data_list <- processTagData(data = data_files,
-                            return.data = FALSE,
-                            save.files = TRUE,
-                            output.folder = "./data processed/complete/20Hz",
                             downsample.to = 20,
                             hard.iron.calibration = TRUE,
                             soft.iron.calibration = FALSE,
                             orientation.algorithm = "tilt_compass",
-                            calculate.paddle.speed = TRUE,
-                            speed.calibration.values = paddle_calibration,
+                            madgwick.beta = 0.02,
+                            orientation.smoothing = 1,
+                            pitch.warning.threshold = 45,
+                            roll.warning.threshold = 45,
                             dba.window = 6,
                             dba.smoothing = 2,
-                            orientation.smoothing = 1,
                             motion.smoothing = 1,
                             speed.smoothing = 2,
+                            calculate.paddle.speed = TRUE,
+                            speed.calibration.values = paddle_calibration,
                             burst.quantiles = c(0.95, 0.99),
+                            check.time.anomalies = TRUE,
+                            return.data = FALSE,
+                            save.files = TRUE,
+                            output.folder = "./data processed/processed/20Hz",
+                            output.suffix = NULL,
+                            data.table.threads = NULL,
                             verbose = TRUE)
-
-
-################################################################################
-# Filter out pre- and post-deployment data #####################################
-################################################################################
-
-# The `filterDeploymentData` function offers two ways to define the deployment period:
-# 1. Automated Depth-Based Detection:
-#    It uses binary segmentation to analyze changes in depth and variance,
-#    identifying the most likely attachment and popup times. This is the
-#    default behavior if no custom times are provided.
-# 2. Custom Deployment Times:
-#    Users can provide a data.frame with specific start and end datetimes
-#    for each individual ID via the 'custom.deployment.times' argument.
-#    This option overrides the depth-based detection and truncates the data
-#    precisely to the specified intervals.
-
-# Diagnostic plots are generated for each filtered dataset to visually assess
-# the effectiveness of the filtering and review data quality and trends
-# within the identified deployment window.
-
-# Load the previously processed/downsampled files
-data_files <- list.files("./data processed/complete/20Hz", full.names = TRUE)
-
-# Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
-filter_results <- filterDeploymentData(data = data_files,
-                                       custom.deployment.times = NULL,
-                                       depth.threshold = 3.5,
-                                       variance.threshold = 6,
-                                       max.changepoints = 6,
-                                       display.plots = FALSE,
-                                       save.plots = TRUE,
-                                       plot.metrics = c("pitch", "roll"),
-                                       plot.metrics.labels = c("Pitch (\u00BA)", "Roll (\u00BA)"),
-                                       return.data = TRUE,
-                                       save.files = FALSE)
-
-# Extract the filtered data from the results
-filtered_list <- filter_results$filtered_data
-
-# Remove empty data tables from the list
-filtered_list <- filtered_list[sapply(filtered_list, nrow) != 0]
-
-# Save the recorded plots to a PDF file for reviewing the filtered data.
-pdf("./plots/filtered_deployments_ms.pdf", width = 8, height = 5.5)
-for(i in 1:length(filter_results$plots)){
-  replayPlot(filter_results$plots[[i]], reloadPkgs = FALSE)
-}
-dev.off()
-
-
-# Adjust deployment periods manually if needed
-# Trim data for PIN_CAM_13 to exclude records after the tag pop-off time
-popoff <- as.POSIXct("2019-09-27 12:46:42", tz="UTC")
-filtered_list[["PIN_CAM_13"]] <- filtered_list[["PIN_CAM_13"]][datetime <= popoff]
 
 
 
@@ -539,7 +583,7 @@ for(i in 1:length(filtered_list)){
 ################################################################################
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/filtered/20Hz", full.names = TRUE)
+data_files <- list.files("./data processed/imported", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 filtered_list <- vector("list", length(data_files))

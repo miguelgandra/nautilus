@@ -732,90 +732,113 @@ processTagData <- function(data,
     ############################################################################
 
     if (calculate.paddle.speed) {
-      # initialize columns
-      individual_data[, paddle_freq := NA_real_]
-      individual_data[, paddle_speed := NA_real_]
-      individual_data[, paddle_quality := NA_real_]
 
-      # check if paddle wheel info is available
-      has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
-      if (!has_paddle_info) {
-        # provide feedback to the user if verbose mode is enabled
-        if (verbose)
-          cat("---> No paddle wheel info, skipping speed estimation\n")
+      # determine if pre-calculated columns exist
+      has_precalculated_freq <- "paddle_freq" %in% names(individual_data)
+      has_precalculated_speed <- "paddle_speed" %in% names(individual_data)
 
-      } else{
-        # check if this tag has a paddle wheel
-        if (attr(individual_data, "paddle.wheel") == FALSE) {
-          # provide feedback to the user if verbose mode is enabled
-          if (verbose)
-            cat("---> Tag has no paddle wheel, skipping speed estimation\n")
+      # initialize columns if they don't exist
+      if (!has_precalculated_freq) individual_data[, paddle_freq := NA_real_]
+      if (!has_precalculated_speed) individual_data[, paddle_speed := NA_real_]
 
-        } else{
-          # check if the package ID is available
-          has_package <- !is.null(attr(individual_data, "package.id"))
+      # initialize flag to determine if we should calculate speed internally
+      perform_internal_calculation <- TRUE
 
-          if (!has_package) {
-            # provide feedback to the user if verbose mode is enabled
-            message("No packageID found for the current tag, skipping speed estimation")
 
-          } else{
-            package_id <- attr(individual_data, "package.id")
+      #############################################################
+      # check for existing valid paddle data ######################
 
-            # ensure calibration information is available for this tag
-            if (!is.null(attr(individual_data, "deployment.info"))) {
-              deploy_year <- as.integer(format(
-                attr(individual_data, "deployment.info")$datetime,
-                "%Y"
-              ))
-            } else{
-              deploy_year <- as.integer(format(individual_data$datetime[1], "%Y"))
-            }
-            tag_calibration <- speed.calibration.values[speed.calibration.values$year == deploy_year &
-                                                          speed.calibration.values$package_id == package_id, ]
-            has_calibration_info <- nrow(tag_calibration) > 0
+      # check if existing data is meaningful (not all NA and not constant)
+      is_freq_meaningful <- has_precalculated_freq &&
+        !all(is.na(individual_data$paddle_freq)) &&
+        length(unique(na.omit(individual_data$paddle_freq))) > 1
 
-            # if no calibration information is available, skip
-            if (!has_calibration_info) {
-              if (verbose)
-                message("No calibration values found for this tag, skipping speed estimation")
-            } else {
-              # check if sampling frequency is enough to resolve paddle wheel rotation frequencies
-              if (sampling_freq < 50) {
-                if (verbose)
-                  message("---> Sampling frequency \u2264 50Hz, skipping speed estimation")
+      is_speed_meaningful <- has_precalculated_speed &&
+        !all(is.na(individual_data$paddle_speed)) &&
+        length(unique(na.omit(individual_data$paddle_speed))) > 1
 
-              } else{
-                # provide feedback to the user if verbose mode is enabled
-                if (verbose)
-                  cat("---> Estimating paddle wheel rotation speed\n")
-                if (verbose)
-                  cat(sprintf(
-                    "     (calibration slope: %.4f)\n",
-                    tag_calibration$slope
-                  ))
+      if (is_freq_meaningful && is_speed_meaningful) {
+        if (verbose) cat("---> Paddle frequency and speed already present, skipping estimation\n")
+        perform_internal_calculation <- FALSE
 
-                # calculate frequencies and speed
-                paddle_data <- .getPaddleSpeed(
-                  mz = individual_data$mz,
-                  sampling.rate = sampling_freq,
-                  calibration.slope = tag_calibration$slope,
-                  smooth.window = speed.smoothing,
-                  quality.check = TRUE
-                )
+      } else if (has_precalculated_speed && !has_precalculated_freq && is_speed_meaningful) {
+        if (verbose) cat("---> Paddle speed already present, setting paddle_freq to NA\n")
+        perform_internal_calculation <- FALSE
 
-                # add to sensor data
-                individual_data[, paddle_freq := paddle_data$freq]
-                individual_data[, paddle_speed := paddle_data$speed]
-                if (!is.null(paddle_data$peak.prominence)) {
-                  individual_data[, paddle_quality := paddle_data$peak.prominence]
-                }
-              }
-            }
+      } else if ((has_precalculated_freq || has_precalculated_speed) && verbose) {
+        if (verbose) cat("---> Paddle data found but invalid (constant or NA). Recalculating.\n")
+      }
+
+      #############################################################
+      # remaining checks for paddle wheel setup ###################
+
+      # check if the tag was equipped with a paddle whee
+      if (perform_internal_calculation) {
+        has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
+        if (!has_paddle_info) {
+          if (verbose) cat("---> No paddle wheel info found, skipping speed estimation\n")
+          perform_internal_calculation <- FALSE
+        } else if (attr(individual_data, "paddle.wheel") == FALSE) {
+          if (verbose) cat("---> Tag has no paddle wheel, skipping speed estimation\n")
+          perform_internal_calculation <- FALSE
+        }
+      }
+
+      # check package ID and calibration
+      if (perform_internal_calculation) {
+        has_package <- !is.null(attr(individual_data, "package.id"))
+        if (!has_package) {
+          message("No packageID found for the current tag, skipping speed estimation")
+          perform_internal_calculation <- FALSE
+        } else {
+          package_id <- attr(individual_data, "package.id")
+
+          # Determine deployment year for calibration lookup
+          if (!is.null(attr(individual_data, "deployment.info"))) {
+            deploy_year <- as.integer(format(attr(individual_data, "deployment.info")$datetime, "%Y"))
+          } else {
+            deploy_year <- as.integer(format(individual_data$datetime[1], "%Y"))
+          }
+
+          tag_calibration <- speed.calibration.values[speed.calibration.values$year == deploy_year &
+                                                        speed.calibration.values$package_id == package_id, ]
+          has_calibration_info <- nrow(tag_calibration) > 0
+
+          if (!has_calibration_info) {
+            if (verbose) message("No calibration values found for this tag, skipping speed estimation")
+            perform_internal_calculation <- FALSE
+          } else if (sampling_freq < 50) {
+            if (verbose) message("Sampling freq too low (\u2264 50Hz), skipping speed estimation")
+            perform_internal_calculation <- FALSE
           }
         }
       }
+
+      #############################################################
+      # perform internal speed estimation if all checks pass ######
+
+      if (perform_internal_calculation) {
+
+        # print message
+        if (verbose) {
+          cat("---> Estimating paddle wheel rotation speed\n")
+          cat(sprintf("     (calibration slope: %.4f)\n", tag_calibration$slope))
+        }
+
+        # calculate frequencies and speed
+        paddle_data <- .getPaddleSpeed(
+          mz = individual_data$mz,
+          sampling.rate = sampling_freq,
+          calibration.slope = tag_calibration$slope,
+          smooth.window = speed.smoothing,
+        )
+
+        # add to sensor data
+        individual_data[, paddle_freq := paddle_data$freq]
+        individual_data[, paddle_speed := paddle_data$speed]
+      }
     }
+
 
     ############################################################################
     # Downsample data ##########################################################
@@ -825,7 +848,9 @@ processTagData <- function(data,
     metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
                  "accel","odba","vedba","roll", "pitch", "heading",
                  "surge", "sway", "heave", "vertical_speed")
-    if(has_paddle_info) metrics <- c(metrics, "paddle_freq", "paddle_speed")
+    if (calculate.paddle.speed) {
+      if(has_paddle_info) metrics <- c(metrics, "paddle_freq", "paddle_speed")
+    }
     position_cols <- c("PTT", "position_type", "lat", "lon", "quality")
 
     # store current sampling frequency
@@ -1005,7 +1030,7 @@ processTagData <- function(data,
     if(save.files){
 
       # feedback message
-      if (verbose) cat("Saving file...\n")
+      if (verbose) cat("Saving file... ")
 
       # determine the output directory: use the specified output folder, or if not provided,
       # use the folder of the current file (if data[i] is a file path), or default to "./"

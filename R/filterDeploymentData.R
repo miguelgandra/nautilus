@@ -282,6 +282,12 @@ filterDeploymentData <- function(data,
     original_attributes <- attributes(individual_data)
     original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
 
+    # correct negative depths
+    individual_data[depth < 0, depth := 0]
+
+    # set default flag
+    valid_dataset <- TRUE
+
 
     ############################################################################
     # Prepare variables ########################################################
@@ -326,14 +332,13 @@ filterDeploymentData <- function(data,
     # Downsample data to 1 Hz ##################################################
     ############################################################################
 
-    # check if 'processed.sampling.frequency' attribute exists in the dataset
-    # if present, use it; otherwise, calculate the sampling frequency from the data
-    sampling_freq <- if ("processed.sampling.frequency" %in% names(attributes(individual_data))) {
-      attributes(individual_data)$processed.sampling.frequency
-    } else {
-      sampling_rate <- nrow(individual_data)/length(unique(lubridate::floor_date(individual_data[[datetime.col]], "sec")))
-      plyr::round_any(sampling_rate, 5)
-    }
+    # calculate the sampling frequency
+    sampling_freq <- nrow(individual_data)/length(unique(lubridate::floor_date(individual_data[[datetime.col]], "sec")))
+    sampling_freq <- plyr::round_any(sampling_freq, 5)
+
+    # print to console
+    cat(paste("Sampling frequency:", sampling_freq, "Hz\n"))
+
 
     # check if the sampling frequency is greater than 1 Hz and downsample is required
     if(sampling_freq > 1){
@@ -454,11 +459,23 @@ filterDeploymentData <- function(data,
 
       # check if no valid deployment segments are identified
       if(length(deployment_segments)==0){
+        # set flag
+        valid_dataset <- FALSE
         # notify that the dataset is discarded
-        cat(crayon::red("No valid deployment segments detected. Dataset discarded."), "\n\n")
+        message("No valid deployment segments detected. Dataset discarded.")
         # assign attach_idx and pop_idx when no valid segments are found
         attach_idx <- nrow(reduced_data)+1
         pop_idx <-  nrow(reduced_data)+1
+        # calculate accurate stats for invalid deployment
+        original_rows <- nrow(individual_data)
+        kept_rows <- 0
+        rows_discarded <- original_rows
+        # print accurate stats
+        total_hours <- sprintf("%.2f", as.numeric(difftime(last_datetime, first_datetime, units="hours")))
+        cat(sprintf("Total dataset duration: %s hours\n", total_hours))
+        cat("Estimated deployment duration: 0 hours (0%)\n")
+        cat("Filtered dataset size: ~ 0\n")
+        cat(sprintf("Rows removed: ~ %s\n", .format_large_number(original_rows)))
 
       }else{
 
@@ -491,27 +508,44 @@ filterDeploymentData <- function(data,
     ##########################################################################
     # Print to console #######################################################
 
-    # calculate the deploy duration
-    total_duration <- difftime(last_datetime, first_datetime, units = "hours")
-    total_duration <- paste(sprintf("%.2f", as.numeric(total_duration)), attributes(total_duration)$units)
-    deploy_duration <- difftime(poptime, attachtime, units = "hours")
-    deploy_duration <- paste(sprintf("%.2f", as.numeric(deploy_duration)), attributes(deploy_duration)$units)
-    deploy_percentage <- as.numeric(difftime(poptime, attachtime, units = "hours"))/as.numeric(difftime(last_datetime, first_datetime, units = "hours"))*100
-    pre_deploy <- as.numeric(difftime(attachtime, first_datetime, units="hours"))
-    pre_deploy <- sprintf("%dh:%02dm", floor(pre_deploy), round((pre_deploy - floor(pre_deploy)) * 60))
-    post_deploy <- as.numeric(difftime(last_datetime, poptime, units="hours"))
-    post_deploy <- sprintf("%dh:%02dm", floor(post_deploy), round((post_deploy - floor(post_deploy)) * 60))
-    rows_discarded <- length(1:attach_idx) + length(pop_idx:nrow(reduced_data))
+    if(valid_dataset){
 
-    # print results to the console
-    cat(sprintf("Total dataset duration: %s\n", total_duration))
-    cat(sprintf("Estimated deployment duration: %s (%.1f%%)\n", deploy_duration, deploy_percentage))
-    cat(sprintf("Attach time: %s (+%s)\n", strftime(attachtime, "%d/%b/%Y %H:%M:%S", tz="UTC"), pre_deploy))
-    cat(sprintf("Popup time: %s (-%s)\n", strftime(poptime, "%d/%b/%Y %H:%M:%S", tz="UTC"), post_deploy))
-    cat(sprintf("Rows removed: %d (~%.0f%%)", rows_discarded, (rows_discarded / nrow(data)) * 100))
-    cat("\n")
+      # calculate the deploy duration
+      total_duration <- difftime(last_datetime, first_datetime, units = "hours")
+      total_duration <- paste(sprintf("%.2f", as.numeric(total_duration)), attributes(total_duration)$units)
+      deploy_duration <- difftime(poptime, attachtime, units = "hours")
+      deploy_duration <- paste(sprintf("%.2f", as.numeric(deploy_duration)), attributes(deploy_duration)$units)
+      deploy_percentage <- as.numeric(difftime(poptime, attachtime, units = "hours"))/as.numeric(difftime(last_datetime, first_datetime, units = "hours"))*100
+      pre_deploy <- as.numeric(difftime(attachtime, first_datetime, units="hours"))
+      pre_deploy <- sprintf("%dh:%02dm", floor(pre_deploy), round((pre_deploy - floor(pre_deploy)) * 60))
+      post_deploy <- as.numeric(difftime(last_datetime, poptime, units="hours"))
+      post_deploy <- sprintf("%dh:%02dm", floor(post_deploy), round((post_deploy - floor(post_deploy)) * 60))
 
+      # calculate row statistics
+      original_rows <- nrow(individual_data)
+      kept_rows <- sum(individual_data[[datetime.col]] >= attachtime & individual_data[[datetime.col]] <= poptime)
+      rows_discarded <- original_rows - kept_rows
 
+      # format large numbers with K/M suffixes
+      .format_large_number <- function(n) {
+        if (n >= 1e6) {
+          paste0(round(n/1e6, 1), " M")
+        } else if (n >= 1e3) {
+          paste0(round(n/1e3, 1), " K")
+        } else {
+          as.character(n)
+        }
+      }
+
+      # print results to the console
+      cat(sprintf("Total dataset duration: %s\n", total_duration))
+      cat(sprintf("Estimated deployment duration: %s (%.1f%%)\n", deploy_duration, deploy_percentage))
+      cat(sprintf("Attach time: %s (+%s)\n", strftime(attachtime, "%d/%b/%Y %H:%M:%S", tz="UTC"), pre_deploy))
+      cat(sprintf("Popup time: %s (-%s)\n", strftime(poptime, "%d/%b/%Y %H:%M:%S", tz="UTC"), post_deploy))
+      cat(sprintf("Filtered dataset size: ~ %s\n", .format_large_number(kept_rows)))
+      cat(sprintf("Rows removed: ~ %s\n", .format_large_number(rows_discarded)))
+
+    }
 
     ############################################################################
     # Plot results #############################################################
@@ -663,10 +697,10 @@ filterDeploymentData <- function(data,
     }
 
     # save the filtered data as an RDS file
-    if(save.files){
+    if(save.files && valid_dataset){
 
       # feedback message
-      if (verbose) cat("Saving file...\n")
+      cat("Saving file... ")
 
       # determine the output directory: use the specified output folder, or if not provided,
       # use the folder of the current file (if data[i] is a file path), or default to "./"
@@ -679,21 +713,24 @@ filterDeploymentData <- function(data,
       }
 
       # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
-      sufix <- ifelse(!is.null(output.suffix), output.suffix, paste0("-", sampling_rate, "Hz"))
+      sufix <- ifelse(!is.null(output.suffix), output.suffix, "")
 
       # construct the output file name
       output_file <- file.path(output_dir, paste0(id, sufix, ".rds"))
 
       # save the processed data
       saveRDS(individual_data, output_file)
-      if (verbose) cat(paste0("File saved: ", paste0(id, sufix, ".rds"), "\n"))
+      cat(paste0("File saved: ", paste0(id, sufix, ".rds"), "\n"))
     }
 
     # store filtered sensor data in the results list if needed
-    if (return.data) {
+    if (return.data && valid_dataset) {
       processed_data[[i]] <- individual_data
       names(processed_data)[i] <- id
     }
+
+    # print empty line
+    cat("\n")
 
     # clear unused objects from the environment to free up memory
     rm(individual_data)
@@ -705,10 +742,14 @@ filterDeploymentData <- function(data,
   # Return results #############################################################
   ##############################################################################
 
+  # print message
+  cat("\n")
+  cat(crayon::bold("All done!\n"))
+
   # print time taken
   end.time <- Sys.time()
   time.taken <- end.time - start.time
-  cat(crayon::bold("\nTotal execution time:"), sprintf("%.02f", as.numeric(time.taken)), base::units(time.taken), "\n\n")
+  cat(crayon::bold("Total execution time:"), sprintf("%.02f", as.numeric(time.taken)), base::units(time.taken), "\n\n")
 
 
   # prepare the return object
