@@ -6,17 +6,16 @@
 # This script provides a step-by-step guide for using the "nautilus" R package to
 # efficiently import and process archival tag data. It demonstrates the following features:
 #
-# ---> Import, standardize and process archival tag data from multiple animals.
-# ---> Integrate and merge location data derived from PSATs (pop-up satellite archival tags)
+# ---> Import and standardize archival tag data from multiple animals.
+# ---> Integrate and merge location data derived from Wildlife Computers tags (e.g., MiniPAT, MK10, SPOT).
 # ---> Automatically filter pre- and post-deployment data to focus on animal attachment periods.
+# ---> Regularize timestamps and remove or adjust inconsistent data points near temporal gaps.
+# ---> Detect and remove sensor outliers based on abrupt changes or prolonged flat-line readings.
 # ---> Automatically compute key metrics on acceleration, orientation, and linear motion.
 # ---> Optionally downsample high-frequency sensor data to reduce volume and enhance manageability.
-# ---> Clean up spurious data sections before or after large time gaps.
-# ---> Detect and remove sensor outliers based on abrupt changes or prolonged flat-line readings.
 # ---> Estimate tail beat frequencies based on wavelet analysis.
 # ---> Generate summary statistics on key metrics for all animals.
 # ---> Generate depth profiles for all animals (color-coded by temperature).
-
 
 # NOTE: This package's functions were optimized for biologging data from G-Pilot and i-Pilot tags,
 # with current parameters specifically fine-tuned for whale shark kinematics and behavioral patterns.
@@ -30,20 +29,20 @@
 
 # To ensure the functions work correctly, organize the data into a root directory containing
 # one subdirectory for each tagged animal. Each animal's subdirectory must include:
-#
+
 # 1. Multi-Sensor Tag Data Folder (default: "CMD")
 #    - Contains a CSV file with time-series data from multi-sensor tags
 #      (e.g., depth, accelerometer, gyroscope, magnetometer).
 #    - The folder name defaults to "CMD" but can be customized via the 'sensor.folders' argument.
-#
+
 # 2. Wildlife Computers Tag Data Folder (Optional)
 #    - For integrating positions from Wildlife Computers tags (MiniPAT/MK10/SPOT).
 #    - The name can be specified using the 'wc.subdirectory' argument or left as NULL for auto-detection.
 #    - This folder must contain location data files in the standard Wildlife Computers format.
 #
 # Each animal folder name must match the "ID" in the metadata file ('id.metadata').
-#
-#
+
+
 # Example directory layout:
 # Root_Directory/
 # ├── ID_01/
@@ -517,10 +516,6 @@ paddle_calibration$processed_slope <- NULL
 # After computing metrics, data can be downsampled (e.g. to 20 Hz) to reduce
 # resolution and file size for downstream analysis.
 
-# To avoid loading all datasets into memory simultaneously, we set:
-#   - `return.data = FALSE` to prevent storing data in RAM
-#   - `save.files = TRUE` to save each processed dataset directly to disk
-
 # For a complete description of all input arguments and the metrics computed,
 # refer to the function help page:
 #   ?processTagData
@@ -579,12 +574,13 @@ filtered_list <- calculateTailBeats(data = data_list,
                                     max.interp.gap = 10,
                                     cores = 1)
 
+
 ################################################################################
 # Save processed data ##########################################################
 ################################################################################
 
 # Specify the directory where the CSV files will be saved
-output_directory <- "./data processed/filtered/20Hz/"
+output_directory <- "./data processed/processed/20Hz"
 
 # Loop through each animal dataset and save the processed data in RDS format (more storage-efficient)
 # This also keeps the attributes associated with each dataset (required for the summarizeTagData() function)
