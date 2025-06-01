@@ -16,13 +16,21 @@ checkSensorAnomalies(
   sensor.accuracy.percent = NULL,
   outlier.window = 5,
   stall.threshold = 5,
-  interpolate = TRUE
+  interpolate = TRUE,
+  return.data = TRUE,
+  save.files = FALSE,
+  save.mode = "all",
+  output.folder = NULL,
+  output.suffix = NULL,
+  verbose = TRUE
 )
 }
 \arguments{
-\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
-containing data from multiple animals. The output of the \link{processTagData} function is recommended, as it formats
-the data appropriately for further analysis.}
+\item{data}{A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
+containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
+\code{.rds} files, each containing data for a single individual. When a character vector is provided,
+files are loaded sequentially to optimize memory use. The output of the \link{importTagData} function
+is strongly recommended, as it formats the data appropriately for all downstream analysis.}
 
 \item{id.col}{A string representing the column name for the ID field (default is "ID").}
 
@@ -65,9 +73,37 @@ expected behavior.}
 \item{interpolate}{Logical. If TRUE, the function will interpolate the missing values (flagged outliers) using
 the \code{zoo} package's \code{na.approx} function. If FALSE, outliers will simply be replaced with \code{NA}.
 Default is TRUE.}
+
+\item{return.data}{Logical. Controls whether the function returns the processed data
+as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+(or both). Default is \code{TRUE}.}
+
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
+during the iteration process. This ensures that progress is saved incrementally, which can
+help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+
+\item{save.mode}{Character. Specifies which files to save when \code{save.files} is \code{TRUE}.
+Can be "all" (saves all processed files, regardless of whether anomalies were corrected)
+or "corrected" (only saves files where anomalies were detected and corrected).
+Default is "all".}
+
+\item{output.folder}{Character. Path to the folder where the processed files will be saved.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
+in the data folder corresponding to each ID. Default is \code{NULL}.}
+
+\item{output.suffix}{Character. A suffix to append to the file name when saving.
+This parameter is only used if \code{save.files = TRUE}.}
+
+\item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
 }
 \value{
-A data frame (\code{data}) with rows containing vertical speed outliers removed.
+Depending on input and parameters:
+\itemize{
+\item If single dataset input: Returns curated data.table
+\item If list/multiple files input: Returns list of curated data.tables (when \code{return.data = TRUE})
+\item If \code{return.data = FALSE}: Returns invisibly NULL (use with \code{save.files = TRUE})
+}
 }
 \description{
 This function identifies and processes outliers in a specified sensor variable by evaluating both
@@ -84,4 +120,8 @@ likely due to sensor malfunction or saturation. The function removes all affecte
 small isolated blocks of valid readings within these periods with \code{NA} to ensure data integrity.
 No data interpolation is applied in these cases.
 }
+}
+\note{
+For large datasets, consider processing in batches with \code{save.files = TRUE} and
+\code{return.data = FALSE} to avoid memory overload.
 }

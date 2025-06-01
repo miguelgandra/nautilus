@@ -21,7 +21,6 @@ processTagData(
   calculate.paddle.speed = FALSE,
   speed.calibration.values = NULL,
   burst.quantiles = c(0.95, 0.99),
-  check.time.anomalies = TRUE,
   return.data = TRUE,
   save.files = FALSE,
   output.folder = NULL,
@@ -94,9 +93,6 @@ This parameter is only used when \code{calculate.paddle.speed = TRUE}. Default i
 
 \item{burst.quantiles}{Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).}
-
-\item{check.time.anomalies}{Logical. Whether to check for and remove temporal gaps/discontinuities in the data.
-Default: TRUE.}
 
 \item{return.data}{Logical. Controls whether the function returns the processed data
 as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce

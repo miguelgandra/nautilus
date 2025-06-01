@@ -1,5 +1,5 @@
 #######################################################################################################
-# Function to process archival tag data ####################################################
+# Function to process archival tag data ###############################################################
 #######################################################################################################
 
 #' Process Archival Tag Data
@@ -75,8 +75,6 @@
 #' This parameter is only used when \code{calculate.paddle.speed = TRUE}. Default is NULL.
 #' @param burst.quantiles Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
 #' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
-#' @param check.time.anomalies Logical. Whether to check for and remove temporal gaps/discontinuities in the data.
-#' Default: TRUE.
 #' @param return.data Logical. Controls whether the function returns the processed data
 #' as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
 #' memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
@@ -176,7 +174,6 @@ processTagData <- function(data,
                            calculate.paddle.speed = FALSE,
                            speed.calibration.values = NULL,
                            burst.quantiles = c(0.95, 0.99),
-                           check.time.anomalies = TRUE,
                            return.data = TRUE,
                            save.files = FALSE,
                            output.folder = NULL,
@@ -375,7 +372,7 @@ processTagData <- function(data,
 
       # extract ID from filename if not explicitly available, or from data
       if (!"ID" %in% names(individual_data)) {
-        individual_data$ID <- id
+        id <- individual_data$ID
       } else {
         id <- unique(individual_data$ID)[1]
       }
@@ -721,7 +718,7 @@ processTagData <- function(data,
       warning(paste(id, "-", "Potential pitch anomaly detected. Double check sensor alignment and calibration"), call. = FALSE)
     }
     if (abs(median_roll) > 45){
-      message("Potential orientation anomaly: Median roll  = ", round(median_roll, 1), "\u00B0 (expected ~0\u00B0)")
+      message("Potential orientation anomaly: Median roll = ", round(median_roll, 1), "\u00B0 (expected ~0\u00B0)")
       roll_anomaly_detected <- TRUE
       warning(paste(id, "-", "Potential roll anomaly detected. Double check sensor alignment and calibration"), call. = FALSE)
     }
@@ -936,16 +933,6 @@ processTagData <- function(data,
     data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), position_cols))
 
 
-    ############################################################################
-    # Check for temporal discontinuities #######################################
-    ############################################################################
-
-    # check for temporal discontinuities
-    if(check.time.anomalies) {
-      processed_data <- checkTimeGaps(data = processed_data,
-                                      time.diff.threshold = 0.01,
-                                      verbose = verbose)
-    }
 
     ############################################################################
     # Store processed data #####################################################
@@ -998,7 +985,6 @@ processTagData <- function(data,
     attr(processed_data, 'roll.warning.threshold') <- roll.warning.threshold
     attr(processed_data, 'pitch.anomaly.detected') <- pitch_anomaly_detected
     attr(processed_data, 'roll.anomaly.detected') <- roll_anomaly_detected
-    attr(processed_data, 'time.diff.threshold') <- formals(checkTimeGaps)$time.diff.threshold
     attr(processed_data, 'processing.date') <- Sys.time()
 
     # sort final attributes
@@ -1009,7 +995,7 @@ processTagData <- function(data,
     sensor_attrs <- c("hard.iron.calibration", "soft.iron.calibration", "orientation.algorithm",
                       "madgwick.beta", "magnetic.declination", "dba.window", "dba.smoothing",
                        "orientation.smoothing", "motion.smoothing", "speed.smoothing", "paddle.wheel")
-    checks_attrs <- c("time.diff.threshold", "pitch.warning.threshold", "roll.warning.threshold",
+    checks_attrs <- c("regularization.performed", "pitch.warning.threshold", "roll.warning.threshold",
                       "pitch.anomaly.detected", "roll.anomaly.detected")
     final_attrs <- c("nautilus.version", "processing.date")
     sorted_attrs <- c(internal_attrs, id_attrs, sensor_attrs, checks_attrs, final_attrs)
@@ -1029,8 +1015,11 @@ processTagData <- function(data,
     # save the processed data as an RDS file
     if(save.files){
 
-      # feedback message
-      if (verbose) cat("Saving file... ")
+      # print without newline and immediately flush output
+      if (verbose) {
+        cat("Saving file... ")
+        flush.console()
+      }
 
       # determine the output directory: use the specified output folder, or if not provided,
       # use the folder of the current file (if data[i] is a file path), or default to "./"
@@ -1050,7 +1039,14 @@ processTagData <- function(data,
 
       # save the processed data
       saveRDS(processed_data, output_file)
-      if (verbose) cat(paste0("File saved: ", paste0(id, sufix, ".rds"), "\n"))
+
+      # overwrite the line with completion message
+      if (verbose) {
+        cat("\r")
+        cat(rep(" ", getOption("width")-1))
+        cat("\r")
+        cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
+      }
     }
 
     # print empty line
@@ -1072,6 +1068,9 @@ processTagData <- function(data,
   ##############################################################################
   # Return processed data ######################################################
   ##############################################################################
+
+  # print message
+  if (verbose) cat(crayon::bold("That's a wrap!\n"))
 
   # print time taken
   end.time <- Sys.time()
@@ -1096,4 +1095,3 @@ processTagData <- function(data,
 #######################################################################################################
 #######################################################################################################
 #######################################################################################################
-

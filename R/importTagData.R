@@ -600,7 +600,6 @@ importTagData <- function(data.folders,
       cat("Total rows:", result, "\n")
     }
 
-
     # check package ID
     package_id <- NULL
     if(!is.null(package.id.col)){
@@ -619,7 +618,7 @@ importTagData <- function(data.folders,
       if (verbose) cat(paste0("--> Converting datetime column to POSIXct (TZ: '", timezone, "')\n"))
       # if `fread` parsed it directly (often does with `tz` arg), it's already POSIXct
       if (!inherits(sensor_data$datetime, "POSIXct")) {
-        sensor_data[, datetime := as.POSIXct(datetime, tz = timezone)]
+        sensor_data[, datetime := as.POSIXct(datetime, tz = timezone) + 0.0001]
       } else {
         # ensure correct timezone even if fread parsed it
         attr(sensor_data$datetime, "tzone") <- timezone
@@ -872,8 +871,11 @@ importTagData <- function(data.folders,
     # save the processed data as an RDS file
     if(save.files){
 
-      # feedback message
-      if (verbose) cat("Saving file... ")
+      # print without newline and immediately flush output
+      if (verbose) {
+        cat("Saving file... ")
+        flush.console()
+      }
 
       # determine the output directory: use the specified output folder or the current data folder
       output_dir <- ifelse(!is.null(output.folder), output.folder, data.folders[i])
@@ -886,7 +888,14 @@ importTagData <- function(data.folders,
 
       # save the processed data
       saveRDS(sensor_data, output_file)
-      if (verbose) cat(paste0("File saved: ", paste0(id, sufix, ".rds"), "\n"))
+
+      # overwrite the line with completion message
+      if (verbose) {
+        cat("\r")
+        cat(rep(" ", getOption("width")-1))
+        cat("\r")
+        cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
+      }
     }
 
     # print empty line

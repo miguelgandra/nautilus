@@ -17,9 +17,11 @@
 #'    small isolated blocks of valid readings within these periods with `NA` to ensure data integrity.
 #'    No data interpolation is applied in these cases.
 #'
-#' @param data A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
-#' containing data from multiple animals. The output of the \link{processTagData} function is recommended, as it formats
-#' the data appropriately for further analysis.
+#' @param data A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
+#' containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
+#' `.rds` files, each containing data for a single individual. When a character vector is provided,
+#' files are loaded sequentially to optimize memory use. The output of the \link{importTagData} function
+#' is strongly recommended, as it formats the data appropriately for all downstream analysis.
 #' @param id.col A string representing the column name for the ID field (default is "ID").
 #' @param datetime.col A string specifying the name of the column that contains timestamps for each observation.
 #' This column must be in "POSIXct" format for proper processing (default is "datetime").
@@ -51,8 +53,33 @@
 #' @param interpolate Logical. If TRUE, the function will interpolate the missing values (flagged outliers) using
 #' the `zoo` package's `na.approx` function. If FALSE, outliers will simply be replaced with `NA`.
 #' Default is TRUE.
+#' @param return.data Logical. Controls whether the function returns the processed data
+#' as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+#' memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+#' (or both). Default is \code{TRUE}.
+#' @param save.files Logical. If `TRUE`, the processed data for each ID will be saved as RDS files
+#' during the iteration process. This ensures that progress is saved incrementally, which can
+#' help prevent data loss if the process is interrupted or stops midway. Default is `FALSE`.
+#' @param save.mode Character. Specifies which files to save when `save.files` is `TRUE`.
+#' Can be "all" (saves all processed files, regardless of whether anomalies were corrected)
+#' or "corrected" (only saves files where anomalies were detected and corrected).
+#' Default is "all".
+#' @param output.folder Character. Path to the folder where the processed files will be saved.
+#' This parameter is only used if `save.files = TRUE`. If `NULL`, the RDS file will be saved
+#' in the data folder corresponding to each ID. Default is `NULL`.
+#' @param output.suffix Character. A suffix to append to the file name when saving.
+#' This parameter is only used if `save.files = TRUE`.
+#' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.
+
+#' @note For large datasets, consider processing in batches with `save.files = TRUE` and
+#' `return.data = FALSE` to avoid memory overload.
 #'
-#' @return A data frame (`data`) with rows containing vertical speed outliers removed.
+#' @return Depending on input and parameters:
+#' \itemize{
+#'   \item If single dataset input: Returns curated data.table
+#'   \item If list/multiple files input: Returns list of curated data.tables (when `return.data = TRUE`)
+#'   \item If `return.data = FALSE`: Returns invisibly NULL (use with `save.files = TRUE`)
+#' }
 #' @export
 
 checkSensorAnomalies <- function(data,
@@ -66,32 +93,88 @@ checkSensorAnomalies <- function(data,
                                  sensor.accuracy.percent = NULL,
                                  outlier.window = 5,
                                  stall.threshold = 5,
-                                 interpolate = TRUE) {
+                                 interpolate = TRUE,
+                                 return.data = TRUE,
+                                 save.files = FALSE,
+                                 save.mode = "all",
+                                 output.folder = NULL,
+                                 output.suffix = NULL,
+                                 verbose = TRUE) {
 
 
   ##############################################################################
-  # Input validation ###########################################################
+  # Initial checks #############################################################
   ##############################################################################
 
-  # if 'data' is not a list, split it into a list of individual data sets based on 'id.col'
-  if (!is.list(data)) {
-    data <- split(data, f = data[[id.col]])
+  # measure running time
+  start.time <- Sys.time()
+
+  # check if data is a character vector of RDS file paths
+  is_filepaths <- is.character(data)
+  if (is_filepaths) {
+    # first, check all files exist
+    missing_files <- data[!file.exists(data)]
+    if (length(missing_files) > 0) {
+      stop(paste("The following files were not found:\n",
+                 paste("-", missing_files, collapse = "\n")), call. = FALSE)
+    }
+  } else if (!is.list(data) || inherits(data, "data.frame")) {
+    # if it's a single data.frame, convert it to a list
+    if (id.col %in% names(data)) {
+      stop("Input data must contain a valid id.col when not provided as a list.", call. = FALSE)
+    }
+    data <- split(data, data[[id.col]])
   }
 
-  # check if specified columns exist in the data
-  if(!id.col %in% names(data[[1]])) stop(paste0("The specified id.col ('", id.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!datetime.col %in% names(data[[1]])) stop(paste0("The specified datetime.col ('", datetime.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!sensor.col %in% names(data[[1]])) stop(paste0("The specified sensor.col ('", sensor.col, "') was not found in the supplied data."), call. = FALSE)
 
-  # ensure datetime column is of POSIXct class
-  if (!inherits(data[[1]][[datetime.col]], "POSIXct")) {
-    stop(sprintf("The '%s' column must be of class 'Date' or 'POSIXct'.", datetime.col))
+  # feedback for save files mode
+  if (!is.logical(save.files)) stop("`save.files` must be a logical value (TRUE or FALSE).", call. = FALSE)
+
+  # validate that at least one output method is selected
+  if (!save.files && !return.data) {
+    stop("Both 'save.files' and 'return.data' cannot be FALSE - this would result in data loss. ",
+         "Please set at least one to TRUE.", call. = FALSE)
   }
 
-  # check if all data eleemnts are either a data.frame or data.table
-  any_invalid <- any(sapply(data, function(x) {!is.null(x) && !inherits(x, "data.frame") && !inherits(x, "data.table")}))
-  if (any_invalid) {
-    stop("All non-NULL elements of 'data_list' must be of class 'data.frame' or 'data.table'.", call. = FALSE)
+  # validate save.mode
+  if (!save.mode %in% c("all", "corrected")) stop("`save.mode` must be either 'all' or 'corrected'.", call. = FALSE)
+
+  # define required columns
+  required_cols <- c(id.col, datetime.col, sensor.col)
+
+  # if data is already in memory (not file paths), validate upfront
+  if (!is_filepaths) {
+
+    # validate each dataset in the list
+    lapply(data, function(dataset) {
+      # check dataset structure
+      if (!is.data.frame(dataset)) stop("Each element in the data list must be a data.frame or data.table", call. = FALSE)
+      # check for required columns
+      missing_cols <- setdiff(required_cols, names(dataset))
+      if (length(missing_cols) > 0) stop(sprintf("Missing required columns: %s", paste(missing_cols, collapse = ", ")), call. = FALSE)
+      # ensure datetime column is of POSIXct class
+      if (!inherits(dataset[[datetime.col]], "POSIXct")) stop("The datetime column must be of class 'POSIXct'.", call. = FALSE)
+    })
+
+    # check for nautilus.version attribute in each dataset
+    missing_attr <- sapply(data, function(x) {is.null(attr(x, "nautilus.version"))})
+    if (any(missing_attr)) {
+      message(paste0(
+        "Warning: The following dataset(s) were likely not processed via importTagData():\n  - ",
+        paste(names(data)[missing_attr], collapse = ", "),
+        "\n\nIt is strongly recommended to run them through importTagData() to ensure proper formatting and avoid downstream errors.\n",
+        "Proceed at your own risk."))
+    }
+  }
+
+  # ensure output.folder is a single string
+  if(!is.null(output.folder) && (!is.character(output.folder) || length(output.folder) != 1)) {
+    stop("`output.folder` must be NULL or a single string.", call. = FALSE)
+  }
+
+  # check if the output folder is valid (if specified)
+  if(!is.null(output.folder) && !dir.exists(output.folder)){
+    stop("The specified output folder does not exist. Please provide a valid folder path.", call. = FALSE)
   }
 
   # ensure either sensor.accuracy.fixed or sensor.accuracy.percent is provided, but not both
@@ -115,57 +198,86 @@ checkSensorAnomalies <- function(data,
   # get the total number of animals in the dataset
   n_animals <- length(data)
 
-  # initialize a flag to track whether any outliers are found
-  no_errors_found <- TRUE
+  # initialize results list if returning data
+  if (return.data) results <- vector("list", length = n_animals)
 
   # feedback message for the user
   cat(paste0(
-    crayon::bold("\n================= Scanning for Sensor Anomalies =================\n"),
-    "Analyzing ", tolower(sensor.name), " time series for ", n_animals, " ", ifelse(n_animals == 1, "tag", "tags"), " to ensure data integrity\n",
-    crayon::bold("=================================================================\n\n")
+    crayon::bold("\n============= Scanning for Sensor Anomalies =============\n"),
+    "Analyzing ", tolower(sensor.name), " readings of ", n_animals, " ", ifelse(n_animals == 1, "tag", "tags"), " to ensure integrity\n",
+    crayon::bold("=========================================================\n\n")
   ))
 
-  # iterate over each element in 'data'
-  for (i in 1:length(data)) {
+  if (verbose & is_filepaths) cat("Loading data from RDS files...\n\n")
 
-    # access the individual dataset
-    individual_data <- data[[i]]
+  # iterate over each animal
+  for (i in seq_along(data)) {
+
+    # initialize a flag to track whether any anomalies were found for the current individual
+    anomalies_corrected <- FALSE
+
+    ############################################################################
+    # load data for the current individual if using file paths #################
+    if (is_filepaths) {
+
+      # get current file path
+      file_path <- data[i]
+      id <- tools::file_path_sans_ext(basename(file_path))
+
+      # load current file
+      individual_data <- readRDS(file_path)
+
+      # perform checks specific to loaded RDS files
+      missing_cols <- setdiff(required_cols, names(individual_data))
+      if (length(missing_cols) > 0) stop(sprintf("Missing required columns: %s in file '%s'", paste(missing_cols, collapse = ", "), basename(file_path)), call. = FALSE)
+      if (!inherits(individual_data[[datetime.col]], "POSIXct")) stop("The datetime column in file '", basename(file_path), "' must be of class 'POSIXct'.", call. = FALSE)
+      if (is.null(attr(individual_data, "nautilus.version"))) {
+        message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
+      }
+
+      # add ID if not present
+      if (!id.col %in% names(individual_data)) {
+         id <- unique(individual_data[[id.col]])[1]
+      }
+
+    } else {
+      # data is already in memory (list of data frames/tables)
+      id <- names(data)[i]
+      individual_data <- data[[i]]
+    }
+
+    # print current ID
+    if (verbose) cat(crayon::bold(sprintf("[%d/%d] %s\n", i, n_animals, id)))
 
     # skip NULL or empty elements in the list
-    if (is.null(individual_data) || length(individual_data) == 0) next
+    if (is.null(individual_data) || nrow(individual_data) == 0) {
+      if (verbose) cat("Skipping empty dataset\n\n")
+      next
+    }
 
-    # create a copy of the specified columns (ID, datetime, sensor) to preserve the original data for plotting
-    plot_data <- data[[i]][, .SD, .SDcols = c(datetime.col, sensor.col)]
+    # convert to data.table if not already
+    if (!data.table::is.data.table(individual_data)) individual_data <- data.table::as.data.table(individual_data)
 
-    # capture the original class of 'data' (either 'data.frame' or 'data.table')
-    original_class <- class(individual_data)
+    # ensure data is ordered by datetime
+    data.table::setorderv(individual_data, cols = datetime.col)
 
-    # store original attributes before processing,  excluding internal ones
+    # store original attributes, excluding internal ones
     discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
     original_attributes <- attributes(individual_data)
     original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
 
-    # convert data.table to data.frame for processing
-    if (inherits(individual_data, "data.frame")) {
-      individual_data <- data.table::setDT(individual_data)
-    }
-
-    # retrieve ID from the dataset based on the specified 'id.col' column
-    id <- unique(individual_data[[id.col]])
+    # create a copy of the specified columns (datetime, sensor) to preserve the original data for plotting
+    plot_data <- data.table::copy(individual_data[, .SD, .SDcols = c(datetime.col, sensor.col)])
 
 
     ############################################################################
     # Calculate rate of change #################################################
     ############################################################################
 
-    # check if 'processed.sampling.frequency' attribute exists in the dataset
-    # if present, use it; otherwise, calculate the sampling frequency from the data
-    sampling_freq <- if ("processed.sampling.frequency" %in% names(attributes(individual_data))) {
-      attributes(data[[i]])$processed.sampling.frequency
-    } else {
-      sampling_rate <- nrow(individual_data)/length(unique(lubridate::floor_date(individual_data[[datetime.col]], "sec")))
-      plyr::round_any(sampling_rate, 5)
-    }
+    # estimate nominal sampling rate
+    time_diffs <- round(as.numeric(diff(individual_data[[datetime.col]])), 6)
+    nominal_interval <- stats::median(time_diffs, na.rm = TRUE)
+    sampling_freq <- round(1 / nominal_interval, 1)
 
     # calculate time difference (dt) between consecutive rows (in seconds)
     dt <- c(NA, diff(individual_data[[datetime.col]]))
@@ -245,13 +357,14 @@ checkSensorAnomalies <- function(data,
     ############################################################################
 
     # check if any potential outliers were identified.
-    if (length(outlier_indices) > 0) {
+    if (length(outlier_indices) == 0) {
 
-      # set the flag to FALSE if any outliers are found
-      no_errors_found <- FALSE
+      if(verbose) cat("\u2713 No anomalies detected\n")
 
-      # feedback message for the user
-      cat(paste0("ID: ", crayon::blue$bold(id), "\n"))
+    }else{
+
+      # set the flag to TRUE if any outliers are found
+      anomalies_corrected <- TRUE
 
       # convert the specified time window to steps based on the sampling rate
       anomaly_window <- outlier.window * 60 * sampling_freq
@@ -312,27 +425,30 @@ checkSensorAnomalies <- function(data,
         }
       }
 
-        ########################################################################
-        # Print console feedback ###############################################
-        ########################################################################
 
-        # print messages to the console based on the anomalies detected
+      ##########################################################################
+      # Print console feedback #################################################
+      ##########################################################################
+
+      # print messages to the console based on the anomalies detected
+      if(verbose) {
+
         if (isolated_outliers_count > 0) {
           if (interpolate) {
-            cat(sprintf("%s outliers found: %d isolated values replaced using interpolation.\n", tools::toTitleCase(sensor.name), isolated_outliers_count))
+            cat(crayon::red(sprintf("\u00B7 %s outliers: %d isolated values interpolated\n",
+                                    tools::toTitleCase(sensor.name), interpolated_values_count)))
           } else {
-            cat(sprintf("%s outliers found: %d isolated values converted to NA.\n", tools::toTitleCase(sensor.name), isolated_outliers_count))
+            cat(crayon::red(sprintf("\u00B7 %s outliers: %d isolated values converted to NA\n",
+                                    tools::toTitleCase(sensor.name), isolated_outliers_count)))
           }
         }
+
         if (malfunction_blocks_count > 0) {
-          if(malfunction_duration<60){
-            cat(sprintf("%s anomalies found: %d values converted to NA (-%.1f secs).\n", tools::toTitleCase(sensor.name), malfunction_blocks_count, malfunction_duration))
-          }else if(malfunction_duration<3600){
-            cat(sprintf("%s anomalies found: %d values converted to NA (-%.1f mins).\n", tools::toTitleCase(sensor.name), malfunction_blocks_count, malfunction_duration/60))
-          }else{
-            cat(sprintf("%s anomalies found: %d values converted to NA (-%.1f hours).\n", tools::toTitleCase(sensor.name), malfunction_blocks_count, malfunction_duration/3600))
-          }
+          cat(crayon::red(sprintf("\u00B7 %s anomalies: %d values converted to NA (-%s)\n",
+                                  tools::toTitleCase(sensor.name), malfunction_blocks_count,
+                                  .formatDuration(malfunction_duration))))
         }
+      }
 
 
       ##########################################################################
@@ -406,36 +522,107 @@ checkSensorAnomalies <- function(data,
       # add legend
       legend("top", inset=c(0, -0.1), legend=c("interpolated", "removed"),
              col=c("cyan3", "red3"), pch=16, bty="n", horiz=TRUE, cex=0.8, xpd=NA)
+    }
+
+    ############################################################################
+    # Restore attributes #######################################################
+    ############################################################################
+
+    # restore the original attributes
+    for (attr_name in names(original_attributes)) {
+      attr(individual_data, attr_name) <- original_attributes[[attr_name]]
+    }
 
 
-      ##########################################################################
-      # Revert data back to its original class and save ########################
-      ##########################################################################
+    ############################################################################
+    # Save curated data ########################################################
+    ############################################################################
 
-      # revert back to original data class
-      if ("data.table" %in% original_class) {
-        individual_data <- data.table::as.data.table(individual_data)
+    # save the processed data as an RDS file based on save.mode
+    if (save.files && (save.mode == "all" || anomalies_corrected)) {
+
+      # print without newline and immediately flush output
+      if (verbose) {
+        cat("Saving file... ")
+        flush.console()
       }
 
-      # save the processed data
-      data[[i]] <- individual_data
+      # determine the output directory
+      if (!is.null(output.folder)) {
+        output_dir <- output.folder
+      } else if (is_filepaths) {
+        output_dir <- dirname(data[i])
+      } else {
+        output_dir <- "./"
+      }
 
-      # force garbage collection after processing each dataset
-      gc()
+      # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
+      sufix <- ifelse(!is.null(output.suffix), output.suffix, "")
+
+      # construct the output file name
+      output_file <- file.path(output_dir, paste0(id, sufix, ".rds"))
+
+      # save the processed data
+      saveRDS(individual_data, output_file)
+
+      # overwrite the line with completion message
+      if (verbose) {
+        cat("\r")
+        cat(rep(" ", getOption("width")-1))
+        cat("\r")
+        cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
+      }
+    } else if (save.files && save.mode == "corrected" && !anomalies_corrected) {
+      if (verbose) cat("\u00B7 File not saved (no changes)\n")
     }
+
+    # print empty line
+    if (verbose) cat("\n")
+
+    # store processed sensor data in the results list if needed
+    if (return.data) {
+      results[[i]] <- individual_data
+    }
+
+    # discard objects and force garbage collection
+    rm(individual_data)
+    gc(verbose = FALSE)
   }
 
   ##############################################################################
   # Return data ################################################################
   ##############################################################################
 
-  # print a message if no outliers were found
-  if(no_errors_found) cat("All good in the hood! No anomalies detected.\n")
+  # print completion message
+  if (verbose) cat(crayon::bold("All good in the hood!\n"))
 
-  # return cleaned data
-  return(data)
+  # print time taken
+  end.time <- Sys.time()
+  time.taken <- end.time - start.time
+  if (verbose) {
+    cat(crayon::bold("Total execution time:"), sprintf("%.2f", as.numeric(time.taken)),
+        attr(time.taken, "units"), "\n\n")
+  }
+
+  # return cleaned data or NULL based on return.data parameter
+  if (return.data) {
+    # assign names to the data list
+    if (is_filepaths) {
+      names(results) <- sapply(data, function(x) tools::file_path_sans_ext(basename(x)))
+    } else {
+      names(results) <- names(data)
+    }
+
+    # if single dataset, return just the dataset (not a list)
+    if (length(results) == 1 && !is.list(data)) {
+      return(results[[1]])
+    } else {
+      return(results)
+    }
+  } else {
+    return(invisible(NULL))
+  }
 }
-
 
 
 ################################################################################

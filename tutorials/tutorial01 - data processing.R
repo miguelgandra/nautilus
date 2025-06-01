@@ -182,6 +182,8 @@ axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
 # - Magnetic: "uT"
 # - Temperature: "C"
 # - Depth: "m"
+# - Frequency: Hz
+# - Speed: m/s
 # - Unitless: "" (empty string)
 
 # # Create the data frame for import mapping
@@ -252,7 +254,7 @@ data_list <- importTagData(data.folders = data_folders,
                            paddle.wheel.col = "paddle_wheel",
                            return.data = FALSE,
                            save.files = TRUE,
-                           output.folder = "./data processed/imported/",
+                           output.folder = "./data processed/imported",
                            output.suffix = NULL,
                            data.table.threads = NULL,
                            verbose = TRUE)
@@ -268,8 +270,7 @@ data_list <- importTagData(data.folders = data_folders,
 #    If no manual input is provided, the function applies a binary segmentation
 #    algorithm to detect shifts in depth and its variance. These changes are
 #    used to estimate the most likely attachment and detachment times. This method
-#    is useful for quickly processing multiple individuals without prior knowledge
-#    of exact deployment intervals.
+#    is useful for processing data without prior knowledge of exact deployment intervals.
 
 # 2. Custom Deployment Times:
 #    Alternatively, users can supply known deployment windows by passing a
@@ -314,7 +315,7 @@ filter_results <- filterDeploymentData(data = data_files,
                                        plot.metrics.labels = c("Temperature (\u00B0C)", "Acc X (\u00B0)"),
                                        return.data = FALSE,
                                        save.files = TRUE,
-                                       output.folder = "./data processed/filtered/",
+                                       output.folder = "./data processed/filtered",
                                        output.suffix = NULL)
 
 
@@ -326,6 +327,84 @@ for(i in 1:length(filter_results$plots)){
 dev.off()
 
 
+
+################################################################################
+# Regularize biologging time series and remove sensor anomalies ################
+################################################################################
+
+# Step 1 – Regularize biologging time series
+# ------------------------------------------
+
+# The `regularizeTimeSeries` function standardizes high-frequency biologging data
+# by detecting and correcting irregular time steps. This step is essential to prepare the
+# data for downstream analyses that assume uniform temporal resolution.
+
+# Key steps:
+# 1. Detects time gaps and jitter in the time column.
+# 2. Assigns each record to the nearest regular timestamp, ensuring uniform
+#    spacing across the entire time series for each individual.
+# 3. Interpolates short gaps (< `gap.threshold`, in seconds) using a chosen method.
+# 4. Leaves longer gaps as missing values (NA).
+
+# Load the previously filtered files
+data_files <- list.files("./data processed/filtered", full.names = TRUE)
+
+# Apply the 'regularizeTimeSeries' function
+data_list <- regularizeTimeSeries(data = data_files,
+                                  id.col = "ID",
+                                  datetime.col = "datetime",
+                                  time.threshold = NULL,
+                                  gap.threshold = 2,
+                                  interpolation.method = "linear",
+                                  return.data = FALSE,
+                                  save.files = TRUE,
+                                  output.folder = "./data processed/filtered",
+                                  output.suffix = "",
+                                  verbose = TRUE)
+
+
+# Step 2 – Detect and remove sensor anomalies
+# ------------------------------------------
+
+# The `checkSensorAnomalies` function identifies and filters out potential sensor
+# errors in time series data (e.g., depth and temperature). It identifies outliers
+# based on two key criteria: rate of change (for detecting spikes or rapid fluctuations)
+# and stall periods (for detecting sensor malfunctions or periods of constant readings).
+# Outliers can optionally be replaced with interpolated values.
+
+# Process depth time series to detect anomalies
+data_list <- checkSensorAnomalies(data = data_files,
+                                  id.col = "ID",
+                                  sensor.col = "depth",
+                                  sensor.name = "Depth",
+                                  rate.threshold = 7,
+                                  sensor.resolution = 0.5,
+                                  sensor.accuracy.percent = 1,
+                                  outlier.window = 5,
+                                  stall.threshold = 5,
+                                  interpolate = TRUE,
+                                  return.data = FALSE,
+                                  save.files = TRUE,
+                                  save.mode = "corrected",
+                                  output.folder = "./data processed/filtered",
+                                  output.suffix = NULL)
+
+# Process temperature time series to detect anomalies
+data_list <- checkSensorAnomalies(data = data_files,
+                                  id.col = "ID",
+                                  sensor.col = "temp",
+                                  sensor.name = "Temperature",
+                                  rate.threshold = 1,
+                                  sensor.resolution = 0.05,
+                                  sensor.accuracy.fixed = 0.1,
+                                  outlier.window = 5,
+                                  stall.threshold = 5,
+                                  interpolate = TRUE,
+                                  return.data = FALSE,
+                                  save.files = TRUE,
+                                  save.mode = "corrected",
+                                  output.folder = "./data processed/filtered",
+                                  output.suffix = NULL)
 
 
 ################################################################################
@@ -474,58 +553,6 @@ data_list <- processTagData(data = data_files,
                             output.suffix = NULL,
                             data.table.threads = NULL,
                             verbose = TRUE)
-
-
-
-################################################################################
-# Detect and remove sensor anomalies ###########################################
-################################################################################
-
-# The following code applies the "checkSensorAnomalies" function to detect and filter
-# out potential sensor errors in depth and temperature time series data. The function
-# identifies outliers based on two key criteria: rate of change (for detecting spikes or
-# rapid fluctuations) and stall periods (for detecting sensor malfunctions or periods
-# of constant readings). Optionally, the identified outliers can be replaced with
-# interpolated values.
-
-# Process depth time series to detect anomalies
-filtered_list <- checkSensorAnomalies(data = filtered_list,
-                                      id.col = "ID",
-                                      sensor.col = "depth",
-                                      sensor.name = "Depth",
-                                      rate.threshold = 7,
-                                      sensor.resolution = 0.5,
-                                      sensor.accuracy.percent = 1,
-                                      interpolate = TRUE)
-
-# Process temperature time series to detect anomalies
-filtered_list <- checkSensorAnomalies(data = filtered_list,
-                                      id.col = "ID",
-                                      sensor.col = "temp",
-                                      sensor.name = "Temperature",
-                                      rate.threshold = 1,
-                                      sensor.resolution = 0.05,
-                                      sensor.accuracy.fixed = 0.1,
-                                      interpolate = TRUE)
-
-
-# Recalculate Vertical Speed After Depth Corrections
-# Recomputes vertical speed (m/s) for each dataset in the list following depth corrections.
-# This must be called after `checkSensorAnomalies()` or any other function that modifies depth values,
-# as vertical speed is derived from depth changes over time.
-filtered_list <- lapply(filtered_list, function(x) {
-  # Calculate vertical speed (m/s)
-  x[, vertical_speed := c(NA, diff(depth) / as.numeric(diff(datetime), units = "secs"))]
-  # Handle potential infinite values from division by zero
-  x[is.infinite(vertical_speed), vertical_speed := NA_real_]
-  # Optional smoothing (if speed.smoothing parameter exists)
-  if("speed.smoothing" %in% names(attributes(x))) {
-    sampling_freq <- attributes(x)$processed.sampling.frequency
-    window_size <- sampling_freq * attributes(x)$speed.smoothing
-    x[, vertical_speed := data.table::frollmean(vertical_speed, n = window_size, fill = NA, align = "center")]
-  }
-  return(x)
-})
 
 
 ################################################################################

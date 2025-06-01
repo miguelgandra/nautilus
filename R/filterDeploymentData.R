@@ -234,8 +234,11 @@ filterDeploymentData <- function(data,
     # load data for the current individual if using file paths #################
     if (is_filepaths) {
 
+
       # get current file path
       file_path <- data[i]
+      id <- tools::file_path_sans_ext(basename(file_path))
+
       # load current file
       individual_data <- readRDS(file_path)
 
@@ -247,11 +250,9 @@ filterDeploymentData <- function(data,
         message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
       }
 
-      # extract ID from filename if not explicitly available, or from data
-      if (!"ID" %in% names(individual_data)) {
-        individual_data$ID <- id
-      } else {
-        id <- unique(individual_data$ID)[1]
+      # add ID if not present
+      if (!id.col %in% names(individual_data)) {
+        id <- unique(individual_data[[id.col]])[1]
       }
 
     ############################################################################
@@ -353,10 +354,10 @@ filterDeploymentData <- function(data,
       data.table::setnames(reduced_data, old = names(reduced_data), new =  c(datetime.col, c(depth.col, plot.metrics)))
 
       # add ID column
-      reduced_data[, ID := id]
+      reduced_data[, (id.col) := id]
 
       # reorder columns
-      data.table::setcolorder(reduced_data, c("ID", setdiff(names(reduced_data), "ID")))
+      data.table::setcolorder(reduced_data, c(id.col, setdiff(names(reduced_data), id.col)))
 
       # restore normal output
       sink()
@@ -699,8 +700,9 @@ filterDeploymentData <- function(data,
     # save the filtered data as an RDS file
     if(save.files && valid_dataset){
 
-      # feedback message
+      # print without newline and immediately flush output
       cat("Saving file... ")
+      flush.console()
 
       # determine the output directory: use the specified output folder, or if not provided,
       # use the folder of the current file (if data[i] is a file path), or default to "./"
@@ -720,7 +722,12 @@ filterDeploymentData <- function(data,
 
       # save the processed data
       saveRDS(individual_data, output_file)
-      cat(paste0("File saved: ", paste0(id, sufix, ".rds"), "\n"))
+
+      # overwrite the line with completion message
+      cat("\r")
+      cat(rep(" ", getOption("width")-1))
+      cat("\r")
+      cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
     }
 
     # store filtered sensor data in the results list if needed
