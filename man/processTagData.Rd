@@ -12,6 +12,7 @@ processTagData(
   orientation.algorithm = "tilt_compass",
   madgwick.beta = 0.02,
   orientation.smoothing = 1,
+  correct.pitch.offset = TRUE,
   pitch.warning.threshold = 45,
   roll.warning.threshold = 45,
   dba.window = 3,
@@ -61,6 +62,13 @@ Only used when \code{orientation.algorithm = "madgwick"}.}
 
 \item{orientation.smoothing}{Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
 Uses circular mean. Set to NULL to disable. Default: 1.}
+
+\item{correct.pitch.offset}{A logical value (TRUE/FALSE) indicating whether to apply a pitch
+offset correction based on the relationship between pitch angle and vertical speed.
+Defaults to FALSE. If TRUE, a linear regression of pitch (in radians) against
+\code{vertical_speed} is performed, and the intercept (pitch at 0 m/s vertical speed)
+is subtracted from all pitch estimates. This method is adapted from Kawatsu et al. (2010)
+to account for potential tag misalignment.}
 
 \item{pitch.warning.threshold}{Numeric. Threshold (in degrees) for median pitch values that trigger orientation warnings.
 Default: 45 (will warn if median |pitch| > 45 degrees).}
@@ -170,8 +178,8 @@ Computed using sensor fusion algorithms:
 \itemize{
 \item {Tilt-compensated compass} (default): A lightweight 6-axis fusion (accelerometer + magnetometer)
 to compute roll, pitch, and heading. The method first calculates tilt angles from accelerometer data,
-then compensates the magnetometer readings using these angles to compute a more accurate heading.
-This approach avoids gyroscope drift but may be affected by magnetic disturbances.
+then compensates the magnetometer readings using these angles to compute a more accurate heading
+(as described in Gunner et al., 2021). This approach avoids gyroscope drift but may be affected by magnetic disturbances.
 \item {Madgwick filter}: A 9-axis fusion algorithm (accelerometer + gyroscope + magnetometer)
 implementing Sebastian Madgwick's quaternion-based gradient descent
 approach. This provides absolute orientation reference by incorporating
@@ -201,6 +209,16 @@ Calculated as the difference in depth measurements divided by the time interval
 \item The active Python environment must include the \code{AHRS} and \code{numpy} modules.
 \item If unavailable, the function will return an informative error with installation guidance.
 }
+}
+\references{
+Gunner RM, Holton MD, Scantlebury MD, \emph{et al.} (2021) Dead-reckoning animal
+movements in R: a reappraisal using Gundog. \emph{Animal Biotelemetry}. 9:1–37.
+\doi{10.1186/s40317-021-00245-z}
+
+Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, \emph{et al.} (2009).
+A new method to calibrate attachment angles of data loggers in swimming sharks.
+\emph{EURASIP Journal on Advances in Signal Processing}. 2010, 732586.
+\doi{10.1155/2010/732586}
 }
 \seealso{
 \link{importTagData}, \link{filterDeploymentData}.

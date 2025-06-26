@@ -13,14 +13,15 @@ importTagData(
   axis.mapping = NULL,
   id.metadata,
   id.col = "ID",
-  tag.col = "tag",
+  tag.model.col = "tag",
+  tag.type.col = NULL,
   deploy.date.col = "tagging_date",
   deploy.lon.col = "deploy_lon",
   deploy.lat.col = "deploy_lat",
-  pop.date.col = "popup_data",
-  pop.lon.col = "popup_lon",
-  pop.lat.col = "popup_lat",
-  package.id.col = "package_id",
+  pop.date.col = NULL,
+  pop.lon.col = NULL,
+  pop.lat.col = NULL,
+  package.id.col = NULL,
   paddle.wheel.col = NULL,
   return.data = TRUE,
   save.files = FALSE,
@@ -73,7 +74,11 @@ Must contain at least columns for ID and tag type.}
 
 \item{id.col}{Character. Column name for ID in \code{id.metadata} (default: "ID").}
 
-\item{tag.col}{Character. Column name for the tag type in \code{id.metadata} (default: "tag").}
+\item{tag.model.col}{Character. Column name for the tag model in \code{id.metadata} (default: "tag").}
+
+\item{tag.type.col}{Character string or \code{NULL}. The name of the column in \code{id.metadata} that specifies the tag's type (e.g., "Camera", "MS").
+If \code{NULL} (default), the tag type is inferred from the animal \code{id} (e.g., by checking for substrings like \code{"CAM"}).
+When specified, \code{axis.mapping} must include a 'type' column with values matching the unique tag types found in this \code{id.metadata} column.}
 
 \item{deploy.date.col}{Character. Column name for the tagging date in \code{id.metadata} (default: "tagging_date").}
 
@@ -81,11 +86,17 @@ Must contain at least columns for ID and tag type.}
 
 \item{deploy.lat.col}{Character. Column name for latitude in sensor data (default: "deploy_lat").}
 
-\item{pop.date.col}{Character. Column name for the popup date in \code{id.metadata} (default: "popup_date").}
+\item{pop.date.col}{Character or NULL. Column name for the popup date in \code{id.metadata}.
+If NULL (default), popup date information will not be imported. When specified,
+the column must contain POSIXct values.}
 
-\item{pop.lon.col}{Character. Column name for popup longitude in sensor data (default: "popup_lon").}
+\item{pop.lon.col}{Character or NULL. Column name for popup longitude in \code{id.metadata}.
+If NULL (default), popup longitude will not be imported. Must be specified
+together with \code{pop.date.col} and \code{pop.lat.col} to enable popup location integration.}
 
-\item{pop.lat.col}{Character. Column name for popup latitude in sensor data (default: "popup_lat").}
+\item{pop.lat.col}{Character or NULL. Column name for popup latitude in \code{id.metadata}.
+If NULL (default), popup latitude will not be imported. Must be specified
+together with \code{pop.date.col} and \code{pop.lon.col} to enable popup location integration.}
 
 \item{package.id.col}{Character. Column name for the package id in \code{id.metadata} (default: "package_id").}
 

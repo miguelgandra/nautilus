@@ -77,13 +77,24 @@
 #' @param id.metadata Data frame. Metadata about the IDs to associate with the processed data.
 #' Must contain at least columns for ID and tag type.
 #' @param id.col Character. Column name for ID in `id.metadata` (default: "ID").
-#' @param tag.col Character. Column name for the tag type in `id.metadata` (default: "tag").
+#' @param tag.model.col Character. Column name for the tag model in `id.metadata` (default: "tag").
+#' @param tag.type.col Character string or `NULL`. The name of the column in `id.metadata` that specifies the tag's type (e.g., "Camera", "MS").
+#'   If `NULL` (default), the tag type is inferred from the animal `id` (e.g., by checking for substrings like `"CAM"`).
+#'   When specified, `axis.mapping` must include a 'type' column with values matching the unique tag types found in this `id.metadata` column.
 #' @param deploy.date.col Character. Column name for the tagging date in `id.metadata` (default: "tagging_date").
 #' @param deploy.lon.col Character. Column name for longitude in sensor data (default: "deploy_lon").
 #' @param deploy.lat.col Character. Column name for latitude in sensor data (default: "deploy_lat").
-#' @param pop.date.col Character. Column name for the popup date in `id.metadata` (default: "popup_date").
-#' @param pop.lon.col Character. Column name for popup longitude in sensor data (default: "popup_lon").
-#' @param pop.lat.col Character. Column name for popup latitude in sensor data (default: "popup_lat").
+#' @param pop.date.col Character or NULL. Column name for the popup date in `id.metadata`.
+#'   If NULL (default), popup date information will not be imported. When specified,
+#'   the column must contain POSIXct values.
+#' @param pop.lon.col Character or NULL. Column name for popup longitude in `id.metadata`.
+#'   If NULL (default), popup longitude will not be imported. Must be specified
+#'   together with `pop.date.col` and `pop.lat.col` to enable popup location integration.
+#' @param pop.lat.col Character or NULL. Column name for popup latitude in `id.metadata`.
+#'   If NULL (default), popup latitude will not be imported. Must be specified
+#'   together with `pop.date.col` and `pop.lon.col` to enable popup location integration.
+#' @param package.id.col Character or NULL. Column name for the package ID in `id.metadata`
+#'   If NULL (default), no package ID information will be imported in the processed data.
 #' @param package.id.col Character. Column name for the package id in `id.metadata` (default: "package_id").
 #' @param paddle.wheel.col Character string specifying the name of the column in `id.metadata`
 #' that indicates whether each tag was equipped with a magnetic paddle wheel for speed estimation.
@@ -129,14 +140,15 @@ importTagData <- function(data.folders,
                           axis.mapping = NULL,
                           id.metadata,
                           id.col = "ID",
-                          tag.col = "tag",
+                          tag.model.col = "tag",
+                          tag.type.col = NULL,
                           deploy.date.col = "tagging_date",
                           deploy.lon.col = "deploy_lon",
                           deploy.lat.col = "deploy_lat",
-                          pop.date.col = "popup_data",
-                          pop.lon.col = "popup_lon",
-                          pop.lat.col = "popup_lat",
-                          package.id.col = "package_id",
+                          pop.date.col = NULL,
+                          pop.lon.col = NULL,
+                          pop.lat.col = NULL,
+                          package.id.col = NULL,
                           paddle.wheel.col = NULL,
                           return.data = TRUE,
                           save.files = FALSE,
@@ -224,27 +236,45 @@ importTagData <- function(data.folders,
 
   # validate orientation.mapping
   if(!is.null(axis.mapping)){
-    if (!all(c("type", "tag", "from", "to") %in% colnames(axis.mapping))) {
-      stop("The 'axis.mapping' data frame must contain 'type', 'tag', 'from', and 'to' columns.", call. = FALSE)
-    }else {
-      if (any(!axis.mapping$tag %in% id.metadata[[tag.col]])) warning("Some tags in axis.mapping do not match tags in id.metadata.", call. = FALSE)
-      if (any(!id.metadata[[tag.col]] %in% axis.mapping$tag)) {
-        missing_tags <- setdiff(id.metadata[[tag.col]], axis.mapping$tag)
-        warning_msg <- paste0("Warning: The following tag types in id.metadata are not present in axis.mapping: ",
-                              paste(missing_tags, collapse = ", "), ". No axis transformations will be performed for these tag types.\n")
+    # first ensure the required columns exist in axis.mapping
+    if (!all(c("type", "tag", "from", "to") %in% colnames(axis.mapping))) stop("The 'axis.mapping' data frame must contain 'type', 'tag', 'from', and 'to' columns.", call. = FALSE)
+    # issue warning in case any tag in axis.mapping is not present in id.metadata
+    if (any(!axis.mapping$tag %in% id.metadata[[tag.model.col]])) warning(paste0("Some tags in axis.mapping are not present in the '", tag.model.col, "' column of 'id.metadata'"), call. = FALSE)
+    # scenario 1: tag.type.col is provided, use combined tag and type validation
+    if (!is.null(tag.type.col)) {
+      # issue warning in case any type in axis.mapping is not present in id.metadata
+      if (any(!axis.mapping$type %in% id.metadata[[tag.type.col]])) warning(paste0("Some types in axis.mapping are not present in the '", tag.type.col, "' column of 'id.metadata'"), call. = FALSE)
+      # check if all tag + type combinations from id.metadata exist in axis.mapping
+      metadata_tags <- paste(id.metadata[[tag.model.col]], id.metadata[[tag.type.col]], sep = "_")
+      axis_mapping_tags <- paste(axis.mapping$tag, axis.mapping$type, sep = "_")
+      missing_types <- setdiff(metadata_tags, axis_mapping_tags)
+      if (length(missing_types) > 0) {
+        # reconstruct original tag and type for the warning message
+        missing_info <- strsplit(missing_types, "_")
+        formatted_missing <- sapply(missing_info, function(x) paste0("Tag: ", x[1], ", Type: ", x[2]))
+        warning_msg <- paste0("The following tag model and type combinations in 'id.metadata' do not have corresponding entries in 'axis.mapping':\n",
+                       paste(formatted_missing, collapse = ";\n"), "\nNo axis transformations will be performed for these entries.")
       }
+    # scenario 2: tag.type.col is NULL, perform simpler tag model validation
+    }else if (any(!id.metadata[[tag.model.col]] %in% axis.mapping$tag)) {
+      missing_tags <- setdiff(id.metadata[[tag.model.col]], axis.mapping$tag)
+      warning_msg <- paste0("Warning: The following tags in 'id.metadata' are not present in 'axis.mapping': ",
+                            paste(missing_tags, collapse = ", "), ". No axis transformations will be performed for these entries.\n")
     }
   }
 
   # check if specified columns exists in id.metadata
   if(!id.col %in% names(id.metadata)) stop(paste("The specified id.col ('", id.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
-  if(!tag.col %in% names(id.metadata)) stop(paste("The specified tag.col ('", tag.col, "') was not found in id.metadata.", sep = ""))
+  if(!tag.model.col %in% names(id.metadata)) stop(paste("The specified tag.model.col ('", tag.model.col, "') was not found in id.metadata.", sep = ""))
   if(!deploy.date.col %in% names(id.metadata)) stop(paste("The specified deploy.date.col ('", deploy.date.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
   if(!deploy.lon.col %in% names(id.metadata)) stop(paste("The specified deploy.lon.col ('", deploy.lon.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
   if(!deploy.lat.col %in% names(id.metadata)) stop(paste("The specified deploy.lat.col ('", deploy.lat.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
-  if(!pop.date.col %in% names(id.metadata)) stop(paste("The specified pop.date.col ('", pop.date.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
-  if(!pop.lon.col %in% names(id.metadata)) stop(paste("The specified pop.lon.col ('", pop.lon.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
-  if(!pop.lat.col %in% names(id.metadata)) stop(paste("The specified pop.lat.col ('", pop.lat.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
+  if(!is.null(pop.date.col) && !pop.date.col %in% names(id.metadata)) stop(paste("The specified pop.date.col ('", pop.date.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
+  if(!is.null(pop.lon.col) && !pop.lon.col %in% names(id.metadata)) stop(paste("The specified pop.lon.col ('", pop.lon.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
+  if(!is.null(pop.lat.col) && !pop.lat.col %in% names(id.metadata)) stop(paste("The specified pop.lat.col ('", pop.lat.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
+  if(!is.null(tag.type.col)){
+    if(!tag.type.col %in% names(id.metadata)) stop(paste("The specified tag.type.col ('", tag.type.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
+  }
   if(!is.null(package.id.col)){
     if(!package.id.col %in% names(id.metadata)) stop(paste("The specified package.id.col ('", package.id.col, "') was not found in id.metadata.", sep = ""), call. = FALSE)
   }
@@ -280,7 +310,7 @@ importTagData <- function(data.folders,
 
   # check if deploy.date.col and pop.date.col are POSIXct
   if (!inherits(id.metadata[[deploy.date.col]], "POSIXct")) stop(paste0("Column '", deploy.date.col, "' must be of class POSIXct."), call. = FALSE)
-  if (!inherits(id.metadata[[pop.date.col]], "POSIXct")) stop(paste0("Column '", pop.date.col, "' must be of class POSIXct."), call. = FALSE)
+  if (!is.null(pop.date.col) && !inherits(id.metadata[[pop.date.col]], "POSIXct")) stop(paste0("Column '", pop.date.col, "' must be of class POSIXct."), call. = FALSE)
 
   # validate timezone input
   if (!timezone %in% OlsonNames()) stop("Invalid timezone. Use OlsonNames() to see valid options.", call. = FALSE)
@@ -600,11 +630,29 @@ importTagData <- function(data.folders,
       cat("Total rows:", result, "\n")
     }
 
+
+    # retrieve tag model from metadata
+    tag_model <- animal_info[[tag.model.col]]
+
+    # retrieve tag type
+    if(!is.null(tag.type.col)){
+      # if tag.type.col specified in metadata, use the provided value
+      tag_type <- animal_info[[tag.type.col]]
+    }else{
+      # otherwise: infer from animal ID string ("Camera" if contains "CAM")
+      # default to "MS" (multisensor) when CAM not found in ID
+      tag_type <- ifelse(grepl("CAM", id, fixed=T), "Camera", "MS")
+    }
+
     # check package ID
     package_id <- NULL
-    if(!is.null(package.id.col)){
-      package_id <- animal_info[[package.id.col]]
-      cat("Package ID:", package_id, "\n")
+    if(!is.null(package.id.col)) package_id <- animal_info[[package.id.col]]
+
+    # print verbose
+    if(verbose){
+      output <- paste(tag_model, tag_type)
+      if(!is.null(package_id)) output <- paste0(output, " | Package ID: ", package_id)
+      cat(paste0(output, "\n"))
     }
 
 
@@ -745,7 +793,8 @@ importTagData <- function(data.folders,
         lon = animal_info[[deploy.lon.col]])
     }
     # pop-up location
-    if (!is.na(animal_info[[pop.date.col]]) && !is.na(animal_info[[pop.lon.col]]) && !is.na(animal_info[[pop.lat.col]])) {
+    if (!is.null(pop.date.col) && !is.null(pop.lon.col) && !is.null(pop.lat.col) &&
+        !is.na(animal_info[[pop.date.col]]) && !is.na(animal_info[[pop.lon.col]]) && !is.na(animal_info[[pop.lat.col]])) {
       metadata_locs[[length(metadata_locs) + 1]] <- data.table::data.table(
         datetime = animal_info[[pop.date.col]],
         position_type = "Metadata [popup]",
@@ -777,28 +826,17 @@ importTagData <- function(data.folders,
     # Apply axis.mapping transformations #######################################
     ############################################################################
 
-    # retrieve tag model from metadata
-    tag_model <- animal_info[[tag.col]]
-    tag_mapping <- c()
-
     # proceed only if axis.mapping is provided and tag_model is valid
-    if (!is.null(axis.mapping) && !is.na(tag_model)) {
+    if (!is.null(axis.mapping) && !is.na(tag_model) && !is.na(tag_type)) {
 
-      # check if tag_model exists in axis.mapping
-      if(tag_model %in% axis.mapping$tag){
+      # filter the axis.mapping for the current tag model and tag type
+      tag_mapping <- axis.mapping[axis.mapping$tag == tag_model & axis.mapping$type == tag_type,]
 
-        # extract the unique types from the data frame
-        types <- unique(axis.mapping$type)
-
-        # check which type is present in the ID name (if no match, assign the default type)
-        tag_type <- types[sapply(types, function(x) grepl(x, id))]
-        if (length(tag_type) == 0) {tag_type <- "CMD"}
+      # check if there is a specific mapping for this tag model and type
+      if(nrow(tag_mapping) > 0){
 
         # provide feedback to the user if verbose mode is enabled
-        if(verbose) cat(paste("--> Applying axis mapping for tag:", tag_model, tag_type, "\n"))
-
-        # filter the axis.mapping for the current tag type and model
-        tag_mapping <- axis.mapping[axis.mapping$tag == tag_model & axis.mapping$type == tag_type,]
+        if(verbose) cat(paste("--> Applying axis mapping\n"))
 
         # create a temporary copy of the data for simultaneous swaps
         temp_data <- data.table::copy(sensor_data)
@@ -822,6 +860,9 @@ importTagData <- function(data.folders,
 
         # update the sensor data with the swapped values
         sensor_data <- data.table::copy(temp_data)
+
+      }else{
+        if (verbose) cat(paste0("--> No specific axis mapping found for this tag, skipping transformations\n"))
       }
     }
 
@@ -851,6 +892,8 @@ importTagData <- function(data.folders,
     attr(sensor_data, 'directory') <- data.folders[i]
     attr(sensor_data, 'imported.columns') <- selected_cols
     attr(sensor_data, 'axis.mapping') <- tag_mapping
+    attr(sensor_data, 'tag.model') <- tag_model
+    attr(sensor_data, 'tag.type') <- tag_type
     attr(sensor_data, 'package.id') <- package_id
     attr(sensor_data, 'deployment.info') <- deployment_info
     attr(sensor_data, 'first.datetime') <- first_datetime

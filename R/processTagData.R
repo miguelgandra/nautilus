@@ -52,6 +52,12 @@
 #' Only used when \code{orientation.algorithm = "madgwick"}.
 #' @param orientation.smoothing Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
 #' Uses circular mean. Set to NULL to disable. Default: 1.
+#' @param correct.pitch.offset A logical value (TRUE/FALSE) indicating whether to apply a pitch
+#' offset correction based on the relationship between pitch angle and vertical speed.
+#' Defaults to FALSE. If TRUE, a linear regression of pitch (in radians) against
+#' `vertical_speed` is performed, and the intercept (pitch at 0 m/s vertical speed)
+#' is subtracted from all pitch estimates. This method is adapted from Kawatsu et al. (2010)
+#' to account for potential tag misalignment.
 #' @param pitch.warning.threshold Numeric. Threshold (in degrees) for median pitch values that trigger orientation warnings.
 #' Default: 45 (will warn if median |pitch| > 45 degrees).
 #' @param roll.warning.threshold Numeric. Threshold (in degrees) for median roll values that trigger orientation warnings.
@@ -117,8 +123,8 @@
 #' \itemize{
 #'   \item {Tilt-compensated compass} (default): A lightweight 6-axis fusion (accelerometer + magnetometer)
 #'   to compute roll, pitch, and heading. The method first calculates tilt angles from accelerometer data,
-#'   then compensates the magnetometer readings using these angles to compute a more accurate heading.
-#'   This approach avoids gyroscope drift but may be affected by magnetic disturbances.
+#'   then compensates the magnetometer readings using these angles to compute a more accurate heading
+#'   (as described in Gunner et al., 2021). This approach avoids gyroscope drift but may be affected by magnetic disturbances.
 #'   \item {Madgwick filter}: A 9-axis fusion algorithm (accelerometer + gyroscope + magnetometer)
 #'   implementing Sebastian Madgwick's quaternion-based gradient descent
 #'   approach. This provides absolute orientation reference by incorporating
@@ -154,6 +160,16 @@
 #' returns \code{NULL} invisibly. In all cases, data will be saved to disk if
 #' \code{save.files = TRUE}.
 #'
+#' @references
+#' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal
+#' movements in R: a reappraisal using Gundog. *Animal Biotelemetry*. 9:1–37.
+#' \doi{10.1186/s40317-021-00245-z}
+#'
+#' Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, *et al.* (2009).
+#' A new method to calibrate attachment angles of data loggers in swimming sharks.
+#' *EURASIP Journal on Advances in Signal Processing*. 2010, 732586.
+#' \doi{10.1155/2010/732586}
+#'
 #' @seealso \link{importTagData}, \link{filterDeploymentData}.
 #' @export
 
@@ -165,6 +181,7 @@ processTagData <- function(data,
                            orientation.algorithm = "tilt_compass",
                            madgwick.beta = 0.02,
                            orientation.smoothing = 1,
+                           correct.pitch.offset = TRUE,
                            pitch.warning.threshold = 45,
                            roll.warning.threshold = 45,
                            dba.window = 3,
@@ -257,15 +274,18 @@ processTagData <- function(data,
   # validate smoothing and moving window parameters
   if(!orientation.algorithm %in% c("madgwick", "tilt_compass")) stop("'orientation.algorithm' must be either 'madgwick' or 'tilt_compass'", call. = FALSE)
   if(!is.numeric(dba.window) || dba.window <= 0) stop("`dba.window` must be a positive numeric value.", call. = FALSE)
-  if(!is.numeric(orientation.smoothing) || orientation.smoothing <= 0) stop("`orientation.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.numeric(motion.smoothing) || motion.smoothing <= 0) stop("`motion.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.numeric(speed.smoothing) || speed.smoothing <= 0) stop("`speed.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.numeric(dba.smoothing) || dba.smoothing <= 0) stop("`dba.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.null(orientation.smoothing)  && (!is.numeric(orientation.smoothing) || orientation.smoothing <= 0)) stop("`orientation.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.null(motion.smoothing) && (!is.numeric(motion.smoothing) || motion.smoothing <= 0)) stop("`motion.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.null(speed.smoothing) && (!is.numeric(speed.smoothing) || speed.smoothing <= 0)) stop("`speed.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.null(dba.smoothing) && (!is.numeric(dba.smoothing) || dba.smoothing <= 0)) stop("`dba.smoothing` must be a positive numeric value.", call. = FALSE)
 
-  # validate `burst.quantiles`
+  # validate "burst.quantiles"
   if (!is.numeric(burst.quantiles) || any(burst.quantiles <= 0) || any(burst.quantiles > 1)) {
     stop("`burst.quantiles` must be a numeric vector with values in the range (0, 1].", call. = FALSE)
   }
+
+  # validate "correct.pitch.offset"
+  if (!is.logical(correct.pitch.offset)) stop("`correct.pitch.offset` must be a logical value (TRUE or FALSE).", call. = FALSE)
 
   # validate speed.calibration.values if paddle speed calculation is requested
   if (calculate.paddle.speed && !is.null(speed.calibration.values)) {
@@ -422,6 +442,16 @@ processTagData <- function(data,
     # proceed with calibration
     if (valid_magnetometer_data) {
 
+      # check if the tag was equipped with a paddle wheel
+      has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
+      if(has_paddle_info && isTRUE(attr(individual_data, "paddle.wheel"))) {
+        # apply 3-second rolling mean to all axes to remove noise
+        if(verbose) cat("---> Filtering magnetic noise from paddle wheel\n")
+        mag_data[, "mx"] <- zoo::rollmean(mag_data[, "mx"], k = sampling_freq * 3, align = "center", fill = "extend")
+        mag_data[, "my"] <- zoo::rollmean(mag_data[, "my"], k = sampling_freq * 3, align = "center", fill = "extend")
+        mag_data[, "mz"] <- zoo::rollmean(mag_data[, "mz"], k = sampling_freq * 3, align = "center", fill = "extend")
+      }
+
       # initialize calibrated data with raw data
       mag_calibrated <- mag_data
 
@@ -445,21 +475,18 @@ processTagData <- function(data,
       if (hard.iron.calibration) {
         # estimate hard-iron offset using midpoint method (average of max and min)
         hard_iron_offset <- 0.5 * (apply(mag_data, 2, max, na.rm = TRUE) + apply(mag_data, 2, min, na.rm = TRUE))
-        mag_calibrated <- sweep(mag_data, 2, hard_iron_offset)
+        # center the data (remove hard-iron bias)
+        mag_calibrated <- sweep(mag_data, 2, hard_iron_offset, FUN = "-")
       }
 
       # apply soft-iron calibration if enabled
       if (soft.iron.calibration) {
-        # estimate soft-iron distortion (fit ellipsoid)
-        cov_matrix <- cov(mag_calibrated)
-        # perform eigen decomposition
-        eig <- eigen(cov_matrix)
-        V <- eig$vectors
-        D_inv <- diag(1 / sqrt(eig$values))
-        # compute the transformation matrix
-        soft_iron_matrix <- V %*% D_inv %*% t(V)
-        # apply soft-iron correction
-        mag_calibrated <- t(soft_iron_matrix %*% t(mag_calibrated))
+        # estimate soft-iron scale factors (half of max chord length for each axis)
+        soft_iron_scales <- 0.5 * (apply(mag_data, 2, max, na.rm = TRUE) - apply(mag_data, 2, min, na.rm = TRUE))
+        # compute average scale (used to normalize all axes)
+        avg_scale <- mean(soft_iron_scales)
+        # apply axis-wise rescaling (soft-iron correction)
+        mag_calibrated <- sweep(mag_calibrated, 2, avg_scale / soft_iron_scales, FUN = "*")
       }
 
       # normalize the calibrated data (unit sphere)
@@ -495,16 +522,6 @@ processTagData <- function(data,
     # calculate window parameters
     window_size <- dba.window * sampling_freq
     pad_length <- ceiling(window_size / 2)
-
-    # define a reusable padding function - centered rolling mean with edge padding to avoid NAs
-    .pad_rollmean <- function(x, window, pad_len) {
-      # symmetric padding using first/last values
-      padded <- c(rep(x[1], pad_len), x, rep(x[length(x)], pad_len))
-      # compute centered rolling mean on padded data
-      rolled <- data.table::frollmean(padded, n = window, align = "center", na.rm = TRUE)
-      # trim to original length
-      rolled[(pad_len + 1):(length(x) + pad_len)]
-    }
 
     # calculate static (low-frequency) acceleration using padded rolling mean
     staticX = .pad_rollmean(individual_data$ax, window_size, pad_length)
@@ -657,24 +674,24 @@ processTagData <- function(data,
 
       # calculate roll and pitch angles
       individual_data[, `:=`(
-        roll = atan2(ay_norm, sign(az_norm) * sqrt(az_norm^2 + epsilon * ax_norm^2)),
+        roll = atan2(ay_norm, sign(az_norm) * sqrt(az_norm^2 + ax_norm^2 * epsilon)),
         pitch = atan2(-ax_norm, sqrt(ay_norm^2 + az_norm^2 + epsilon))
       )]
 
       # correct the magnetometer readings using the roll and pitch angles (tilt-compensated magnetic field vector)
-      mx_comp <- individual_data$mx*cos(individual_data$pitch) + individual_data$mz*sin(individual_data$pitch)
-      my_comp <- individual_data$mx*sin(individual_data$roll)*sin(individual_data$pitch) + individual_data$my*cos(individual_data$roll) - individual_data$mz*sin(individual_data$roll)*cos(individual_data$pitch)
+      mx_comp <- individual_data$mx * cos(individual_data$pitch) + individual_data$my * sin(individual_data$pitch) * sin(individual_data$roll) + individual_data$mz * sin(individual_data$pitch) * cos(individual_data$roll)
+      my_comp <- individual_data$my * cos(individual_data$roll) - individual_data$mz * sin(individual_data$roll)
 
       # convert roll and pitch from radians to degrees
       individual_data[, roll := roll * (180 / pi)]
       individual_data[, pitch := pitch * (180 / pi)]
 
       # calculate the heading and convert from radians to degrees (accounting for gimbal lock)
-      individual_data[, heading := {ifelse(abs(pitch) > 89.5, NA_real_, atan2(my_comp, mx_comp) * (180/pi))}]
+      individual_data[, heading := {ifelse(abs(pitch) > 89.5, NA_real_, atan2(-my_comp, mx_comp) * (180/pi))}]
     }
 
-    #############################################################
-    #############################################################
+    ############################################################################
+    ## convert magnetic heading to geographic heading ##########################
 
     # determine location to use for magnetic declination calculation
     if (!is.null(attr(individual_data, "deployment.info"))) {
@@ -699,7 +716,62 @@ processTagData <- function(data,
     # apply magnetic declination correction to convert from magnetic north to geographic north
     individual_data[, heading := (heading + declination_deg) %% 360]
 
-    # apply a moving circular mean to smooth the metrics time series
+
+
+    ############################################################################
+    # correct pitch offset if requested ########################################
+
+    if (correct.pitch.offset) {
+      if (verbose) cat("---> Correcting for potential pitch offset\n")
+
+      # calculate 10-second rolling mean of vertical speed
+      vv_window <- 10 * sampling_freq
+      individual_data[, vv_smooth := data.table::frollmean(vertical_speed, n = vv_window, fill = NA, align = "center")]
+
+      # convert pitch to radians for regression
+      individual_data[, pitch_rad := pitch * (pi/180)]
+
+      # perform linear regression between smoothed vertical velocity and pitch (in radians)
+      pitch_model <- lm(pitch_rad ~ vv_smooth, data = individual_data[!is.na(vv_smooth) & !is.na(pitch_rad)])
+
+      # get R squared
+      pitch_offset_r2 <- summary(pitch_model)$r.squared
+
+      # get intercept (pitch angle in radians when vertical velocity = 0)
+      pitch_offset_rad <- coef(pitch_model)[1]
+
+      # convert intercept back to degrees for correction
+      pitch_offset_deg <- pitch_offset_rad * (180/pi)
+
+      # only apply correction if offset is below threshold
+      if(abs(pitch_offset_deg) < pitch.warning.threshold) {
+
+        # correct pitch values by subtracting the offset (in degrees)
+        individual_data[, pitch := pitch - pitch_offset_deg]
+
+        # report the estimated offset in degrees
+        if (verbose) cat(sprintf("     (pitch offset correction: %.2f\u00b0 | R\u00b2 = %.2f)\n", pitch_offset_deg, pitch_offset_r2))
+
+      } else {
+
+        if (verbose) cat(sprintf("     (pitch offset %.2f\u00b0 exceeds threshold of %.2f\u00b0 - no correction applied)\n", pitch_offset_deg, pitch_warning.threshold))
+        pitch_offset_deg <- NULL
+        pitch_offset_r2 <- NULL
+      }
+
+      # clean up temporary columns
+      individual_data[, c("pitch_rad", "vv_smooth") := NULL]
+      rm(pitch_model, pitch_offset_rad, vv_window)
+
+      } else {
+        pitch_offset_deg <- NULL
+        pitch_offset_r2 <- NULL
+      }
+
+
+    ############################################################################
+    # apply a moving circular mean to smooth the metrics time series ###########
+
     if(!is.null(orientation.smoothing)) {
       window_size <- sampling_freq * orientation.smoothing
       individual_data[, roll := .rollingCircularMean(roll, window = window_size, range = c(-180, 180) )]
@@ -707,7 +779,9 @@ processTagData <- function(data,
       individual_data[, heading := .rollingCircularMean(heading, window = window_size, range = c(0, 360))]
     }
 
-    # check for potential axis issues (misalignment, swaps, or sign flips)
+    ############################################################################
+    # check for potential axis issues (misalignment, swaps, or sign flips) #####
+
     median_pitch <- median(individual_data$pitch, na.rm = TRUE)
     median_roll  <- median(individual_data$roll, na.rm = TRUE)
     pitch_anomaly_detected <- FALSE
@@ -981,6 +1055,8 @@ processTagData <- function(data,
     attr(processed_data, 'orientation.smoothing') <- orientation.smoothing
     attr(processed_data, 'motion.smoothing') <- motion.smoothing
     attr(processed_data, 'speed.smoothing') <- speed.smoothing
+    attr(individual_data, 'pitch.offset.value') <- pitch_offset_deg
+    attr(individual_data, 'pitch.offset.model.r2') <- pitch_offset_r2
     attr(processed_data, 'pitch.warning.threshold') <- pitch.warning.threshold
     attr(processed_data, 'roll.warning.threshold') <- roll.warning.threshold
     attr(processed_data, 'pitch.anomaly.detected') <- pitch_anomaly_detected
@@ -989,14 +1065,14 @@ processTagData <- function(data,
 
     # sort final attributes
     internal_attrs <- c("names", "row.names", "class", ".internal.selfref", "index")
-    id_attrs <- c("id", "directory", "package.id", "original.rows", "imported.columns",
+    id_attrs <- c("id", "directory", "tag.model", "tag.type", "package.id", "original.rows", "imported.columns",
                   "axis.mapping", "timezone", "deployment.info", "first.datetime", "last.datetime",
                   "original.sampling.frequency", "processed.sampling.frequency")
     sensor_attrs <- c("hard.iron.calibration", "soft.iron.calibration", "orientation.algorithm",
                       "madgwick.beta", "magnetic.declination", "dba.window", "dba.smoothing",
                        "orientation.smoothing", "motion.smoothing", "speed.smoothing", "paddle.wheel")
-    checks_attrs <- c("regularization.performed", "pitch.warning.threshold", "roll.warning.threshold",
-                      "pitch.anomaly.detected", "roll.anomaly.detected")
+    checks_attrs <- c("regularization.performed", "pitch.offset.value",  "pitch.offset.model.r2",
+                      "pitch.warning.threshold", "roll.warning.threshold","pitch.anomaly.detected", "roll.anomaly.detected")
     final_attrs <- c("nautilus.version", "processing.date")
     sorted_attrs <- c(internal_attrs, id_attrs, sensor_attrs, checks_attrs, final_attrs)
 

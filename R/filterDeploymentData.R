@@ -56,11 +56,15 @@
 #' These plots generate diagnostic visuals showing depth and additional metrics, assisting users in reviewing the extracted deployment periods.
 #' If set to `FALSE`, no plots will be saved.
 #' Default is `FALSE`.
-#' @param plot.metrics A character vector of column names indicating additional metrics (e.g., acceleration or pitch)
-#' to include in the visualization. These metrics are plotted alongside the depth data to aid in visually reviewing
-#' the deployment period assignments (default is \code{c("pitch", "sway")}).
-#' @param plot.metrics.labels A character vector specifying custom titles for the metrics plotted in the output.
-#' If set to NULL, the column names provided in `plot.metrics` will be used as labels (default is NULL).
+#' @param plot.metrics An optional character vector of column names indicating additional metrics
+#' (e.g., acceleration or temperature) to include in the visualization. These metrics are plotted
+#' alongside the depth data to aid in visually reviewing the deployment period assignments.
+#' Required only if `display.plots` or `save.plots` is `TRUE`. If NULL (default) and plots are requested,
+#' defaults to `c("temp", "ax")`. Must be length 2 if provided.
+#' @param plot.metrics.labels An optional character vector specifying custom titles for the metrics
+#' plotted in the output. If NULL (default), the column names provided in `plot.metrics` will be
+#' used as labels. Must be NULL if `plot.metrics` is NULL, and must be length 2 if provided.
+#' Ignored unless plots are being generated (`display.plots` or `save.plots` is `TRUE`).
 #' @param return.data Logical. Controls whether the function returns the processed data
 #' as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
 #' memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
@@ -97,7 +101,7 @@ filterDeploymentData <- function(data,
                                  max.changepoints = 6,
                                  display.plots = FALSE,
                                  save.plots = TRUE,
-                                 plot.metrics = c("pitch", "sway"),
+                                 plot.metrics = NULL,
                                  plot.metrics.labels = NULL,
                                  return.data = TRUE,
                                  save.files = FALSE,
@@ -194,6 +198,30 @@ filterDeploymentData <- function(data,
 
   # validate plot parameters
   if (display.plots || save.plots) {
+    # ensure that plot.metrics is a character vector of length 2
+    if (!is.character(plot.metrics) || length(plot.metrics) != 2) {
+      stop("The plot.metrics argument must be a character vector of length 2.", call. = FALSE)
+    }
+    # validate plot.metrics.labels
+    if (is.null(plot.metrics.labels)) {
+      plot.metrics.labels <- plot.metrics
+    } else if (length(plot.metrics.labels) != 2) {
+      stop("The plot.metrics.labels argument must be a character vector of length 2.", call. = FALSE)
+    }
+  }
+
+
+  # validate plot parameters
+  if (display.plots || save.plots) {
+    # validate plot.metrics.labels - must be NULL if plot.metrics is NULL
+    if (!is.null(plot.metrics.labels) && is.null(plot.metrics)) {
+      stop("plot.metrics.labels was provided but plot.metrics was not.", call. = FALSE)
+    }
+    # if plot.metrics is NULL, set default values
+    if (is.null(plot.metrics)) {
+      plot.metrics <- c("temp", "ax")
+      plot.metrics.labels <- c("Temperature (\u00B0C)", "Acc X (\u00B0)")
+    }
     # ensure that plot.metrics is a character vector of length 2
     if (!is.character(plot.metrics) || length(plot.metrics) != 2) {
       stop("The plot.metrics argument must be a character vector of length 2.", call. = FALSE)
@@ -347,11 +375,17 @@ filterDeploymentData <- function(data,
       # temporarily suppress console output (redirect to a temporary file)
       sink(tempfile())
 
+      # determine which columns to downsample
+      cols_to_downsample <- depth.col
+      if (!is.null(plot.metrics)) cols_to_downsample <- c(cols_to_downsample, plot.metrics)
+
       # downsample to 1 Hz by rounding datetime to the nearest second and taking the mean value for each second
-      reduced_data <- individual_data[, lapply(c(depth.col, plot.metrics), function(col) mean(get(col), na.rm = TRUE)),
+      reduced_data <- individual_data[, lapply(cols_to_downsample, function(col) mean(get(col), na.rm = TRUE)),
                                       by = .(lubridate::floor_date(get(datetime.col)))]
+
       # correct the column names
-      data.table::setnames(reduced_data, old = names(reduced_data), new =  c(datetime.col, c(depth.col, plot.metrics)))
+      new_names <- c(datetime.col, cols_to_downsample)
+      data.table::setnames(reduced_data, old = names(reduced_data), new = new_names)
 
       # add ID column
       reduced_data[, (id.col) := id]
@@ -365,8 +399,10 @@ filterDeploymentData <- function(data,
       # else, if downsampling is not required (sampling frequency <= 1 Hz)
     } else {
 
-      #keep only relevant columns
-      reduced_data <- individual_data[, c(id.col, datetime.col, depth.col, plot.metrics), with = FALSE]
+      # keep only relevant columns
+      cols_to_keep <- c(id.col, datetime.col, depth.col)
+      if (display.plots || save.plots) cols_to_keep <- c(cols_to_keep, plot.metrics)
+      reduced_data <- individual_data[, cols_to_keep, with = FALSE]
 
     }
 

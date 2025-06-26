@@ -286,6 +286,38 @@ NULL
 
 
 #####################################################################################
+# Centered rolling mean with edge padding ###########################################
+#####################################################################################
+
+#' Centered Rolling Mean with Edge Padding
+#'
+#' Calculates a centered rolling mean while avoiding edge artifacts through symmetric padding.
+#' Designed for time-series smoothing where maintaining data length and minimizing edge distortion
+#' is critical. Uses efficient \code{data.table} backend for large datasets.
+#'
+#' @param x Numeric vector to be smoothed (may contain \code{NA}s).
+#' @param window Integer width of the rolling window (in observations). For time-based windows,
+#'               use \code{window = sampling_rate * seconds}.
+#' @param pad_len Integer number of values to pad at each edge. Typically \code{ceiling(window/2)}.
+#'                Determines how many values are mirrored at the boundaries.
+#'
+#' @return Numeric vector of the same length as \code{x} containing smoothed values.
+#'         The first and last \code{pad_len} values are smoothed using mirrored padding.
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.pad_rollmean <- function(x, window, pad_len) {
+  # symmetric padding using first/last values
+  padded <- c(rep(x[1], pad_len), x, rep(x[length(x)], pad_len))
+  # compute centered rolling mean on padded data
+  rolled <- data.table::frollmean(padded, n = window, align = "center", na.rm = TRUE)
+  # trim to original length
+  rolled[(pad_len + 1):(length(x) + pad_len)]
+}
+
+
+#####################################################################################
 # Format durations ##################################################################
 #####################################################################################
 

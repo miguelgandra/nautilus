@@ -15,7 +15,7 @@ filterDeploymentData(
   max.changepoints = 6,
   display.plots = FALSE,
   save.plots = TRUE,
-  plot.metrics = c("pitch", "sway"),
+  plot.metrics = NULL,
   plot.metrics.labels = NULL,
   return.data = TRUE,
   save.files = FALSE,
@@ -68,12 +68,16 @@ These plots generate diagnostic visuals showing depth and additional metrics, as
 If set to \code{FALSE}, no plots will be saved.
 Default is \code{FALSE}.}
 
-\item{plot.metrics}{A character vector of column names indicating additional metrics (e.g., acceleration or pitch)
-to include in the visualization. These metrics are plotted alongside the depth data to aid in visually reviewing
-the deployment period assignments (default is \code{c("pitch", "sway")}).}
+\item{plot.metrics}{An optional character vector of column names indicating additional metrics
+(e.g., acceleration or temperature) to include in the visualization. These metrics are plotted
+alongside the depth data to aid in visually reviewing the deployment period assignments.
+Required only if \code{display.plots} or \code{save.plots} is \code{TRUE}. If NULL (default) and plots are requested,
+defaults to \code{c("temp", "ax")}. Must be length 2 if provided.}
 
-\item{plot.metrics.labels}{A character vector specifying custom titles for the metrics plotted in the output.
-If set to NULL, the column names provided in \code{plot.metrics} will be used as labels (default is NULL).}
+\item{plot.metrics.labels}{An optional character vector specifying custom titles for the metrics
+plotted in the output. If NULL (default), the column names provided in \code{plot.metrics} will be
+used as labels. Must be NULL if \code{plot.metrics} is NULL, and must be length 2 if provided.
+Ignored unless plots are being generated (\code{display.plots} or \code{save.plots} is \code{TRUE}).}
 
 \item{return.data}{Logical. Controls whether the function returns the processed data
 as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce

@@ -80,14 +80,14 @@ animal_metadata <- readxl::read_excel("./PINTADO_metadata_multisensor.xlsx")
 
 # Select relevant columns
 selected_cols <- c("id", "dateTime", "site", "longitudeD", "latitudeD",
-                   "sex", "size", "Nmax", "typeCMD", "PakageID", "satPtt", "padWheel",
+                   "sex", "size", "Nmax", "type", "typeCMD", "PakageID", "satPtt", "padWheel",
                    "recoveryDate", "recoveryTime", "lonRecov", "latRecov",
                    "popupDatetime", "latPop", "lonPop")
 animal_metadata <- as.data.frame(animal_metadata)[,selected_cols]
 
 # Update column names to standardized format for further processing
 colnames(animal_metadata) <- c("ID", "deploy_date", "deploy_site", "deploy_lon", "deploy_lat",
-                               "sex", "size", "n_animals", "tag", "package_id", "satPtt", "paddle_wheel",
+                               "sex", "size", "n_animals", "type", "tag", "package_id", "satPtt", "paddle_wheel",
                                "recover_date", "recover_time", "recover_lon", "recover_lat",
                                "popup_date", "popup_lat", "popup_lon")
 
@@ -97,6 +97,7 @@ animal_metadata$deploy_year <- as.integer(format(animal_metadata$deploy_date, "%
 # Standardize tag labels
 animal_metadata$tag[animal_metadata$tag=="4k"] <- "4K"
 animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
+animal_metadata$type[animal_metadata$type=="Camara"] <- "Camera"
 
 # Update CEIIA tags with year suffix for 2022 deployments
 animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022] <- "CEIIA_2022"
@@ -111,10 +112,15 @@ animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year
 # It specifies how raw sensor axes (accelerometer, magnetometer, gyroscope) are
 # mapped for different tags to match the NED (North-East-Down) coordinate system,
 # or marked as NA for known faulty sensors.
-# The "type" is automatically determined based on the ID names:
-# - If the ID name includes the substring "CAM", it will be classified as type "CAM".
-# - If no such match is found, the type will default to "CMD".
-# The "tag" column in the configuration should match the tags included in the ID metadata.
+#
+# The "type" column must match tag types listed in ID metadata.
+# If tag.type.col is NULL, tag type is inferred from ID names:
+#   - "CAM" in ID → "Camera"
+#   - Otherwise → "MS"
+#
+# The "tag" column must match the tag models listed in the ID metadata
+# (e.g., "CATS", "CEIIA").
+#
 # Accelerometer axes: ax, ay, and az.
 # Magnetometer axes: mx, my, and mz.
 # Gyroscope axes: gx, gy, and gz.
@@ -128,28 +134,28 @@ axes_config <- data.frame(
 )
 
 # Mapping for CATS CAM TAG
-axes_config[1, ] <- c("CAM", "CATS", "ax", "-ax")
-axes_config[2, ] <- c("CAM", "CATS", "ay", "-ay")
-axes_config[3, ] <- c("CAM", "CATS", "az", "-az")
+axes_config[1, ] <- c("Camera", "CATS", "ax", "-ax")
+axes_config[2, ] <- c("Camera", "CATS", "ay", "-ay")
+axes_config[3, ] <- c("Camera", "CATS", "az", "-az")
 
 # Mapping for CEiiA CAM TAG (general)
-axes_config[4, ] <- c("CAM", "CEIIA", "ax", "az")
-axes_config[5, ] <- c("CAM", "CEIIA", "ay", "-ax")
-axes_config[6, ] <- c("CAM", "CEIIA", "az", "ay")
-axes_config[7, ] <- c("CAM", "CEIIA", "mx", "mz")
-axes_config[8, ] <- c("CAM", "CEIIA", "mz", "-mx")
+axes_config[4, ] <- c("Camera", "CEIIA", "ax", "az")
+axes_config[5, ] <- c("Camera", "CEIIA", "ay", "-ax")
+axes_config[6, ] <- c("Camera", "CEIIA", "az", "ay")
+axes_config[7, ] <- c("Camera", "CEIIA", "mx", "mz")
+axes_config[8, ] <- c("Camera", "CEIIA", "mz", "-mx")
 
 # Special mapping for CEiiA CAM TAG 2022 (faulty mag and gyr sensors)
-axes_config[9, ] <- c("CAM", "CEIIA_2022", "mx", "NA")
-axes_config[10, ] <- c("CAM", "CEIIA_2022", "my", "NA")
-axes_config[11, ] <- c("CAM", "CEIIA_2022", "mz", "NA")
-axes_config[12, ] <- c("CAM", "CEIIA_2022", "gx", "NA")
-axes_config[13, ] <- c("CAM", "CEIIA_2022", "gy", "NA")
-axes_config[14, ] <- c("CAM", "CEIIA_2022", "gz", "NA")
+axes_config[9, ] <- c("Camera", "CEIIA_2022", "mx", "NA")
+axes_config[10, ] <- c("Camera", "CEIIA_2022", "my", "NA")
+axes_config[11, ] <- c("Camera", "CEIIA_2022", "mz", "NA")
+axes_config[12, ] <- c("Camera", "CEIIA_2022", "gx", "NA")
+axes_config[13, ] <- c("Camera", "CEIIA_2022", "gy", "NA")
+axes_config[14, ] <- c("Camera", "CEIIA_2022", "gz", "NA")
 
 # Mapping for CATS mini-Diary TAG (CMD)
-axes_config[15, ] <- c("CMD", "CATS", "ax", "-ay")
-axes_config[16, ] <- c("CMD", "CATS", "ay", "-ax")
+axes_config[15, ] <- c("MS", "CATS", "ax", "-ay")
+axes_config[16, ] <- c("MS", "CATS", "ay", "-ax")
 
 
 ################################################################################
@@ -242,7 +248,8 @@ data_list <- importTagData(data.folders = data_folders,
                            axis.mapping = axes_config,
                            id.metadata = animal_metadata,
                            id.col = "ID",
-                           tag.col = "tag",
+                           tag.model.col = "tag",
+                           tag.type.col = "type",
                            deploy.date.col = "deploy_date",
                            deploy.lon.col = "deploy_lon",
                            deploy.lat.col = "deploy_lat",
@@ -522,26 +529,24 @@ paddle_calibration$processed_slope <- NULL
 
 
 # Load the previously imported files
-data_files <- list.files("./data processed/imported", full.names = TRUE)
+data_files <- list.files("./data processed/filtered", full.names = TRUE)
 
 # Process tag data using the "processTagData" function
 data_list <- processTagData(data = data_files,
                             downsample.to = 20,
                             hard.iron.calibration = TRUE,
-                            soft.iron.calibration = FALSE,
+                            soft.iron.calibration = TRUE,
                             orientation.algorithm = "tilt_compass",
-                            madgwick.beta = 0.02,
                             orientation.smoothing = 1,
                             pitch.warning.threshold = 45,
                             roll.warning.threshold = 45,
-                            dba.window = 6,
+                            dba.window = 5,
                             dba.smoothing = 2,
                             motion.smoothing = 1,
                             speed.smoothing = 2,
                             calculate.paddle.speed = TRUE,
                             speed.calibration.values = paddle_calibration,
                             burst.quantiles = c(0.95, 0.99),
-                            check.time.anomalies = TRUE,
                             return.data = FALSE,
                             save.files = TRUE,
                             output.folder = "./data processed/processed/20Hz",
@@ -567,7 +572,7 @@ filtered_list <- calculateTailBeats(data = data_list,
                                     output.dir = "./plots/tail beat frequencies",
                                     motion.col = "surge",
                                     ridge.only = FALSE,
-                                    min.freq.Hz = 0.02,
+                                    min.freq.Hz = 0.05,
                                     max.freq.Hz = 2,
                                     smooth.window = 5,
                                     power.ratio.threshold = 2,
@@ -606,7 +611,7 @@ for(i in 1:length(filtered_list)){
 ################################################################################
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/imported", full.names = TRUE)
+data_files <- list.files("./data processed/processed/20Hz", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 filtered_list <- vector("list", length(data_files))
