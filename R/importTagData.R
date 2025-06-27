@@ -239,11 +239,11 @@ importTagData <- function(data.folders,
     # first ensure the required columns exist in axis.mapping
     if (!all(c("type", "tag", "from", "to") %in% colnames(axis.mapping))) stop("The 'axis.mapping' data frame must contain 'type', 'tag', 'from', and 'to' columns.", call. = FALSE)
     # issue warning in case any tag in axis.mapping is not present in id.metadata
-    if (any(!axis.mapping$tag %in% id.metadata[[tag.model.col]])) warning(paste0("Some tags in axis.mapping are not present in the '", tag.model.col, "' column of 'id.metadata'"), call. = FALSE)
+    if (any(!axis.mapping$tag %in% id.metadata[[tag.model.col]])) warning_msg1 <- paste0("Some tags in axis.mapping are not present in the '", tag.model.col, "' column of 'id.metadata'\n")
     # scenario 1: tag.type.col is provided, use combined tag and type validation
     if (!is.null(tag.type.col)) {
       # issue warning in case any type in axis.mapping is not present in id.metadata
-      if (any(!axis.mapping$type %in% id.metadata[[tag.type.col]])) warning(paste0("Some types in axis.mapping are not present in the '", tag.type.col, "' column of 'id.metadata'"), call. = FALSE)
+      if (any(!axis.mapping$type %in% id.metadata[[tag.type.col]])) warning_msg2 <- paste0("Some types in axis.mapping are not present in the '", tag.type.col, "' column of 'id.metadata'\n")
       # check if all tag + type combinations from id.metadata exist in axis.mapping
       metadata_tags <- paste(id.metadata[[tag.model.col]], id.metadata[[tag.type.col]], sep = "_")
       axis_mapping_tags <- paste(axis.mapping$tag, axis.mapping$type, sep = "_")
@@ -251,15 +251,20 @@ importTagData <- function(data.folders,
       if (length(missing_types) > 0) {
         # reconstruct original tag and type for the warning message
         missing_info <- strsplit(missing_types, "_")
-        formatted_missing <- sapply(missing_info, function(x) paste0("Tag: ", x[1], ", Type: ", x[2]))
-        warning_msg <- paste0("The following tag model and type combinations in 'id.metadata' do not have corresponding entries in 'axis.mapping':\n",
-                       paste(formatted_missing, collapse = ";\n"), "\nNo axis transformations will be performed for these entries.")
+        formatted_missing <- vapply(missing_info, function(x) paste0("- ", x[1], " ", x[2]), character(1))
+        warning_msg3 <- paste0(
+          "Some tag model x type combinations from 'id.metadata' are missing in 'axis.mapping'.",
+          "No axis transformations will be applied to these:\n",
+          paste(formatted_missing, collapse = "\n"), "\n")
       }
     # scenario 2: tag.type.col is NULL, perform simpler tag model validation
     }else if (any(!id.metadata[[tag.model.col]] %in% axis.mapping$tag)) {
       missing_tags <- setdiff(id.metadata[[tag.model.col]], axis.mapping$tag)
-      warning_msg <- paste0("Warning: The following tags in 'id.metadata' are not present in 'axis.mapping': ",
-                            paste(missing_tags, collapse = ", "), ". No axis transformations will be performed for these entries.\n")
+      formatted_missing <- paste0("- ", missing_tags)
+      warning_msg3 <- paste0(
+        "Some tag models in 'id.metadata' do not have corresponding entries in 'axis.mapping'.",
+        "No axis transformations will be applied to these:\n",
+        paste(formatted_missing, collapse = "\n"), "\n")
     }
   }
 
@@ -476,7 +481,9 @@ importTagData <- function(data.folders,
   if(verbose) cat(crayon::blue(paste0("- ", basename(data.folders), collapse = "\n")), "\n\n")
 
   # print warning
-  if (exists("warning_msg")) message(warning_msg)
+  if (exists("warning_msg1")) message(warning_msg1)
+  if (exists("warning_msg2")) message(warning_msg2)
+  if (exists("warning_msg3")) message(warning_msg3)
 
 
   ##############################################################################

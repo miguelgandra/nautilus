@@ -80,16 +80,16 @@ animal_metadata <- readxl::read_excel("./PINTADO_metadata_multisensor.xlsx")
 
 # Select relevant columns
 selected_cols <- c("id", "dateTime", "site", "longitudeD", "latitudeD",
-                   "sex", "size", "Nmax", "type", "typeCMD", "PakageID", "satPtt", "padWheel",
-                   "recoveryDate", "recoveryTime", "lonRecov", "latRecov",
-                   "popupDatetime", "latPop", "lonPop")
+                   "sex", "size", "Nmax", "type", "typeCMD", "PakageID", "ID_CMD",
+                   "satPtt", "padWheel", "recoveryDate", "recoveryTime",
+                   "lonRecov", "latRecov", "popupDatetime", "latPop", "lonPop")
 animal_metadata <- as.data.frame(animal_metadata)[,selected_cols]
 
 # Update column names to standardized format for further processing
 colnames(animal_metadata) <- c("ID", "deploy_date", "deploy_site", "deploy_lon", "deploy_lat",
-                               "sex", "size", "n_animals", "type", "tag", "package_id", "satPtt", "paddle_wheel",
-                               "recover_date", "recover_time", "recover_lon", "recover_lat",
-                               "popup_date", "popup_lat", "popup_lon")
+                               "sex", "size", "n_animals", "type", "tag", "package_id", "cmd_id",
+                               "satPtt", "paddle_wheel", "recover_date", "recover_time",
+                               "recover_lon", "recover_lat", "popup_date", "popup_lat", "popup_lon")
 
 # Extract year from POSIXct deploy_date
 animal_metadata$deploy_year <- as.integer(format(animal_metadata$deploy_date, "%Y"))
@@ -100,8 +100,11 @@ animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 animal_metadata$type[animal_metadata$type=="Camara"] <- "Camera"
 
 # Update CEIIA tags with year suffix for 2022 deployments
-animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022] <- "CEIIA_2022"
+animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022] <- "CEIIA 2022"
 
+# Reclassify as "CATS 2019" all CAM tags deployed in 2019 with CMD ID 71, which had a non-standard axes mapping
+animal_metadata$tag[animal_metadata$cmd_id == "71" & animal_metadata$deploy_year == 2019] <- "CATS 2019"
+animal_metadata$tag[animal_metadata$ID=="PIN_12"] <- "CATS"
 
 
 ################################################################################
@@ -138,24 +141,34 @@ axes_config[1, ] <- c("Camera", "CATS", "ax", "-ax")
 axes_config[2, ] <- c("Camera", "CATS", "ay", "-ay")
 axes_config[3, ] <- c("Camera", "CATS", "az", "-az")
 
+# Special mapping for CATS CAM TAG 2019 (different mapping)
+axes_config[4, ] <- c("Camera", "CATS 2019", "ax", "-ax")
+
 # Mapping for CEiiA CAM TAG (general)
-axes_config[4, ] <- c("Camera", "CEIIA", "ax", "az")
-axes_config[5, ] <- c("Camera", "CEIIA", "ay", "-ax")
-axes_config[6, ] <- c("Camera", "CEIIA", "az", "ay")
-axes_config[7, ] <- c("Camera", "CEIIA", "mx", "mz")
-axes_config[8, ] <- c("Camera", "CEIIA", "mz", "-mx")
+axes_config[5, ] <- c("Camera", "CEIIA", "ax", "az")
+axes_config[6, ] <- c("Camera", "CEIIA", "ay", "-ax")
+axes_config[7, ] <- c("Camera", "CEIIA", "az", "ay")
+axes_config[8, ] <- c("Camera", "CEIIA", "mx", "mz")
+axes_config[9, ] <- c("Camera", "CEIIA", "mz", "-mx")
 
 # Special mapping for CEiiA CAM TAG 2022 (faulty mag and gyr sensors)
-axes_config[9, ] <- c("Camera", "CEIIA_2022", "mx", "NA")
-axes_config[10, ] <- c("Camera", "CEIIA_2022", "my", "NA")
-axes_config[11, ] <- c("Camera", "CEIIA_2022", "mz", "NA")
-axes_config[12, ] <- c("Camera", "CEIIA_2022", "gx", "NA")
-axes_config[13, ] <- c("Camera", "CEIIA_2022", "gy", "NA")
-axes_config[14, ] <- c("Camera", "CEIIA_2022", "gz", "NA")
+axes_config[10, ] <- c("Camera", "CEIIA 2022", "ax", "az")
+axes_config[11, ] <- c("Camera", "CEIIA 2022", "az", "ax")
+axes_config[12, ] <- c("Camera", "CEIIA 2022", "mx", "NA")
+axes_config[13, ] <- c("Camera", "CEIIA 2022", "my", "NA")
+axes_config[14, ] <- c("Camera", "CEIIA 2022", "mz", "NA")
+axes_config[15, ] <- c("Camera", "CEIIA 2022", "gx", "NA")
+axes_config[16, ] <- c("Camera", "CEIIA 2022", "gy", "NA")
+axes_config[17, ] <- c("Camera", "CEIIA 2022", "gz", "NA")
 
 # Mapping for CATS mini-Diary TAG (CMD)
-axes_config[15, ] <- c("MS", "CATS", "ax", "-ay")
-axes_config[16, ] <- c("MS", "CATS", "ay", "-ax")
+axes_config[18, ] <- c("MS", "CATS", "ax", "-ay")
+axes_config[19, ] <- c("MS", "CATS", "ay", "-ax")
+
+# Mapping for BBC Camera
+axes_config[20, ] <- c("Camera", "BBC", "ax", "ay")
+axes_config[21, ] <- c("Camera", "BBC", "ay", "az")
+axes_config[22, ] <- c("Camera", "BBC", "az", "ax")
 
 
 ################################################################################
@@ -317,8 +330,8 @@ filter_results <- filterDeploymentData(data = data_files,
                                        max.changepoints = 6,
                                        display.plots = FALSE,
                                        save.plots = TRUE,
-                                       plot.metrics = c("temp", "ax"),
-                                       plot.metrics.labels = c("Temperature (\u00B0C)", "Acc X (\u00B0)"),
+                                       plot.metrics = c("ay", "az"),
+                                       plot.metrics.labels = c("Acc Y (\u00B0)", "Acc Z (\u00B0)"),
                                        return.data = FALSE,
                                        save.files = TRUE,
                                        output.folder = "./data processed/filtered",

@@ -446,7 +446,7 @@ processTagData <- function(data,
       has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
       if(has_paddle_info && isTRUE(attr(individual_data, "paddle.wheel"))) {
         # apply 3-second rolling mean to all axes to remove noise
-        if(verbose) cat("---> Filtering magnetic noise from paddle wheel\n")
+        if(verbose) cat("---> Removing magnetic noise from paddle wheel\n")
         mag_data[, "mx"] <- zoo::rollmean(mag_data[, "mx"], k = sampling_freq * 3, align = "center", fill = "extend")
         mag_data[, "my"] <- zoo::rollmean(mag_data[, "my"], k = sampling_freq * 3, align = "center", fill = "extend")
         mag_data[, "mz"] <- zoo::rollmean(mag_data[, "mz"], k = sampling_freq * 3, align = "center", fill = "extend")
@@ -460,7 +460,7 @@ processTagData <- function(data,
         hi <- as.integer(hard.iron.calibration)
         si <- as.integer(soft.iron.calibration)
         if (hi == 1 && si == 1) {
-          type <- "both hard-iron and soft-iron"
+          type <- "hard-iron and soft-iron"
         } else if (hi == 1 && si == 0) {
           type <- "hard-iron"
         } else if (hi == 0 && si == 1) {
@@ -594,71 +594,80 @@ processTagData <- function(data,
     # Calculate orientation metrics ############################################
     ############################################################################
 
+    # first, check sensor data validity
+    valid_accel_data <- !all(is.na(individual_data$ax)) &
+      !all(is.na(individual_data$ay)) &
+      !all(is.na(individual_data$az))
+
+    valid_gyro_data <- !all(is.na(individual_data$gx)) &
+      !all(is.na(individual_data$gy)) &
+      !all(is.na(individual_data$gz))
+
+    # determine feasible orientation methods
+    use_madgwick <- orientation.algorithm == "madgwick" && valid_accel_data && valid_gyro_data
+    use_tilt_compass <- orientation.algorithm == "tilt" && valid_accel_data
+
+
     #############################################################
     # Python Madgwick filter ####################################
-    if(orientation.algorithm == "madgwick"){
-
-      # provide feedback to the user if verbose mode is enabled
-      if (verbose) cat("---> Calculating orientation using Madgwick filter\n")
+    if(use_madgwick){
 
       # load Python packages
       ahrs <- reticulate::import("ahrs", delay_load = TRUE)
       np <- reticulate::import("numpy", delay_load = TRUE)
 
-      # prepare sensor data matrices
-      acc_data <- as.matrix(individual_data[, .(ax, ay, az)])
-      gyr_data <- as.matrix(individual_data[, .(gx, gy, gz)])
-      mag_data <- as.matrix(individual_data[, .(mx, my, mz)])
+      # prepare sensor data (always accel + gyro)
+      acc_np <- np$array(as.matrix(individual_data[, .(ax, ay, az)]))
+      gyr_np <- np$array(as.matrix(individual_data[, .(gx, gy, gz)]))
 
-      # convert to numpy arrays
-      acc_np <- np$array(acc_data)
-      gyr_np <- np$array(gyr_data)
-      mag_np <- np$array(mag_data)
+      # run Madgwick (with or without mag)
+      if (valid_magnetometer_data) {
+        # run the full Madgwick filter (MARG: acc + gyro + mag)
+        if (verbose) cat("---> Calculating orientation using Madgwick filter (MARG mode)\n")
+        mag_np <- np$array(as.matrix(individual_data[, .(mx, my, mz)]))
+        madgwick <- ahrs$filters$Madgwick(gyr = gyr_np, acc = acc_np, mag = mag_np,
+                                          frequency = sampling_freq, beta = madgwick.beta)
+      } else {
+        if (verbose) cat("---> Calculating orientation using Madgwick filter (IMU mode)\n")
+        if (verbose) message("No valid magnetometer data (accel + gyro only, no heading)")
+        madgwick <- ahrs$filters$Madgwick(gyr = gyr_np, acc = acc_np, mag = NULL,
+                                          frequency = sampling_freq, beta = madgwick.beta)
+      }
 
-      # run the full Madgwick filter (MARG: acc + gyro + mag)
-      madgwick <- ahrs$filters$Madgwick(gyr = gyr_np, acc = acc_np, mag = mag_np,
-                                        frequency = sampling_freq, beta = madgwick.beta)
-
-      # extract quaternions [w, x, y, z]
+      # extract quaternions
       Q <- madgwick$Q
+      w <- Q[, 1]; x <- Q[, 2]; y <- Q[, 3]; z <- Q[, 4]
 
-      # convert quaternions to yaw, pitch, and roll in degrees
-      w <- Q[, 1]
-      x <- Q[, 2]
-      y <- Q[, 3]
-      z <- Q[, 4]
+      # compute pitch and roll
+      pitch_deg <- asin(pmax(pmin(2 * (w * y - z * x), 1.0), -1.0)) * 180 / pi
+      roll_deg <- atan2(2 * (w * x + y * z), 1 - 2 * (x^2 + y^2)) * 180 / pi
 
-      # yaw (heading, Z axis) - wrap to [0, 360)
-      yaw <- atan2(2 * (w * z + x * y), 1 - 2 * (y^2 + z^2))
-      yaw_deg <- (yaw * 180 / pi) %% 360
+      # compute heading ONLY if mag was used
+      heading_deg <- if (valid_magnetometer_data) {
+        (atan2(2 * (w * z + x * y), 1 - 2 * (y^2 + z^2)) * 180 / pi) %% 360
+      } else {
+        rep(NA_real_, nrow(Q))
+      }
 
-      # pitch (Y axis) - clamp to [-1, 1]
-      pitch <- asin(pmax(pmin(2 * (w * y - z * x), 1.0), -1.0))
-      pitch_deg <- pitch * 180 / pi
-
-      # roll (X axis)
-      roll <- atan2(2 * (w * x + y * z), 1 - 2 * (x^2 + y^2))
-      roll_deg <- roll * 180 / pi
-
-      # add to sensor_data table
+      # store results
       individual_data[, `:=`(
-        heading = yaw_deg,
+        heading = heading_deg,
         pitch = pitch_deg,
         roll = roll_deg
       )]
 
-      # delete Python objects and force garbage collection
-      to_remove <- c("madgwick", "acc_np", "gyr_np", "mag_np",
-                     "Q", "w", "x", "y", "z", "yaw", "pitch", "roll",
-                     "yaw_deg", "pitch_deg", "roll_deg")
+      # cleanup - delete Python objects and force garbage collection
+      to_remove <- c("madgwick", "acc_np", "gyr_np", "mag_np", "Q",
+                     "w", "x", "y", "z", "heading_deg", "pitch_deg", "roll_deg")
       rm(list = intersect(to_remove, ls()))
       py_gc <- reticulate::import("gc")
       invisible(py_gc$collect())
       gc()
 
+
     #############################################################
     # else, default to the tilt-compensated compass method ######
-    } else {
+    } else if (use_tilt_compass) {
 
       # provide feedback to the user if verbose mode is enabled
       if (verbose) cat("---> Calculating tilt-compensated orientation metrics\n")
@@ -678,95 +687,128 @@ processTagData <- function(data,
         pitch = atan2(-ax_norm, sqrt(ay_norm^2 + az_norm^2 + epsilon))
       )]
 
-      # correct the magnetometer readings using the roll and pitch angles (tilt-compensated magnetic field vector)
-      mx_comp <- individual_data$mx * cos(individual_data$pitch) + individual_data$my * sin(individual_data$pitch) * sin(individual_data$roll) + individual_data$mz * sin(individual_data$pitch) * cos(individual_data$roll)
-      my_comp <- individual_data$my * cos(individual_data$roll) - individual_data$mz * sin(individual_data$roll)
+      # calculate heading only if magnetometer readings are valid
+      if (valid_magnetometer_data) {
 
-      # convert roll and pitch from radians to degrees
-      individual_data[, roll := roll * (180 / pi)]
-      individual_data[, pitch := pitch * (180 / pi)]
+        # correct the magnetometer readings using the roll and pitch angles (tilt-compensated magnetic field vector)
+        mx_comp <- individual_data$mx * cos(individual_data$pitch) + individual_data$my * sin(individual_data$pitch) * sin(individual_data$roll) + individual_data$mz * sin(individual_data$pitch) * cos(individual_data$roll)
+        my_comp <- individual_data$my * cos(individual_data$roll) - individual_data$mz * sin(individual_data$roll)
 
-      # calculate the heading and convert from radians to degrees (accounting for gimbal lock)
-      individual_data[, heading := {ifelse(abs(pitch) > 89.5, NA_real_, atan2(-my_comp, mx_comp) * (180/pi))}]
+        # convert roll and pitch from radians to degrees
+        individual_data[, roll := roll * (180 / pi)]
+        individual_data[, pitch := pitch * (180 / pi)]
+
+        # calculate the heading and convert from radians to degrees (accounting for gimbal lock)
+        individual_data[, heading := {ifelse(abs(pitch) > 89.5, NA_real_, atan2(-my_comp, mx_comp) * (180/pi))}]
+
+      } else {
+        # set heading to NA
+        if (verbose) message("No valid magnetometer data - setting heading to NA.")
+        individual_data[, heading := NA_real_]
+
+        # convert roll and pitch from radians to degrees
+        individual_data[, roll := roll * (180 / pi)]
+        individual_data[, pitch := pitch * (180 / pi)]
+      }
+
+    # if all else fails
+    } else {
+      if (verbose) message("Insufficient sensor data - cannot compute orientation.")
+      individual_data[, `:=`(roll = NA_real_, pitch = NA_real_, heading = NA_real_)]
     }
+
 
     ############################################################################
     ## convert magnetic heading to geographic heading ##########################
 
-    # determine location to use for magnetic declination calculation
-    if (!is.null(attr(individual_data, "deployment.info"))) {
-      # use deployment info if available
-      deploy_info <- attr(individual_data, "deployment.info")
-    } else {
-      # fallback: use the first available row with valid longitude and latitude
-      valid_idx <- which(!is.na(individual_data$lon) & !is.na(individual_data$lat))[1]
-      if (!is.na(valid_idx)) {
-        deploy_info <- data.frame(datetime=individual_data$datetime[valid_idx],
-                                  lon = individual_data$lon[valid_idx],
-                                  lat = individual_data$lat[valid_idx])
+    # only proceed if heading exists and is not all NA
+    if (!all(is.na(individual_data$heading))) {
+
+      # determine location to use for magnetic declination calculation
+      if (!is.null(attr(individual_data, "deployment.info"))) {
+        # use deployment info if available
+        deploy_info <- attr(individual_data, "deployment.info")
       } else {
-        stop("No valid location found to estimate magnetic declination.", call. = FALSE)
+        # fallback: use the first available row with valid longitude and latitude
+        valid_idx <- which(!is.na(individual_data$lon) & !is.na(individual_data$lat))[1]
+        if (!is.na(valid_idx)) {
+          deploy_info <- data.frame(datetime=individual_data$datetime[valid_idx],
+                                    lon = individual_data$lon[valid_idx],
+                                    lat = individual_data$lat[valid_idx])
+        } else {
+          stop("No valid location found to estimate magnetic declination.", call. = FALSE)
+        }
       }
+
+      # get magnetic declination value (in degrees)
+      declination_deg <- oce::magneticField(longitude=deploy_info$lon, latitude=deploy_info$lat, time=deploy_info$datetime)$declination
+      declination_deg <- round(declination_deg, 2)
+
+      # apply magnetic declination correction to convert from magnetic north to geographic north
+      individual_data[, heading := (heading + declination_deg) %% 360]
+
     }
-
-    # get magnetic declination value (in degrees)
-    declination_deg <- oce::magneticField(longitude=deploy_info$lon, latitude=deploy_info$lat, time=deploy_info$datetime)$declination
-    declination_deg <- round(declination_deg, 2)
-
-    # apply magnetic declination correction to convert from magnetic north to geographic north
-    individual_data[, heading := (heading + declination_deg) %% 360]
-
 
 
     ############################################################################
     # correct pitch offset if requested ########################################
 
     if (correct.pitch.offset) {
-      if (verbose) cat("---> Correcting for potential pitch offset\n")
 
-      # calculate 10-second rolling mean of vertical speed
-      vv_window <- 10 * sampling_freq
-      individual_data[, vv_smooth := data.table::frollmean(vertical_speed, n = vv_window, fill = NA, align = "center")]
-
-      # convert pitch to radians for regression
-      individual_data[, pitch_rad := pitch * (pi/180)]
-
-      # perform linear regression between smoothed vertical velocity and pitch (in radians)
-      pitch_model <- lm(pitch_rad ~ vv_smooth, data = individual_data[!is.na(vv_smooth) & !is.na(pitch_rad)])
-
-      # get R squared
-      pitch_offset_r2 <- summary(pitch_model)$r.squared
-
-      # get intercept (pitch angle in radians when vertical velocity = 0)
-      pitch_offset_rad <- coef(pitch_model)[1]
-
-      # convert intercept back to degrees for correction
-      pitch_offset_deg <- pitch_offset_rad * (180/pi)
-
-      # only apply correction if offset is below threshold
-      if(abs(pitch_offset_deg) < pitch.warning.threshold) {
-
-        # correct pitch values by subtracting the offset (in degrees)
-        individual_data[, pitch := pitch - pitch_offset_deg]
-
-        # report the estimated offset in degrees
-        if (verbose) cat(sprintf("     (pitch offset correction: %.2f\u00b0 | R\u00b2 = %.2f)\n", pitch_offset_deg, pitch_offset_r2))
+      # skip if all pitch values are NA
+      if (all(is.na(individual_data$pitch))) {
+        if (verbose) message("No valid pitch data - skipping pitch offset correction")
+        pitch_offset_deg <- NULL
+        pitch_offset_r2 <- NULL
 
       } else {
 
-        if (verbose) cat(sprintf("     (pitch offset %.2f\u00b0 exceeds threshold of %.2f\u00b0 - no correction applied)\n", pitch_offset_deg, pitch_warning.threshold))
-        pitch_offset_deg <- NULL
-        pitch_offset_r2 <- NULL
+        if (verbose) cat("---> Correcting for potential pitch offset\n")
+
+        # calculate 10-second rolling mean of vertical speed
+        vv_window <- 10 * sampling_freq
+        individual_data[, vv_smooth := data.table::frollmean(vertical_speed, n = vv_window, fill = NA, align = "center")]
+
+        # convert pitch to radians for regression
+        individual_data[, pitch_rad := pitch * (pi/180)]
+
+        # perform linear regression between smoothed vertical velocity and pitch (in radians)
+        pitch_model <- lm(pitch_rad ~ vv_smooth, data = individual_data[!is.na(vv_smooth) & !is.na(pitch_rad)])
+
+        # get R squared
+        pitch_offset_r2 <- summary(pitch_model)$r.squared
+
+        # get intercept (pitch angle in radians when vertical velocity = 0)
+        pitch_offset_rad <- coef(pitch_model)[1]
+
+        # convert intercept back to degrees for correction
+        pitch_offset_deg <- pitch_offset_rad * (180/pi)
+
+        # only apply correction if offset is below threshold
+        if(abs(pitch_offset_deg) < pitch.warning.threshold) {
+
+          # correct pitch values by subtracting the offset (in degrees)
+          individual_data[, pitch := pitch - pitch_offset_deg]
+
+          # report the estimated offset in degrees
+          if (verbose) cat(sprintf("     (pitch offset correction: %.2f\u00b0 | R\u00b2 = %.2f)\n", pitch_offset_deg, pitch_offset_r2))
+
+        } else {
+
+          if (verbose) cat(sprintf("     (pitch offset %.2f\u00b0 exceeds threshold - no correction applied)\n", pitch_offset_deg))
+          pitch_offset_deg <- NULL
+          pitch_offset_r2 <- NULL
+        }
+
+        # clean up temporary columns
+        individual_data[, c("pitch_rad", "vv_smooth") := NULL]
+        rm(pitch_model, pitch_offset_rad, vv_window)
       }
 
-      # clean up temporary columns
-      individual_data[, c("pitch_rad", "vv_smooth") := NULL]
-      rm(pitch_model, pitch_offset_rad, vv_window)
-
-      } else {
-        pitch_offset_deg <- NULL
-        pitch_offset_r2 <- NULL
-      }
+    } else {
+      pitch_offset_deg <- NULL
+      pitch_offset_r2 <- NULL
+    }
 
 
     ############################################################################
@@ -782,19 +824,27 @@ processTagData <- function(data,
     ############################################################################
     # check for potential axis issues (misalignment, swaps, or sign flips) #####
 
-    median_pitch <- median(individual_data$pitch, na.rm = TRUE)
-    median_roll  <- median(individual_data$roll, na.rm = TRUE)
     pitch_anomaly_detected <- FALSE
     roll_anomaly_detected <- FALSE
-    if (abs(median_pitch) > 45){
-      message("Potential orientation anomaly: Median pitch = ", round(median_pitch, 1), "\u00B0 (expected ~0\u00B0)")
-      pitch_anomaly_detected <- TRUE
-      warning(paste(id, "-", "Potential pitch anomaly detected. Double check sensor alignment and calibration"), call. = FALSE)
+
+    # only check if pitch contain non-NA values
+    if (!all(is.na(individual_data$pitch))) {
+      median_pitch <- median(individual_data$pitch, na.rm = TRUE)
+      if (abs(median_pitch) > pitch.warning.threshold) {
+        message("Potential pitch anomaly: Median = ", round(median_pitch, 1), "\u00B0")
+        pitch_anomaly_detected <- TRUE
+        warning(paste(id, "- Potential pitch anomaly detected"), call. = FALSE)
+      }
     }
-    if (abs(median_roll) > 45){
-      message("Potential orientation anomaly: Median roll = ", round(median_roll, 1), "\u00B0 (expected ~0\u00B0)")
-      roll_anomaly_detected <- TRUE
-      warning(paste(id, "-", "Potential roll anomaly detected. Double check sensor alignment and calibration"), call. = FALSE)
+
+    # only check if roll contain non-NA values
+    if (!all(is.na(individual_data$roll))) {
+      median_roll <- median(individual_data$roll, na.rm = TRUE)
+      if (abs(median_roll) > roll.warning.threshold) {
+        message("Potential roll anomaly: Median = ", round(median_roll, 1), "\u00B0")
+        roll_anomaly_detected <- TRUE
+        warning(paste(id, "- Potential roll anomaly detected"), call. = FALSE)
+      }
     }
 
 
