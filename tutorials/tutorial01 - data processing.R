@@ -99,12 +99,21 @@ animal_metadata$tag[animal_metadata$tag=="4k"] <- "4K"
 animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 animal_metadata$type[animal_metadata$type=="Camara"] <- "Camera"
 
-# Update CEIIA tags with year suffix for 2022 deployments
+# Update CEIIA tags with year suffix for 2022 and 2023 deployments
 animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022] <- "CEIIA 2022"
+animal_metadata$tag[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2023] <- "CEIIA 2023"
+animal_metadata$tag[animal_metadata$tag == "CEIIA 2022" & animal_metadata$package_id == 71] <- "CEIIA 2022 (71)"
+animal_metadata$tag[animal_metadata$tag == "CEIIA 2022" & animal_metadata$package_id == 134] <- "CEIIA 2022 (134)"
 
 # Reclassify as "CATS 2019" all CAM tags deployed in 2019 with CMD ID 71, which had a non-standard axes mapping
 animal_metadata$tag[animal_metadata$cmd_id == "71" & animal_metadata$deploy_year == 2019] <- "CATS 2019"
-animal_metadata$tag[animal_metadata$ID=="PIN_12"] <- "CATS"
+
+# Reclassify CATS CMD 27 package as "CATS 27" (PIN_09 + PIN_CAM_05)
+animal_metadata$tag[animal_metadata$cmd_id == 27] <- "CATS 27"
+
+# Reclassify PIN_10 and PIN_12 tags, which potentially had a non-standard axes mapping
+animal_metadata$tag[animal_metadata$ID == "PIN_10"] <- "CATS PIN_10"
+animal_metadata$tag[animal_metadata$ID == "PIN_12"] <- "CATS PIN_12"
 
 
 ################################################################################
@@ -136,39 +145,61 @@ axes_config <- data.frame(
   to = character()
 )
 
-# Mapping for CATS CAM TAG
-axes_config[1, ] <- c("Camera", "CATS", "ax", "-ax")
-axes_config[2, ] <- c("Camera", "CATS", "ay", "-ay")
-axes_config[3, ] <- c("Camera", "CATS", "az", "-az")
-
-# Special mapping for CATS CAM TAG 2019 (different mapping)
-axes_config[4, ] <- c("Camera", "CATS 2019", "ax", "-ax")
-
-# Mapping for CEiiA CAM TAG (general)
-axes_config[5, ] <- c("Camera", "CEIIA", "ax", "az")
-axes_config[6, ] <- c("Camera", "CEIIA", "ay", "-ax")
-axes_config[7, ] <- c("Camera", "CEIIA", "az", "ay")
-axes_config[8, ] <- c("Camera", "CEIIA", "mx", "mz")
-axes_config[9, ] <- c("Camera", "CEIIA", "mz", "-mx")
-
-# Special mapping for CEiiA CAM TAG 2022 (faulty mag and gyr sensors)
-axes_config[10, ] <- c("Camera", "CEIIA 2022", "ax", "az")
-axes_config[11, ] <- c("Camera", "CEIIA 2022", "az", "ax")
-axes_config[12, ] <- c("Camera", "CEIIA 2022", "mx", "NA")
-axes_config[13, ] <- c("Camera", "CEIIA 2022", "my", "NA")
-axes_config[14, ] <- c("Camera", "CEIIA 2022", "mz", "NA")
-axes_config[15, ] <- c("Camera", "CEIIA 2022", "gx", "NA")
-axes_config[16, ] <- c("Camera", "CEIIA 2022", "gy", "NA")
-axes_config[17, ] <- c("Camera", "CEIIA 2022", "gz", "NA")
-
 # Mapping for CATS mini-Diary TAG (CMD)
-axes_config[18, ] <- c("MS", "CATS", "ax", "-ay")
-axes_config[19, ] <- c("MS", "CATS", "ay", "-ax")
+axes_config[1, ] <- c("MS", "CATS", "ax", "-ay")
+axes_config[2, ] <- c("MS", "CATS", "ay", "-ax")
 
-# Mapping for BBC Camera
-axes_config[20, ] <- c("Camera", "BBC", "ax", "ay")
-axes_config[21, ] <- c("Camera", "BBC", "ay", "az")
-axes_config[22, ] <- c("Camera", "BBC", "az", "ax")
+# Mapping for CATS CAM TAG
+axes_config[3, ] <- c("Camera", "CATS", "ax", "-ax")
+axes_config[4, ] <- c("Camera", "CATS", "ay", "-ay")
+axes_config[5, ] <- c("Camera", "CATS", "az", "-az")
+
+# Mapping for CATS CAM TAG 2019
+axes_config[6, ] <- c("Camera", "CATS 2019", "ax", "-ax")
+axes_config[7, ] <- c("Camera", "CATS 2019", "ay", "-ay")
+
+# Mapping for CEiiA CAM TAG 2022 - PIN_CAM_30 (packageID 71)
+# faulty mag and gyr sensors
+axes_config[8, ] <- c("Camera", "CEIIA 2022 (71)", "ax", "ay")
+axes_config[9, ] <- c("Camera", "CEIIA 2022 (71)", "ay", "az")
+axes_config[10, ] <- c("Camera", "CEIIA 2022 (71)", "az", "-ax")
+axes_config[11, ] <- c("Camera", "CEIIA 2022 (71)", "mx", "NA")
+axes_config[12, ] <- c("Camera", "CEIIA 2022 (71)", "my", "NA")
+axes_config[13, ] <- c("Camera", "CEIIA 2022 (71)", "mz", "NA")
+axes_config[14, ] <- c("Camera", "CEIIA 2022 (71)", "gx", "NA")
+axes_config[15, ] <- c("Camera", "CEIIA 2022 (71)", "gy", "NA")
+axes_config[16, ] <- c("Camera", "CEIIA 2022 (71)", "gz", "NA")
+
+# Mapping for CEiiA CAM TAG 2022 - PIN_CAM_34 (packageID 134)
+# faulty mag and gyr sensors
+axes_config[17, ] <- c("Camera", "CEIIA 2022 (134)", "ax", "-ax")
+axes_config[18, ] <- c("Camera", "CEIIA 2022 (134)", "az", "-az")
+axes_config[19, ] <- c("Camera", "CEIIA 2022 (134)", "mx", "NA")
+axes_config[20, ] <- c("Camera", "CEIIA 2022 (134)", "my", "NA")
+axes_config[21, ] <- c("Camera", "CEIIA 2022 (134)", "mz", "NA")
+axes_config[22, ] <- c("Camera", "CEIIA 2022 (134)", "gx", "NA")
+axes_config[23, ] <- c("Camera", "CEIIA 2022 (134)", "gy", "NA")
+axes_config[24, ] <- c("Camera", "CEIIA 2022 (134)", "gz", "NA")
+
+# Mapping for CEiiA CAM TAG 2023
+axes_config[25, ] <- c("Camera", "CEIIA 2023", "ax", "ay")
+axes_config[26, ] <- c("Camera", "CEIIA 2023", "ay", "az")
+axes_config[27, ] <- c("Camera", "CEIIA 2023", "az", "ax")
+
+# Mapping for CATS CMD 27 (PIN_09 + PIN_CAM_05)
+axes_config[28, ] <- c("MS", "CATS 27", "ax", "az")
+axes_config[29, ] <- c("MS", "CATS 27", "ay", "-ax")
+axes_config[30, ] <- c("MS", "CATS 27", "az", "-ay")
+axes_config[31, ] <- c("Camera", "CATS 27", "ax", "-az")
+axes_config[32, ] <- c("Camera", "CATS 27", "az", "ax")
+
+# Mapping for 4K Camera (PIN_CAM_26)
+axes_config[33, ] <- c("Camera", "4K", "ax", "az")
+axes_config[34, ] <- c("Camera", "4K", "az", "-ax")
+
+# Special Mapping for PIN_10
+axes_config[35, ] <- c("MS", "CATS PIN_10", "ax", "-ax")
+
 
 
 ################################################################################
@@ -277,7 +308,7 @@ data_list <- importTagData(data.folders = data_folders,
                            output.suffix = NULL,
                            data.table.threads = NULL,
                            verbose = TRUE)
-
+y
 
 ################################################################################
 # Filter out pre- and post-deployment data #####################################
@@ -339,7 +370,7 @@ filter_results <- filterDeploymentData(data = data_files,
 
 
 # Save the recorded plots to a PDF file for reviewing the filtered data.
-pdf("./plots/filtered_deployments.pdf", width = 8.5, height = 5)
+pdf("./plots/filtered_deployments-v2.pdf", width = 8.5, height = 5)
 for(i in 1:length(filter_results$plots)){
   replayPlot(filter_results$plots[[i]], reloadPkgs = FALSE)
 }

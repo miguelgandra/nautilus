@@ -605,7 +605,7 @@ processTagData <- function(data,
 
     # determine feasible orientation methods
     use_madgwick <- orientation.algorithm == "madgwick" && valid_accel_data && valid_gyro_data
-    use_tilt_compass <- orientation.algorithm == "tilt" && valid_accel_data
+    use_tilt_compass <- orientation.algorithm == "tilt_compass" && valid_accel_data
 
 
     #############################################################
@@ -747,6 +747,11 @@ processTagData <- function(data,
       # apply magnetic declination correction to convert from magnetic north to geographic north
       individual_data[, heading := (heading + declination_deg) %% 360]
 
+    }else{
+
+      # skip declination correction
+      declination_deg <- NULL
+
     }
 
 
@@ -795,7 +800,7 @@ processTagData <- function(data,
 
         } else {
 
-          if (verbose) cat(sprintf("     (pitch offset %.2f\u00b0 exceeds threshold - no correction applied)\n", pitch_offset_deg))
+          if (verbose) cat("     (pitch offset exceeds threshold - no correction applied)\n")
           pitch_offset_deg <- NULL
           pitch_offset_r2 <- NULL
         }
@@ -833,7 +838,7 @@ processTagData <- function(data,
       if (abs(median_pitch) > pitch.warning.threshold) {
         message("Potential pitch anomaly: Median = ", round(median_pitch, 1), "\u00B0")
         pitch_anomaly_detected <- TRUE
-        warning(paste(id, "- Potential pitch anomaly detected"), call. = FALSE)
+        warning(sprintf("%s - Potential pitch anomaly detected (%.2f\u00b0)", id, median_pitch), call. = FALSE)
       }
     }
 
@@ -843,7 +848,7 @@ processTagData <- function(data,
       if (abs(median_roll) > roll.warning.threshold) {
         message("Potential roll anomaly: Median = ", round(median_roll, 1), "\u00B0")
         roll_anomaly_detected <- TRUE
-        warning(paste(id, "- Potential roll anomaly detected"), call. = FALSE)
+        warning(sprintf("%s - Potential roll anomaly detected (%.2f\u00b0)", id, median_roll), call. = FALSE)
       }
     }
 

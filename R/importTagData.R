@@ -253,7 +253,7 @@ importTagData <- function(data.folders,
         missing_info <- strsplit(missing_types, "_")
         formatted_missing <- vapply(missing_info, function(x) paste0("- ", x[1], " ", x[2]), character(1))
         warning_msg3 <- paste0(
-          "Some tag model x type combinations from 'id.metadata' are missing in 'axis.mapping'.",
+          "Some tag model x type combinations from id.metadata are missing in axis.mapping. ",
           "No axis transformations will be applied to these:\n",
           paste(formatted_missing, collapse = "\n"), "\n")
       }
@@ -262,7 +262,7 @@ importTagData <- function(data.folders,
       missing_tags <- setdiff(id.metadata[[tag.model.col]], axis.mapping$tag)
       formatted_missing <- paste0("- ", missing_tags)
       warning_msg3 <- paste0(
-        "Some tag models in 'id.metadata' do not have corresponding entries in 'axis.mapping'.",
+        "Some tag models in id.metadata do not have corresponding entries in axis.mapping. ",
         "No axis transformations will be applied to these:\n",
         paste(formatted_missing, collapse = "\n"), "\n")
     }
