@@ -265,7 +265,6 @@ filterDeploymentData <- function(data,
 
       # get current file path
       file_path <- data[i]
-      id <- tools::file_path_sans_ext(basename(file_path))
 
       # load current file
       individual_data <- readRDS(file_path)
@@ -278,10 +277,9 @@ filterDeploymentData <- function(data,
         message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
       }
 
-      # add ID if not present
-      if (!id.col %in% names(individual_data)) {
-        id <- unique(individual_data[[id.col]])[1]
-      }
+      # get ID
+      id <- unique(individual_data[[id.col]])[1]
+
 
     ############################################################################
     # data is already in memory (list of data frames/tables) ###################

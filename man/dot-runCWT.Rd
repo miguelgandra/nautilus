@@ -17,11 +17,16 @@
   power.ratio.threshold,
   smooth.window,
   max.interp.gap,
-  plot,
-  output.dir,
+  plot.wavelet,
+  plot.diagnostic,
+  plot.output.dir,
   png.width,
   png.height,
   png.res,
+  return.data,
+  save.files,
+  output.folder,
+  output.suffix,
   n.cores = 1
 )
 }
@@ -48,7 +53,7 @@ Lower values reduce memory usage but may increase processing time for very large
 \item{ridge.only}{Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
 in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.}
 
-\item{power.ratio.threshold}{Numeric or NULL. Minimum ratio between peak power and average power
+\item{power.ratio.threshold}{Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
 for a frequency to be considered valid. NULL disables this filter. Default is NULL.}
 
 \item{smooth.window}{Numeric. Window size (in seconds) for moving average smoothing of frequency estimates.
@@ -57,9 +62,12 @@ Set to 0 to disable smoothing. Default is 10 seconds.}
 \item{max.interp.gap}{Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 Set to NULL to disable interpolation. Default is 10 seconds.}
 
-\item{plot}{Logical. Whether to generate plots. Default is TRUE.}
+\item{plot.wavelet}{Logical. Whether to generate wavelet power spectrum plots. Default is TRUE.}
 
-\item{output.dir}{Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
+\item{plot.diagnostic}{Logical. Whether to generate diagnostic time series plots showing tail beat
+frequencies and power ratios. Default is FALSE.}
+
+\item{plot.output.dir}{Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
 Default is NULL (plots shown in R graphics device).}
 
 \item{png.width}{Numeric. Width of PNG output in inches (default = 10).}
@@ -67,6 +75,34 @@ Default is NULL (plots shown in R graphics device).}
 \item{png.height}{Numeric. Height of PNG output in inches (default = 7).}
 
 \item{png.res}{Numeric. Resolution of PNG output in ppi (default = 300).}
+
+\item{return.data}{Logical. Controls whether the function returns the processed data
+as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+(or both). Default is \code{TRUE}.}
+
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
+during the iteration process. This ensures that progress is saved incrementally, which can
+help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+
+\item{output.folder}{Character. Path to the folder where the processed files will be saved.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
+in the data folder corresponding to each ID. Default is \code{NULL}.}
+
+\item{output.suffix}{Character. A suffix to append to the file name when saving.
+This parameter is only used if \code{save.files = TRUE}.
+
+#' @return Depending on parameters:
+\itemize{
+\item If \code{return.data = TRUE} (default): Returns the input data with added columns \code{tbf_hz}
+containing estimated tail beat frequencies in Hz, and \code{power_ratio}.
+The \code{power_ratio} represents the ratio of the peak wavelet power at the estimated
+\code{tbf_hz} to the average wavelet power across the relevant frequency spectrum,
+providing a measure of the prominence of the tail beat frequency.
+For list/file inputs, returns a list of modified data frames with results for each individual.
+\item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
+files if \code{save.files = TRUE}.
+}}
 
 \item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
 }

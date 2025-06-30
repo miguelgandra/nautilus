@@ -379,6 +379,7 @@ processTagData <- function(data,
 
       # get current file path
       file_path <- data[i]
+
       # load current file
       individual_data <- readRDS(file_path)
 
@@ -390,12 +391,8 @@ processTagData <- function(data,
         message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
       }
 
-      # extract ID from filename if not explicitly available, or from data
-      if (!"ID" %in% names(individual_data)) {
-        id <- individual_data$ID
-      } else {
-        id <- unique(individual_data$ID)[1]
-      }
+      # get ID
+      id <- unique(individual_data[[id.col]])[1]
 
     ############################################################################
     # data is already in memory (list of data frames/tables) ###################

@@ -16,16 +16,25 @@ calculateTailBeats(
   ridge.only = FALSE,
   power.ratio.threshold = NULL,
   max.interp.gap = 10,
-  n.cores = 1,
-  plot = TRUE,
-  output.dir = NULL,
+  plot.wavelet = TRUE,
+  plot.diagnostic = FALSE,
+  plot.output.dir = NULL,
   png.width = 24,
   png.height = 6,
-  png.res = 600
+  png.res = 600,
+  return.data = TRUE,
+  save.files = FALSE,
+  output.folder = NULL,
+  output.suffix = NULL,
+  n.cores = 1
 )
 }
 \arguments{
-\item{data}{A data frame or a list of data frames containing depth profile information.}
+\item{data}{A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
+containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
+\code{.rds} files, each containing data for a single individual. When a character vector is provided,
+files are loaded sequentially to optimize memory use. The output of the \link{processTagData} function
+is strongly recommended, as it formats the data appropriately for all downstream analysis.}
 
 \item{id.col}{Character. The name of the column identifying individuals (default: "ID").}
 
@@ -48,17 +57,18 @@ Lower values reduce memory usage but may increase processing time for very large
 \item{ridge.only}{Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
 in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.}
 
-\item{power.ratio.threshold}{Numeric or NULL. Minimum ratio between peak power and average power
+\item{power.ratio.threshold}{Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
 for a frequency to be considered valid. NULL disables this filter. Default is NULL.}
 
 \item{max.interp.gap}{Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 Set to NULL to disable interpolation. Default is 10 seconds.}
 
-\item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
+\item{plot.wavelet}{Logical. Whether to generate wavelet power spectrum plots. Default is TRUE.}
 
-\item{plot}{Logical. Whether to generate plots. Default is TRUE.}
+\item{plot.diagnostic}{Logical. Whether to generate diagnostic time series plots showing tail beat
+frequencies and power ratios. Default is FALSE.}
 
-\item{output.dir}{Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
+\item{plot.output.dir}{Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
 Default is NULL (plots shown in R graphics device).}
 
 \item{png.width}{Numeric. Width of PNG output in inches (default = 10).}
@@ -66,10 +76,46 @@ Default is NULL (plots shown in R graphics device).}
 \item{png.height}{Numeric. Height of PNG output in inches (default = 7).}
 
 \item{png.res}{Numeric. Resolution of PNG output in ppi (default = 300).}
+
+\item{return.data}{Logical. Controls whether the function returns the processed data
+as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+(or both). Default is \code{TRUE}.}
+
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
+during the iteration process. This ensures that progress is saved incrementally, which can
+help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+
+\item{output.folder}{Character. Path to the folder where the processed files will be saved.
+This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
+in the data folder corresponding to each ID. Default is \code{NULL}.}
+
+\item{output.suffix}{Character. A suffix to append to the file name when saving.
+This parameter is only used if \code{save.files = TRUE}.
+
+#' @return Depending on parameters:
+\itemize{
+\item If \code{return.data = TRUE} (default): Returns the input data with added columns \code{tbf_hz}
+containing estimated tail beat frequencies in Hz, and \code{power_ratio}.
+The \code{power_ratio} represents the ratio of the peak wavelet power at the estimated
+\code{tbf_hz} to the average wavelet power across the relevant frequency spectrum,
+providing a measure of the prominence of the tail beat frequency.
+For list/file inputs, returns a list of modified data frames with results for each individual.
+\item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
+files if \code{save.files = TRUE}.
+}}
+
+\item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
 }
 \value{
-Returns the input data with added column \code{tbf_hz} containing estimated tail beat
-frequencies in Hz. For list inputs, returns a list of modified data frames.
+Depending on parameters:
+\itemize{
+\item If \code{return.data = TRUE} (default): Returns the input data with added column \code{tbf_hz}
+containing estimated tail beat frequencies in Hz. For list/file inputs, returns a list of modified
+data frames with results for each individual.
+\item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
+files if \code{save.files = TRUE}.
+}
 }
 \description{
 This function uses continuous wavelet transform (CWT) to estimate tail beat frequencies

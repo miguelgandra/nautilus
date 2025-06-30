@@ -10,7 +10,11 @@
 #' It features intelligent batch processing with automatic buffer zones to handle large
 #' datasets efficiently while maintaining accuracy at batch boundaries.
 #'
-#' @param data A data frame or a list of data frames containing depth profile information.
+#' @param data A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
+#' containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
+#' `.rds` files, each containing data for a single individual. When a character vector is provided,
+#' files are loaded sequentially to optimize memory use. The output of the \link{processTagData} function
+#' is strongly recommended, as it formats the data appropriately for all downstream analysis.
 #' @param id.col Character. The name of the column identifying individuals (default: "ID").
 #' @param datetime.col Character. The name of the column containing datetime information (default: "datetime").
 #' @param motion.col Character. The name of the column containing motion data (e.g., "sway") to analyze.
@@ -24,20 +28,52 @@
 #' Set to 0 to disable smoothing. Default is 10 seconds.
 #' @param ridge.only Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
 #' in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.
-#' @param power.ratio.threshold Numeric or NULL. Minimum ratio between peak power and average power
+#' @param power.ratio.threshold Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
 #' for a frequency to be considered valid. NULL disables this filter. Default is NULL.
 #' @param max.interp.gap Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 #' Set to NULL to disable interpolation. Default is 10 seconds.
 #' @param n.cores Number of CPU cores for parallel processing (default = 1)
-#' @param plot Logical. Whether to generate plots. Default is TRUE.
-#' @param output.dir Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
-#'                   Default is NULL (plots shown in R graphics device).
+#' @param plot.wavelet Logical. Whether to generate wavelet power spectrum plots. Default is TRUE.
+#' @param plot.diagnostic Logical. Whether to generate diagnostic time series plots showing tail beat
+#'        frequencies and power ratios. Default is FALSE.
+#' @param plot.output.dir Character. If provided, all plots will be saved as PNG files in this directory instead of being displayed interactively.
+#' Default is NULL (plots shown in R graphics device).
 #' @param png.width Numeric. Width of PNG output in inches (default = 10).
 #' @param png.height Numeric. Height of PNG output in inches (default = 7).
 #' @param png.res Numeric. Resolution of PNG output in ppi (default = 300).
+#' @param return.data Logical. Controls whether the function returns the processed data
+#' as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
+#' memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
+#' (or both). Default is \code{TRUE}.
+#' @param save.files Logical. If `TRUE`, the processed data for each ID will be saved as RDS files
+#' during the iteration process. This ensures that progress is saved incrementally, which can
+#' help prevent data loss if the process is interrupted or stops midway. Default is `FALSE`.
+#' @param output.folder Character. Path to the folder where the processed files will be saved.
+#' This parameter is only used if `save.files = TRUE`. If `NULL`, the RDS file will be saved
+#' in the data folder corresponding to each ID. Default is `NULL`.
+#' @param output.suffix Character. A suffix to append to the file name when saving.
+#' This parameter is only used if `save.files = TRUE`.
 #'
-#' @return Returns the input data with added column \code{tbf_hz} containing estimated tail beat
-#'         frequencies in Hz. For list inputs, returns a list of modified data frames.
+#'#' @return Depending on parameters:
+#' \itemize{
+#'   \item If \code{return.data = TRUE} (default): Returns the input data with added columns \code{tbf_hz}
+#'         containing estimated tail beat frequencies in Hz, and \code{power_ratio}.
+#'         The \code{power_ratio} represents the ratio of the peak wavelet power at the estimated
+#'         \code{tbf_hz} to the average wavelet power across the relevant frequency spectrum,
+#'         providing a measure of the prominence of the tail beat frequency.
+#'         For list/file inputs, returns a list of modified data frames with results for each individual.
+#'   \item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
+#'         files if \code{save.files = TRUE}.
+#' }
+#'
+#' @return Depending on parameters:
+#' \itemize{
+#'   \item If \code{return.data = TRUE} (default): Returns the input data with added column \code{tbf_hz}
+#'         containing estimated tail beat frequencies in Hz. For list/file inputs, returns a list of modified
+#'         data frames with results for each individual.
+#'   \item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
+#'         files if \code{save.files = TRUE}.
+#' }
 #'
 #' @details
 #' The function implements a comprehensive workflow for tail beat frequency estimation:
@@ -100,12 +136,17 @@ calculateTailBeats <- function(data,
                                ridge.only = FALSE,
                                power.ratio.threshold = NULL,
                                max.interp.gap = 10,
-                               n.cores = 1,
-                               plot = TRUE,
-                               output.dir = NULL,
+                               plot.wavelet = TRUE,
+                               plot.diagnostic = FALSE,
+                               plot.output.dir = NULL,
                                png.width = 24,
                                png.height = 6,
-                               png.res = 600) {
+                               png.res = 600,
+                               return.data = TRUE,
+                               save.files = FALSE,
+                               output.folder = NULL,
+                               output.suffix = NULL,
+                               n.cores = 1) {
 
   ##############################################################################
   # Initial checks and setup ###################################################
@@ -117,25 +158,75 @@ calculateTailBeats <- function(data,
   # check if the 'WaveletComp' package is installed.
   if(!requireNamespace("WaveletComp", quietly=TRUE)) stop("The 'WaveletComp' package is required but is not installed. Please install 'WaveletComp' using install.packages('WaveletComp') and try again.", call. = FALSE)
 
-  # if 'data' is not a list, split it into a list of individual data sets
-  if (!is.list(data)) {
-    data <- split(data, f = data[[id.col]])
-  }
-
-  # Check if list contains data frames
-  if (!all(sapply(data, is.data.frame))) {
-    stop("All elements in the input list must be data frames", call. = FALSE)
-  }
-
   # validate column specifications
   if (!is.character(id.col) || length(id.col) != 1) stop("'id.col' must be a single character value", call. = FALSE)
   if (!is.character(datetime.col) || length(datetime.col) != 1) stop("'datetime.col' must be a single character value", call. = FALSE)
   if (!is.character(motion.col) || length(motion.col) != 1) stop("'motion.col' must be a single character value", call. = FALSE)
 
-  # check if specified columns exist in the data
-  if(!id.col %in% names(data[[1]])) stop(paste0("The specified id.col ('", id.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!datetime.col %in% names(data[[1]])) stop(paste0("The specified datetime.col ('", datetime.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!motion.col %in% names(data[[1]])) stop(paste0("The specified motion.col ('", motion.col, "') was not found in the supplied data."), call. = FALSE)
+  # check if data is a character vector of RDS file paths
+  is_filepaths <- is.character(data)
+  if (is_filepaths) {
+    # first, check all files exist
+    missing_files <- data[!file.exists(data)]
+    if (length(missing_files) > 0) {
+      stop(paste("The following files were not found:\n",
+                 paste("-", missing_files, collapse = "\n")), call. = FALSE)
+    }
+  } else if (!is.list(data) || inherits(data, "data.frame")) {
+    # if it's a single data.frame, convert it to a list
+    if (!id.col %in% names(data)) {
+      stop(paste0("Input data must contain the specified id.col (", id.col, ") when not provided as a list."), call. = FALSE)
+    }
+    data <- split(data, data[[id.col]])
+  }
+
+
+  # feedback for save files mode
+  if (!is.logical(save.files)) stop("`save.files` must be a logical value (TRUE or FALSE).", call. = FALSE)
+
+  # validate that at least one output method is selected
+  if (!save.files && !return.data) {
+    stop("Both 'save.files' and 'return.data' cannot be FALSE - this would result in data loss. ",
+         "Please set at least one to TRUE.", call. = FALSE)
+  }
+
+  # define required columns
+  required_cols <- c(id.col, datetime.col, motion.col)
+
+  # if data is already in memory (not file paths), validate upfront
+  if (!is_filepaths) {
+
+    # validate each dataset in the list
+    lapply(data, function(dataset) {
+      # check dataset structure
+      if (!is.data.frame(dataset)) stop("Each element in the data list must be a data.frame or data.table", call. = FALSE)
+      # check for required columns
+      missing_cols <- setdiff(required_cols, names(dataset))
+      if (length(missing_cols) > 0) stop(sprintf("Missing required columns: %s", paste(missing_cols, collapse = ", ")), call. = FALSE)
+      # ensure datetime column is of POSIXct class
+      if (!inherits(dataset[[datetime.col]], "POSIXct")) stop("The datetime column must be of class 'Date' or 'POSIXct'.", call. = FALSE)
+    })
+
+    # check for nautilus.version attribute in each dataset
+    missing_attr <- sapply(data, function(x) {is.null(attr(x, "nautilus.version"))})
+    if (any(missing_attr)) {
+      message(paste0(
+        "Warning: The following dataset(s) were likely not processed via importTagData():\n  - ",
+        paste(names(data)[missing_attr], collapse = ", "),
+        "\n\nIt is strongly recommended to run them through importTagData() to ensure proper formatting and avoid downstream errors.\n",
+        "Proceed at your own risk."))
+    }
+  }
+
+  # ensure output.folder is a single string
+  if(!is.null(output.folder) && (!is.character(output.folder) || length(output.folder) != 1)) {
+    stop("`output.folder` must be NULL or a single string.", call. = FALSE)
+  }
+
+  # check if the output folder is valid (if specified)
+  if(!is.null(output.folder) && !dir.exists(output.folder)){
+    stop("The specified output folder does not exist. Please provide a valid folder path.", call. = FALSE)
+  }
 
   # validate frequency parameters
   if (!is.numeric(min.freq.Hz) || length(min.freq.Hz) != 1 || min.freq.Hz <= 0) stop("'min.freq.Hz' must be a single positive numeric value", call. = FALSE)
@@ -173,6 +264,22 @@ calculateTailBeats <- function(data,
     }
   }
 
+
+  # validate plot parameters
+  if (!is.logical(plot.wavelet) || length(plot.wavelet) != 1) {
+    stop("'plot.wavelet' must be a single logical value", call. = FALSE)
+  }
+  if (!is.logical(plot.diagnostic) || length(plot.diagnostic) != 1) {
+    stop("'plot.diagnostic' must be a single logical value", call. = FALSE)
+  }
+
+  # check if plot output directory exists
+  if (!is.null(plot.output.dir)) {
+    if (!dir.exists(plot.output.dir)) {
+      stop("The specified plot output directory does not exist. Please provide a valid folder path.", call. = FALSE)
+    }
+  }
+
   # validate parallel computing packages
   if (n.cores>1){
     if(!requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
@@ -184,14 +291,22 @@ calculateTailBeats <- function(data,
     }
   }
 
-  # create output directory if it doesn't exist
-  if (!is.null(output.dir)) {
-    if (!dir.exists(output.dir)) {
-      stop(, call. = FALSE)
-    }
-    # force plotting when output directory is specified
-    plot <- TRUE
-  }
+  ##############################################################################
+  # Initialize variables #######################################################
+  ##############################################################################
+
+  # calculate number of animals
+  n_animals <- length(data)
+
+  cat(paste0(
+    crayon::bold("\n==================== Estimating Tail Beats ====================\n"),
+    "Using ", motion.col, " data to estimate tail beat frequencies for ", n_animals,
+    " ", ifelse(n_animals == 1, "tag", "tags"), "\n",
+    crayon::bold("===============================================================\n\n")
+  ))
+
+  # initialize list to hold results
+  data_list <- vector("list", n_animals)
 
 
   ##############################################################################
@@ -202,14 +317,26 @@ calculateTailBeats <- function(data,
   # we want at least 4 samples per cycle for reliable frequency estimation
   # (Nyquist would be 2, but we're conservative)
 
+  # print verbose
+  cat("Validating sampling frequencies...\n")
 
   # retrieve data sampling frequencies
   data_hz <- unlist(lapply(data, function(dt) {
+
+    # if data is file paths, we need to load the data first
+    if (is_filepaths) dt <- readRDS(dt)
+
     if ("processed.sampling.frequency" %in% names(attributes(dt))) {
       attributes(dt)$processed.sampling.frequency
     } else {
-       sf <- nrow(data_individual) / as.numeric(difftime(max(data_individual$date), min(data_individual$date), units = "secs"))
-       round(sf / 5) * 5
+      # calculate from timestamps if not available in attributes
+      time_diff <- as.numeric(difftime(max(dt[[datetime.col]]), min(dt[[datetime.col]]),  units = "secs"))
+      if (time_diff == 0) {
+        warning("Cannot calculate sampling frequency - timestamps may be identical",  call. = FALSE)
+        return(NA_real_)
+      }
+      sf <- nrow(dt) / time_diff
+      round(sf / 5) * 5
     }
   }))
 
@@ -224,7 +351,9 @@ calculateTailBeats <- function(data,
   # generate message only for the most severe issue
   if (any(insufficient_hz)) {
     offenders <- which(insufficient_hz)
-    offender_names <- if (!is.null(names(data))) names(data)[offenders] else paste("Dataset", offenders)
+    offender_names <- if (!is.null(names(data))) names(data)[offenders] else {
+      if (is_filepaths) basename(data[offenders]) else paste("Dataset", offenders)
+    }
     offender_freqs <- data_hz[offenders]
     stop(paste0(
       "Insufficient sampling frequency for ", length(offenders), " dataset(s):\n",
@@ -236,7 +365,9 @@ calculateTailBeats <- function(data,
       "2) Use higher frequency data"
     ), call. = FALSE)
   } else if (any(marginal_hz)) {
-    marginal_names <- if (!is.null(names(data))) names(data)[marginal_hz] else paste("Dataset", which(marginal_hz))
+    marginal_names <- if (!is.null(names(data))) names(data)[marginal_hz] else {
+      if (is_filepaths) basename(data[marginal_hz]) else paste("Dataset", which(marginal_hz))
+    }
     warning(paste0(
       "Marginal sampling frequency for ", length(marginal_names), " dataset(s):\n",
       paste0("- ", marginal_names, ": ", data_hz[marginal_hz], " Hz", collapse = "\n"), "\n",
@@ -252,25 +383,61 @@ calculateTailBeats <- function(data,
   # Perform Continuous Wavelet Transform (CWT) #################################
   ##############################################################################
 
-  # calculate number of animals
-  n_animals <- length(data)
+  # print message if n.cores > 1
+  if(n.cores > 1) cat(paste0("Starting parallel computation: ", n.cores, " cores\n"))
+  cat("\n")
 
-  cat(paste0(
-    crayon::bold("\n==================== Estimating Tail Beats ====================\n"),
-    "Using ", motion.col, " data to estimate tail beat frequencies for ", n_animals,
-    " ", ifelse(n_animals == 1, "tag", "tags"), "\n",
-    crayon::bold("===============================================================\n\n")
-  ))
-
-  # Process each individual (sequentially)
+  # process each individual (sequentially)
   for (i in seq_along(data)) {
-    current_id <- names(data)[i]
-    cat(sprintf("[%d/%d] %s\n", i, n_animals, current_id))
 
-    # Process the individual with parallel batch processing
-    data[[i]] <- .runCWT(
-      dt = data[[i]],
-      animal_id = current_id,
+    ############################################################################
+    # load data for the current individual if using file paths #################
+    if (is_filepaths) {
+
+      # get current file path
+      file_path <- data[i]
+
+      # load current file
+      individual_data <- readRDS(file_path)
+
+      # perform checks specific to loaded RDS files
+      missing_cols <- setdiff(required_cols, names(individual_data))
+      if (length(missing_cols) > 0) stop(sprintf("Missing required columns: %s in file '%s'", paste(missing_cols, collapse = ", "), basename(file_path)), call. = FALSE)
+      if (!inherits(individual_data[[datetime.col]], "POSIXct")) stop("The datetime column in file '", basename(file_path), "' must be of class 'POSIXct'.", call. = FALSE)
+      if (is.null(attr(individual_data, "nautilus.version"))) {
+        message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
+      }
+
+      ############################################################################
+      # data is already in memory (list of data frames/tables) ###################
+    } else {
+      # access the individual dataset
+      individual_data <- data[[i]]
+    }
+
+    # get ID
+    id <- unique(individual_data[[id.col]])[1]
+
+    # print current ID
+    cat(crayon::bold(sprintf("[%d/%d] %s\n", i, n_animals, id)))
+
+    # skip if no valid motion data
+    if (all(is.na(individual_data[[motion.col]]))) {
+      message("No valid motion data - skipping processing")
+      if (inherits(individual_data, "data.table")) {
+        individual_data[, tbf_hz := NA_real_]
+      } else {
+        individual_data$tbf_hz <- NA_real_
+      }
+      data_list[[i]] <- individual_data
+      names(data_list)[i] <- id
+      next
+    }
+
+    # process the individual with parallel batch processing
+    data_list[[i]] <- .runCWT(
+      dt = individual_data,
+      animal_id = id,
       id.col = id.col,
       datetime.col = datetime.col,
       motion.col = motion.col,
@@ -281,15 +448,20 @@ calculateTailBeats <- function(data,
       power.ratio.threshold = power.ratio.threshold,
       smooth.window = smooth.window,
       max.interp.gap = max.interp.gap,
-      plot = plot,
-      output.dir = output.dir,
+      plot.wavelet = plot.wavelet,
+      plot.diagnostic = plot.diagnostic,
+      plot.output.dir = plot.output.dir,
       png.width = png.width,
       png.height = png.height,
       png.res = png.res,
+      return.data = return.data,
+      save.files = save.files,
+      output.folder = output.folder,
+      output.suffix = output.suffix,
       n.cores = n.cores
     )
 
-    # Add space between individuals
+    # add space between individuals
     cat("\n")
   }
 
@@ -303,8 +475,15 @@ calculateTailBeats <- function(data,
   time.taken <- end.time - start.time
   cat(crayon::bold("Total execution time:"), sprintf("%.02f", as.numeric(time.taken)), base::units(time.taken), "\n\n")
 
-  # return the list containing tail beat metrics
-  return(data)
+
+  # return imported data or NULL based on return.data parameter
+  if (return.data) {
+    # return the list containing processed data with tail beat metrics
+    names(data_list) <- sapply(data_list, function(x) unique(x[[id.col]])[1])
+    return(data_list)
+  } else {
+    return(invisible(NULL))
+  }
 
 }
 
@@ -326,8 +505,10 @@ calculateTailBeats <- function(data,
 
 .runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col,
                     min.freq.Hz, max.freq.Hz, max.rows.per.batch, ridge.only,
-                    power.ratio.threshold, smooth.window, max.interp.gap, plot,
-                    output.dir, png.width, png.height, png.res, n.cores = 1) {
+                    power.ratio.threshold, smooth.window, max.interp.gap,
+                    plot.wavelet, plot.diagnostic, plot.output.dir,
+                    png.width, png.height, png.res, return.data,
+                    save.files, output.folder, output.suffix, n.cores = 1) {
 
   # extract relevant columns and rename
   data_individual <- data.frame(
@@ -374,6 +555,8 @@ calculateTailBeats <- function(data,
   combined_dates <- NULL
   dominant_freqs <- numeric(n_rows_valid)
   coi_exclusions <- list(total_excluded = 0, batches_with_exclusions = 0)
+  power_ratios <- numeric(n_rows_valid)
+  na_full_mask <- rep(FALSE, n_rows_valid)
 
 
   #####################################################################
@@ -418,11 +601,21 @@ calculateTailBeats <- function(data,
         min.freq.Hz = min.freq.Hz,
         max.freq.Hz = max.freq.Hz,
         ridge.only = ridge.only,
-        power.ratio.threshold = power.ratio.threshold
+        power.ratio.threshold = power.ratio.threshold,
+        max.interp.gap = max.interp.gap,
+        animal_id = animal_id
       )
 
       # update frequency results
       dominant_freqs[batch_result$core_start:batch_result$core_end] <- batch_result$batch_dominant_freqs
+
+      # update power ratios
+      power_ratios[batch_result$core_start:batch_result$core_end] <- batch_result$batch_power_ratios
+
+      # update NA mask
+      if (!is.null(batch_result$na_mask_plotting)) {
+        na_full_mask[batch_result$core_start:batch_result$core_end] <- batch_result$na_mask_plotting
+      }
 
       # update plotting components
       if (is.null(combined_power)) {
@@ -445,6 +638,9 @@ calculateTailBeats <- function(data,
       if (batch_result$current_exclusions > 0) {
         coi_exclusions$batches_with_exclusions <- coi_exclusions$batches_with_exclusions + 1
       }
+
+      # update the na_full_mask for the aggregated plot
+      na_full_mask[batch_result$core_start:batch_result$core_end] <- batch_result$na_mask_plotting
 
       # update progress bar
       setTxtProgressBar(pb, batch)
@@ -489,7 +685,9 @@ calculateTailBeats <- function(data,
           min.freq.Hz = min.freq.Hz,
           max.freq.Hz = max.freq.Hz,
           ridge.only = ridge.only,
-          power.ratio.threshold = power.ratio.threshold
+          power.ratio.threshold = power.ratio.threshold,
+          max.interp.gap = max.interp.gap,
+          animal_id = animal_id
         )
       }
 
@@ -500,6 +698,12 @@ calculateTailBeats <- function(data,
       for (result in batch_results) {
         # update frequency results
         dominant_freqs[result$core_start:result$core_end] <- result$batch_dominant_freqs
+        # update power ratios
+        power_ratios[result$core_start:result$core_end] <- result$batch_power_ratios # Use the new result from .processBatch
+        # update NA mask
+        if (!is.null(result$na_mask_plotting)) {
+          na_full_mask[result$core_start:result$core_end] <- result$na_mask_plotting
+        }
         # update plotting components
         if (is.null(combined_power)) {
           combined_power <- result$wavelet_power
@@ -557,19 +761,24 @@ calculateTailBeats <- function(data,
     }
   }
 
-  # create full-length vector with NAs where no data
+  # create full-length vector with NAs where no data for TBF
   tbf <- rep(NA_real_, n_rows)
   tbf[first_valid:last_valid] <- dominant_freqs
-
-  # add to original data
+  # add tbf_hz to original data
   dt$tbf_hz <- tbf
 
+  # create full-length vector with NAs where no data for power ratio
+  power_ratio_full <- rep(NA_real_, n_rows)
+  power_ratio_full[first_valid:last_valid] <- power_ratios
+  # add power_ratio_hz to original data
+  dt$tbf_power_ratio <- power_ratio_full
+
 
   #####################################################################
-  # Generate plot (if requested) ######################################
+  # Generate wavelet plot (if requested) ##############################
   #####################################################################
 
-  if (plot) {
+  if (plot.wavelet) {
 
     # create a combined wavelet result object for plotting
     combined_result <- list(
@@ -592,6 +801,9 @@ calculateTailBeats <- function(data,
       full_axis1 <- seq(0, (length(full_time_grid)-1)/sampling_freq, length.out = length(full_time_grid))
       # create empty power matrix with NA values
       full_power <- matrix(NA, nrow = length(combined_result$Period), ncol = length(full_axis1))
+      # prepare COI vectors with NA values too
+      full_coi1 <- rep(NA_real_, length(full_axis1))
+      full_coi2 <- rep(NA_real_, length(full_axis1))
       # find matching time indices (fast approximation when times are nearly aligned)
       bin_width <- 1/sampling_freq
       matched_indices <- round(combined_result$axis.1/bin_width) + 1
@@ -603,13 +815,16 @@ calculateTailBeats <- function(data,
       # map power values (with dimension check)
       if (length(matched_indices) > 0) {
         full_power[, matched_indices] <- combined_result$Power[, valid_matches]
+        full_coi1[matched_indices] <- combined_result$coi.1[valid_matches]
+        full_coi2[matched_indices] <- combined_result$coi.2[valid_matches]
       }
       # update the result object
       combined_result$axis.1 <- full_axis1
       combined_result$Power <- full_power
+      combined_result$coi.1 <- full_coi1
+      combined_result$coi.2 <- full_coi2
       combined_result$series$date <- full_time_grid
     }
-
 
     # downsample time axis if too large
     max_points <- 5e5
@@ -625,17 +840,20 @@ calculateTailBeats <- function(data,
       combined_result$coi.1 <- combined_result$coi.1[keep]
       combined_result$coi.2 <- combined_result$coi.2[keep]
       combined_result$series$date <- combined_result$series$date[keep]
+      na_full_mask <- na_full_mask[keep]
       # ensure the axis is perfectly regular (optional, forces exact regularity)
       combined_result$axis.1 <- regular_grid
     }
 
+    # apply the na_full_mask to the combined_power (set power to NA where there were too-long gaps)
+    combined_result$Power[, na_full_mask] <- NA_real_
+
 
     # if output directory is specified, save to PNG
-    if (!is.null(output.dir)) {
+    if (!is.null(plot.output.dir)) {
       # Create clean filename from animal ID
-      png_file <- file.path(output.dir, paste0("tailbeats_", animal_id, ".png"))
+      png_file <- file.path(plot.output.dir, paste0(animal_id, "-wavelet.png"))
       png(png_file, width = png.width, height = png.height, units = "in", res = png.res)
-      on.exit(dev.off(), add = TRUE)
     }
 
     # set margins
@@ -688,9 +906,15 @@ calculateTailBeats <- function(data,
     mtext("Period (s)", side = 4, line = 2.5, cex = 1.4)
 
     # plot cone of influence
-    polygon(c(combined_result$coi.1, rev(combined_result$coi.1)),
-            c(combined_result$coi.2, rep(max(combined_result$coi.2, na.rm=TRUE), length(combined_result$coi.2))),
-            border = NA, col = adjustcolor("black", alpha.f=0.6))
+    valid_coi <- which(!is.na(combined_result$coi.1) & !is.na(combined_result$coi.2))
+    if (length(valid_coi) > 0) {
+      polygon(
+        x = c(combined_result$coi.1[valid_coi], rev(combined_result$coi.1[valid_coi])),
+        y = c(combined_result$coi.2[valid_coi], rep(max(combined_result$coi.2[valid_coi], na.rm = TRUE), length(valid_coi))),
+        border = NA,
+        col = adjustcolor("black", alpha.f = 0.6)
+      )
+    }
 
     # plot tail beat frequencies
     if (length(combined_result$axis.1) < length(combined_axis1)) {
@@ -710,6 +934,139 @@ calculateTailBeats <- function(data,
 
     # draw box
     box()
+
+    # close png
+    if (!is.null(plot.output.dir)) dev.off()
+
+  }
+
+
+
+  #####################################################################
+  # Generate diagnostic plot (if requested) ###########################
+  #####################################################################
+
+  if (plot.diagnostic) {
+
+    # prepare data
+    plot_dates <- dt[[datetime.col]]
+    plot_freqs <- dt$tbf_hz
+    plot_ratios <- dt$tbf_power_ratio
+
+    # define color palette for power ratios
+    power_ratio_color_pal <- .jet_pal(100)
+
+    # scale power_ratios to indices for the color palette (1 to 100)
+    min_ratio <- min(plot_ratios, na.rm = TRUE)
+    max_ratio <- max(plot_ratios, na.rm = TRUE)
+    if (max_ratio == min_ratio) {
+      color_indices <- rep(50, length(plot_ratios)) # Use a middle color
+    } else {
+      color_indices <- ceiling(((plot_ratios - min_ratio) / (max_ratio - min_ratio)) * 99) + 1
+    }
+    color_indices[color_indices < 1] <- 1
+    color_indices[color_indices > 100] <- 100
+    segment_colors <- power_ratio_color_pal[color_indices]
+
+    # set up PNG output
+    if (!is.null(plot.output.dir)) {
+      png_file <- file.path(plot.output.dir, paste0(animal_id, "-diagnostic.png"))
+      png(png_file, width = png.width, height = png.height, units = "in", res = png.res)
+    }
+
+    # save current par settings
+    op <- par(no.readonly = TRUE)
+
+    # set up plot layout
+    layout(matrix(c(1, 2), nrow = 2, byrow = TRUE), heights = c(2.5, 1.8))
+
+    ######################################################
+    # plot top panel - estimated tail beat frequency
+    par(mar = c(1, 5.5, 2.5, 11) + 0.1)
+
+    # first, set up an empty plot with the correct axes ranges
+    plot(plot_dates, plot_freqs, type = "n", xlab = "",  ylab = "",  xaxs = "i", axes = FALSE, main = "")
+
+    # add background color
+    rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], col="grey97", border=NA)
+
+    # draw the color-coded segments for TBF
+    for (i in 1:(length(plot_dates) - 1)) {
+      segments(x0 = plot_dates[i], y0 = plot_freqs[i], x1 = plot_dates[i+1], y1 = plot_freqs[i+1],
+               col = segment_colors[i], lwd = 2)
+    }
+
+    # add title
+    title(main = paste("Tail Beat Frequency -", animal_id, " [", motion.col, "]"), font.main = 2, line = 1, cex.main = 1.4)
+
+    # y-axis for tail beat frequency
+    axis(2, cex.axis = 1.1, las = 1)
+    mtext("Tail Beat Frequency (Hz)", side = 2, line = 3,  cex = 1.2)
+
+    # draw box
+    box()
+
+    # add color legend
+    ratio_labs <- pretty(plot_ratios)
+    ratio_labs <- ratio_labs[ratio_labs>=min(plot_ratios, na.rm = TRUE) & ratio_labs<=max(plot_ratios, na.rm = TRUE)]
+    .colorlegend(col=power_ratio_color_pal, zlim=range(plot_ratios, na.rm = TRUE), zval=ratio_labs,
+                 posx=c(0.93, 0.94), posy = c(0, 0.85), main = "Power Ratio",
+                 main.cex=1.1, digit=1,  cex=1)
+
+
+    ######################################################
+    # plot bottom panel - power ratio time series
+    par(mar = c(4.5, 5.5, 0, 11) + 0.1)
+
+    # first, set up an empty plot with the correct axes ranges
+    plot(plot_dates, plot_ratios, type = "n", xlab = "",  ylab = "",  xaxs = "i", axes = FALSE, main = "")
+
+    # add background color
+    rect(par("usr")[1], par("usr")[3], par("usr")[2], par("usr")[4], col="grey97", border=NA)
+
+    # draw the color-coded segments for power ratio
+    for (i in 1:(length(plot_dates) - 1)) {
+      segments(x0 = plot_dates[i], y0 = plot_ratios[i], x1 = plot_dates[i+1], y1 = plot_ratios[i+1], col = segment_colors[i], lwd = 1.5)
+    }
+
+    # y-axis for power ratio
+    axis(2, cex.axis = 1.1, las = 1)
+    abline(h=pretty(plot_ratios), lwd=0.5, lty=2, col="grey20")
+    if(!is.null(power.ratio.threshold)) abline(h=power.ratio.threshold, lwd=1, lty=2, col="red")
+    mtext("Power Ratio\n(max/mean)", side = 2, line = 3, cex = 1.2)
+
+    # draw box
+    box()
+
+    # x-axis (shared for both plots, only drawn on bottom plot)
+    date_labels <- pretty(plot_dates, n = 9)
+    date_positions <- as.numeric(date_labels)
+    axis(1, at = date_positions, labels = strftime(date_labels, "%d/%b %H:%M", tz = "UTC"),
+         las = 1, cex.axis = 1.1)
+    mtext("Date", side = 1, line = 2.8, cex = 1.2)
+
+    # add call info as legend
+    legend_text <- c(
+      sprintf("Min Freq: %.2f Hz", min.freq.Hz),
+      sprintf("Max Freq: %.2f Hz", max.freq.Hz),
+      sprintf("Ridge Only: %s", ridge.only),
+      sprintf("Power Ratio Thresh: %s", ifelse(is.null(power.ratio.threshold), "NULL", formatC(power.ratio.threshold, digits = 1, format = "f"))),
+      sprintf("Smooth Window: %.1f s", smooth.window),
+      sprintf("Max Interp Gap: %s", ifelse(is.null(max.interp.gap), "NULL", sprintf("%.1f s", max.interp.gap)))
+    )
+
+    # add the legend to the plot
+    leg_info <- legend("bottomright", legend = legend_text, cex = 0.9,  bty = "n", xpd = TRUE, inset = c(-0.095, 0), y.intersp = 1.1)
+    title_y_pos <- leg_info$rect$top + (par("cex") * 0.7 * strheight("M"))
+    offset_x <- strwidth("M", cex = 0.9) * 1
+    text(x = leg_info$rect$left + offset_x, y = title_y_pos, labels = "Parameters", adj = c(0, 0.5), cex = 1.1, xpd = NA)
+
+    # close png
+    if (!is.null(plot.output.dir)) dev.off()
+
+    # reset layout and par settings
+    layout(1)
+    par(op)
   }
 
 
@@ -717,11 +1074,50 @@ calculateTailBeats <- function(data,
   # Return results ####################################################
   #####################################################################
 
+  # save the processed data as an RDS file
+  if(save.files){
+
+    # print without newline and immediately flush output
+    cat("Saving file... ")
+    flush.console()
+
+    # determine the output directory: use the specified output folder, or if not provided,
+    # use the folder of the current file (if data[i] is a file path), or default to "./"
+    if (!is.null(output.folder)) {
+      output_dir <- output.folder
+    } else if (is_filepaths) {
+      output_dir <- dirname(data[i])
+    } else {
+      output_dir <- "./"
+    }
+
+    # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
+    sufix <- ifelse(!is.null(output.suffix), output.suffix, paste0("-", sampling_freq, "Hz"))
+
+    # construct the output file name
+    output_file <- file.path(output_dir, paste0(animal_id, sufix, ".rds"))
+
+    # save the processed data
+    saveRDS(dt, output_file)
+
+    # overwrite the line with completion message
+    cat("\r")
+    cat(rep(" ", getOption("width")-1))
+    cat("\r")
+    cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
+
+  }
+
   # last garbage collection
   gc()
 
-  # return result
-  return(dt)
+  # return result if needed
+  if (return.data) {
+    return(dt)
+  }else{
+    return(invisible(NULL))
+  }
+
 
 }
 
@@ -733,10 +1129,11 @@ calculateTailBeats <- function(data,
 #' Helper function to process a single batch
 #' @note This function is intended for internal use within the `nautilus` package.
 #' @keywords internal
+#' @noRd
 
 .processBatch <- function(batch, valid_data, batch_size, buffer_samples, n_rows_valid,
                           sampling_freq, min.freq.Hz, max.freq.Hz, ridge.only,
-                          power.ratio.threshold) {
+                          power.ratio.threshold, max.interp.gap, animal_id) {
 
   # initialize empty result list
   result <- list(
@@ -744,7 +1141,9 @@ calculateTailBeats <- function(data,
     core_start = NULL,
     core_end = NULL,
     current_exclusions = 0,
-    wavelet_result = NULL  # This will store the full wavelet result for plotting
+    wavelet_result = NULL,  # This will store the full wavelet result for plotting
+    batch_power_ratios = NULL,
+    na_mask_plotting = NULL
   )
 
   # buffered batch indices (for wavelet processing)
@@ -763,13 +1162,52 @@ calculateTailBeats <- function(data,
   local_core_end <- result$core_end - batch_start + 1
   central_cols <- local_core_start:local_core_end
 
+  # mask of all original NAs in this batch_data
+  original_motion_is_na <- is.na(batch_data$motion)
+  too_long_na_mask <- rep(FALSE, length(original_motion_is_na))
+  if (any(original_motion_is_na)) {
+    # find contiguous NA blocks
+    na_rle <- rle(original_motion_is_na)
+    current_idx_in_batch <- 0
+    for (i in seq_along(na_rle$lengths)) {
+      segment_length <- na_rle$lengths[i]
+      if (na_rle$values[i]) {
+        gap_duration_seconds <- segment_length / sampling_freq
+        if (gap_duration_seconds > max.interp.gap) {
+          # mark this entire NA segment as "too long"
+          too_long_na_mask[(current_idx_in_batch + 1):(current_idx_in_batch + segment_length)] <- TRUE
+        }
+      }
+      current_idx_in_batch <- current_idx_in_batch + segment_length
+    }
+
+    # imputation for WaveletComp input - fill aLL NAs
+    if (sum(!original_motion_is_na) >= 2) {
+      batch_data$motion <- zoo::na.approx(batch_data$motion, na.rm = FALSE)
+    }
+    # fill any remaining NAs (especially at start/end of the batch_data) with LOCF/NOCB
+    batch_data$motion <- zoo::na.locf(batch_data$motion, na.rm = FALSE)
+    batch_data$motion <- zoo::na.locf(batch_data$motion, fromLast = TRUE, na.rm = FALSE)
+
+    # if, after all imputation, the data is still all NAs (e.g., original batch was entirely NA),
+    # then treat it as an unprocessable batch and return NAs.
+    if (all(is.na(batch_data$motion))) {
+      warning(sprintf("%s - Batch %d contains only NA motion data after imputation (wavelet skipped)", animal_id, batch), call. = FALSE)
+      result$batch_dominant_freqs <- rep(NA_real_, result$core_end - result$core_start + 1)
+      result$dates <- valid_data$date[batch_start:batch_end][central_cols]
+      result$batch_power_ratios <- rep(NA_real_, result$core_end - result$core_start + 1)
+      result$na_mask_plotting <- too_long_na_mask[central_cols]
+      return(result)
+    }
+  }
+
   # skip constant batches
   if (length(unique(na.omit(batch_data$motion))) <= 1) {
-    warning(
-      paste0("Constant motion data detected in batch ", batch, " (wavelet skipped)"),
-      call. = FALSE)
+    warning(sprintf("%s - Constant motion data detected in batch %d (wavelet skipped)", animal_id, batch), call. = FALSE)
     result$batch_dominant_freqs <- rep(NA_real_, result$core_end - result$core_start + 1)
     result$dates <- valid_data$date[batch_start:batch_end][central_cols]
+    result$batch_power_ratios <- rep(NA_real_, result$core_end - result$core_start + 1)
+    result$na_mask_plotting <- too_long_na_mask[central_cols]
     return(result)
   }
 
@@ -786,6 +1224,10 @@ calculateTailBeats <- function(data,
     verbose = FALSE
   )
 
+  # calculate power_ratio for the core part of the batch
+  batch_power_ratio_values <- apply(result$wavelet_result$Power[, central_cols, drop = FALSE], 2, function(x) max(x) / mean(x))
+  result$batch_power_ratios <- batch_power_ratio_values
+
   # determine dominant tail-beat frequencies
   if (ridge.only) {
     # strict ridge-based approach (connected maxima in wavelet power spectrum)
@@ -796,9 +1238,7 @@ calculateTailBeats <- function(data,
     dominant_periods[ridge_indices] <- max_periods[ridge_indices]
   } else if (!is.null(power.ratio.threshold)) {
     # lenient dominant frequency approach with power ratio filtering
-    power_ratio <- apply(result$wavelet_result$Power[, central_cols, drop = FALSE], 2,
-                         function(x) max(x)/mean(x))
-    dominant_periods <- ifelse(power_ratio > power.ratio.threshold,
+    dominant_periods <- ifelse(batch_power_ratio_values > power.ratio.threshold,
                                result$wavelet_result$Period[apply(result$wavelet_result$Power[, central_cols, drop = FALSE], 2, which.max)],
                                NA)
   } else {
@@ -815,7 +1255,13 @@ calculateTailBeats <- function(data,
   result$batch_dominant_freqs[in_coi] <- NA_real_
   result$current_exclusions <- sum(in_coi, na.rm = TRUE)
 
-  # add plotting components to result
+  # set results to NA where original gaps were identified as "too long"
+  mask_for_results_central_cols <- too_long_na_mask[central_cols]
+  result$batch_dominant_freqs[mask_for_results_central_cols] <- NA_real_
+  result$batch_power_ratios[mask_for_results_central_cols] <- NA_real_
+  result$na_mask_plotting <- mask_for_results_central_cols
+
+  # add plotting components to result (reflecting potentially masked output)
   result$wavelet_power <- result$wavelet_result$Power[, central_cols, drop = FALSE]
   result$periods <- result$wavelet_result$Period
   result$axis1 <- result$wavelet_result$axis.1[central_cols] + (batch_start - 1)/sampling_freq
@@ -823,6 +1269,7 @@ calculateTailBeats <- function(data,
   result$coi2 <- result$wavelet_result$coi.2[central_cols]
   result$dates <- valid_data$date[batch_start:batch_end][central_cols]
 
+  # return
   return(result)
 }
 

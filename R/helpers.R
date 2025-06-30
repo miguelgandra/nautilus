@@ -511,7 +511,7 @@ NULL
 ## Updated colorlegend function  ####################################################
 #####################################################################################
 ## Adapted from 'shape' package (https://rdrr.io/cran/shape/src/R/colorlegend.R)
-## - added main.adj + main.inset + support for scientific notation
+## - added main.adj + support for scientific notation
 ## - added tick.length
 ## - added horizontal option
 ## - added zlab option
@@ -539,7 +539,6 @@ NULL
                          main.col = "black",
                          main.adj = 0.5,
                          lab.col = "black",
-                         main.inset = 1,
                          digit = 0,
                          left = FALSE,
                          tick.length = 0.3,

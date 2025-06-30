@@ -308,7 +308,7 @@ data_list <- importTagData(data.folders = data_folders,
                            output.suffix = NULL,
                            data.table.threads = NULL,
                            verbose = TRUE)
-y
+
 
 ################################################################################
 # Filter out pre- and post-deployment data #####################################
@@ -347,7 +347,7 @@ deploy_list <- list(
 deploy_periods <- do.call(rbind, lapply(deploy_list, as.data.frame))
 
 
-# Load the previously processed/downsampled files
+# Select the previously imported files
 data_files <- list.files("./data processed/imported", full.names = TRUE)
 
 # Apply the 'filterDeploymentData' function to filter pre- and post-deployment periods
@@ -396,7 +396,7 @@ dev.off()
 # 3. Interpolates short gaps (< `gap.threshold`, in seconds) using a chosen method.
 # 4. Leaves longer gaps as missing values (NA).
 
-# Load the previously filtered files
+# Select the previously filtered files
 data_files <- list.files("./data processed/filtered", full.names = TRUE)
 
 # Apply the 'regularizeTimeSeries' function
@@ -572,7 +572,7 @@ paddle_calibration$processed_slope <- NULL
 #   ?processTagData
 
 
-# Load the previously imported files
+# Select the previously filtered files
 data_files <- list.files("./data processed/filtered", full.names = TRUE)
 
 # Process tag data using the "processTagData" function
@@ -612,42 +612,28 @@ data_list <- processTagData(data = data_files,
 # frequency be at least 4× higher than max.freq.Hz. For example, with max.freq.Hz = 2,
 # the data should be sampled at ≥ 8 Hz (though ≥ 4 Hz would meet Nyquist minimum).
 
-filtered_list <- calculateTailBeats(data = data_list,
-                                    output.dir = "./plots/tail beat frequencies",
-                                    motion.col = "surge",
-                                    ridge.only = FALSE,
-                                    min.freq.Hz = 0.05,
-                                    max.freq.Hz = 2,
-                                    smooth.window = 5,
-                                    power.ratio.threshold = 2,
-                                    max.interp.gap = 10,
-                                    cores = 1)
+# Select the previously processed files
+data_files <- list.files("./data processed/processed/20Hz", full.names = TRUE)
 
-
-################################################################################
-# Save processed data ##########################################################
-################################################################################
-
-# Specify the directory where the CSV files will be saved
-output_directory <- "./data processed/processed/20Hz"
-
-# Loop through each animal dataset and save the processed data in RDS format (more storage-efficient)
-# This also keeps the attributes associated with each dataset (required for the summarizeTagData() function)
-for(i in 1:length(filtered_list)){
-  # Construct the output filename
-  suffix <- paste0(attributes(filtered_list[[i]])$processed.sampling.frequency, "Hz")
-  output_file <- paste0(output_directory, names(filtered_list)[i], "-", suffix, ".rds")
-  # Save the combined list as an RDS file
-  saveRDS(filtered_list[[i]], file=output_file)
-}
-
-# Alternatively, save the filtered data as CSV for interoperability
-#for(i in 1:length(data_list)){
-#  # Construct the output filename
-#  output_file <- paste0(output_directory, names(data_list)[i], "_processed.csv")
-#  # Write the processed data to CSV
-#  write.csv(data_list[[i]], file = output_file, row.names = FALSE)
-# }
+# Calculate tail beat frequencies using the "calculateTailBeats" function
+data_list  <- calculateTailBeats(data = data_files,
+                                 id.col = "ID",
+                                 datetime.col = "datetime",
+                                 motion.col = "surge",
+                                 ridge.only = FALSE,
+                                 min.freq.Hz = 0.05,
+                                 max.freq.Hz = 2,
+                                 smooth.window = 5,
+                                 power.ratio.threshold = 2,
+                                 max.interp.gap = 10,
+                                 plot.wavelet = TRUE,
+                                 plot.diagnostic = TRUE,
+                                 plot.output.dir = "./plots/tail beat frequencies",
+                                 return.data = FALSE,
+                                 save.files = TRUE,
+                                 output.folder = "./data processed/processed/20Hz-tbf",
+                                 output.suffix = "-20Hz-tbf",
+                                 n.cores = 1)
 
 
 ################################################################################
