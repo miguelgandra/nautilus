@@ -442,6 +442,8 @@ processTagData <- function(data,
       # check if the tag was equipped with a paddle wheel
       has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
       if(has_paddle_info && isTRUE(attr(individual_data, "paddle.wheel"))) {
+        # store original mz column to estimate paddle speed
+        mz_raw <- mag_data[, "mz"]
         # apply 3-second rolling mean to all axes to remove noise
         if(verbose) cat("---> Removing magnetic noise from paddle wheel\n")
         mag_data[, "mx"] <- zoo::rollmean(mag_data[, "mx"], k = sampling_freq * 3, align = "center", fill = "extend")
@@ -950,7 +952,7 @@ processTagData <- function(data,
 
         # calculate frequencies and speed
         paddle_data <- .getPaddleSpeed(
-          mz = individual_data$mz,
+          mz = mz_raw,
           sampling.rate = sampling_freq,
           calibration.slope = tag_calibration$slope,
           smooth.window = speed.smoothing,
