@@ -440,12 +440,13 @@ processTagData <- function(data,
     if (valid_magnetometer_data) {
 
       # check if the tag was equipped with a paddle wheel
+      mz_raw <- NA
       has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
       if(has_paddle_info && isTRUE(attr(individual_data, "paddle.wheel"))) {
         # store original mz column to estimate paddle speed
         mz_raw <- mag_data[, "mz"]
         # apply 3-second rolling mean to all axes to remove noise
-        if(verbose) cat("---> Removing magnetic noise from paddle wheel\n")
+        if(verbose) cat("---> Removing paddle-wheel-induced magnetic noise\n")
         mag_data[, "mx"] <- zoo::rollmean(mag_data[, "mx"], k = sampling_freq * 3, align = "center", fill = "extend")
         mag_data[, "my"] <- zoo::rollmean(mag_data[, "my"], k = sampling_freq * 3, align = "center", fill = "extend")
         mag_data[, "mz"] <- zoo::rollmean(mag_data[, "mz"], k = sampling_freq * 3, align = "center", fill = "extend")
@@ -1210,7 +1211,7 @@ processTagData <- function(data,
   # return imported data or NULL based on return.data parameter
   if (return.data) {
     # assign names to the data list
-    names(data_list) <- names(data)
+    names(data_list) <- sapply(data_list, function(x) unique(x$ID)[1])
     # convert NA placeholders back to NULL
     na_indices <- which(sapply(data_list, function(x) identical(x, NA)))
     for (index in na_indices) {data_list[[index]] <- NULL}
