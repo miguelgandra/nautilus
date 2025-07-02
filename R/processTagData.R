@@ -391,17 +391,16 @@ processTagData <- function(data,
         message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
       }
 
-      # get ID
-      id <- unique(individual_data[[id.col]])[1]
-
     ############################################################################
     # data is already in memory (list of data frames/tables) ###################
     } else {
-      # retrieve ID from the dataset based on the specified 'id.col' column
-      id <- names(data)[i]
+
       # access the individual dataset
       individual_data <- data[[i]]
     }
+
+    # get ID
+    id <- unique(individual_data$ID)[1]
 
     # print current ID
     cat(crayon::bold(sprintf("[%d/%d] %s\n", i, n_animals, id)))
