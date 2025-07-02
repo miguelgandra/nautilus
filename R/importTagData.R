@@ -870,6 +870,7 @@ importTagData <- function(data.folders,
 
       }else{
         if (verbose) cat(paste0("--> No specific axis mapping found for this tag, skipping transformations\n"))
+        tag_mapping <- NA
       }
     }
 

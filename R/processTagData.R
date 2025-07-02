@@ -289,6 +289,8 @@ processTagData <- function(data,
 
   # validate speed.calibration.values if paddle speed calculation is requested
   if (calculate.paddle.speed && !is.null(speed.calibration.values)) {
+    # coerce to data.frame if it's a data.table
+    if (data.table::is.data.table(speed.calibration.values)) speed.calibration.values <- as.data.frame(speed.calibration.values)
     if (!is.data.frame(speed.calibration.values)) stop("speed.calibration.values must be a data.frame", call. = FALSE)
     missing_cols <- setdiff(c("year", "package_id", "slope"), names(speed.calibration.values))
     if (length(missing_cols) > 0) {
