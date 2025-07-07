@@ -931,11 +931,11 @@ importTagData <- function(data.folders,
       # determine the output directory: use the specified output folder or the current data folder
       output_dir <- ifelse(!is.null(output.folder), output.folder, data.folders[i])
 
-      # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
-      sufix <- ifelse(!is.null(output.suffix), output.suffix, "")
+      # define the file suffix: use the specified suffix or default to an empty string
+      suffix <- ifelse(!is.null(output.suffix), output.suffix, "")
 
       # construct the output file name
-      output_file <- file.path(output_dir, paste0(id, sufix, ".rds"))
+      output_file <- file.path(output_dir, paste0(id, suffix, ".rds"))
 
       # save the processed data
       saveRDS(sensor_data, output_file)

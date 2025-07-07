@@ -7,6 +7,7 @@
 filterVideoPeriod(
   data,
   video.metadata,
+  annotation.ends = NULL,
   id.col = "ID",
   datetime.col = "datetime"
 )
@@ -17,6 +18,10 @@ filterVideoPeriod(
 
 \item{video.metadata}{A \code{data.table} containing metadata for each video, with columns:
 \code{ID} (unique identifier), \code{start} (start datetime), and \code{end} (end datetime).}
+
+\item{annotation.ends}{A \code{data.table} containing adjusted end times for annotations,
+with columns: \code{ID} (unique identifier) and \code{annotation_end} (datetime).
+This table is used to override the 'end' time of the latest video segment for an ID.}
 
 \item{id.col}{A \code{character} string indicating the column name in \code{video.metadata}
 that contains the unique IDs matching the \code{data} list names. Default is \code{"ID"}.}
@@ -31,5 +36,6 @@ If no matching periods are found for a given ID, an empty \code{data.table} is r
 }
 \description{
 This function subsets a list of data.tables to match the periods where video footage is available,
-based on metadata containing video start and end times.
+based on metadata containing video start and end times. It can also adjust video end times
+based on annotation end markers.
 }

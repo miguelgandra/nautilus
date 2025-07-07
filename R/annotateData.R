@@ -72,7 +72,7 @@ annotateData <- function(data,
   if (!is.null(selected.events)) {
     if (!is.character(selected.events)) stop("The 'selected.events' argument must be a character vector.", call. = FALSE)
     # check that all selected events are valid event types present in the annotations
-    valid_events <- unique(annotations$event)
+    valid_events <- unique(annotations[[event.col]])
     invalid_events <- setdiff(selected.events, valid_events)
     if (length(invalid_events) > 0) stop(paste("The following selected events are not found in the annotations: ", paste(invalid_events, collapse = ", ")), call. = FALSE)
   }
@@ -84,7 +84,7 @@ annotateData <- function(data,
 
   # if selected.events is not NULL, filter annotations to only include those events
   if (!is.null(selected.events)) {
-    annotations <- annotations[annotations$event %in% selected.events, ]
+    annotations <- annotations[annotations[[event.col]] %in% selected.events, ]
   }
 
 
@@ -102,7 +102,19 @@ annotateData <- function(data,
   annotated_data <- vector("list", length(data))
   names(annotated_data) <- names(data)
 
-  # loop through each data frame in the list
+
+  ################################################################
+  # initialize all event columns with 0 for all data frames ######
+  for (i in seq_along(data)) {
+    df <- data[[i]]
+    if (!is.null(df)) {
+      for (event in unique_events) df[[event]] <- 0
+      annotated_data[[i]] <- df
+    }
+  }
+
+  ################################################################
+  # process annotations for each individual ######################
   for (i in seq_along(data)) {
 
     # extract the current dataset and its ID

@@ -553,11 +553,11 @@ checkSensorAnomalies <- function(data,
         output_dir <- "./"
       }
 
-      # define the file suffix: use the specified suffix or default to a suffix based on the sampling rate
-      sufix <- ifelse(!is.null(output.suffix), output.suffix, "")
+      # define the file suffix: use the specified suffix or default to an empty string
+      suffix <- ifelse(!is.null(output.suffix), output.suffix, "")
 
       # construct the output file name
-      output_file <- file.path(output_dir, paste0(id, sufix, ".rds"))
+      output_file <- file.path(output_dir, paste0(id, suffix, ".rds"))
 
       # save the processed data
       saveRDS(individual_data, output_file)

@@ -2,38 +2,82 @@
 % Please edit documentation in R/extractFeatures.R
 \name{extractFeatures}
 \alias{extractFeatures}
-\title{Extract Features from a Sliding Window}
+\title{Extract Features from Sensor Data Using Sliding or Aggregated Windows}
 \usage{
 extractFeatures(
   data,
-  variables,
-  metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum", "energy",
-    "skewness", "kurtosis", "entropy"),
+  variables = NULL,
+  metrics = NULL,
+  parameter.grid = NULL,
+  id.col = "ID",
+  datetime.col = "datetime",
   window.size = 5,
   aggregate = FALSE,
-  datetime.col = "datetime",
+  downsample.to = NULL,
   response.col = NULL,
+  response.aggregation = "majority",
+  return.data = TRUE,
+  save.files = FALSE,
+  output.folder = NULL,
+  output.suffix = NULL,
   n.cores = 1
 )
 }
 \arguments{
-\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
-containing data from multiple animals. Must include the variables specified in \code{variables}.}
+\item{data}{A list of tables/data frames (one per individual), a single aggregated data table/data frame,
+or a character vector of file paths to RDS files containing sensor data.
+If not a list or file paths, splits data by \code{id.col} (must be present in attributes).
+Must include the variables specified in \code{variables}.}
 
-\item{variables}{A character vector of column names from \code{data} for which to calculate metrics.}
+\item{variables}{(Optional) A character vector of column names from \code{data} for which to calculate metrics.
+If \code{parameter.grid} is supplied, this argument is ignored. If both \code{variables} and \code{parameter.grid} are \code{NULL}, an error will be thrown.}
 
-\item{metrics}{A character vector specifying the metrics to calculate. Supported metrics: "mean", "sd", "min", "max", "sum",
-"range", "mad", "skewness", "kurtosis", "energy", "entropy".}
+\item{metrics}{(Optional) A character vector specifying the metrics to calculate. Supported metrics:
+"mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy".
+If \code{parameter.grid} is supplied, this argument is ignored. If both \code{metrics} and \code{parameter.grid} are \code{NULL}, an error will be thrown.}
+
+\item{parameter.grid}{(Optional) A data frame with two columns: \code{variable} and \code{metric}.
+If supplied, the function will use this grid to determine which variable-metric combinations to calculate.
+If \code{NULL} (default), the \code{parameter.grid} will be generated from the \code{variables} and \code{metrics} arguments.}
+
+\item{id.col}{A character string specifying the column containing individual IDs. Required if \code{data} is a single data frame.}
+
+\item{datetime.col}{A character string specifying the column in \code{data} containing datetime information
+(in POSIXct format). Default: \code{"datetime"}.}
 
 \item{window.size}{An integer specifying the size of the sliding or aggregation window, in seconds.
 The actual number of steps in the window is determined based on the sampling interval of the data.}
 
-\item{aggregate}{Logical. If \code{TRUE}, aggregates data into distinct, non-overlapping windows. If \code{FALSE}, retains temporal resolution.}
+\item{aggregate}{Logical. If TRUE, uses non-overlapping windows for initial feature extraction.
+If FALSE (default), uses sliding windows.}
 
-\item{datetime.col}{A character string specifying the column in \code{data} containing datetime information.}
+\item{downsample.to}{NULL or numeric (seconds). If specified, aggregates
+features into non-overlapping windows after initial extraction. Works with both
+aggregate=TRUE/FALSE. For example:
+\itemize{
+\item aggregate=FALSE, downsample.interval=60: 5s sliding → 1m bins
+\item aggregate=TRUE, downsample.interval=60: 5s epochs → 1m bins
+}}
 
 \item{response.col}{(Optional) A character string specifying the column in \code{data} containing response or annotated labels (e.g., feeding events).
 It must be binary (i.e., containing values 0 or 1).}
+
+\item{response.aggregation}{Optional. Method to aggregate \code{response.col} when \code{window.size > 1}:
+\itemize{
+\item \code{"majority"}: Assigns \code{1} if >50\% of window values are \code{1} (default).
+\item \code{"any"}: Assigns \code{1} if \strong{any} value in the window is \code{1}.
+Ignored if \code{response.col = NULL}.
+}}
+
+\item{return.data}{Logical. If \code{TRUE}, the processed data will be returned as a list. Defaults to \code{TRUE}.}
+
+\item{save.files}{Logical. If \code{TRUE}, the processed data for each individual will be saved as a separate RDS file. Defaults to \code{FALSE}.}
+
+\item{output.folder}{(Optional) A character string specifying the directory where processed RDS files should be saved.
+If \code{NULL} and \code{save.files = TRUE}: if \code{data} was provided as file paths, the output will be saved in the same directory as the input files;
+otherwise, it defaults to the current working directory.}
+
+\item{output.suffix}{(Optional) A character string to append to the filename of the output RDS files (e.g., "_features").}
 
 \item{n.cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
 }

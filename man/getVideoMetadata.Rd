@@ -7,11 +7,13 @@
 getVideoMetadata(
   video.folders,
   video.format = "mp4",
-  id.metadata = NULL,
-  id.col = "ID",
-  tagdate.col = "tagging_date",
+  tesseract.model = "cam",
   validate.timestamps = TRUE,
-  ocr.language = "cam"
+  max.validation.attempts = 6,
+  expected.gap.range = c(0, 60),
+  gap.tolerance = 2,
+  use.parallel = TRUE,
+  n.cores = NULL
 )
 }
 \arguments{
@@ -19,62 +21,43 @@ getVideoMetadata(
 
 \item{video.format}{Character vector. Allowed video formats, such as "mp4" or "mov". Defaults to "mp4".}
 
-\item{id.metadata}{Optional. Data frame containing metadata about the videos. Must include columns for
-identifying IDs (\code{id.col}) and tagging dates (\code{tagdate.col}). If provided, the tagging date is used to
-determine the start time of the video.}
-
-\item{id.col}{Character string. Column name in \code{id.metadata} corresponding to folder IDs. Defaults to "ID".}
-
-\item{tagdate.col}{Character string. Column name in \code{id.metadata} with tagging dates. Defaults to "tagging_date".}
-
-\item{validate.timestamps}{In development.}
-
-\item{ocr.language}{Character string. Language or configuration used by the OCR engine for recognizing
+\item{tesseract.model}{Character string. Language or configuration used by the OCR engine for recognizing
 text in timestamp overlays. Defaults to "cam", indicating a predefined configuration for the target tag type.}
+
+\item{validate.timestamps}{Logical. Whether to perform temporal validation using multiple frames. Defaults to TRUE.}
+
+\item{max.validation.attempts}{Integer. Maximum number of frame extractions to attempt for validation. Defaults to 6.}
+
+\item{expected.gap.range}{Numeric vector of length 2. Expected range (in seconds) for gaps between video files. Defaults to c(10, 60).}
+
+\item{gap.tolerance}{Numeric. Tolerance factor for gap validation (multiplier). Defaults to 2.0.}
+
+\item{use.parallel}{Logical. Whether to use parallel processing. Defaults to TRUE.}
+
+\item{n.cores}{Integer. Number of cores to use for parallel processing. If NULL, uses detectCores() - 1.}
 }
 \value{
-A data frame containing metadata for each video file, including:
-\itemize{
-\item \code{ID}: Folder identifier (if \code{id.metadata} is provided).
-\item \code{video}: Video filename.
-\item \code{start}: Start time of the video (POSIXct).
-\item \code{end}: End time of the video (POSIXct).
-\item \code{duration}: Video duration in seconds.
-\item \code{frame_rate}: Frame rate in frames per second.
-\item \code{file}: Full path to the video file.
-}
+A data frame containing metadata for each video file with enhanced validation metrics.
 }
 \description{
 This function extracts key metadata from video files located within specified
 directories. The extracted metadata includes the start time, end time, duration,
 and frame rate of the videos. It is specifically designed to process videos
-from biologging tags that include a black timestamp box positioned in the
+from biologging tags that feature a black timestamp box positioned in the
 bottom-right corner of the frames.
+
 The function extracts individual frames using FFMPEG and employs Optical
-Character Recognition (OCR) via the Tesseract engine to read the timestamps.
-FFMPEG is also used to retrieve video information such as frame rate and duration.
-As the position of the timestamp box is fixed (hardcoded), this function may
-not be suitable for videos from tags with different configurations or formats.
-For more details and usage guidelines, check out the \code{Details} section.
-}
-\details{
-This function leverages the \strong{tesseract} R package to perform Optical Character Recognition (OCR).
-However, the \strong{Tesseract OCR engine} itself must be installed separately on your system, as the R
-package serves as a wrapper for it. The accuracy of the OCR process depends heavily on the version
-and configuration of the Tesseract engine. For installation instructions, refer to the
-\href{https://github.com/tesseract-ocr/tesseract}{Tesseract GitHub page} or the relevant package documentation.
+Character Recognition (OCR) via the Tesseract engine to read the timestamps
+embedded in the video frames. FFMPEG is also used to retrieve video information
+such as frame rate and duration.
 
-The function extracts the start time of each video by applying OCR to the first frame. The \code{ocr.language}
-parameter allows you to specify the OCR engine configuration. By default, this is set to \code{"cam"}, a custom-trained
-OCR model optimized for reading timestamps from videos produced by specific biologging CAM tag devices. The custom
-\code{"cam.traineddata"} file is included in the \code{inst/extdata} folder of the package repository.
-For other video formats or devices, you may need to adjust the engine to a more appropriate OCR configuration.
+Because the timestamp box position is hardcoded and fixed, this function may
+not be suitable for videos from biologging tags with different configurations,
+timestamp placements, or video formats. Users should verify compatibility with
+their specific video data prior to use.
 
-If \code{id.metadata} is supplied, the function uses the tagging date from the metadata as a reference,
-extracting only the time component via OCR. This approach minimizes OCR errors by focusing on the
-time portion of the timestamp, avoiding potential misinterpretations of the date.
-
-For optimal results, ensure both the \verb{Tesseract OCR} engine and the custom-trained model are correctly
-installed and configured. Additionally, verify the \code{FFMPEG} installation, as it is used to extract frames
-and retrieve video details such as frame rate and duration.
+The function supports parallel processing to speed up metadata extraction from
+large datasets. It also implements improved validation strategies based on
+inter-video timing patterns, using gap-based checks to detect and correct
+timestamp inconsistencies.
 }

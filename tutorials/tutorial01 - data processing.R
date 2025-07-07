@@ -641,15 +641,15 @@ data_list  <- calculateTailBeats(data = data_files,
 ################################################################################
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/processed/20Hz", full.names = TRUE)
+data_files <- list.files("./data processed/processed/20Hz-tbf", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
-filtered_list <- vector("list", length(data_files))
+processed_list <- vector("list", length(data_files))
 
 # Loop through each file, load the data, and assign names based on animal ID
 for(i in 1:length(data_files)){
-  filtered_list[[i]] <- readRDS(data_files[i])
-  names(filtered_list)[i] <- attributes(filtered_list[[i]])$id
+  processed_list[[i]] <- readRDS(data_files[i])
+  names(processed_list)[i] <- attributes(processed_list[[i]])$id
 }
 
 
@@ -661,23 +661,45 @@ for(i in 1:length(data_files)){
 # The function calculates key metrics like deployment duration, temperature range, max depth,
 # sampling frequency, and GPS positions (Fastloc and user-defined) based on the provided data.
 
-# Specify the metadata columns to include in the summary
-metadata_cols <- c("ID", "sex", "size", "tag", "satPtt", "deploy_site")
-# Extract the specified columns from the metadata table for summary calculations
-summary_metadata <- animal_metadata[,metadata_cols]
-# Rename the columns in the extracted metadata table for readability and consistency in the summary output
-colnames(summary_metadata) <- c("ID", "Sex", "Size", "Tag", "SatPTT", "Tagging site")
+# Read metadata file containing details about tagged animals
+summary_metadata <- readxl::read_excel("./PINTADO_metadata_multisensor.xlsx")
 
+# Specify the metadata columns to include in the summary
+selected_cols <- c("id", "sex", "size", "site", "longitudeD", "latitudeD", "typeCMD", "type", "satPtt", "padWheel")
+summary_metadata <- as.data.frame(summary_metadata)[,selected_cols]
+
+# Standardize tag labels
+summary_metadata$typeCMD[summary_metadata$typeCMD=="4k"] <- "4K"
+summary_metadata$typeCMD[summary_metadata$typeCMD=="Ceiia"] <- "CEIIA"
+summary_metadata$type[summary_metadata$type=="Camara"] <- "Camera"
+
+# Round coordinates
+summary_metadata$longitudeD <- sprintf("%.4f", summary_metadata$longitudeD)
+summary_metadata$latitudeD <- sprintf("%.4f", summary_metadata$latitudeD)
+
+# Create a new tag label
+summary_metadata$tag[grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "i-Pilot"
+summary_metadata$tag[!grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "G-Pilot"
+summary_metadata$tag <- paste(summary_metadata$tag, summary_metadata$typeCMD)
+summary_metadata <- summary_metadata[,-which(colnames(summary_metadata) %in% c("typeCMD", "type"))]
+summary_metadata <- summary_metadata[,c(1:6,9,7:8)]
+
+# Create a unified tag label by combining 'typeCMD' and 'type' columns, then remove the original columns
+#summary_metadata$typeCMD <- paste(summary_metadata$typeCMD, summary_metadata$type)
+#summary_metadata <- summary_metadata[,-which(colnames(summary_metadata) %in% c("type"))]
+
+# Rename the columns in the extracted metadata table for readability and consistency in the summary output
+colnames(summary_metadata) <- c("ID", "Sex", "Size", "Tagging site", "Lon", "Lat", "Tag", "SatPTT", "Paddle wheel")
 
 # Call the summarizeTagData function to generate the summary statistics for each individual.
-summary <- summarizeTagData(data = filtered_list,
+summary <- summarizeTagData(data = processed_list,
                             id.metadata = summary_metadata)
 
 # Print the summary table
 print(summary)
 
 # Save the summary table as CSV
-write.csv(summary, file="./summary_table_all.csv", row.names = FALSE)
+write.csv(summary, file="./summary_table.csv", row.names = FALSE)
 
 
 ################################################################################

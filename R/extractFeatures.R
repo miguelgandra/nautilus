@@ -2,26 +2,50 @@
 # Function to extract features from a sliding window #################################################
 #######################################################################################################
 
-#' Extract Features from a Sliding Window
+#' Extract Features from Sensor Data Using Sliding or Aggregated Windows
 #'
 #' This function calculates specified metrics (e.g., mean, standard deviation) for selected variables over a sliding window.
 #' It can either retain the temporal resolution of the dataset or aggregate data into distinct, non-overlapping windows.
 #' This is useful for preparing the dataset for machine learning or other analytical methods that require a structured set of features.
 #'
-#' @param data A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame
-#' containing data from multiple animals. Must include the variables specified in `variables`.
-#' @param variables A character vector of column names from `data` for which to calculate metrics.
-#' @param metrics A character vector specifying the metrics to calculate. Supported metrics: "mean", "sd", "min", "max", "sum",
-#' "range", "mad", "skewness", "kurtosis", "energy", "entropy".
+#' @param data A list of tables/data frames (one per individual), a single aggregated data table/data frame,
+#' or a character vector of file paths to RDS files containing sensor data.
+#' If not a list or file paths, splits data by `id.col` (must be present in attributes).
+#' Must include the variables specified in `variables`.
+#' @param variables (Optional) A character vector of column names from `data` for which to calculate metrics.
+#' If `parameter.grid` is supplied, this argument is ignored. If both `variables` and `parameter.grid` are `NULL`, an error will be thrown.
+#' @param metrics (Optional) A character vector specifying the metrics to calculate. Supported metrics:
+#' "mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy".
+#' If `parameter.grid` is supplied, this argument is ignored. If both `metrics` and `parameter.grid` are `NULL`, an error will be thrown.
+#' @param parameter.grid (Optional) A data frame with two columns: `variable` and `metric`.
+#' If supplied, the function will use this grid to determine which variable-metric combinations to calculate.
+#' If `NULL` (default), the `parameter.grid` will be generated from the `variables` and `metrics` arguments.
+#' @param id.col A character string specifying the column containing individual IDs. Required if `data` is a single data frame.
+#' @param datetime.col A character string specifying the column in `data` containing datetime information
+#' (in POSIXct format). Default: `"datetime"`.
 #' @param window.size An integer specifying the size of the sliding or aggregation window, in seconds.
 #' The actual number of steps in the window is determined based on the sampling interval of the data.
-#' @param aggregate Logical. If `TRUE`, aggregates data into distinct, non-overlapping windows. If `FALSE`, retains temporal resolution.
-#' @param datetime.col A character string specifying the column in `data` containing datetime information.
+#' @param aggregate Logical. If TRUE, uses non-overlapping windows for initial feature extraction.
+#'  If FALSE (default), uses sliding windows.
+#' @param downsample.to NULL or numeric (seconds). If specified, aggregates
+#'  features into non-overlapping windows after initial extraction. Works with both
+#'  aggregate=TRUE/FALSE. For example:
+#'    - aggregate=FALSE, downsample.interval=60: 5s sliding → 1m bins
+#'    - aggregate=TRUE, downsample.interval=60: 5s epochs → 1m bins
 #' @param response.col (Optional) A character string specifying the column in `data` containing response or annotated labels (e.g., feeding events).
 #' It must be binary (i.e., containing values 0 or 1).
+#' @param response.aggregation Optional. Method to aggregate `response.col` when `window.size > 1`:
+#'   - `"majority"`: Assigns `1` if >50% of window values are `1` (default).
+#'   - `"any"`: Assigns `1` if **any** value in the window is `1`.
+#'  Ignored if `response.col = NULL`.
+#' @param return.data Logical. If `TRUE`, the processed data will be returned as a list. Defaults to `TRUE`.
+#' @param save.files Logical. If `TRUE`, the processed data for each individual will be saved as a separate RDS file. Defaults to `FALSE`.
+#' @param output.folder (Optional) A character string specifying the directory where processed RDS files should be saved.
+#' If `NULL` and `save.files = TRUE`: if `data` was provided as file paths, the output will be saved in the same directory as the input files;
+#' otherwise, it defaults to the current working directory.
+#' @param output.suffix (Optional) A character string to append to the filename of the output RDS files (e.g., "_features").
 #' @param n.cores The number of processor cores to use for parallel computation. Defaults to 1 (single-core).
 
-#'
 #' @details
 #' This function supports the following metrics:
 #' - "mean": The average value of the data. It provides the central tendency of the dataset within each window.
@@ -51,13 +75,20 @@
 
 
 extractFeatures <- function(data,
-                            variables,
-                            metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum",
-                                        "energy", "skewness", "kurtosis", "entropy"),
+                            variables = NULL,
+                            metrics = NULL,
+                            parameter.grid = NULL,
+                            id.col = "ID",
+                            datetime.col = "datetime",
                             window.size = 5,
                             aggregate = FALSE,
-                            datetime.col = "datetime",
+                            downsample.to = NULL,
                             response.col = NULL,
+                            response.aggregation = "majority",
+                            return.data = TRUE,
+                            save.files = FALSE,
+                            output.folder = NULL,
+                            output.suffix = NULL,
                             n.cores = 1){
 
   ##############################################################################
@@ -67,40 +98,93 @@ extractFeatures <- function(data,
   # measure running time
   start.time <- Sys.time()
 
-  # if 'data' is not a list, split it into a list of individual data sets based on 'id.col'
-  if (!is.list(data)) {
+  # determine if data is a character vector of RDS file paths
+  is_filepaths <- is.character(data)
+
+  # if data is not file paths and not a list, split it by id.col
+  if (!is_filepaths && !is.list(data)) {
+    if (!id.col %in% names(data)) {
+      stop("Input data must contain a valid 'id.col' when not provided as a list or file paths.", call. = FALSE)
+    }
     data <- split(data, f = data[[id.col]])
   }
 
-  # ensure specified variables exist in the dataset
-  if(any(!variables %in% colnames(data[[1]]))) {
-    stop("Some specified variables are not present in the data.", call. = FALSE)
+  # validate output parameters
+  if (!is.logical(save.files)) stop("`save.files` must be a logical value (TRUE or FALSE).", call. = FALSE)
+  if (!is.logical(return.data)) stop("`return.data` must be a logical value (TRUE or FALSE).", call. = FALSE)
+
+  # ensure at least one output method is selected
+  if (!save.files && !return.data) {
+    stop("Both 'save.files' and 'return.data' cannot be FALSE - this would result in no output. ",
+         "Please set at least one to TRUE.", call. = FALSE)
   }
 
-  # ensure valid metrics are specified
-  valid_metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum", "energy", "skewness", "kurtosis", "entropy")
-  metrics <- tolower(metrics)
-  if(any(!metrics %in% valid_metrics)) {
-    stop("Some specified metrics are not supported. Supported metrics: ", paste(valid_metrics, collapse = ", "), call. = FALSE)
-  }
-
-  # check that datetime.col exists in the original dataset
-  if (!datetime.col %in% colnames(data[[1]])) {
-    stop("The specified datetime column does not exist in the data.", call. = FALSE)
-  }
-
-  # check that the datetime column is of class POSIXct
-  if (!inherits(data[[1]][[datetime.col]], "POSIXct")) {
-    stop(paste("The specified datetime column", datetime.col, "must be of class POSIXct."), call. = FALSE)
-  }
-
-  # check if response column exists and is binary
-  if (!is.null(response.col)) {
-    if (!response.col %in% colnames(data[[1]])) {
-      stop("The specified response column is not present in the data.", call. = FALSE)
+  # validate downsample.to parameter
+  if (!is.null(downsample.to)) {
+    if (!is.numeric(downsample.to) || downsample.to <= 0) {
+      stop("`downsample.to` must be a positive numeric value in seconds.", call. = FALSE)
     }
-    if (!all(data[[1]][[response.col]] %in% c(0, 1))) {
-      stop("The response column must be binary (0 or 1).", call. = FALSE)
+  }
+
+
+  # warning for conflicting arguments
+  if (!is.null(parameter.grid) && (!is.null(variables) || !missing(metrics))) {
+    warning("Both `parameter.grid` and `variables`/`metrics` were supplied. `variables` and `metrics` will be ignored in favor of `parameter.grid`.", call. = FALSE, immediate. = TRUE)
+  }
+
+  # determine the parameter grid to use
+  if (is.null(parameter.grid)) {
+    # if not supplied, generate from variables and metrics
+    # if parameter.grid is not supplied, variables and metrics must be provided
+    if (is.null(variables) || length(variables) == 0) stop("If `parameter.grid` is not supplied, `variables` must be provided and not empty.", call. = FALSE)
+    if (is.null(metrics) || length(metrics) == 0) stop("If `parameter.grid` is not supplied, `metrics` must be provided and not empty.", call. = FALSE)
+    parameter_grid <- expand.grid(variable = variables, metric = metrics, stringsAsFactors = FALSE)
+    parameter_grid <- parameter_grid[order(parameter_grid$variable),]
+  } else {
+    # if supplied, validate it
+    if (!is.data.frame(parameter.grid)) stop("`parameter.grid` must be a data frame.", call. = FALSE)
+    if (!all(c("variable", "metric") %in% names(parameter.grid))) stop("`parameter.grid` must contain 'variable' and 'metric' columns.", call. = FALSE)
+    # convert metrics in the supplied grid to lowercase for consistency
+    parameter.grid$metric <- tolower(parameter.grid$metric)
+    parameter_grid <- parameter.grid
+  }
+
+  # define all supported metrics for validation
+  valid_metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum", "energy", "skewness", "kurtosis", "entropy")
+  if(any(!parameter_grid$metric %in% valid_metrics)) {
+    unsupported_metrics <- setdiff(parameter_grid$metric, valid_metrics)
+    stop(paste0("The following metrics are not supported: ", paste(unsupported_metrics, collapse = ", "),
+                ". Supported metrics: ", paste(valid_metrics, collapse = ", ")), call. = FALSE)
+  }
+
+  # extract variables from the parameter grid for subsequent checks
+  variables_to_check <- unique(parameter_grid$variable)
+
+  # validate output parameters and check data existence/format
+  if (is_filepaths) {
+    missing_files <- data[!file.exists(data)]
+    if (length(missing_files) > 0) {
+      stop(paste("The following files were not found:\n",
+                 paste("-", missing_files, collapse = "\n")), call. = FALSE)
+    }
+  } else {
+    # if data is in memory, perform initial checks on the first element
+    if (length(data) > 0) {
+      first_dataset <- if (is.list(data)) data[[1]] else data
+      if(any(!variables_to_check %in% colnames(first_dataset))) stop("Some specified variables are not present in the data.", call. = FALSE)
+      if (!datetime.col %in% colnames(first_dataset)) stop("The specified datetime column does not exist in the data.", call. = FALSE)
+      if (!inherits(first_dataset[[datetime.col]], "POSIXct")) stop(paste("The specified datetime column", datetime.col, "must be of class POSIXct."), call. = FALSE)
+      if (!is.null(response.col)) {
+        if (!response.col %in% colnames(first_dataset)) stop("The specified response column is not present in the data.", call. = FALSE)
+        if (!all(first_dataset[[response.col]] %in% c(0, 1))) stop("The response column must be binary (0 or 1).", call. = FALSE)
+      }
+    }
+  }
+
+  # validate response.aggregation
+  if (!is.null(response.col)) {
+    if (!response.aggregation %in% c("majority", "any")) {
+      stop('response.aggregation must be either "majority" or "any"', call. = FALSE)
     }
   }
 
@@ -116,18 +200,19 @@ extractFeatures <- function(data,
   }
 
   # set export packages (required for parallel computing)
-  export_packages <- "zoo"
+  export_packages <- "data.table"
   # check if 'skewness' or 'kurtosis' are in metrics and ensure 'moments' package is installed
-  if(any(metrics %in% c("skewness", "kurtosis"))){
+  if(any(parameter_grid$metric %in% c("skewness", "kurtosis"))){
     if(!requireNamespace("moments", quietly=TRUE)) stop("The 'moments' package is required for skewness and/or kurtosis calculations but is not installed. Please install 'moments' using install.packages('moments') and try again.", call. = FALSE)
     export_packages <- c(export_packages, "moments")
   }
 
   # check if 'entropy' is in metrics and ensure 'entropy' package is installed
-  if(any(metrics == "entropy")){
+  if(any(parameter_grid$metric == "entropy")){
     if(!requireNamespace("entropy", quietly=TRUE)) stop("The 'entropy' package is required for entropy calculations but is not installed. Please install 'entropy' using install.packages('entropy') and try again.", call. = FALSE)
     export_packages <- c(export_packages, "entropy")
   }
+
 
 
   ##############################################################################
@@ -136,10 +221,6 @@ extractFeatures <- function(data,
 
   # calculate number of unique datasets
   n_animals <- length(data)
-
-  # create a grid of variable and metric combinations
-  parameter_grid <- expand.grid(variable = variables, metric = metrics, stringsAsFactors = FALSE)
-  parameter_grid <- parameter_grid[order(parameter_grid$variable),]
 
   # feedback messages for the user
   cat(paste0(
@@ -162,52 +243,97 @@ extractFeatures <- function(data,
     `%dopar%` <- foreach::`%dopar%`
   }
 
-  # initialize list to hold features
-  data_processed <- vector("list", length(data))
+  # initialize results list if returning data
+  if (return.data) data_processed <- vector("list", length = n_animals)
+
 
   # iterate over each element in 'data'
   for (i in 1:length(data)) {
 
-    # retrieve data for current ID
-    data_individual <- data[[i]]
+    ##################################################################
+    # load data for the current individual if using file paths #######
+    if (is_filepaths) {
+      file_path <- data[i]
+      individual_data <- readRDS(file_path)
 
-    # store original attributes before processing,  excluding internal ones
-    discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
-    original_attributes <- attributes(data_individual)
-    original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
+      # extract ID from attributes or filename
+      id <- unique(individual_data[[id.col]])[1]
+      if (is.null(id)) id <- tools::file_path_sans_ext(basename(file_path))
 
-    # retrieve animal ID
-    id <- original_attributes$id
-    names(data_processed)[i] <- id
+      # perform checks for RDS files
+      if(any(!variables_to_check %in% colnames(individual_data))) stop(paste0("Some specified variables are not present in the data for file: ", basename(file_path)), call. = FALSE)
+      if (!datetime.col %in% colnames(individual_data)) stop(paste0("The specified datetime column does not exist in the data for file: ", basename(file_path)), call. = FALSE)
+      if (!inherits(individual_data[[datetime.col]], "POSIXct")) stop(paste0("The specified datetime column ", datetime.col, " in file ", basename(file_path), " must be of class POSIXct."), call. = FALSE)
+      if (!is.null(response.col)) {
+        if (!response.col %in% colnames(individual_data)) stop(paste0("The specified response column is not present in the data for file: ", basename(file_path)), call. = FALSE)
+        if (!all(individual_data[[response.col]] %in% c(0, 1))) stop(paste0("The response column in file ", basename(file_path), " must be binary (0 or 1)."), call. = FALSE)
+      }
+
+    ##################################################################
+    # else, data is already in memory (list of data frames/tables) ###
+
+    } else {
+      individual_data <- data[[i]]
+      id <- unique(data[[id.col]])[[i]]
+      # fallback for id
+      if (is.null(id) || id == "") id <- names(data)[i]
+    }
+
+    ##################################################################
+    ##################################################################
+
+    # name the list element for easy access later
+    if (return.data) names(data_processed)[i] <- id
 
     # print animal ID to the console
     cat(crayon::blue$bold(id), "\n")
 
+    # convert to data.table for faster processing
+    if (!data.table::is.data.table(individual_data)) {
+      individual_data <- data.table::setDT(individual_data)
+    }
+
+    # store original attributes before processing,  excluding internal ones
+    discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
+    original_attributes <- attributes(individual_data)
+    original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
+
     # ensure variables are numeric
-    for (var in variables) {
-      if (!is.numeric(data_individual[[var]])) {
+    for (var in variables_to_check) {
+      if (!is.numeric(individual_data[[var]])) {
         warning(paste("Variable", var, "is not numeric. Converting to numeric."), call. = FALSE)
-        data_individual[[var]] <- as.numeric(as.character(data_individual[[var]]))
+        individual_data[[var]] <- as.numeric(as.character(individual_data[[var]]))
       }
     }
 
     # check if a response column is specified
     if (!is.null(response.col)) {
       # if the response column does not exist in the data frame, create it
-      if (!(response.col %in% colnames(data_individual))) {
-        data_individual[[response.col]] <- 0
+      if (!(response.col %in% colnames(individual_data))) {
+        individual_data[[response.col]] <- 0L
       }
       # if the response column is a factor, convert it to numeric
-      if (is.factor(data_individual[[response.col]])) {
-        data_individual[[response.col]] <- as.numeric(as.factor(data_individual[[response.col]])) - 1
+      if (is.factor(individual_data[[response.col]])) {
+        individual_data[[response.col]] <- as.numeric(as.factor(individual_data[[response.col]])) - 1
       }
     }
 
     # calculate sampling frequency
     sampling_freq <- original_attributes$processed.sampling.frequency
+    if (is.null(sampling_freq) || !is.numeric(sampling_freq) || sampling_freq <= 0) {
+      # attempt to estimate sampling frequency if not found in attributes
+      if (nrow(individual_data) > 1) {
+        time_diffs <- diff(as.numeric(individual_data[[datetime.col]]))
+        sampling_freq <- 1 / median(time_diffs)
+        warning(paste0("Sampling frequency not found in attributes for ID '", id, "'. Estimated as ", round(sampling_freq, 2), " Hz."), call. = FALSE)
+      } else {
+        stop(paste0("Cannot determine sampling frequency for ID '", id, "'. Please ensure 'processed.sampling.frequency' is an attribute of your data or provide data with more than one row."), call. = FALSE)
+      }
+    }
 
     # convert the window size from seconds to steps
-    window_interval <- window.size * sampling_freq
+    window_steps <- round(window.size * sampling_freq)
+    if (window_steps < 1) stop(paste0("Calculated window interval for ID '", id, "' is less than 1 step. Check your window.size and sampling frequency. Window size (seconds): ", window.size, ", Sampling Frequency (Hz): ", sampling_freq), call. = FALSE)
 
     # initialize an empty list to store features
     feature_list <- list()
@@ -221,13 +347,13 @@ extractFeatures <- function(data,
       pb <- txtProgressBar(min=0, max=nrow(parameter_grid), initial=0, style=3)
 
       # loop through each
-      for(i in 1:nrow(parameter_grid)){
-        var <- parameter_grid$variable[i]
-        metric <- parameter_grid$metric[i]
-        feature_list[[i]] <- .calculateMetric(data_individual, var, metric, window_interval, aggregate)
+      for(p in 1:nrow(parameter_grid)){
+        var <- parameter_grid$variable[p]
+        metric <- parameter_grid$metric[p]
+       feature_list[[p]] <- .calculateMetric(individual_data, var, metric, window_steps, aggregate)
 
         # update progress bar
-        setTxtProgressBar(pb, i)
+        setTxtProgressBar(pb, p)
       }
     }
 
@@ -243,14 +369,14 @@ extractFeatures <- function(data,
 
       # perform parallel computation
       feature_list <- foreach::foreach(
-        i = 1:nrow(parameter_grid),
+        p = 1:nrow(parameter_grid),
         .options.snow = opts,
         .packages = export_packages,
         .export = c(".calculateMetric")
       ) %dopar% {
-        var <- parameter_grid$variable[i]
-        metric <- parameter_grid$metric[i]
-        .calculateMetric(data_individual, var, metric, window_interval, aggregate)
+        var <- parameter_grid$variable[p]
+        metric <- parameter_grid$metric[p]
+        .calculateMetric(individual_data, var, metric, window_steps, aggregate)
       }
     }
 
@@ -268,66 +394,210 @@ extractFeatures <- function(data,
     # Aggregate response column (if specified) #################################
     ############################################################################
 
-    # if response.col is specified, summarize labels within each window
+    # if a response column was provided, process it according to the specified aggregation method
     if (!is.null(response.col)) {
-      if (!aggregate) {
-        feature_list[[response.col]] <- zoo::rollapply(data_individual[[response.col]], width=window.size,
-                                                       FUN=function(x) as.integer(mean(x, na.rm = TRUE) > 0.5),
-                                                       align="center", fill=NA)
+
+      # case 1: aggregate response values within each window (non-overlapping)
+      if (aggregate) {
+
+        # calculate window indices for aggregation
+        idx <- seq(1, nrow(individual_data), by = window_steps)
+
+        # assign 1 if the majority of values in the window are 1 (i.e., mean > 0.5), otherwise 0
+        if (response.aggregation == "majority") {
+          feature_list[[response.col]] <- sapply(idx, function(start_idx) {
+            end_idx <- min(start_idx + window_steps - 1, nrow(individual_data))
+            as.integer(mean(individual_data[[response.col]][start_idx:end_idx], na.rm = TRUE) > 0.5)
+          })
+        # assign 1 if any value in the window is 1, otherwise 0
+        } else if (response.aggregation == "any") {
+          feature_list[[response.col]] <- sapply(idx, function(start_idx) {
+            end_idx <- min(start_idx + window_steps - 1, nrow(individual_data))
+            as.integer(any(individual_data[[response.col]][start_idx:end_idx] == 1, na.rm = TRUE))
+          })
+        }
+      # case 2: use a sliding window across the entire sequence (overlapping)
       } else {
-        idx <- seq(1, nrow(data_individual), by = window.size)
-        feature_list[[response.col]] <- sapply(idx, function(start_idx) {
-          end_idx <- min(start_idx + window.size - 1, nrow(data_individual))
-          as.integer(mean(data_individual[[response.col]][start_idx:end_idx], na.rm = TRUE) > 0.5)
-        })
+        # apply majority rule in a sliding window: assign 1 if >50% of values are 1
+        if (response.aggregation == "majority") {
+          feature_list[[response.col]] <- zoo::rollapply(
+            individual_data[[response.col]],
+            width = window_steps,
+            FUN = function(x) as.integer(mean(x, na.rm = TRUE) > 0.5),
+            align = "center", fill = NA
+          )
+        # assign 1 if any value in the window is 1
+        } else if (response.aggregation == "any") {
+          feature_list[[response.col]] <- zoo::rollapply(
+            individual_data[[response.col]],
+            width = window_steps,
+            FUN = function(x) as.integer(any(x == 1, na.rm = TRUE)),
+            align = "center", fill = NA
+          )
+        }
       }
     }
+
 
     ############################################################################
     # Combine features #########################################################
     ############################################################################
 
-    # combine features into a single data frame
-    feature_data <- as.data.frame(feature_list)
-
+    # combine features into a single data.table
+    feature_data <- data.table::setDT(feature_list)
 
     # add the timestamp column
     if (!aggregate) {
-      feature_data[[datetime.col]] <- data_individual[[datetime.col]]
+      feature_data[, (datetime.col) := individual_data[[datetime.col]]]
     } else {
-      # calculate step size in rows (window.size [seconds] × sampling frequency [Hz])
-      step <- window.size * sampling_freq
       # ensure we don't exceed data bounds
-      idx <- seq(1, nrow(data_individual), by = step)
-      feature_data[[datetime.col]] <- data_individual[[datetime.col]][idx]
+      idx <- seq(1, nrow(individual_data), by = window_steps)
+      feature_data[, (datetime.col) := individual_data[[datetime.col]][idx]]
     }
 
     # add the 'ID' column to the processed data
-    feature_data[["ID"]] <- id
+    feature_data[, ID := id]
 
-    # move datetime.col to the first column
-    feature_data <- feature_data[, c("ID", datetime.col, setdiff(names(feature_data), c("ID", datetime.col)))]
+    # move ID and datetime.col to the first columns
+    data.table::setcolorder(feature_data, c("ID", datetime.col))
 
     # convert response col back to factor
     if (!is.null(response.col)) {
-      feature_data[[response.col]] <- as.factor(feature_data[[response.col]])
+      feature_data[, (response.col) := as.factor(get(response.col))]
     }
 
     # remove rows with any missing values (NA) in any column
     feature_data <- na.omit(feature_data)
 
-    # reapply the original attributes to the processed data
-    for (attr_name in names(original_attributes)) {
-      attr(feature_data, attr_name) <- original_attributes[[attr_name]]
+
+    ############################################################################
+    # Downsample data ##########################################################
+    ############################################################################
+
+    # if a downsampling rate is specified, aggregate the data to the defined frequency (in Hz)
+    if(!is.null(downsample.to)){
+
+      # check if the specified downsampling frequency matches the dataset's sampling frequency
+      if (downsample.to == sampling_freq) {
+        warning(paste(id, " - dataset sampling already", downsample.to, "Hz, downsampling skipped"), call. = FALSE)
+        final_data <- feature_data
+
+        # check if the specified downsampling frequency exceeds the dataset's sampling frequency
+      } else if(downsample.to > sampling_freq) {
+        warning(paste(id, " - dataset sampling (", downsample.to, "Hz) lower than the specified downsampling rate, downsampling skipped"), call. = FALSE)
+        final_data <- feature_data
+
+        # start downsampling
+      } else {
+
+        # select columns to keep
+        feature_cols <- setdiff(colnames(feature_data), c(id.col, datetime.col))
+        if (!is.null(response.col)) feature_cols <- setdiff(feature_cols, response.col)
+
+        # convert the desired downsample rate to time interval in seconds
+        downsample_interval <- 1 / downsample.to
+
+        # round datetime to the nearest downsample interval
+        first_time <- feature_data[[datetime.col]][1]
+        feature_data[, (datetime.col) := first_time + floor(as.numeric(get(datetime.col) - first_time) / downsample_interval) * downsample_interval]
+
+        # temporarily suppress console output (redirect to a temporary file)
+        sink(tempfile())
+
+        # aggregate metrics using arithmetic mean
+        final_data <- feature_data[, lapply(.SD, mean, na.rm=TRUE), by = datetime.col, .SDcols = feature_cols]
+
+        # handle response column aggregation if present
+        if (!is.null(response.col)) {
+          if (response.aggregation == "majority") {
+            processed_response <- feature_data[, .(response = as.integer(mean(as.numeric(as.character(get(response.col))), na.rm = TRUE) > 0.5)),  by = c(datetime.col)]
+          } else if (response.aggregation == "any") {
+            processed_response <- feature_data[, .(response = as.integer(any(as.numeric(as.character(get(response.col))) == 1, na.rm = TRUE))),  by = c(datetime.col)]
+          }
+          # rename before merging
+          data.table::setnames(processed_response, "response", response.col)
+          # merge with downsampled features
+          final_data <- merge(final_data, processed_response, by = datetime.col, sort = FALSE)
+        }
+
+        # re-add ID column
+        final_data[, (id.col) := id]
+
+        # clean up
+        gc()
+
+        # restore normal output
+        sink()
+      }
+
+    } else{
+      # if no downsampling rate is defined, return the original sensor data
+      final_data <- feature_data
     }
 
-    # save data to list
-    data_processed[[i]]  <- feature_data
+    # reorder columns
+    data.table::setcolorder(final_data, c(id.col, datetime.col, if(!is.null(response.col)) response.col, feature_cols))
+
+
+    ############################################################################
+    # Add additional attributes ################################################
+    ############################################################################
+
+    # reapply the original attributes to the processed data
+    for (attr_name in names(original_attributes)) {
+      attr(final_data, attr_name) <- original_attributes[[attr_name]]
+    }
+
+    # create new attributes to save relevant variables
+    attr(final_data, "features.window.size") <- window.size
+    attr(final_data, "features.aggregate") <- aggregate
+    attr(final_data, "features.response_col") <- response.col
+    attr(final_data, "features.response.aggregation") <- response.aggregation
+    attr(final_data, 'processing.date') <- Sys.time()
+
+
+    ############################################################################
+    # Save processed data ######################################################
+    ############################################################################
+
+    # save the processed data as an RDS file
+    if (save.files) {
+      if (is_filepaths) {
+        output_dir <- if (!is.null(output.folder)) output.folder else dirname(file_path)
+      } else {
+        output_dir <- if (!is.null(output.folder)) output.folder else "./"
+      }
+      if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+
+      suffix <- ifelse(!is.null(output.suffix), output.suffix, "")
+      output_file <- file.path(output_dir, paste0(id, suffix, ".rds"))
+
+      cat("Saving file... ")
+      flush.console()
+      saveRDS(final_data, output_file)
+      cat("\r")
+      cat(rep(" ", getOption("width")-1))
+      cat("\r")
+      cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
+    }
+
+    # store data to list if return.data is TRUE
+    if (return.data) {
+      data_processed[[i]] <- final_data
+    }
+
+    # clear individual data from memory
+    rm(individual_data, feature_data, feature_list, final_data)
+    # run garbage collection
+    gc(verbose = FALSE)
+
+    # newline after each individual's processing
+    cat("\n")
+
   }
 
-
   ##############################################################################
-  # Process data ###############################################################
+  # Finalization ###############################################################
   ##############################################################################
 
   # print time taken
@@ -336,55 +606,83 @@ extractFeatures <- function(data,
   cat(sprintf("\nTotal execution time: %.02f %s\n\n", as.numeric(time.taken), base::units(time.taken)))
 
   # return results
-  return(data_processed)
+  if (return.data) {
+    return(data_processed)
+  } else {
+    return(invisible(NULL)) # Return nothing if not returning data
+  }
 }
+
 
 
 ################################################################################
 # Define helper function to to calculate metrics ###############################
 ################################################################################
 
-# Define a helper function to calculate metrics
-.calculateMetric <- function(data, var, metric, window.size, aggregate) {
+# Replace the current .calculateMetric function with vectorized operations
+.calculateMetric <- function(data, var, metric, window_steps, aggregate) {
 
-  # define a function for the metric
-  metric_function <- switch(metric,
-                            mean = function(x) mean(x, na.rm = TRUE),
-                            median = function(x) median(x, na.rm = TRUE),
-                            sd = function(x) sd(x, na.rm = TRUE),
-                            range = function(x) diff(range(x, na.rm = TRUE)),
-                            min = function(x) min(x, na.rm = TRUE),
-                            max = function(x) max(x, na.rm = TRUE),
-                            iqr = function(x) IQR(x, na.rm = TRUE),
-                            sum = function(x) sum(x, na.rm = TRUE),
-                            energy = function(x) sum(x^2, na.rm = TRUE),
-                            skewness = function(x) moments::skewness(x, na.rm = TRUE),
-                            kurtosis = function(x) moments::kurtosis(x, na.rm = TRUE),
-                            entropy = function(x) {
-                              # remove NA values first
-                              x <- x[!is.na(x)]
-                              # if all values are identical or there's no variation, return 0
-                              if(length(unique(x)) <= 1) return(NA)
-                              # try Sturges method first, fall back to NA if it fails
-                              tryCatch({
-                                hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
-                                p <- hist_data$density / sum(hist_data$density)
-                                entropy::entropy(p)
-                              }, error = function(e) {
-                               return(NA)
-                              })
-                            })
+  # access data
+  x <- data[[var]]
 
-  # apply the rolling function to the variable
   if (!aggregate) {
-    zoo::rollapply(data[[var]], width = window.size, FUN = metric_function, align = "center", fill = NA)
+    # use data.table's frollapply for efficient sliding window calculations
+    switch(metric,
+           mean = data.table::frollmean(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
+           median = data.table::frollapply(x, window_steps, median, na.rm = TRUE, align = "center", fill = NA),
+           sd = data.table::frollapply(x, window_steps, sd, na.rm = TRUE, align = "center", fill = NA),
+           min = data.table::frollapply(x, window_steps, min, na.rm = TRUE, align = "center", fill = NA),
+           max = data.table::frollapply(x, window_steps, max, na.rm = TRUE, align = "center", fill = NA),
+           sum = data.table::frollsum(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
+           # for more complex metrics, still use the original approach but with faster functions
+           range = zoo::rollapply(x, window_steps, function(x) diff(range(x, na.rm = TRUE)), fill = NA, align = "center", partial = FALSE),
+           iqr = zoo::rollapply(x, window_steps, IQR, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
+           energy = data.table::frollapply(x^2, window_steps, sum, na.rm = TRUE, align = "center", fill = NA),
+           skewness = zoo::rollapply(x, window_steps, moments::skewness, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
+           kurtosis = zoo::rollapply(x, window_steps, moments::kurtosis, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
+           entropy = zoo::rollapply(x, window_steps, function(x) {
+             x <- x[!is.na(x)]
+             if(length(unique(x)) <= 1) return(NA)
+             tryCatch({
+               hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
+               p <- hist_data$density / sum(hist_data$density)
+               entropy::entropy(p)
+             }, error = function(e) NA)
+           }, fill = NA, align = "center", partial = FALSE)
+    )
+
+    # aggregate data into distinct windows - use vectorized operations where possible
+
   } else {
-    # aggregate data into distinct windows
-    idx <- seq(1, nrow(data), by = window.size)
-    sapply(idx, function(start_idx) {
-      end_idx <- min(start_idx + window.size - 1, nrow(data))
-      metric_function(data[[var]][start_idx:end_idx])
-    })
+    n <- length(x)
+    starts <- seq(1, n, by = window_steps)
+    ends <- pmin(starts + window_steps - 1, n)
+
+    # use vectorized operations for simple metrics
+    switch(metric,
+           mean = vapply(seq_along(starts), function(i) mean(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           median = vapply(seq_along(starts), function(i) median(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           sd = vapply(seq_along(starts), function(i) sd(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           min = vapply(seq_along(starts), function(i) min(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           max = vapply(seq_along(starts), function(i) max(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           sum = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           # For complex metrics, keep original approach
+           range = vapply(seq_along(starts), function(i) diff(range(x[starts[i]:ends[i]], na.rm = TRUE)), numeric(1)),
+           iqr = vapply(seq_along(starts), function(i) IQR(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           energy = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]]^2, na.rm = TRUE), numeric(1)),
+           skewness = vapply(seq_along(starts), function(i) moments::skewness(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           kurtosis = vapply(seq_along(starts), function(i) moments::kurtosis(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+           entropy = vapply(seq_along(starts), function(i) {
+             segment <- x[starts[i]:ends[i]]
+             segment <- segment[!is.na(segment)]
+             if(length(unique(segment)) <= 1) return(NA)
+             tryCatch({
+               hist_data <- hist(segment, breaks = "Sturges", plot = FALSE)
+               p <- hist_data$density / sum(hist_data$density)
+               entropy::entropy(p)
+             }, error = function(e) NA)
+           }, numeric(1))
+    )
   }
 }
 

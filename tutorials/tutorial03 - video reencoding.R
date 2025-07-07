@@ -1,53 +1,53 @@
 ###############################################################################################
-## Miguel Gandra || CCMAR || m3gandra@gmail.com || December 2024 ##############################
-## Sample Script for Reencoding MOV Videos to HEVC Format #####################################
+## Miguel Gandra || CCMAR || m3gandra@gmail.com || July 2025 ##################################
+## Script for Re-encoding Camera Videos to HEVC Format #########################################
 ###############################################################################################
 
-# This script allows users to:
-# 1. Reencode segmented .MOV video files to HEVC (H.265) format.
-# 2. Retrieve and display metadata for the video files.
+# This script allows users to re-encode segmented .MOV video files captured by biologging
+# camera tags into space-efficient HEVC (H.265) .mp4 format using FFmpeg.
 #
-# Requirements:
-# - FFmpeg (installed outside of R) must be available on your system.
-# - The 'nautilus' package, which can be installed from GitHub.
-#
-# Please ensure FFmpeg is installed correctly before running the script.
+# ---> Re-encodes high-resolution .MOV videos to HEVC format for archival and/or processing.
+# ---> Supports both software (libx265) and hardware-accelerated (hevc_videotoolbox, etc.) encoding.
+# ---> Users can control encoding quality, output file suffixes, overwrite policy, and destination folders.
+# ---> FFmpeg must be installed and available on the system path.
+# ---> Uses 'nautilus::reencodeVideos()' to automate batch processing of video folders.
 
 
 ################################################################################
 # Install and load required packages ###########################################
 ################################################################################
 
-# Uncomment the following line if 'devtools' is not installed
+# Uncomment and run the line below if 'devtools' is not already installed
 # install.packages("devtools")
 
-# Install and load the 'nautilus' package from GitHub
-#devtools::install_github("miguelgandra/nautilus")
+# Install and load the 'nautilus' package from GitHub if needed
+# devtools::install_github("miguelgandra/nautilus")
 library(nautilus)
 
 
 ################################################################################
-# Process videos  ##############################################################
+# Re-encode video files to HEVC (H.265) format #################################
 ################################################################################
 
-# Specify the folder path containing the .MOV video files that you want to reencode
-# Replace this path with the location of your own video files
-video_directory <- "~/Desktop/Whale Sharks/CAMS/PIN_CAM_10/"
+# Define the input directory containing .MOV video segments to be re-encoded
+# Replace the path below with the folder containing your raw camera videos
 video_directory <- "/Volumes/T7 Shield/CAMS/2022/PIN_CAM_31/MOV"
 
-# Reencode all MOV videos in the specified directory to HEVC (H.265) format
-# The reencoded videos will be saved as .mp4 files in the same directory by default
-# You can specify an alternative output directory if desired
-reencodeVideos(mov.directory=video_directory, encoder = "hevc_videotoolbox", video.quality = 35)
+# Optional: Define an alternative output directory for saving the .mp4 files
+# If omitted, the re-encoded files will be saved to the same folder as the originals
+output_directory <- NULL  # e.g., "~/Desktop/reencoded_videos"
 
+# Run the re-encoding process
+# Key arguments:
+# - encoder: Selects the encoding engine (e.g., 'libx265', 'hevc_videotoolbox')
+# - crf: Used for software encoding (libx265); typical values are 18–28
+# - video.quality: Used for hardware encoding; values 1–100
+# - preset: Controls encoding speed (e.g., 'ultrafast', 'medium', 'veryslow')
+# - overwrite: Defines behavior for existing output files ('ask', TRUE, FALSE)
 
-# Retrieve metadata for all processed videos in the specified directory
-# This function returns details like duration, start time, end time, and frame rate.
-video_info <- getVideoMetadata(video_directory)
-
-# View the retrieved video metadata
-# This will display information about each video
-print(video_info)
+reencodeVideos(mov.directory = video_directory,
+               encoder = "hevc_videotoolbox",
+               video.quality = 35)
 
 
 ###############################################################################################
