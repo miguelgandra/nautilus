@@ -420,7 +420,7 @@ importTagData <- function(data.folders,
     c("Depth (200bar) 1 [m]", "depth", "m"),
     c("Depth (100bar) [m]", "depth", "m"),
     c("Temperature (depth) [\u00b0C]", "temp", "C"),
-    c("Temperature (imu) [\u00b0C]", "temp", "C"),
+    c("Depth (200bar) 2 [\u00b0C]", "temp", "C"),
     c("Temp. (magnet.) [\u00b0C]", "temp", "C")
   )
 
