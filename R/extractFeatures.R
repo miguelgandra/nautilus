@@ -4,7 +4,7 @@
 
 #' Extract Features from Sensor Data Using Sliding or Aggregated Windows
 #'
-#' This function calculates specified metrics (e.g., mean, standard deviation) for selected variables over a sliding window.
+#' This function calculates specified metrics (e.g., mean, standard deviation, circular statistics) for selected variables over a sliding window.
 #' It can either retain the temporal resolution of the dataset or aggregate data into distinct, non-overlapping windows.
 #' This is useful for preparing the dataset for machine learning or other analytical methods that require a structured set of features.
 #'
@@ -15,7 +15,7 @@
 #' @param variables (Optional) A character vector of column names from `data` for which to calculate metrics.
 #' If `parameter.grid` is supplied, this argument is ignored. If both `variables` and `parameter.grid` are `NULL`, an error will be thrown.
 #' @param metrics (Optional) A character vector specifying the metrics to calculate. Supported metrics:
-#' "mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy".
+#' "mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy", "mrl".
 #' If `parameter.grid` is supplied, this argument is ignored. If both `metrics` and `parameter.grid` are `NULL`, an error will be thrown.
 #' @param parameter.grid (Optional) A data frame with two columns: `variable` and `metric`.
 #' If supplied, the function will use this grid to determine which variable-metric combinations to calculate.
@@ -34,6 +34,7 @@
 #'    - aggregate=TRUE, downsample.interval=60: 5s epochs → 1m bins
 #' @param response.col (Optional) A character string specifying the column in `data` containing response or annotated labels (e.g., feeding events).
 #' It must be binary (i.e., containing values 0 or 1).
+#' @param circular.variables Character vector specifying variables that should be treated as circular (e.g., angles in degrees). Defaults to "heading" and "roll"
 #' @param response.aggregation Optional. Method to aggregate `response.col` when `window.size > 1`:
 #'   - `"majority"`: Assigns `1` if >50% of window values are `1` (default).
 #'   - `"any"`: Assigns `1` if **any** value in the window is `1`.
@@ -56,11 +57,25 @@
 #' - "max": The maximum value of the data. It indicates the largest value in the dataset within each window.
 #' - "iqr": The interquartile range of the data. It is the difference between the 75th percentile (Q3) and the 25th percentile (Q1) of the dataset, measuring the spread of the middle 50% of the data.
 #' - "sum": The sum of the data. It adds up all the values in the dataset within each window.
+#' - "rate": Average rate of change per second of the data values. This metric quantifies how fast the variable changes over time within each window.
 #' - "energy": The sum of the squares of the data. It reflects the magnitude of the values, commonly used in signal processing and analysis of periodicity.
 #' - "skewness": The skewness of the data, a measure of the asymmetry of the distribution. A positive value indicates a right-skewed distribution, while a negative value indicates a left-skewed distribution.
 #' - "kurtosis": The kurtosis of the data, a measure of the "tailedness" or sharpness of the distribution. High kurtosis indicates heavy tails, while low kurtosis indicates lighter tails.
 #' - "entropy": The entropy of the data, which measures the unpredictability or randomness. High entropy values indicate more uncertainty or randomness in the data, while low values suggest more predictability.
 #'
+#'
+#' For circular variables, the function supports:
+#' - "mean": Directional average accounting for wrap-around.
+#' - "median": Middle value in circular space.
+#' - "sd": Angular dispersion (0° = no dispersion).
+#' - "range": Shortest arc containing all angles.
+#' - "iqr": Middle 50% of angles in circular space.
+#' - "rate": Average rate of angular change per second, accounting for wrap-around. This represents how quickly the circular variable changes over time.
+#' - "mrl": Mean resultant length, indicating concentration of circular values. (0 = uniform, 1 = identical directions).
+
+#' Pitch (-90° to 90°) is treated as linear (by default) since it represents inclination rather than direction.
+
+
 #' @return
 #' A list of data frames, each corresponding to an individual animal, containing the calculated features for the specified
 #' variables and metrics. The structure of the output depends on the `aggregate` parameter:
@@ -85,6 +100,7 @@ extractFeatures <- function(data,
                             downsample.to = NULL,
                             response.col = NULL,
                             response.aggregation = "majority",
+                            circular.variables = c("heading", "roll"),
                             return.data = TRUE,
                             save.files = FALSE,
                             output.folder = NULL,
@@ -126,16 +142,25 @@ extractFeatures <- function(data,
     }
   }
 
-
   # warning for conflicting arguments
   if (!is.null(parameter.grid) && (!is.null(variables) || !missing(metrics))) {
     warning("Both `parameter.grid` and `variables`/`metrics` were supplied. `variables` and `metrics` will be ignored in favor of `parameter.grid`.", call. = FALSE, immediate. = TRUE)
   }
 
+  # validate circular variables
+  if (!is.null(circular.variables)) {
+    if (!is.character(circular.variables)) {
+      stop("`circular.variables` must be a character vector.", call. = FALSE)
+    }
+  }
+
+  # define valid metrics
+  valid_linear_metrics <- c("mean", "median", "sd", "range", "min", "max", "iqr", "mad", "sum", "rate", "energy", "skewness", "kurtosis", "entropy")
+  valid_circular_metrics <- c("mean", "median", "sd", "range", "iqr", "mrl", "rate")
+
   # determine the parameter grid to use
   if (is.null(parameter.grid)) {
     # if not supplied, generate from variables and metrics
-    # if parameter.grid is not supplied, variables and metrics must be provided
     if (is.null(variables) || length(variables) == 0) stop("If `parameter.grid` is not supplied, `variables` must be provided and not empty.", call. = FALSE)
     if (is.null(metrics) || length(metrics) == 0) stop("If `parameter.grid` is not supplied, `metrics` must be provided and not empty.", call. = FALSE)
     parameter_grid <- expand.grid(variable = variables, metric = metrics, stringsAsFactors = FALSE)
@@ -149,12 +174,34 @@ extractFeatures <- function(data,
     parameter_grid <- parameter.grid
   }
 
-  # define all supported metrics for validation
-  valid_metrics = c("mean", "median", "sd", "range", "min", "max", "iqr", "sum", "energy", "skewness", "kurtosis", "entropy")
-  if(any(!parameter_grid$metric %in% valid_metrics)) {
-    unsupported_metrics <- setdiff(parameter_grid$metric, valid_metrics)
-    stop(paste0("The following metrics are not supported: ", paste(unsupported_metrics, collapse = ", "),
-                ". Supported metrics: ", paste(valid_metrics, collapse = ", ")), call. = FALSE)
+  # validate metrics for circular and linear variables
+  if (!is.null(circular.variables)) {
+    circular_rows <- parameter_grid$variable %in% circular.variables
+    invalid_circular <- parameter_grid[circular_rows & !(parameter_grid$metric %in% valid_circular_metrics), ]
+    if (nrow(invalid_circular) > 0) {
+      stop(paste(
+        "Invalid metrics for circular variables:",
+        paste(unique(invalid_circular$metric), collapse = ", "),
+        "\nValid circular metrics:",
+        paste(valid_circular_metrics, collapse = ", ")
+      ), call. = FALSE)
+    }
+  }
+
+  # validate linear metrics
+  linear_rows <- if (!is.null(circular.variables)) {
+    !(parameter_grid$variable %in% circular.variables)
+  } else {
+    rep(TRUE, nrow(parameter_grid))
+  }
+  invalid_linear <- parameter_grid[linear_rows & !(parameter_grid$metric %in% valid_linear_metrics), ]
+  if (nrow(invalid_linear) > 0) {
+    stop(paste(
+      "Invalid metrics for linear variables:",
+      paste(unique(invalid_linear$metric), collapse = ", "),
+      "\nValid linear metrics:",
+      paste(valid_linear_metrics, collapse = ", ")
+    ), call. = FALSE)
   }
 
   # extract variables from the parameter grid for subsequent checks
@@ -350,7 +397,13 @@ extractFeatures <- function(data,
       for(p in 1:nrow(parameter_grid)){
         var <- parameter_grid$variable[p]
         metric <- parameter_grid$metric[p]
-       feature_list[[p]] <- .calculateMetric(individual_data, var, metric, window_steps, aggregate)
+       feature_list[[p]] <- .calculateMetric(data = individual_data,
+                                             var = var,
+                                             metric = metric,
+                                             sampling_freq = sampling_freq,
+                                             window_steps = window_steps,
+                                             aggregate = aggregate,
+                                             circular_variables = circular.variables)
 
         # update progress bar
         setTxtProgressBar(pb, p)
@@ -376,7 +429,13 @@ extractFeatures <- function(data,
       ) %dopar% {
         var <- parameter_grid$variable[p]
         metric <- parameter_grid$metric[p]
-        .calculateMetric(individual_data, var, metric, window_steps, aggregate)
+        .calculateMetric(data = individual_data,
+                         var = var,
+                         metric = metric,
+                         sampling_freq = sampling_freq,
+                         window_steps = window_steps,
+                         aggregate = aggregate,
+                         circular_variables = circular.variables)
       }
     }
 
@@ -466,7 +525,52 @@ extractFeatures <- function(data,
       feature_data[, (response.col) := as.factor(get(response.col))]
     }
 
-    # remove rows with any missing values (NA) in any column
+
+    # replace problematic metrics with defaults where appropriate
+    # skewness to 0 (symmetric distribution), kurtosis to 3 (normal distribution baseline)
+    # and entropy to 0 (no uncertainty, all values same)
+
+    # this avoids removing biologically meaningful surface periods where depth is constant
+    # (e.g., depth = 0), which would otherwise result in NA or NaN for some metrics
+    # and be dropped if using na.omit() downstream.
+
+
+    # define default replacement values for problematic metrics
+    replacement_values <- list(skewness = 0, kurtosis = 3, entropy = 0)
+    # define which variables (prefixes) you want to target for replacement
+    target_prefixes <- c("depth", "vertical_speed")
+
+    # create a logical vector indicating rows where depth is exactly zero (surface),
+    # excluding missing depth values (NA), since we only want to replace NAs in metrics
+    # caused by constant zero depth, not missing sensor data.
+    depth_zero <- !is.na(individual_data$depth) & individual_data$depth == 0
+    # create a temporary data.table linking datetime to depth_zero flag
+    dt_flags <- data.table(datetime = individual_data[[datetime.col]], depth_zero = depth_zero)
+
+    # merge the flag data into the features data by datetime (left join)
+    feature_data <- merge(feature_data, dt_flags, by = datetime.col, all.x = TRUE)
+
+    # loop over target variable prefixes (e.g., "depth", "vertical_speed") and metrics
+    for (prefix in target_prefixes) {
+      for (suffix in names(replacement_values)) {
+        # find columns matching metric names, e.g. "depth_skewness"
+        pattern <- paste0("^", prefix, "_", suffix, "$")
+        matching_cols <- grep(pattern, names(feature_data), value = TRUE)
+        for (col in matching_cols) {
+          # find indices where metric is NA or NaN
+          idx_replace <- which(is.na(feature_data[[col]]) | is.nan(feature_data[[col]]))
+          # filter indices to only those where depth_zero flag is TRUE
+          idx_replace <- idx_replace[which(feature_data$depth_zero[idx_replace] == TRUE)]
+          # replace NA/NaN with the default replacement value for this metric
+          feature_data[[col]][idx_replace] <- replacement_values[[suffix]]
+        }
+      }
+    }
+
+    # remove the temporary depth_zero flag column after replacements
+    feature_data[, depth_zero := NULL]
+
+    # remove rows with any (remaining) missing values (NA) in any column
     feature_data <- na.omit(feature_data)
 
 
@@ -619,73 +723,178 @@ extractFeatures <- function(data,
 # Define helper function to to calculate metrics ###############################
 ################################################################################
 
-# Replace the current .calculateMetric function with vectorized operations
-.calculateMetric <- function(data, var, metric, window_steps, aggregate) {
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.calculateMetric <- function(data, var, metric, sampling_freq, window_steps, aggregate, circular_variables) {
 
   # access data
   x <- data[[var]]
 
-  if (!aggregate) {
-    # use data.table's frollapply for efficient sliding window calculations
-    switch(metric,
-           mean = data.table::frollmean(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
-           median = data.table::frollapply(x, window_steps, median, na.rm = TRUE, align = "center", fill = NA),
-           sd = data.table::frollapply(x, window_steps, sd, na.rm = TRUE, align = "center", fill = NA),
-           min = data.table::frollapply(x, window_steps, min, na.rm = TRUE, align = "center", fill = NA),
-           max = data.table::frollapply(x, window_steps, max, na.rm = TRUE, align = "center", fill = NA),
-           sum = data.table::frollsum(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
-           # for more complex metrics, still use the original approach but with faster functions
-           range = zoo::rollapply(x, window_steps, function(x) diff(range(x, na.rm = TRUE)), fill = NA, align = "center", partial = FALSE),
-           iqr = zoo::rollapply(x, window_steps, IQR, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-           energy = data.table::frollapply(x^2, window_steps, sum, na.rm = TRUE, align = "center", fill = NA),
-           skewness = zoo::rollapply(x, window_steps, moments::skewness, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-           kurtosis = zoo::rollapply(x, window_steps, moments::kurtosis, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-           entropy = zoo::rollapply(x, window_steps, function(x) {
-             x <- x[!is.na(x)]
-             if(length(unique(x)) <= 1) return(NA)
-             tryCatch({
-               hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
-               p <- hist_data$density / sum(hist_data$density)
-               entropy::entropy(p)
-             }, error = function(e) NA)
-           }, fill = NA, align = "center", partial = FALSE)
-    )
+  ##############################################################################
+  # circular variables #########################################################
+  if (var %in% circular_variables) {
 
-    # aggregate data into distinct windows - use vectorized operations where possible
+    # sliding window for circular
+    if (!aggregate) {
+      return(zoo::rollapply(
+        x,
+        width = window_steps,
+        FUN = function(w) .circularMetric(w, metric = metric, sampling_freq = sampling_freq),
+        align = "center",
+        fill = NA
+      ))
+    # aggregate for circular
+    } else {
+      n <- length(x)
+      starts <- seq(1, n, by = window_steps)
+      ends <- pmin(starts + window_steps - 1, n)
+      result <- sapply(seq_along(starts), function(i) {
+        window_data <- x[starts[i]:ends[i]]
+        .circularMetric(window_data, metric = metric, sampling_freq = sampling_freq)
+      })
+      return(result)
+    }
+
+
+  ##############################################################################
+  # linear variable processing #########################################################
 
   } else {
-    n <- length(x)
-    starts <- seq(1, n, by = window_steps)
-    ends <- pmin(starts + window_steps - 1, n)
 
-    # use vectorized operations for simple metrics
-    switch(metric,
-           mean = vapply(seq_along(starts), function(i) mean(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           median = vapply(seq_along(starts), function(i) median(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           sd = vapply(seq_along(starts), function(i) sd(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           min = vapply(seq_along(starts), function(i) min(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           max = vapply(seq_along(starts), function(i) max(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           sum = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           # For complex metrics, keep original approach
-           range = vapply(seq_along(starts), function(i) diff(range(x[starts[i]:ends[i]], na.rm = TRUE)), numeric(1)),
-           iqr = vapply(seq_along(starts), function(i) IQR(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           energy = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]]^2, na.rm = TRUE), numeric(1)),
-           skewness = vapply(seq_along(starts), function(i) moments::skewness(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           kurtosis = vapply(seq_along(starts), function(i) moments::kurtosis(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-           entropy = vapply(seq_along(starts), function(i) {
-             segment <- x[starts[i]:ends[i]]
-             segment <- segment[!is.na(segment)]
-             if(length(unique(segment)) <= 1) return(NA)
-             tryCatch({
-               hist_data <- hist(segment, breaks = "Sturges", plot = FALSE)
-               p <- hist_data$density / sum(hist_data$density)
-               entropy::entropy(p)
-             }, error = function(e) NA)
-           }, numeric(1))
-    )
+    if (!aggregate) {
+      # use data.table's frollapply for efficient sliding window calculations
+      switch(metric,
+             mean = data.table::frollmean(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
+             median = data.table::frollapply(x, window_steps, median, na.rm = TRUE, align = "center", fill = NA),
+             sd = data.table::frollapply(x, window_steps, sd, na.rm = TRUE, align = "center", fill = NA),
+             min = data.table::frollapply(x, window_steps, min, na.rm = TRUE, align = "center", fill = NA),
+             max = data.table::frollapply(x, window_steps, max, na.rm = TRUE, align = "center", fill = NA),
+             sum = data.table::frollsum(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
+             # for more complex metrics, still use the original approach but with faster functions
+             range = zoo::rollapply(x, window_steps, function(x) diff(range(x, na.rm = TRUE)), fill = NA, align = "center", partial = FALSE),
+             iqr = zoo::rollapply(x, window_steps, IQR, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
+             rate = zoo::rollapply(x, width = window_steps, function(x) {
+               if (length(x) < 2 || all(is.na(x))) return(NA)
+               mean(abs(diff(x)), na.rm = TRUE) * sampling_freq
+             }, fill = NA, align = "center", partial = FALSE),
+             energy = data.table::frollapply(x^2, window_steps, sum, na.rm = TRUE, align = "center", fill = NA),
+             skewness = zoo::rollapply(x, window_steps, moments::skewness, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
+             kurtosis = zoo::rollapply(x, window_steps, moments::kurtosis, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
+             entropy = zoo::rollapply(x, window_steps, function(x) {
+               x <- x[!is.na(x)]
+               if(length(unique(x)) <= 1) return(NA)
+               tryCatch({
+                 hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
+                 p <- hist_data$density / sum(hist_data$density)
+                 entropy::entropy(p)
+               }, error = function(e) NA)
+             }, fill = NA, align = "center", partial = FALSE)
+      )
+
+    # aggregate data into distinct windows - use vectorized operations where possible
+    } else {
+      n <- length(x)
+      starts <- seq(1, n, by = window_steps)
+      ends <- pmin(starts + window_steps - 1, n)
+
+      # use vectorized operations for simple metrics
+      switch(metric,
+             mean = vapply(seq_along(starts), function(i) mean(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             median = vapply(seq_along(starts), function(i) median(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             sd = vapply(seq_along(starts), function(i) sd(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             min = vapply(seq_along(starts), function(i) min(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             max = vapply(seq_along(starts), function(i) max(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             sum = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             # For complex metrics, keep original approach
+             range = vapply(seq_along(starts), function(i) diff(range(x[starts[i]:ends[i]], na.rm = TRUE)), numeric(1)),
+             iqr = vapply(seq_along(starts), function(i) IQR(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             rate = vapply(seq_along(starts), function(i) {
+               segment <- x[starts[i]:ends[i]]
+               if (length(segment) < 2 || all(is.na(segment))) return(NA_real_)
+               mean(abs(diff(segment)), na.rm = TRUE) * sampling_freq
+             }, numeric(1)),
+             energy = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]]^2, na.rm = TRUE), numeric(1)),
+             skewness = vapply(seq_along(starts), function(i) moments::skewness(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             kurtosis = vapply(seq_along(starts), function(i) moments::kurtosis(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
+             entropy = vapply(seq_along(starts), function(i) {
+               segment <- x[starts[i]:ends[i]]
+               segment <- segment[!is.na(segment)]
+               if(length(unique(segment)) <= 1) return(NA)
+               tryCatch({
+                 hist_data <- hist(segment, breaks = "Sturges", plot = FALSE)
+                 p <- hist_data$density / sum(hist_data$density)
+                 entropy::entropy(p)
+               }, error = function(e) NA)
+             }, numeric(1))
+      )
+    }
+
   }
 }
 
+
+################################################################################
+# Define helper function for circular metrics ##################################
+################################################################################
+
+.circularMetric <- function(x_window, metric, sampling_freq) {
+
+  # remove NAs and ensure sufficient data
+  x_window <- x_window[!is.na(x_window)]
+  if (length(x_window) == 0) return(NA)
+  if (metric %in% c("sd", "range", "iqr") && length(x_window) < 2) return(NA)
+
+  # convert to radians
+  radians <- x_window * pi / 180
+
+  # small helper function for angular difference
+  .angular_diff <- function(a, b) {
+    diff <- abs(a - b) %% 360
+    pmin(diff, 360 - diff)
+  }
+
+  switch(metric,
+         mean = {
+           C <- mean(cos(radians))
+           S <- mean(sin(radians))
+           atan2(S, C) * 180 / pi
+         },
+         median = {
+           sorted <- sort(x_window)
+           diffs <- sapply(sorted, function(y) sum(abs(pi - abs(radians - y*pi/180))))
+           sorted[which.min(diffs)]
+         },
+         sd = {
+           C <- mean(cos(radians))
+           S <- mean(sin(radians))
+           R <- sqrt(C^2 + S^2)
+           sqrt(-2 * log(R)) * 180 / pi
+         },
+         range = {
+           if (length(x_window) < 2) return(NA)
+           sorted <- sort(x_window)
+           gaps <- c(diff(sorted), 360 - (sorted[length(sorted)] - sorted[1]))
+           360 - max(gaps)
+         },
+         iqr = {
+           if (length(x_window) < 2) return(NA)
+           q <- quantile(x_window, probs = c(0.25, 0.75))
+           diff <- (q[2] - q[1]) %% 360
+           min(diff, 360 - diff)
+         },
+         mrl = {
+           C <- mean(cos(radians))
+           S <- mean(sin(radians))
+           sqrt(C^2 + S^2)
+         },
+         rate = {
+           diffs <- .angular_diff(x_window[-1], x_window[-length(x_window)])
+           mean(diffs, na.rm = TRUE) * sampling_freq
+         }
+  )
+}
 
 
 #######################################################################################################

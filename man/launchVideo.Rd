@@ -3,10 +3,17 @@
 \name{launchVideo}
 \alias{launchVideo}
 \title{This function searches for the video file that contains the given datetime
-within its start and end times. If a matching video is found, it opens
-the video using VLC at the time corresponding to the given datetime.}
+within its start and end times. If a matching video is found, it closes any
+existing VLC instances (by default) and opens the video using VLC at the time
+corresponding to the given datetime.}
 \usage{
-launchVideo(id, datetime, video.metadata, vlc.path = NULL)
+launchVideo(
+  id,
+  datetime,
+  video.metadata,
+  vlc.path = NULL,
+  close.existing = TRUE
+)
 }
 \arguments{
 \item{id}{A \code{character} or \code{factor} representing the unique ID
@@ -21,6 +28,9 @@ video, as returned by \code{getVideoMetadata}.}
 
 \item{vlc.path}{(Optional) The full path to the VLC application. If not
 provided, a default path will be used based on the user's operating system.}
+
+\item{close.existing}{(Optional) Logical value indicating whether to close
+existing VLC instances before opening the new video. Defaults to TRUE.}
 }
 \value{
 The function opens the corresponding video at the specified datetime
@@ -28,6 +38,7 @@ using VLC. If no video matches the datetime, an appropriate message is printed.
 }
 \description{
 This function searches for the video file that contains the given datetime
-within its start and end times. If a matching video is found, it opens
-the video using VLC at the time corresponding to the given datetime.
+within its start and end times. If a matching video is found, it closes any
+existing VLC instances (by default) and opens the video using VLC at the time
+corresponding to the given datetime.
 }

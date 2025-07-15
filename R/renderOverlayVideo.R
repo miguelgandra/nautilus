@@ -1,69 +1,3 @@
-#######################################################################################################
-# Function to render an overlay video with synchronized sensor data ##################################
-#######################################################################################################
-
-#' renderOverlayVideo
-#'
-#' This function generates a video with synchronized sensor data overlayed onto the video frames.
-#' It processes the video and sensor data, extracts the frames, synchronizes them with the sensor data,
-#' applies overlays, and outputs the final annotated video.
-#'
-#' @param video.file The path to the input video file.
-#' @param video.metadata A data frame containing metadata about the video,
-#'   including start and end times, frame rate, and video ID. This should be
-#'   the output of the \code{\link{getVideoMetadata}} function.
-#' @param sensor.data A data frame containing the sensor data, which includes timestamps and the associated
-#'   metrics to be overlayed (e.g., depth, heading, pitch, roll).
-#' @param output.file The name of the output video file (e.g., "output.mp4").
-#' @param output.directory The directory where temporary and final files will be saved.
-#' @param start.time (Optional) The start time in the video from which to begin processing,
-#' in the format "HH:MM:SS". Defaults to "00:00:00".
-#' @param end.time (Optional) The end time in the video up to which processing should occur,
-#' in the format "HH:MM:SS".
-#' @param duration (Optional) The duration of the video segment to process, in seconds. Overrides \code{end.time}
-#' if specified.
-#' @param overlay.side The side of the frame where overlays should be displayed ("left", "center" or "right"). Defaults to "left".
-#' @param depth.window The time window (in seconds) for averaging or visualizing depth data. Defaults to 300 seconds (5 minutes).
-#' @param vedba.window The time window (in seconds) for averaging or visualizing VE-DBA (Vectorial Dynamic Body Acceleration) data.
-#'   Defaults to 30 seconds.
-#' @param vertical.speed.window The time window (in seconds) for calculating vertical speed. Defaults to 30 seconds.
-#' @param tailbeat.window The time window (in seconds) for calculating and visualizing tail beat frequency. Defaults to 30 seconds.
-#' @param pseudo.track.window Time window (in seconds) for displaying dead-reckoned movement path.
-#' Controls how much historical movement is shown in the 3D track visualization. Defaults to 30 seconds.
-#' Requires pseudo track columns (pseudo_lat, pseudo_lon) in sensor.data.
-#' @param epsg.code The EPSG code for the coordinate reference system (CRS) to use when projecting
-#' pseudo track coordinates for visualization. Required if pseudo track data is available in the sensor data.
-#' @param text.color The color of the overlay text. Defaults to "black".
-#' @param sensor.val.color The color used to display sensor values. Defaults to "red3".
-#' @param jpeg.quality An integer specifying the quality of the extracted JPEG frames.
-#' This value controls the level of compression applied to the frames.
-#' The `jpeg.quality` value is passed to `ffmpeg`'s `-qscale:v` option. A value of
-#' `1` represents the best quality (larger file size), while a value of `31`
-#' represents the worst quality (smaller file size). The default is `4`, which provides
-#' a good balance between quality and file size.
-#' @param video.compression Character. Compression format for the output video. Options are `"h264"` for standard compression
-#'   and `"h265"` for HEVC compression. Default is `"h265"`.
-#'   HEVC (H.265) offers higher compression efficiency compared to H.264, resulting in smaller file sizes
-#'   with comparable or better video quality.
-#' @param crf A numeric value for the Constant Rate Factor (CRF), which controls the quality and file size of the output video.
-#' The CRF range is from 0 to 51, where:
-#'   - A value of 0 represents lossless encoding, resulting in the highest quality but the largest file size.
-#'   - A value of 28 is considered a good balance between quality and compression for most use cases. This is the default value.
-#'   - A higher value (closer to 51) will result in lower quality and smaller file sizes.
-#' @param n.cores The number of processor cores to use for parallel computation. Defaults to 1 (single-core).
-#' @return A video file with synchronized sensor overlays saved to the specified \code{output.file}.
-#'
-#' @details
-#' This function extracts frames from the specified video, aligns each frame with the corresponding timestamp in the
-#' sensor data, and overlays the sensor data onto the frames. It supports single-core and multi-core processing
-#' for frame overlay generation. The final annotated video is assembled using FFmpeg.
-#'
-#' @note
-#' Ensure FFmpeg is installed and accessible via the system PATH, as it is required for video processing.
-#'
-#' @export
-
-
 renderOverlayVideo <- function(video.file,
                                video.metadata,
                                sensor.data,
@@ -84,433 +18,241 @@ renderOverlayVideo <- function(video.file,
                                jpeg.quality = 3,
                                video.compression = "h265",
                                crf = 28,
-                               n.cores = 1){
+                               n.cores = 1) {
 
+  # Check for required packages
+  if (!requireNamespace("magick", quietly = TRUE)) {
+    stop("The 'magick' package is required. Please install it using install.packages('magick')")
+  }
 
+  # Check FFmpeg installation
+  if (system("which ffmpeg", intern = TRUE) == "") {
+    stop("FFmpeg is not installed. Please install FFmpeg to proceed.")
+  }
 
   ##############################################################################
-  # Initial checks #############################################################
+  # Input Validation ###########################################################
   ##############################################################################
 
-  # check if ffmpeg is installed
-  ffmpeg_check <- system("which ffmpeg", intern = TRUE)
-  if(length(ffmpeg_check) == 0) stop("ffmpeg is not installed. Please install ffmpeg to proceed.", call. = FALSE)
-
-  # check if the video file exists
+  # Validate input file exists
   if (!file.exists(video.file)) stop("The specified video file does not exist.", call. = FALSE)
 
-  # check if the output directory exists
-  if (!is.null(output.directory) && !dir.exists(output.directory)) stop("The specified output directory does not exist: ", output.directory, call. = FALSE)
-
-  # validate video.metadata structure
+  # Validate metadata structure
   required_metadata_cols <- c("ID", "video", "start", "end", "frame_rate")
   missing_cols <- setdiff(required_metadata_cols, colnames(video.metadata))
   if (length(missing_cols) > 0) {
-    stop("The 'video.metadata' is missing the following required columns: ", paste(missing_cols, collapse = ", "), call. = FALSE)
+    stop("Missing required columns in video.metadata: ", paste(missing_cols, collapse = ", "), call. = FALSE)
   }
 
-  # validate sensor.data structure
+  # Validate sensor.data structure
   required_data_cols <- c("datetime", "depth", "heading", "pitch", "roll", "vedba", "vertical_speed")
   missing_cols <- setdiff(required_data_cols, colnames(sensor.data))
   if (length(missing_cols) > 0) {
-    stop("The 'sensor.data' is missing the following required columns: ", paste(missing_cols, collapse = ", "), call. = FALSE)
+    stop("Missing required columns in sensor.data: ", paste(missing_cols, collapse = ", "), call. = FALSE)
   }
 
-  # validate overlay.side
-  if (!overlay.side %in% c("left", "center", "right")) stop("Invalid value for 'overlay.side'. Must be one of: 'left', 'center', or 'right'.", call. = FALSE)
-
-  # validate numerical arguments
-  if (depth.window <= 0 || !is.numeric(depth.window)) stop("'depth.window' must be a positive number.", call. = FALSE)
-  if (vedba.window <= 0 || !is.numeric(vedba.window)) stop("'vedba.window' must be a positive number.", call. = FALSE)
-  if (vertical.speed.window <= 0 || !is.numeric(vertical.speed.window)) stop("'vertical.speed.window' must be a positive number.", call. = FALSE)
-  if (tailbeat.window <= 0 || !is.numeric(tailbeat.window)) stop("'tailbeat.window' must be a positive number.", call. = FALSE)
-  if (pseudo.track.window <= 0 || !is.numeric(pseudo.track.window)) stop("'pseudo.track.window' must be a positive number.", call. = FALSE)
-  if (n.cores <= 0 || !is.numeric(n.cores) || n.cores %% 1 != 0) stop("'n.cores' must be a positive integer.", call. = FALSE)
-
-  # validate parallel computing packages
-  if (n.cores>1){
-    if(!requireNamespace("foreach", quietly=TRUE)) stop("The 'foreach' package is required for parallel computing but is not installed. Please install 'foreach' using install.packages('foreach') and try again.", call. = FALSE)
-    if(!requireNamespace("doSNOW", quietly=TRUE)) stop("The 'doSNOW' package is required for parallel computing but is not installed. Please install 'doSNOW' using install.packages('doSNOW') and try again.", call. = FALSE)
-    if(!requireNamespace("parallel", quietly=TRUE)){
-      stop("The 'parallel' package is required for parallel computing but is not installed. Please install 'parallel' using install.packages('parallel') and try again.", call. = FALSE)
-    }else if(parallel::detectCores()<n.cores){
-      stop(paste("Please choose a different number of cores for parallel computing (only", parallel::detectCores(), "available)."), call. = FALSE)
-    }
+  # Validate time parameters
+  if (!is.null(end.time) && !is.null(duration)) {
+    stop("Only one of 'end.time' or 'duration' can be provided, not both.", call. = FALSE)
   }
 
-  # validate that not both end.time and duration are supplied simultaneously
-  if (!is.null(end.time) && !is.null(duration)) stop("Only one of 'end.time' or 'duration' can be provided, not both.", call. = FALSE)
+  # Set default start.time if not provided
+  if (is.null(start.time)) start.time <- "00:00:00"
 
-  # validate start.time and end.time formats
-  time_pattern <- "^([01]?[0-9]|2[0-3]):([0-5]?[0-9]):([0-5]?[0-9])$"
-  if (!is.null(start.time)) {
-    if (!grepl(time_pattern, start.time)) stop("Invalid start.time format. Please use HH:MM:SS.", call. = FALSE)
+  ##############################################################################
+  # Setup Directories and Paths ################################################
+  ##############################################################################
+
+  # Set default output directory if not specified
+  if (is.null(output.directory)) {
+    output.directory <- tempdir()
+    # Create a more specific temp directory
+    output.directory <- file.path(output.directory, "video_overlay_temp")
   }
-  if (!is.null(end.time)) {
-    if (!grepl(time_pattern, end.time)) stop("Invalid end.time format. Please use HH:MM:SS.", call. = FALSE)
-  }
 
-  # validate jpeg.quality argument
-  if (jpeg.quality < 1 || jpeg.quality > 31 || !is.numeric(jpeg.quality)) stop("The 'jpeg.quality' argument must be an integer between 1 and 31.", call. = FALSE)
+  # Create unique directory for this processing job
+  video_base <- tools::file_path_sans_ext(basename(video.file))
+  output.directory <- file.path(output.directory, video_base)
 
-  # validate the crf argument
-  if(!is.numeric(crf) || length(crf) != 1 || crf < 0 || crf > 51) stop("Error: 'crf' must be a numeric value between 0 and 51.", call. = FALSE)
+  # Create necessary subdirectories
+  overlay_directory <- file.path(output.directory, "overlays")
+  dir.create(overlay_directory, recursive = TRUE, showWarnings = FALSE)
 
-
-  ##############################################################################
-  # Retrieve video metadata ####################################################
-  ##############################################################################
-
-  selected_video <- video.metadata[video.metadata$video==basename(video.file),]
-  if (nrow(selected_video) == 0) stop("No matching video found in 'video.metadata' for file: ", basename(video.file))
-  id <- as.character(selected_video$ID)
-  start <- selected_video$start
-  end <-  selected_video$end
-  video_duration <- selected_video$duration
-  frame_rate <- selected_video$frame_rate
-
-
-  ##############################################################################
-  # Define paths and directory variables #######################################
-  ##############################################################################
-
-  # set a temporary output directory if not defined by the user
-  if(is.null(output.directory)) output.directory <-  tempdir()
-
-  # append the unique ID and the base name of the video file to the output path
-  output.directory <- file.path(output.directory, id, tools::file_path_sans_ext(basename(video.file)))
-
-  # check if the output directory already exists
-  if (dir.exists(output.directory)) {
-
-    # print a warning and prompt the user for confirmation
-    prompt_msg <- paste0(
-      crayon::red$bold("Warning: "),
-      "The output directory already exists. ",
-      "Existing files may be overwritten. ",
-      "Proceed? (yes/no):\n"
-    )
-    # wrap the message to ensure it fits within the console width
-    prompt_msg <- strwrap(prompt_msg, width = getOption("width"))
-    # print the wrapped message
-    cat(paste(prompt_msg, collapse = "\n"))
-
-    # capture user input
-    proceed <- readline()
-
-    # convert input to lowercase and check if it is negative
-    if(!(tolower(proceed) %in% c("yes", "y"))) {
-      # exit the function if the user decides not to proceed
+  # Check for existing files and prompt user
+  if (dir.exists(overlay_directory) && length(list.files(overlay_directory)) > 0) {
+    cat("Warning: Overlay directory already contains files. Existing files may be overwritten.\n")
+    proceed <- readline("Proceed? (yes/no): ")
+    if (!tolower(proceed) %in% c("yes", "y")) {
       cat("Processing cancelled.\n")
       return(invisible(NULL))
     }
+    unlink(list.files(overlay_directory, full.names = TRUE))
   }
 
-  # define subdirectories for storing frames, overlays, and processed frames
-  frames_directory <- file.path(output.directory, "raw frames")
-  overlays_directory <- file.path(output.directory, "overlays")
-  processed_directory <- file.path(output.directory, "processed frames")
-
-  # ensure the directories exist and are empty
-  if (dir.exists(frames_directory)) unlink(frames_directory, recursive = TRUE)
-  dir.create(frames_directory, recursive = TRUE)
-  if (dir.exists(overlays_directory)) unlink(overlays_directory, recursive = TRUE)
-  dir.create(overlays_directory, recursive = TRUE)
-  if (dir.exists(processed_directory)) unlink(processed_directory, recursive = TRUE)
-  dir.create(processed_directory, recursive = TRUE)
-
-  # check if pseudo track data is available
-  has_pseudo_track <- all(c("pseudo_lat", "pseudo_lon", "dead_reckon_vx", "dead_reckon_vy", "dead_reckon_vz") %in% colnames(sensor.data))
-
   ##############################################################################
-  # 1 - Extract frames #########################################################
+  # Video Metadata Processing ##################################################
   ##############################################################################
 
-  # print progress message
-  cat("Extracting video frames...\n")
-
-  # set default value for start.time if not supplied
-  if(is.null(start.time)) {
-    start.time <- "00:00:00"
+  # Get video metadata
+  selected_video <- video.metadata[video.metadata$video == basename(video.file), ]
+  if (nrow(selected_video) == 0) {
+    stop("No matching video found in video.metadata for file: ", basename(video.file))
   }
 
-  # calculate the effective duration
+  frame_rate <- selected_video$frame_rate
+  video_start <- selected_video$start
+
+  # Calculate effective duration
   if (!is.null(end.time)) {
-    # convert start.time and end.time to seconds
     start_seconds <- sum(as.numeric(strsplit(start.time, ":")[[1]]) * c(3600, 60, 1))
     end_seconds <- sum(as.numeric(strsplit(end.time, ":")[[1]]) * c(3600, 60, 1))
     effective_duration <- end_seconds - start_seconds
   } else if (!is.null(duration)) {
-    # use duration directly
     effective_duration <- as.numeric(duration)
   } else {
-    effective_duration  <- video_duration
+    effective_duration <- selected_video$duration
   }
 
-  # compute the expected frame count
+  # Calculate expected frame count
   frame_count <- ceiling(effective_duration * frame_rate)
-  cat(sprintf("Expected frame count: %d\n", frame_count))
-
-
-  # construct the ffmpeg command based on which arguments are provided
-  if (!is.null(end.time)) {
-    # case 1: start.time and end.time are provided
-    ffmpeg_command <- sprintf(
-      "ffmpeg -i \"%s\" -ss %s -to %s -q:v %d \"%s/frame_%%06d.jpg\" 2>&1",
-      video.file, start.time, end.time, jpeg.quality, frames_directory)
-  } else if (!is.null(duration)) {
-    # case 2: start.time and duration are provided
-    ffmpeg_command <- sprintf(
-      "ffmpeg -i \"%s\" -ss %s -t %s -q:v %d \"%s/frame_%%06d.jpg\" 2>&1",
-      video.file, start.time, duration, jpeg.quality, frames_directory)
-  }
-
-  # initialize progress bar
-  pb <- txtProgressBar(min=1, max=frame_count, initial=0, style=3)
-
-  # redirect stderr to stdout using '2>&1'
-  process <- pipe(ffmpeg_command, "r")
-  extracted_frames <- 0
-  repeat {
-    line <- readLines(process, n = 1, warn = FALSE)
-    if (length(line) == 0) break
-    # look for "frame=" in ffmpeg's progress output
-    if (grepl("frame=", line)) {
-      frame_str <- sub(".*frame=\\s*([0-9]+).*", "\\1", line)
-      current_frame <- as.numeric(frame_str)
-      if (!is.na(current_frame)) {
-        extracted_frames <- current_frame
-        # update progress bar based on the extracted frame count
-        setTxtProgressBar(pb, min(extracted_frames, frame_count))
-      }
-    }
-  }
-
-  # close the progress bar and the process
-  close(pb)
-  close(process)
-
-  # get total number of frames
-  nframes <- length(list.files(frames_directory))
-
 
   ##############################################################################
-  # 2 - Assign a frame number to each dataset row ##############################
+  # Sensor Data Alignment ######################################################
   ##############################################################################
 
-  # convert the selected start time to elapsed seconds
+  # Convert start time to elapsed seconds
   time_parts <- as.integer(strsplit(start.time, ":")[[1]])
   elapsed_secs <- time_parts[1] * 3600 + time_parts[2] * 60 + time_parts[3]
-  start <- start + elapsed_secs
+  video_start <- video_start + elapsed_secs
 
-  # cut dataset to match
-  sensor.data <- sensor.data[sensor.data$datetime>=start & sensor.data$datetime<=end,]
+  # Filter sensor data to video time range
+  sensor.data <- sensor.data[sensor.data$datetime >= video_start &
+                               sensor.data$datetime <= (video_start + effective_duration), ]
 
-  # calculate the time difference between sensor data and video start time
-  sensor.data$time_diff <- as.numeric(difftime(sensor.data$datetime, start, units = "secs"))
-
-  # convert time difference to frame numbers (+1 because frames are 1-indexed)
+  # Calculate frame numbers for each sensor reading
+  sensor.data$time_diff <- as.numeric(difftime(sensor.data$datetime, video_start, units = "secs"))
   sensor.data$frame <- floor(sensor.data$time_diff * frame_rate) + 1
 
-
   ##############################################################################
-  # 3a - Overlay sensor data (single core) #####################################
-  ##############################################################################
-
-  if(n.cores == 1){
-
-    # print progress message
-    cat("Creating data overlay graphs...\n")
-
-    # initialize progress bar
-    pb <- txtProgressBar(min=1, max=nframes, initial=0, style=3)
-
-    # iterate over each frame
-    for (i in 1:nframes) {
-
-      # add overlays and save processed frame
-      .processFrames(i, start, frame_rate, sensor.data,
-                     frames_directory, overlays_directory, processed_directory,
-                     overlay.side, depth.window, vedba.window, vertical.speed.window,
-                     tailbeat.window, pseudo.track.window, has_pseudo_track,
-                     text.color, sensor.val.color, epsg.code)
-
-      # update progress bar
-      setTxtProgressBar(pb, i)
-
-    }
-
-    # close progress bar
-    close(pb)
-
-  }
-
-  ##############################################################################
-  # 3b - Overlay sensor data (parallel computing) ##############################
+  # Generate Overlay Frames (Parallelized) #####################################
   ##############################################################################
 
-  # use multiple cores to speed up computations
-  if(n.cores > 1) {
+  cat("Generating overlay frames...\n")
 
-    # print progress message
-    cat("Generating data overlay graphs...\n")
+  # Determine if we have pseudo track data
+  has_pseudo_track <- all(c("pseudo_lat", "pseudo_lon", "dead_reckon_vx", "dead_reckon_vy", "dead_reckon_vz") %in% colnames(sensor.data))
 
-    # print information to console
-    cat(paste0("Starting parallel computation: ", n.cores, " cores\n"))
-
-    # register parallel backend with the specified number of cores
-    cl <- parallel::makeCluster(n.cores)
-    doSNOW::registerDoSNOW(cl)
-
-    # ensure the cluster is properly stopped when the function exits
-    on.exit(parallel::stopCluster(cl))
-
-    # define the `%dopar%` operator locally for parallel execution
-    `%dopar%` <- foreach::`%dopar%`
-
-    # initialize progress bar
-    pb <- txtProgressBar(min=1, max=nframes, initial=0, style=3)
-
-    # set progress bar options
-    opts <- list(progress = function(n) setTxtProgressBar(pb, n))
-
-    # process frames using parallel computation
-    foreach::foreach(i=1:nframes, .options.snow=opts, .packages=c("magick"), .export=c(".processFrames")) %dopar% {
-     .processFrames(i, start, frame_rate, sensor.data,
-                    frames_directory, overlays_directory, processed_directory,
-                    overlay.side, depth.window, vedba.window, vertical.speed.window,
-                    tailbeat.window, pseudo.track.window, has_pseudo_track,
-                    text.color, sensor.val.color, epsg.code)
-   }
-
-   # close progress bar
-   close(pb)
-  }
-
-
-  ##############################################################################
-  # 4 - Create mp4 #############################################################
-  ##############################################################################
-
-  # print progress message
-  cat("Encoding final video...\n")
-
-  # specify the output MP4 file name
-  output.file <- path.expand(output.file)
-
-  # determine the codec and output format based on the video.compression argument
-  if (video.compression == "h265") {
-    # check if the hevc_videotoolbox codec (hardware acceleration) is available
-    hw_accel_check <- system("ffmpeg -codecs 2>&1 | grep hevc_videotoolbox", intern = TRUE)
-    if (length(hw_accel_check) > 0) {
-      # hardware-accelerated HEVC encoding is available, use it
-      video_codec <- "hevc_videotoolbox"
-      cat("Using hardware-accelerated HEVC encoding with hevc_videotoolbox.\n")
+  # Prepare for parallel processing
+  if (n.cores > 1) {
+    if (!requireNamespace("foreach", quietly = TRUE)) {
+      warning("Parallel processing requires 'foreach' package. Falling back to single core.")
+      n.cores <- 1
     } else {
-      # hardware acceleration is not available, fall back to software-based encoding
-      video_codec <- "libx265"
-      cat("Hardware acceleration (hevc_videotoolbox) not available. Falling back to software-based HEVC encoding with libx265.\n")
+      # define the `%dopar%` operator locally for parallel execution
+      `%dopar%` <- foreach::`%dopar%`
+      cl <- parallel::makeCluster(n.cores)
+      doSNOW::registerDoSNOW(cl)
+      on.exit(parallel::stopCluster(cl), add = TRUE)
     }
+  }
+
+  # Process frames
+  if (n.cores == 1) {
+    # Single-core processing
+    pb <- txtProgressBar(min = 1, max = frame_count, style = 3)
+    for (i in 1:frame_count) {
+      .generateOverlayFrame(i, video_start, frame_rate, sensor.data, overlay_directory,
+                            overlay.side, depth.window, vedba.window, vertical.speed.window,
+                            tailbeat.window, pseudo.track.window, has_pseudo_track,
+                            text.color, sensor.val.color, epsg.code)
+      setTxtProgressBar(pb, i)
+    }
+    close(pb)
   } else {
-    # if video.compression is not "h265", use the standard H.264 codec
-    video_codec <- "libx264"
-    cat("Using standard H.264 encoding with libx264.\n")
-  }
-
-
-  # construct the ffmpeg command
-  ffmpeg_command <- sprintf(
-    'ffmpeg -framerate 30 -i "%s/final_frame_%%06d.jpg" -c:v %s -pix_fmt yuv420p -tag:v hvc1 -crf %d "%s" 2>&1',
-    processed_directory,
-    video_codec,
-    crf,
-    output.file)
-
-  # initialize progress bar
-  pb <- txtProgressBar(min=1, max=nframes, initial=0, style=3)
-
-  # redirect stderr to stdout using '2>&1'
-  process <- pipe(ffmpeg_command, "r")
-  extracted_frames <- 0
-  repeat {
-    line <- readLines(process, n = 1, warn = FALSE)
-    if (length(line) == 0) break
-    # look for "frame=" in ffmpeg's progress output
-    if (grepl("frame=", line)) {
-      frame_str <- sub(".*frame=\\s*([0-9]+).*", "\\1", line)
-      current_frame <- as.numeric(frame_str)
-      if (!is.na(current_frame)) {
-        extracted_frames <- current_frame
-        # update progress bar based on the extracted frame count
-        setTxtProgressBar(pb, min(extracted_frames, nframes))
-      }
+    # Parallel processing
+    foreach::foreach(i = 1:frame_count, .export=".generateOverlayFrame", .packages = c("magick", "grDevices")) %dopar% {
+      .generateOverlayFrame(i, video_start, frame_rate, sensor.data, overlay_directory,
+                            overlay.side, depth.window, vedba.window, vertical.speed.window,
+                            tailbeat.window, pseudo.track.window, has_pseudo_track,
+                            text.color, sensor.val.color, epsg.code)
     }
   }
 
-  # close the progress bar and the process
-  close(pb)
-  close(process)
+  ##############################################################################
+  # Composite Overlays with FFmpeg #############################################
+  ##############################################################################
 
-  # print message
-  cat("Video created successfully! ***\n")
+  cat("Compositing overlays with FFmpeg...\n")
+
+  # Determine overlay position
+  position <- switch(overlay.side,
+                     "left" = "10:10",
+                     "right" = "main_w-overlay_w-10:10",
+                     "(main_w-overlay_w)/2:10")
+
+  # Determine video codec
+  video_codec <- ifelse(video.compression == "h265",
+                        ifelse(system("ffmpeg -codecs 2>&1 | grep hevc_videotoolbox", intern = TRUE) != "",
+                               "hevc_videotoolbox", "libx265"),
+                        "libx264")
+
+  # Normalize paths for FFmpeg
+  video_path <- normalizePath(video.file)
+  overlay_path_pattern <- normalizePath(file.path(overlay_directory, "overlay_%06d.png"))
+  output_path <- normalizePath(output.file, mustWork = FALSE)
+
+  # Build FFmpeg command
+  ffmpeg_command <- sprintf(
+    'ffmpeg -y -i "%s" -i "%s" -filter_complex "[0:v][1:v] overlay=%s" -c:a copy -c:v %s -preset fast -crf %d -pix_fmt yuv420p "%s"',
+    video_path, overlay_path_pattern, position, video_codec, crf, output_path
+  )
+
+  # Execute FFmpeg command
+  system(ffmpeg_command)
+
+  # Verify output file was created
+  if (!file.exists(output.file)) {
+    stop("Failed to create output video. Check FFmpeg output for errors.")
+  }
+
+  cat(sprintf("\nVideo successfully created: %s\n", output.file))
 }
 
 
+# Helper function to generate a single overlay frame
+.generateOverlayFrame <- function(frame_num, video_start, frame_rate, sensor_data,
+                                  overlay_directory, overlay.side, depth.window,
+                                  vedba.window, vertical.speed.window, tailbeat.window,
+                                  pseudo.track.window, has_pseudo_track, text.color,
+                                  sensor.val.color, epsg.code) {
 
-################################################################################
-# Define helper function to process frames #####################################
-################################################################################
+  # Calculate current time for this frame
+  current_time <- video_start + (frame_num - 1) / frame_rate
 
-#' Process Video Frames with Sensor Data Overlays
-#'
-#' This function processes individual video frames by overlaying relevant sensor data such as heading, pitch, roll, depth, VeDBA (Vectorial Dynamic Body Acceleration),
-#' and vertical speed. The function creates a final frame with graphical representations of these metrics.
-#'
-#' @return Saves processed frame image as a `.jpg` file in the `processed_directory`.
-#' @note This function is intended for internal use within the `nautilus` package.
-#' @keywords internal
-#' @noRd
+  # Find closest sensor data row
+  closest_row <- which.min(abs(sensor_data$frame - frame_num))
+  frame_data <- sensor_data[closest_row, ]
 
-.processFrames <- function(i, start, frame_rate, sensor_data,
-                           frames_directory, overlays_directory, processed_directory,
-                           overlay.side, depth.window, vedba.window, vertical.speed.window,
-                           tailbeat.window, pseudo.track.window, has_pseudo_track,
-                           text.color, sensor.val.color, epsg.code){
+  # Create overlay image path
+  overlay_path <- file.path(overlay_directory, sprintf("overlay_%06d.png", frame_num))
 
-  # define paths
-  frame_path <- sprintf("%s/frame_%06d.jpg", frames_directory, i)
-  overlay_path <- sprintf("%s/overlay_%06d.png", overlays_directory, i)
-  final_frame_path <- sprintf("%s/final_frame_%06d.jpg", processed_directory, i)
-
-  # get current frame datetime
-  current_time <- start + (i - 1) / frame_rate
-
-  # find the closest row in sensor_data based on the frame number
-  closest_row_index <- which.min(abs(sensor_data$frame - i))
-  frame_data <- sensor_data[closest_row_index, ]
-
-  # read the original frame
-  frame <- magick::image_read(frame_path)
-
-  # open a PNG device with transparency
-  if(has_pseudo_track) {
-    png(filename = overlay_path, width = 1100, height = 2300, bg = "transparent", res = 300)
-  }else{
-    png(filename = overlay_path, width = 1100, height = 2000, bg = "transparent", res = 300)
-  }
-
-  # adjust layout matrix to accommodate 3D plot if pseudo track data exists
-  if(has_pseudo_track) {
-    #mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8,9,9,9,9,9,9), nrow=8, byrow=TRUE)
-    #layout(mat, heights=c(2,1,1,1,1,1,5,1))
-    mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8,9,9,9), nrow=7, byrow=TRUE)
-    layout(mat, heights=c(2.5, 1.4, 1.4, 1.4, 1.4, 3.2, 0.3))
+  # Open PNG device
+  if (has_pseudo_track) {
+    png(overlay_path, width = 500, height = 1200, bg = "transparent", res = 100)
   } else {
-    mat <- matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8), nrow=6, byrow=TRUE)
-    layout(mat, heights=c(2,1,1,1,1,1))
+    png(overlay_path, width = 500, height = 1000, bg = "transparent", res = 100)
   }
 
-  # set up plot settings
+  # Set up plot layout
+  if (has_pseudo_track) {
+    layout(matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8,9,9,9), nrow=7, byrow=TRUE),
+           heights=c(2.5, 1.4, 1.4, 1.4, 1.4, 3.2, 0.3))
+  } else {
+    layout(matrix(c(1,2,3,4,4,4,5,5,5,6,6,6,7,7,7,8,8,8), nrow=6, byrow=TRUE),
+           heights=c(2,1,1,1,1,1))
+  }
+
+  # Set plot margins
   par(mar = c(1, 1, 1, 1), oma = c(0, 0, 1, 0), xpd = NA)
 
 
@@ -962,47 +704,7 @@ renderOverlayVideo <- function(video.file,
   #################################################################
   # close overlay png #############################################
 
-  # close the PNG device
+
+  # Close device
   dev.off()
-
-
-  #################################################################
-  # combine frame and overlay graphs ##############################
-
-  # read the overlay image
-  overlay_img <- magick::image_read(overlay_path)
-
-  # set the width and height of the overlay image
-  overlay_width <- 500
-  overlay_height <- 1200
-
-  # resize the overlay image before compositing
-  overlay_img_resized <- magick::image_scale(overlay_img, paste0(overlay_width, "x", overlay_height))
-
-  # get the width and height of the frame (assuming `frame` is an image object)
-  frame_width <- as.integer(magick::image_info(frame)$width)
-  frame_height <- as.integer(magick::image_info(frame)$height)
-
-  # Define dynamic offset based on overlay.side
-  if (overlay.side == "left") {
-    # position it 10px from the left and top
-    offset <- "+10+10"
-  } else if (overlay.side == "right") {
-    # position it near the right side (adjust as needed for your frame size)
-    offset <- paste0("+", as.integer(frame_width - overlay_width - 10), "+10")
-  } else {
-    # default: center the overlay if the side isn't recognized
-    offset <- paste0("+", as.integer((frame_width - overlay_width) / 2), "+10")
-  }
-
-  # combine the original frame with the resized overlay using the dynamic offset
-  combined_img <- magick::image_composite(frame, overlay_img_resized, operator = "over", offset = offset)
-
-  # save the combined image
-  magick::image_write(combined_img, final_frame_path)
 }
-
-
-#######################################################################################################
-#######################################################################################################
-#######################################################################################################

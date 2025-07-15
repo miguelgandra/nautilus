@@ -341,8 +341,11 @@ deploy_list <- list(
   list(ID = "PIN_10", start = as.POSIXct("2020-08-23 16:25:00", tz = "UTC"), end = as.POSIXct("2020-08-23 20:48:24", tz = "UTC")),
   list(ID = "PIN_16", start = as.POSIXct("2022-09-18 17:48:00", tz = "UTC"), end = as.POSIXct("2022-09-19 08:34:00", tz = "UTC")),
   list(ID = "PIN_23", start = as.POSIXct("2023-08-31 11:00:00", tz = "UTC"), end = as.POSIXct("2023-08-31 21:45:25", tz = "UTC")),
-  list(ID = "PIN_CAM_03", start = as.POSIXct("2023-08-31 11:00:00", tz = "UTC"), end = as.POSIXct("2023-08-31 21:45:25", tz = "UTC")),
-  list(ID = "PIN_CAM_13", start = as.POSIXct("2019-09-27 10:25:00", tz = "UTC"), end = as.POSIXct("2019-09-27 12:46:42", tz = "UTC"))
+  list(ID = "PIN_CAM_03", start = as.POSIXct("2019-09-10 11:53:03", tz = "UTC"), end = as.POSIXct("2019-09-10 12:25:37", tz = "UTC")),
+  list(ID = "PIN_CAM_06", start = as.POSIXct("2019-09-10 15:47:37", tz = "UTC"), end = as.POSIXct("2019-09-10 16:21:34", tz = "UTC")),
+  list(ID = "PIN_CAM_13", start = as.POSIXct("2019-09-27 10:25:00", tz = "UTC"), end = as.POSIXct("2019-09-27 12:46:42", tz = "UTC")),
+  list(ID = "PIN_CAM_25", start = as.POSIXct("2020-10-14 13:53:17", tz = "UTC"), end = NA),
+  list(ID = "PIN_CAM_32", start = as.POSIXct("2022-09-17 13:34:40", tz = "UTC"), end =  as.POSIXct("2022-09-18 10:31:52", tz = "UTC"))
 )
 deploy_periods <- do.call(rbind, lapply(deploy_list, as.data.frame))
 
@@ -370,7 +373,7 @@ filter_results <- filterDeploymentData(data = data_files,
 
 
 # Save the recorded plots to a PDF file for reviewing the filtered data.
-pdf("./plots/filtered_deployments-v2.pdf", width = 8.5, height = 5)
+pdf("./plots/filtered_deployments.pdf", width = 8.5, height = 5)
 for(i in 1:length(filter_results$plots)){
   replayPlot(filter_results$plots[[i]], reloadPkgs = FALSE)
 }
@@ -631,8 +634,8 @@ data_list  <- calculateTailBeats(data = data_files,
                                  plot.output.dir = "./plots/tail beat frequencies",
                                  return.data = FALSE,
                                  save.files = TRUE,
-                                 output.folder = "./data processed/processed/20Hz-tbf",
-                                 output.suffix = "-20Hz-tbf",
+                                 output.folder = "./data processed/processed/20Hz",
+                                 output.suffix = "-20Hz",
                                  n.cores = 1)
 
 
@@ -641,7 +644,7 @@ data_list  <- calculateTailBeats(data = data_files,
 ################################################################################
 
 # Retrieve the list of processed files
-data_files <- list.files("./data processed/processed/20Hz-tbf", full.names = TRUE)
+data_files <- list.files("./data processed/processed/20Hz", full.names = TRUE)
 
 # Initialize a list to store the loaded datasets
 processed_list <- vector("list", length(data_files))
@@ -678,11 +681,13 @@ summary_metadata$longitudeD <- sprintf("%.4f", summary_metadata$longitudeD)
 summary_metadata$latitudeD <- sprintf("%.4f", summary_metadata$latitudeD)
 
 # Create a new tag label
-summary_metadata$tag[grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "i-Pilot"
-summary_metadata$tag[!grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "G-Pilot"
-summary_metadata$tag <- paste(summary_metadata$tag, summary_metadata$typeCMD)
+summary_metadata$tag[grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "CAM"
+summary_metadata$tag[!grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "MS"
 summary_metadata <- summary_metadata[,-which(colnames(summary_metadata) %in% c("typeCMD", "type"))]
 summary_metadata <- summary_metadata[,c(1:6,9,7:8)]
+
+# Correct site label
+summary_metadata$site[summary_metadata$site == "SE_PICO"] <- "SE PICO"
 
 # Create a unified tag label by combining 'typeCMD' and 'type' columns, then remove the original columns
 #summary_metadata$typeCMD <- paste(summary_metadata$typeCMD, summary_metadata$type)
@@ -699,7 +704,7 @@ summary <- summarizeTagData(data = processed_list,
 print(summary)
 
 # Save the summary table as CSV
-write.csv(summary, file="./summary_table.csv", row.names = FALSE)
+write.csv2(summary, file = "./summary_table.csv", row.names = FALSE, fileEncoding = "UTF-8")
 
 
 ################################################################################

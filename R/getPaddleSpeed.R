@@ -14,7 +14,7 @@
 #' @param step.size Step size for overlapping windows in seconds (default: 1). Must be positive.
 #' @param min.freq.Hz Minimum frequency (Hz) to consider for peak detection (default: 0.1).
 #'   This should be chosen based on the expected minimum paddle wheel rotation frequency.
-#' @param max.freq.Hz Maximum frequency (Hz) to consider for peak detection (default: 5).
+#' @param max.freq.Hz Maximum frequency (Hz) to consider for peak detection (default: 100).
 #'   This should be chosen based on the expected maximum paddle wheel rotation frequency.
 #' @param calibration.slope Numeric value representing the slope of the calibration line
 #'   (speed = slope * frequency). (default: 0.25).
@@ -46,7 +46,7 @@
                             window.size = 5,
                             step.size = 1,
                             min.freq.Hz = 0.1,
-                            max.freq.Hz = 30,
+                            max.freq.Hz = 100,
                             calibration.slope,
                             smooth.window = NULL,
                             quality.check = TRUE,

@@ -294,16 +294,13 @@ checkSensorAnomalies <- function(data,
     # this ensures that the uncertainty is never less than the sensor's resolution
     sensor.uncertainty <- pmax(sensor_accuracy, sensor.resolution)
 
-    # calculate the uncertainty in the rate of change using error propagation
-    # the formula accounts for the uncertainty in sensor readings (sensor.uncertainty)
-    # the term for time uncertainty is ignored, assuming no uncertainty in time measurements (set to 0)
-    # sqrt((uncertainty due to value difference)^2 + (uncertainty due to time difference)^2)
-    rate_uncertainty <- sqrt((1 / dt * sensor.uncertainty)^2 + ((value_diff) / dt^2 * 0)^2)
+    # For rate calculations, use only the sensor resolution (precision), not the full accuracy
+    # This is because accuracy errors are systematic and cancel out in rate calculations
+    rate_uncertainty <- sqrt((1 / dt * sensor.resolution)^2 + ((value_diff) / dt^2 * 0)^2)
 
     # calculate rate of change
     # only compute the rate if the difference between consecutive values
-    # exceeds the combined uncertainty (sensor resolution + accuracy),
-    # ensuring minor fluctuations due to sensor noise are ignored.
+    # exceeds the rate uncertainty (based on sensor resolution)
     rate_of_change <- ifelse(abs(value_diff) > rate_uncertainty, value_diff / dt, NA)
 
 
@@ -401,7 +398,7 @@ checkSensorAnomalies <- function(data,
             interpolated_values_count <- interpolated_values_count + 1
           }
 
-        # multiple outliers in close proximity: treat as sensor malfunction
+          # multiple outliers in close proximity: treat as sensor malfunction
         } else {
           # save the flagged outlier before removing
           flagged_outliers <- c(flagged_outliers, group)

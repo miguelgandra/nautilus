@@ -415,7 +415,7 @@ processTagData <- function(data,
 
     # calculate sampling frequency
     sampling_freq <- nrow(individual_data) / length(unique(lubridate::floor_date(individual_data$datetime, "sec")))
-    sampling_freq <- plyr::round_any(sampling_freq, 5)
+    sampling_freq <- plyr::round_any(sampling_freq, 1)
 
     # store original attributes, excluding internal ones
     discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
@@ -575,8 +575,14 @@ processTagData <- function(data,
     # motion along the vertical (Z) axis (up and down, often from diving or wave action)
     individual_data[, heave := az - staticZ]
 
-    # calculate vertical speed
-    individual_data[, vertical_speed := c(NA, diff(depth) / as.numeric(diff(datetime), units = "secs"))]
+    # calculate vertical speed (using central diff)
+    individual_data[, vertical_speed := {
+      dz <- data.table::shift(depth, type = "lead") - data.table::shift(depth, type = "lag")
+      dt <- as.numeric(difftime(data.table::shift(datetime, type = "lead"),
+                                data.table::shift(datetime, type = "lag"),
+                                units = "secs"))
+      dz / dt
+    }]
 
     # smooth the signals using a moving average (optional for noise reduction)
     if(!is.null(motion.smoothing)){

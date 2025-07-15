@@ -1,34 +1,44 @@
 #######################################################################################################
-# Function to filter data based on video availability #################################################
+# Function to filter data based on video availability and annotation intervals #########################
 #######################################################################################################
 
-#' Filter data based on video availability periods
+#' Filter data based on video availability and annotation intervals
 #'
-#' This function subsets a list of data.tables to match the periods where video footage is available,
-#' based on metadata containing video start and end times. It can also adjust video end times
-#' based on annotation end markers.
+#' @description
+#' This function subsets a list of \code{data.table} objects in two steps:
+#' 1. First retains only periods where video footage was available (from video.metadata)
+#' 2. Then optionally further restricts to periods with manual annotations (from annotation.intervals)
+#'
+#' The function handles temporal jumps between videos by processing each video segment separately.
+#' Annotation intervals are only applied after establishing video-available periods.
+#'
+#' For annotation intervals, missing \code{start} or \code{end} values are automatically filled with:
+#' \itemize{
+#'   \item the earliest video start time for missing \code{start} values
+#'   \item the latest video end time for missing \code{end} values
+#' }
 #'
 #' @param data A \code{list} where each element is a \code{data.table} for a specific ID
 #' (e.g., a specific camera or animal). Each dataset should include a column for datetimes.
-#' @param video.metadata A \code{data.table} containing metadata for each video, with columns:
+#' @param video.metadata A \code{data.table} containing metadata for each video segment, with columns:
 #' \code{ID} (unique identifier), \code{start} (start datetime), and \code{end} (end datetime).
-#' @param annotation.ends A \code{data.table} containing adjusted end times for annotations,
-#' with columns: \code{ID} (unique identifier) and \code{annotation_end} (datetime).
-#' This table is used to override the 'end' time of the latest video segment for an ID.
-#' @param id.col A \code{character} string indicating the column name in \code{video.metadata}
-#' that contains the unique IDs matching the \code{data} list names. Default is \code{"ID"}.
+#' @param annotation.intervals An optional \code{data.frame} or \code{data.table} containing annotation intervals
+#' with columns: \code{ID}, \code{start}, and \code{end} (all datetimes). If \code{NULL} (default), 
+#' filtering is based solely on video availability.
+#' @param id.col A \code{character} string indicating the column name in \code{video.metadata} and
+#' \code{annotation.intervals} that contains the unique IDs matching the \code{data} list names. Default is \code{"ID"}.
 #' @param datetime.col A \code{character} string indicating the name of the datetime column
 #' in each dataset. Default is \code{"datetime"}.
 #'
-#' @return A list of filtered \code{data.table} objects, where each dataset contains only the rows
-#' that fall within the video availability periods specified in \code{video.metadata}.
+#' @return A \code{list} of filtered \code{data.table} objects, where each dataset contains only the rows
+#' falling within both the video availability periods and the annotation intervals (if provided).
 #' If no matching periods are found for a given ID, an empty \code{data.table} is returned.
+#'
 #' @export
-
 
 filterVideoPeriod <- function(data,
                               video.metadata,
-                              annotation.ends = NULL, 
+                              annotation.intervals = NULL,
                               id.col = "ID",
                               datetime.col = "datetime") {
   
@@ -51,11 +61,8 @@ filterVideoPeriod <- function(data,
   }
   
   # check that all data.tables contain the required columns
-  missing_id_col <- any(!sapply(data, function(dt) id.col %in% colnames(dt)))
   missing_datetime_col <- any(!sapply(data, function(dt) datetime.col %in% colnames(dt)))
-  if (missing_id_col) stop(sprintf("Column '%s' not found in at least one element of 'data'.", id.col), call. = FALSE)
   if (missing_datetime_col) stop(sprintf("Column '%s' not found in at least one element of 'data'.", datetime.col), call. = FALSE)
-  
   
   # ensure datetime column is of class POSIXct in all elements
   invalid_datetime_class <- any(!vapply(data, function(dt) inherits(dt[[datetime.col]], "POSIXct"), logical(1)))
@@ -76,13 +83,17 @@ filterVideoPeriod <- function(data,
     stop("Columns 'start' and 'end' in 'video.metadata' must be of class POSIXct.", call. = FALSE)
   }
   
-  # check annotation.ends if provided
-  if (!is.null(annotation.ends)) {
-    if (!all(c(id.col, "annotation_end") %in% colnames(annotation.ends))) {
-      stop("'annotation.ends' must contain columns 'ID' and 'annotation_end'.", call. = FALSE)
+  # check annotation.intervals if provided
+  if (!is.null(annotation.intervals)) {
+    # Allow data.frame or data.table
+    req_annot_cols <- c(id.col, "start", "end")
+    if (!all(req_annot_cols %in% colnames(annotation.intervals))) {
+      stop(sprintf("'annotation.intervals' must contain columns: %s",
+                   paste(req_annot_cols, collapse = ", ")), call. = FALSE)
     }
-    if (!inherits(annotation.ends$annotation_end, "POSIXct")) {
-      stop("Column 'annotation_end' in 'annotation.ends' must be of class POSIXct.", call. = FALSE)
+    if (!inherits(annotation.intervals$start, "POSIXct") ||
+        !inherits(annotation.intervals$end, "POSIXct")) {
+      stop("Columns 'start' and 'end' in 'annotation.intervals' must be of class POSIXct.", call. = FALSE)
     }
   }
   
@@ -90,32 +101,19 @@ filterVideoPeriod <- function(data,
   # Filter data ################################################################
   ##############################################################################
   
-  # calculate number of unique datasets
-  n_animals <- length(data)
-  
-  # feedback messages for the user
+  # verbose message
   cat(crayon::bold("Filtering data based on video availability\n"))
   
   # initialize an empty list to store filtered data
   data_subsetted <- vector("list", length(data))
   names(data_subsetted) <- names(data)
   
-  
   # iterate over each dataset in the input list
-  for (i in 1:n_animals) {
+  for (i in seq_along(data)) {
     
     # retrieve data for current ID
     data_individual <- data[[i]]
-    
-    # store original attributes before processing, excluding internal ones
-    if(data.table::is.data.table(data_individual)){
-      discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
-      original_attributes <- attributes(data_individual)
-      original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
-    }
-    
-    # retrieve animal ID
-    id <- unique(data_individual[[id.col]])[1]
+    id <- names(data)[i]
     
     # skip if no matching ID in video.metadata
     if (!id %in% video.metadata[[id.col]]) {
@@ -123,57 +121,84 @@ filterVideoPeriod <- function(data,
       next
     }
     
-    # print message
     cat(crayon::blue$bold(id))
     
     # extract relevant video metadata for the current ID
     tag_videos <- video.metadata[video.metadata[[id.col]] == id, ]
     
-    # Initialize an empty data.table to store segments for the current ID
-    filtered_segments_for_id <- data.table::data.table()
-    
-    # Get annotation end for the current ID, if it exists
-    current_annotation_end <- NULL
-    if (!is.null(annotation.ends) && id %in% annotation.ends[[id.col]]) {
-      current_annotation_end <- annotation.ends[annotation.ends[[id.col]] == id, "annotation_end", drop = TRUE]
-    }
-    
-    # Iterate over each video segment for the current ID
+    # first filter: extract only video-covered periods
+    video_filtered <- data.table::data.table()
     for (j in 1:nrow(tag_videos)) {
       video_start <- tag_videos$start[j]
       video_end <- tag_videos$end[j]
       
-      # If this is the last video segment for the current ID
-      # and an annotation end exists, adjust the video_end
-      if (j == nrow(tag_videos) && !is.null(current_annotation_end)) {
-        # Ensure the annotation_end does not extend beyond the original video_end
-        video_end <- min(video_end, current_annotation_end)
-      }
-      
-      # Subset the data.table using the current video segment's start and end times
       segment_data <- data_individual[data_individual[[datetime.col]] >= video_start &
-                                        data_individual[[datetime.col]] <= video_end,]
+                                        data_individual[[datetime.col]] <= video_end, ]
       
-      # If there's data in this segment, append it to the overall filtered data for the ID
       if (nrow(segment_data) > 0) {
-        filtered_segments_for_id <- rbind(filtered_segments_for_id, segment_data)
+        video_filtered <- rbind(video_filtered, segment_data)
       }
     }
     
-    data_subsetted[[i]] <- filtered_segments_for_id
+    # if no video data found, skip to next ID
+    if (nrow(video_filtered) == 0) {
+      cat(": No video data retained\n")
+      next
+    }
     
-    # calculate the duration of the subsetted period
+    # second filter: apply annotation intervals if provided
+    if (!is.null(annotation.intervals) && id %in% annotation.intervals[[id.col]]) {
+      annot_periods <- annotation.intervals[annotation.intervals[[id.col]] == id, ]
+      
+      # fix missing starts/ends
+      if (any(is.na(annot_periods$start))) {
+        earliest_video <- min(video_filtered[[datetime.col]])
+        annot_periods$start[is.na(annot_periods$start)] <- earliest_video
+      }
+      if (any(is.na(annot_periods$end))) {
+        latest_video <- max(video_filtered[[datetime.col]])
+        annot_periods$end[is.na(annot_periods$end)] <- latest_video
+      }
+      
+      # filter data within annotation periods
+      annotation_filtered <- data.table::data.table()
+      for (k in 1:nrow(annot_periods)) {
+        ann_start <- annot_periods$start[k]
+        ann_end <- annot_periods$end[k]
+        
+        # find overlap between annotation period and video-filtered data
+        annot_data <- video_filtered[video_filtered[[datetime.col]] >= ann_start &
+                                       video_filtered[[datetime.col]] <= ann_end, ]
+        
+        if (nrow(annot_data) > 0) {
+          annotation_filtered <- rbind(annotation_filtered, annot_data)
+        }
+      }
+      
+      data_subsetted[[i]] <- annotation_filtered
+    } else {
+      # no annotation intervals to apply
+      data_subsetted[[i]] <- video_filtered
+    }
+    
+    # print retention message
     if (nrow(data_subsetted[[i]]) > 0) {
-      subsetted_period <- difftime(max(data_subsetted[[i]][[datetime.col]]), min(data_subsetted[[i]][[datetime.col]]))
-      # print how much time was retained
-      cat(sprintf(": %.1f %s retained\n", as.numeric(subsetted_period), attr(subsetted_period, "units")))
+      
+      # calculate sampling interval (time between consecutive observations)
+      time_diff <- as.numeric(difftime(data_subsetted[[i]][[datetime.col]][2], 
+                                       data_subsetted[[i]][[datetime.col]][1], 
+                                       units = "secs"))
+      
+      # calculate total coverage duration (number of observations * sampling interval)
+      total_coverage <- nrow(data_subsetted[[i]]) * time_diff
+      
+      cat(sprintf(": %s retained\n", .formatDuration(total_coverage)))
     } else {
       cat(": No data retained\n")
     }
   }
   
-  
-  # return results
+  # remove NULL elements and return
   data_subsetted <- Filter(Negate(is.null), data_subsetted)
   return(data_subsetted)
 }

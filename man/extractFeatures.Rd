@@ -16,6 +16,7 @@ extractFeatures(
   downsample.to = NULL,
   response.col = NULL,
   response.aggregation = "majority",
+  circular.variables = c("heading", "roll"),
   return.data = TRUE,
   save.files = FALSE,
   output.folder = NULL,
@@ -33,7 +34,7 @@ Must include the variables specified in \code{variables}.}
 If \code{parameter.grid} is supplied, this argument is ignored. If both \code{variables} and \code{parameter.grid} are \code{NULL}, an error will be thrown.}
 
 \item{metrics}{(Optional) A character vector specifying the metrics to calculate. Supported metrics:
-"mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy".
+"mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy", "mrl".
 If \code{parameter.grid} is supplied, this argument is ignored. If both \code{metrics} and \code{parameter.grid} are \code{NULL}, an error will be thrown.}
 
 \item{parameter.grid}{(Optional) A data frame with two columns: \code{variable} and \code{metric}.
@@ -69,6 +70,8 @@ It must be binary (i.e., containing values 0 or 1).}
 Ignored if \code{response.col = NULL}.
 }}
 
+\item{circular.variables}{Character vector specifying variables that should be treated as circular (e.g., angles in degrees). Defaults to "heading" and "roll"}
+
 \item{return.data}{Logical. If \code{TRUE}, the processed data will be returned as a list. Defaults to \code{TRUE}.}
 
 \item{save.files}{Logical. If \code{TRUE}, the processed data for each individual will be saved as a separate RDS file. Defaults to \code{FALSE}.}
@@ -94,7 +97,7 @@ the temporal alignment of the sliding windows.
 }
 }
 \description{
-This function calculates specified metrics (e.g., mean, standard deviation) for selected variables over a sliding window.
+This function calculates specified metrics (e.g., mean, standard deviation, circular statistics) for selected variables over a sliding window.
 It can either retain the temporal resolution of the dataset or aggregate data into distinct, non-overlapping windows.
 This is useful for preparing the dataset for machine learning or other analytical methods that require a structured set of features.
 }
@@ -109,9 +112,22 @@ This function supports the following metrics:
 \item "max": The maximum value of the data. It indicates the largest value in the dataset within each window.
 \item "iqr": The interquartile range of the data. It is the difference between the 75th percentile (Q3) and the 25th percentile (Q1) of the dataset, measuring the spread of the middle 50\% of the data.
 \item "sum": The sum of the data. It adds up all the values in the dataset within each window.
+\item "rate": Average rate of change per second of the data values. This metric quantifies how fast the variable changes over time within each window.
 \item "energy": The sum of the squares of the data. It reflects the magnitude of the values, commonly used in signal processing and analysis of periodicity.
 \item "skewness": The skewness of the data, a measure of the asymmetry of the distribution. A positive value indicates a right-skewed distribution, while a negative value indicates a left-skewed distribution.
 \item "kurtosis": The kurtosis of the data, a measure of the "tailedness" or sharpness of the distribution. High kurtosis indicates heavy tails, while low kurtosis indicates lighter tails.
 \item "entropy": The entropy of the data, which measures the unpredictability or randomness. High entropy values indicate more uncertainty or randomness in the data, while low values suggest more predictability.
+}
+
+For circular variables, the function supports:
+\itemize{
+\item "mean": Directional average accounting for wrap-around.
+\item "median": Middle value in circular space.
+\item "sd": Angular dispersion (0° = no dispersion).
+\item "range": Shortest arc containing all angles.
+\item "iqr": Middle 50\% of angles in circular space.
+\item "rate": Average rate of angular change per second, accounting for wrap-around. This represents how quickly the circular variable changes over time.
+\item "mrl": Mean resultant length, indicating concentration of circular values. (0 = uniform, 1 = identical directions).
+Pitch (-90° to 90°) is treated as linear (by default) since it represents inclination rather than direction.
 }
 }

@@ -14,6 +14,7 @@ calculateTailBeats(
   smooth.window = 10,
   max.rows.per.batch = 2e+05,
   ridge.only = FALSE,
+  ridge.threshold = 0.1,
   power.ratio.threshold = NULL,
   max.interp.gap = 10,
   plot.wavelet = TRUE,
@@ -56,6 +57,11 @@ Lower values reduce memory usage but may increase processing time for very large
 
 \item{ridge.only}{Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
 in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.}
+
+\item{ridge.threshold}{Scale factor used in the ridge detection step via \code{WaveletComp::ridge()}.
+A larger value results in a smoother ridge and potentially fewer oscillations detected,
+while a smaller value increases sensitivity to local variations in the wavelet power spectrum.
+Default is \code{0.1}.}
 
 \item{power.ratio.threshold}{Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
 for a frequency to be considered valid. NULL disables this filter. Default is NULL.}
@@ -130,8 +136,9 @@ The function implements a comprehensive workflow for tail beat frequency estimat
 \strong{Frequency Detection Methods:}
 \itemize{
 \item \code{ridge.only = TRUE}: Conservative approach using only connected maxima (ridges)
-in the wavelet power spectrum. Most robust against noise but may miss weaker signals.
-
+in the wavelet power spectrum, identified via \code{WaveletComp::ridge()}. This method is
+the most robust against noise but may miss weaker signals. The behaviour can be fine-tuned
+with the \code{scale.factor} argument, which controls the smoothness of the ridge.
 \item \code{ridge.only = FALSE}: More inclusive approach using all local maxima, with optional
 quality filtering via \code{power.ratio.threshold}.
 }

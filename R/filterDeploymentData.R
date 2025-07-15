@@ -33,16 +33,27 @@
 #' @param depth.col A string specifying the name of the column that contains depth measurements. Depth data is
 #' used for detecting deployment periods (default is "depth").
 #' @param custom.deployment.times An optional `data.frame` or `data.table` with three columns: `ID`, `start`, and `end`.
-#' This allows users to manually specify deployment periods for each individual, overriding the depth-based detection.
-#' `start` and `end` must be in "POSIXct" format. If provided, `depth.threshold`, `variance.threshold`,
-#' and `max.changepoints` will be ignored. Default is `NULL`.
+#' This allows users to manually specify deployment periods for each individual, overriding or supplementing the depth-based detection.
+#' `start` and `end` must be in "POSIXct" format. Users can provide:
+#' \itemize{
+#'   \item Both `start` and `end` times to fully override automatic detection
+#'   \item Only `start` time (with `end` as NA) - the end time will be estimated using depth analysis
+#'   \item Only `end` time (with `start` as NA) - the start time will be estimated using depth analysis
+#' }
+#' When partial times are provided, the missing boundary is inferred using the same depth-based changepoint analysis
+#' as the automated approach. If provided, `depth.threshold`, `variance.threshold`, and `max.changepoints`
+#' are ignored for fully specified periods but used for estimating missing boundaries in partial specifications.
+#' Default is `NULL`.
 #' @param depth.threshold A numeric value specifying the minimum mean depth to classify a segment as part of
-#' the deployment period (default is 3.5). This parameter is ignored if `custom.deployment.times` is provided.
+#' the deployment period (default is 3.5). This parameter is ignored for fully specified custom deployment times
+#' but used when estimating missing boundaries in partial custom specifications.
 #' @param variance.threshold A numeric value specifying the minimum variance in depth measurements to classify
 #' a segment as part of the deployment period. Segments with variance below this value are considered spurious (default is 6).
-#' This parameter is ignored if `custom.deployment.times` is provided.
+#' This parameter is ignored for fully specified custom deployment times but used when estimating missing boundaries
+#' in partial custom specifications.
 #' @param max.changepoints An integer specifying the maximum number of changepoints to detect (default is 6).
-#' This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored if `custom.deployment.times` is provided.
+#' This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored
+#' for fully specified custom deployment times but used when estimating missing boundaries in partial custom specifications.
 #' @param display.plots A logical value indicating whether the diagnostic plots should be displayed.
 #' These plots generate diagnostic visuals showing depth and additional metrics,
 #' assisting users in reviewing the extracted deployment periods.
@@ -410,6 +421,9 @@ filterDeploymentData <- function(data,
     ############################################################################
 
     valid_deployment_times <- FALSE
+    partial_deployment_times <- FALSE
+    custom_start_only <- FALSE
+    custom_end_only <- FALSE
 
     if (!is.null(custom.deployment.times)) {
 
@@ -419,29 +433,62 @@ filterDeploymentData <- function(data,
       # use custom periods if available
       if (nrow(custom_period) > 0) {
 
-        cat("Using custom deployment times\n")
-        attachtime <- custom_period$start[1]
-        poptime <- custom_period$end[1]
+        has_start <- !is.na(custom_period$start[1])
+        has_end <- !is.na(custom_period$end[1])
 
-        # find corresponding indices in reduced_data
-        attach_idx <- which.min(abs(reduced_data[[datetime.col]] - attachtime))
-        pop_idx <- which.min(abs(reduced_data[[datetime.col]] - poptime))
+        # case 1: both start and end are provided
+        if (has_start && has_end) {
+          cat("Using custom deployment times (full period)\n")
+          attachtime <- custom_period$start[1]
+          poptime <- custom_period$end[1]
 
-        # verify custom periods are within data range
-        if (attachtime < first_datetime || poptime > last_datetime) {
-          message(paste("Custom period extends beyond data range, using depth-based approach instead"))
-        } else {
-          valid_deployment_times <- TRUE
+          # find corresponding indices in reduced_data
+          attach_idx <- which.min(abs(reduced_data[[datetime.col]] - attachtime))
+          pop_idx <- which.min(abs(reduced_data[[datetime.col]] - poptime))
+
+          # verify custom periods are within data range
+          if (attachtime < first_datetime || poptime > last_datetime) {
+            message(paste("Custom period extends beyond data range, using depth-based approach instead"))
+          } else {
+            valid_deployment_times <- TRUE
+          }
+
+        # case 2: only start is provided
+        } else if (has_start && !has_end) {
+          cat("Using custom start time, estimating end time\n")
+          partial_deployment_times <- TRUE
+          custom_start_only <- TRUE
+          attachtime <- custom_period$start[1]
+
+          # verify start time is within data range
+          if (attachtime < first_datetime || attachtime > last_datetime) {
+            message(paste("Custom start time is outside data range, using depth-based approach instead"))
+          } else {
+            attach_idx <- which.min(abs(reduced_data[[datetime.col]] - attachtime))
+          }
+
+        # case 3: only end is provided
+        } else if (!has_start && has_end) {
+          cat("Using custom end time, estimating start time\n")
+          partial_deployment_times <- TRUE
+          custom_end_only <- TRUE
+          poptime <- custom_period$end[1]
+
+          # verify end time is within data range
+          if (poptime < first_datetime || poptime > last_datetime) {
+            message(paste("Custom end time is outside data range, using depth-based approach instead"))
+          } else {
+            pop_idx <- which.min(abs(reduced_data[[datetime.col]] - poptime))
+          }
         }
       }
     }
-
 
     ############################################################################
     # Add temporal buffer for changepoint analysis #############################
     ############################################################################
 
-    # if not valid custom deployment periods were supplied
+    # if not valid custom deployment periods were supplied OR partial times need estimation
     if(!valid_deployment_times){
 
       # add 1 hour of 0-depth data before the first and after the last datetime
@@ -493,14 +540,14 @@ filterDeploymentData <- function(data,
       spurious_segments <- which(segment_stats$mean < depth.threshold | segment_stats$variance < variance.threshold)
 
       # check if no valid deployment segments are identified
-      if(length(deployment_segments)==0){
+      if (length(deployment_segments) == 0) {
         # set flag
         valid_dataset <- FALSE
         # notify that the dataset is discarded
         message("No valid deployment segments detected. Dataset discarded.")
         # assign attach_idx and pop_idx when no valid segments are found
-        attach_idx <- nrow(reduced_data)+1
-        pop_idx <-  nrow(reduced_data)+1
+        attach_idx <- nrow(reduced_data) + 1
+        pop_idx <- nrow(reduced_data) + 1
         # calculate accurate stats for invalid deployment
         original_rows <- nrow(individual_data)
         kept_rows <- 0
@@ -512,33 +559,64 @@ filterDeploymentData <- function(data,
         cat("Filtered dataset size: ~ 0\n")
         cat(sprintf("Rows removed: ~ %s\n", .format_large_number(original_rows)))
 
-      }else{
+      } else {
 
-        # identify the pre-deployment segment
-        if(any(spurious_segments < min(deployment_segments))){
-          pre_deployment <- max(spurious_segments[spurious_segments < min(deployment_segments)])
-        }else{
-          pre_deployment <- max(spurious_segments[spurious_segments <= min(deployment_segments)])
+        # handle different scenarios based on partial custom times
+        if (partial_deployment_times) {
+
+          if (custom_start_only) {
+            # custom start provided, estimate end using depth analysis
+            # find the post-deployment segment after the custom start
+            if (any(spurious_segments > max(deployment_segments))) {
+              post_deployment <- min(spurious_segments[spurious_segments > max(deployment_segments)])
+            } else {
+              post_deployment <- min(spurious_segments[spurious_segments >= max(deployment_segments)])
+            }
+            pop_idx <- segment_stats$start[post_deployment] - 1
+            poptime <- reduced_data[[datetime.col]][pop_idx]
+
+          } else if (custom_end_only) {
+            # custom end provided, estimate start using depth analysis
+            # find the pre-deployment segment before the custom end
+            if (any(spurious_segments < min(deployment_segments))) {
+              pre_deployment <- max(spurious_segments[spurious_segments < min(deployment_segments)])
+            } else {
+              pre_deployment <- max(spurious_segments[spurious_segments <= min(deployment_segments)])
+            }
+            attach_idx <- segment_stats$end[pre_deployment] + 1
+            attachtime <- reduced_data[[datetime.col]][attach_idx]
+          }
+
+          # set valid_deployment_times to TRUE since we now have both times
+          valid_deployment_times <- TRUE
+
+        } else {
+          # standard automated approach - estimate both start and end
+          # identify the pre-deployment segment
+          if (any(spurious_segments < min(deployment_segments))) {
+            pre_deployment <- max(spurious_segments[spurious_segments < min(deployment_segments)])
+          } else {
+            pre_deployment <- max(spurious_segments[spurious_segments <= min(deployment_segments)])
+          }
+          pre_segment_end <- segment_stats$end[pre_deployment]
+
+          # identify the post-deployment segment
+          if (any(spurious_segments > max(deployment_segments))) {
+            post_deployment <- min(spurious_segments[spurious_segments > max(deployment_segments)])
+          } else {
+            post_deployment <- min(spurious_segments[spurious_segments >= max(deployment_segments)])
+          }
+          post_segment_start <- segment_stats$start[post_deployment]
+
+          # assign attach_idx and pop_idx
+          attach_idx <- pre_segment_end + 1
+          pop_idx <- post_segment_start - 1
+
+          attachtime <- reduced_data[[datetime.col]][attach_idx]
+          poptime <- reduced_data[[datetime.col]][pop_idx]
         }
-        pre_segment_end <- segment_stats$end[pre_deployment]
-
-        # identify the post-deployment segment
-        if(any(spurious_segments > max(deployment_segments))){
-          post_deployment <- min(spurious_segments[spurious_segments > max(deployment_segments)])
-        }else{
-          post_deployment <- min(spurious_segments[spurious_segments >= max(deployment_segments)])
-        }
-        post_segment_start <- segment_stats$start[post_deployment]
-
-        # assign attach_idx and pop_idx
-        attach_idx <- pre_segment_end + 1
-        pop_idx <- post_segment_start - 1
-
-        attachtime <- reduced_data[[datetime.col]][attach_idx]
-        poptime <- reduced_data[[datetime.col]][pop_idx]
       }
     }
-
 
     ##########################################################################
     # Print to console #######################################################

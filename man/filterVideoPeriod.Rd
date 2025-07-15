@@ -2,12 +2,12 @@
 % Please edit documentation in R/filterVideoPeriod.R
 \name{filterVideoPeriod}
 \alias{filterVideoPeriod}
-\title{Filter data based on video availability periods}
+\title{Filter data based on video availability and annotation intervals}
 \usage{
 filterVideoPeriod(
   data,
   video.metadata,
-  annotation.ends = NULL,
+  annotation.intervals = NULL,
   id.col = "ID",
   datetime.col = "datetime"
 )
@@ -16,26 +16,37 @@ filterVideoPeriod(
 \item{data}{A \code{list} where each element is a \code{data.table} for a specific ID
 (e.g., a specific camera or animal). Each dataset should include a column for datetimes.}
 
-\item{video.metadata}{A \code{data.table} containing metadata for each video, with columns:
+\item{video.metadata}{A \code{data.table} containing metadata for each video segment, with columns:
 \code{ID} (unique identifier), \code{start} (start datetime), and \code{end} (end datetime).}
 
-\item{annotation.ends}{A \code{data.table} containing adjusted end times for annotations,
-with columns: \code{ID} (unique identifier) and \code{annotation_end} (datetime).
-This table is used to override the 'end' time of the latest video segment for an ID.}
+\item{annotation.intervals}{An optional \code{data.frame} or \code{data.table} containing annotation intervals
+with columns: \code{ID}, \code{start}, and \code{end} (all datetimes). If \code{NULL} (default),
+filtering is based solely on video availability.}
 
-\item{id.col}{A \code{character} string indicating the column name in \code{video.metadata}
-that contains the unique IDs matching the \code{data} list names. Default is \code{"ID"}.}
+\item{id.col}{A \code{character} string indicating the column name in \code{video.metadata} and
+\code{annotation.intervals} that contains the unique IDs matching the \code{data} list names. Default is \code{"ID"}.}
 
 \item{datetime.col}{A \code{character} string indicating the name of the datetime column
 in each dataset. Default is \code{"datetime"}.}
 }
 \value{
-A list of filtered \code{data.table} objects, where each dataset contains only the rows
-that fall within the video availability periods specified in \code{video.metadata}.
+A \code{list} of filtered \code{data.table} objects, where each dataset contains only the rows
+falling within both the video availability periods and the annotation intervals (if provided).
 If no matching periods are found for a given ID, an empty \code{data.table} is returned.
 }
 \description{
-This function subsets a list of data.tables to match the periods where video footage is available,
-based on metadata containing video start and end times. It can also adjust video end times
-based on annotation end markers.
+This function subsets a list of \code{data.table} objects in two steps:
+\enumerate{
+\item First retains only periods where video footage was available (from video.metadata)
+\item Then optionally further restricts to periods with manual annotations (from annotation.intervals)
+}
+
+The function handles temporal jumps between videos by processing each video segment separately.
+Annotation intervals are only applied after establishing video-available periods.
+
+For annotation intervals, missing \code{start} or \code{end} values are automatically filled with:
+\itemize{
+\item the earliest video start time for missing \code{start} values
+\item the latest video end time for missing \code{end} values
+}
 }

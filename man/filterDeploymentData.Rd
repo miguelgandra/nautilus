@@ -39,19 +39,30 @@ This column must be in "POSIXct" format for proper processing (default is "datet
 used for detecting deployment periods (default is "depth").}
 
 \item{custom.deployment.times}{An optional \code{data.frame} or \code{data.table} with three columns: \code{ID}, \code{start}, and \code{end}.
-This allows users to manually specify deployment periods for each individual, overriding the depth-based detection.
-\code{start} and \code{end} must be in "POSIXct" format. If provided, \code{depth.threshold}, \code{variance.threshold},
-and \code{max.changepoints} will be ignored. Default is \code{NULL}.}
+This allows users to manually specify deployment periods for each individual, overriding or supplementing the depth-based detection.
+\code{start} and \code{end} must be in "POSIXct" format. Users can provide:
+\itemize{
+\item Both \code{start} and \code{end} times to fully override automatic detection
+\item Only \code{start} time (with \code{end} as NA) - the end time will be estimated using depth analysis
+\item Only \code{end} time (with \code{start} as NA) - the start time will be estimated using depth analysis
+}
+When partial times are provided, the missing boundary is inferred using the same depth-based changepoint analysis
+as the automated approach. If provided, \code{depth.threshold}, \code{variance.threshold}, and \code{max.changepoints}
+are ignored for fully specified periods but used for estimating missing boundaries in partial specifications.
+Default is \code{NULL}.}
 
 \item{depth.threshold}{A numeric value specifying the minimum mean depth to classify a segment as part of
-the deployment period (default is 3.5). This parameter is ignored if \code{custom.deployment.times} is provided.}
+the deployment period (default is 3.5). This parameter is ignored for fully specified custom deployment times
+but used when estimating missing boundaries in partial custom specifications.}
 
 \item{variance.threshold}{A numeric value specifying the minimum variance in depth measurements to classify
 a segment as part of the deployment period. Segments with variance below this value are considered spurious (default is 6).
-This parameter is ignored if \code{custom.deployment.times} is provided.}
+This parameter is ignored for fully specified custom deployment times but used when estimating missing boundaries
+in partial custom specifications.}
 
 \item{max.changepoints}{An integer specifying the maximum number of changepoints to detect (default is 6).
-This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored if \code{custom.deployment.times} is provided.}
+This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored
+for fully specified custom deployment times but used when estimating missing boundaries in partial custom specifications.}
 
 \item{display.plots}{A logical value indicating whether the diagnostic plots should be displayed.
 These plots generate diagnostic visuals showing depth and additional metrics,

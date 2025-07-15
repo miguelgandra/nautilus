@@ -13,6 +13,9 @@
 # Install and load required packages ###########################################
 ################################################################################
 
+# Check if the "readxl" package is installed; if not, install it
+if(!require(readxl)){install.packages("readxl"); library(readxl)}
+
 # Install and load the 'nautilus' package from GitHub
 #devtools::install_github("miguelgandra/nautilus")
 library(nautilus)
@@ -48,17 +51,98 @@ animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 ################################################################################
 
 # Loop through each animal dataset and load the processed data in RDS format.
-data_files <- list.files("./data processed/filtered/20Hz", full.names = TRUE)
-filtered_list <- vector("list", length(data_files))
+data_files <- list.files("./data processed/processed/20Hz-tbf", full.names = TRUE)
+processed_list <- vector("list", length(data_files))
 for(i in 1:length(data_files)){
   # Save the combined list as an RDS file
-  filtered_list[[i]] <- readRDS(data_files[i])
-  names(filtered_list)[i] <- attributes(filtered_list[[i]])$id
+  processed_list[[i]] <- readRDS(data_files[i])
+  names(processed_list)[i] <- attributes(processed_list[[i]])$id
 }
 
-# Select or exclude specific folders within the source data folder (if needed)
-filtered_list <- filtered_list[48:51]
-gc()
+
+################################################################################
+## Analyze Relationship Between Tail-Beat Frequency and Paddle Speed ###########
+################################################################################
+
+#
+qualifying_IDs <- c()
+for (i in names(processed_list)) {
+  # Check if 'tbf_hz' has at least one non-NA value
+  has_non_NA_tbf <- any(!is.na( processed_list[[i]][["tbf_hz"]]))
+  # Check if 'paddle_speed' has at least one non-NA value
+  has_non_NA_paddle <- any(!is.na( processed_list[[i]][["paddle_speed"]]))
+  # If both conditions are met, add the name to our list
+  if (has_non_NA_tbf && has_non_NA_paddle) qualifying_IDs <- c(qualifying_IDs, i)
+}
+
+
+
+
+# Define window parameters
+window_size_sec <- 5
+
+# Define horizonal swimming thresholds
+max_vertical_speed <- 0.5  # m/s
+min_duration <- 60  # seconds (minimum sustained horizontal swimming)
+
+# Process each dataset in the list
+speed_results <- lapply(processed_list, function(dt) {
+
+  # Check required columns exist
+  if (!all(c("tbf_hz", "paddle_speed", "vertical_speed") %in% names(dt))) return(NULL)
+  all_na_tbf <- all(is.na(dt$tbf_hz))
+  all_na_paddle <- all(is.na(dt$paddle_speed))
+  if(all_na_tbf && all_na_paddle) return(NULL)
+
+  # Fetch sampling rate
+  sampling_rate <- attributes(dt)$processed.sampling.frequency
+
+  # Flag horizontal frames
+  dt[, is_horizontal := abs(vertical_speed) < max_vertical_speed]
+
+  # Identify sustained horizontal bouts (run length encoding)
+  dt[, bout_id := data.table::rleid(is_horizontal)]
+
+  # Calculate bout durations and filter
+  bout_durations <- dt[, .(duration = max(datetime) - min(datetime)), by = bout_id][duration >= min_duration]
+
+  # Calculate upper 25th percentile of tbf power ratios
+  tbf_threshold <- quantile(dt$tbf_power_ratio, probs = 0.8, na.rm = TRUE)
+
+  # Subset only qualifying horizontal bouts
+  horizontal_dt <- dt[bout_id %in% bout_durations$bout_id & is_horizontal == TRUE]
+  horizontal_dt <- horizontal_dt[tbf_power_ratio >= tbf_threshold]
+
+  # Proceed only if sufficient data remains
+  if (nrow(horizontal_dt) < min_duration * sampling_rate) return(NULL)
+
+  # Create time windows (5s intervals)
+  horizontal_dt[, window_id := floor(as.numeric(datetime) / window_size_sec)]
+
+  # Calculate window averages (remove NA values)
+  window_avgs <- horizontal_dt[, .(mean_tbf = mean(tbf_hz, na.rm = TRUE),
+                                   mean_speed = mean(paddle_speed, na.rm = TRUE),
+                                   n_obs = .N),
+                               by = .(window_id)]
+
+  # Filter windows with sufficient data (e.g., at least 50% coverage)
+  window_avgs <- window_avgs[n_obs >= (window_size_sec * sampling_rate * 0.5)]
+
+  # Only proceed if we have at least 3 windows with data
+  if (nrow(window_avgs) < 3) return(NULL)
+
+  # Fit linear model for this individual/trial
+  model <- lm(mean_speed ~ mean_tbf, data = window_avgs)
+
+  plot(mean_speed ~ mean_tbf, data = window_avgs)
+
+  # Return results
+  list(window_data = window_avgs,
+       model_summary = summary(model),
+       coefficients = coef(model),
+       r_squared = summary(model)$r.squared)
+})
+
 
 
 
@@ -67,34 +151,115 @@ gc()
 ################################################################################
 
 # 10 km/h as a conservative max cruising speed for whale sharks
-filtered_list <- filterLocations(data = filtered_list,
-                                 id.metadata = animal_metadata,
-                                 deploy.lon.col = "deploy_lon",
-                                 deploy.lat.col = "deploy_lat",
-                                 max.speed.kmh = 10,
-                                 max.distance.km = 200,
-                                 min.satellites = NULL,
-                                 plot = TRUE)
+processed_list <- filterLocations(data = processed_list,
+                                  id.metadata = animal_metadata,
+                                  deploy.lon.col = "deploy_lon",
+                                  deploy.lat.col = "deploy_lat",
+                                  max.speed.kmh = 10,
+                                  max.distance.km = 200,
+                                  min.satellites = NULL,
+                                  plot = TRUE)
 
 
 ################################################################################
 # Estimate Pseudo Tracks - Dead Reckoning ######################################
 ################################################################################
 
-pseudo_tracks <- estimate3DPseudoTrack(data = filtered_list,
+
+for (i in 1:length(processed_list)){
+
+  individual_data <- processed_list[[i]]
+  individual_data$lon[individual_data$position_type=="Metadata [deploy]"] <- NA
+  individual_data$lat[individual_data$position_type=="Metadata [deploy]"] <- NA
+  has_locs <- any(!is.na(individual_data$lon) & !is.na(individual_data$lat))
+  if(has_locs){
+    lon <- individual_data$lon
+    lat <- individual_data$lat
+  }else{
+    lon <- NULL
+    lat <- NULL
+  }
+
+  gundog_result <- Gundog.Tracks(TS = individual_data$datetime,
+                                 h = individual_data$heading,
+                                 v = 0.5,
+                                 elv = individual_data$depth,
+                                 ch = NULL,
+                                 cs = NULL,
+                                 m = 1,
+                                 c = 1,
+                                 ME = 1,
+                                 la = attributes(individual_data)$deployment.info$lat,
+                                 lo = attributes(individual_data)$deployment.info$lon,
+                                 VP.lat = lon,
+                                 VP.lon = lat,
+                                 method="all",
+                                 Outgoing = TRUE,
+                                 bound = FALSE,
+                                 plot = FALSE)
+
+  if(!has_locs) {
+    gundog_result <- gundog_result[,c("Timestamp", "DR.longitude", "DR.latitude",
+                                      "DR.distance.2D", "DR.distance.3D",
+                                      "DR.speed.2D", "DR.speed.3D")]
+    colnames(gundog_result) <- c("datetime", "pseudo_lon", "pseudo_lat", "pseudo_distance_2D",
+                                 "pseudo_distance_3D", "pseudo_speed_2D", "pseudo_speed_3D")
+  }else{
+    gundog_result <- gundog_result[,c("Timestamp", "DR.longitude.corr", "DR.latitude.corr",
+                                      "DR.distance.2D", "DR.distance.3D",
+                                      "DR.speed.2D", "DR.speed.3D")]
+    colnames(gundog_result) <- c("datetime", "pseudo_lon", "pseudo_lat", "pseudo_distance_2D",
+                                 "pseudo_distance_3D", "pseudo_speed_2D", "pseudo_speed_3D")
+  }
+
+  # merge
+  pseudo_tracks <- merge(individual_data, gundog_result, by="datetime")
+
+
+
+
+pseudo_tracks <- calculateTortuosity(data,
+                                     id.col = "ID",
+                                     lon.col = "lon",
+                                     lat.col = "lat",
+                                     datetime.col = "datetime",
+                                     window.size = 10,
+                                     metrics = "all",
+                                     time.window = 24,
+                                     min.points = 5)
+
+
+
+
+pseudo_tracks <- estimate3DPseudoTrack(data = processed_list[1],
                                        id.metadata = animal_metadata,
+                                       dba.col = "vedba",
                                        deploy.lon.col = "deploy_lon",
                                        deploy.lat.col = "deploy_lat",
-                                       animal.mass = 15000,
-                                       water.density = 1025,
-                                       tag.drag.coef = 1.2,
-                                       tag.area = 0.015,
-                                       max.speed = 3,
-                                       vpc.method = "distance",
-                                       vpc.thresh = 1000,
-                                       vpc.dist.step = 1,
-                                       vpc.bound = TRUE,
+                                       sampling.freq = 20,
+                                       speed.model = "DBA",
+                                       speed.coef = 1.0,
+                                       speed.intercept = 0.0,
+                                       fixed.speed = 1.0,
+                                       smooth.window = 5,
+                                       smooth.type = "median",
+                                       vpc.method = "linear",
+                                       vpc.freq = 60,
                                        cores = 4)
+
+pseudo_tracks <- as.data.frame(pseudo_tracks$PIN_01)
+p3 <- ggplot(pseudo_tracks, aes(x = pseudo_lon, y = pseudo_lat)) +
+  geom_path(color = "blue") +
+  # add points from data_plot, color-coded by position_type
+  geom_point(data = data_plot, aes(x = lon, y = lat, color = position_type)) +
+  theme_bw() +
+  ggtitle(data_plot$ID[1]) +  # Using [1] to get a single value if ID is the same for all points
+  scale_x_continuous(labels = function(x) sprintf("%.5f", x)) +
+  scale_y_continuous(labels = function(x) sprintf("%.5f", x)) +
+  # Optional: customize the color scale if needed
+  scale_color_discrete(name = "Position Type")
+print(p3)
+
 
 
 

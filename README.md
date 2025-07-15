@@ -1,5 +1,5 @@
 
-# nautilus <img src="resources/nautilus-logo.png" align="right" width="100" />
+# nautilus <img src="inst/resources/nautilus-logo.png" align="right" width="100" />
 
 [![Project Status: Work in Progress](https://img.shields.io/badge/status-WIP-orange)](https://www.repostatus.org/#wip)  
 [![](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)

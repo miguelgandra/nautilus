@@ -28,6 +28,10 @@
 #' Set to 0 to disable smoothing. Default is 10 seconds.
 #' @param ridge.only Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
 #' in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.
+#' @param ridge.threshold Scale factor used in the ridge detection step via \code{WaveletComp::ridge()}.
+#' A larger value results in a smoother ridge and potentially fewer oscillations detected,
+#' while a smaller value increases sensitivity to local variations in the wavelet power spectrum.
+#' Default is \code{0.1}.
 #' @param power.ratio.threshold Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
 #' for a frequency to be considered valid. NULL disables this filter. Default is NULL.
 #' @param max.interp.gap Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
@@ -81,8 +85,9 @@
 #' \strong{Frequency Detection Methods:}
 #' \itemize{
 #'   \item \code{ridge.only = TRUE}: Conservative approach using only connected maxima (ridges)
-#'         in the wavelet power spectrum. Most robust against noise but may miss weaker signals.
-#'
+#'         in the wavelet power spectrum, identified via \code{WaveletComp::ridge()}. This method is
+#'         the most robust against noise but may miss weaker signals. The behaviour can be fine-tuned
+#'         with the \code{scale.factor} argument, which controls the smoothness of the ridge.
 #'   \item \code{ridge.only = FALSE}: More inclusive approach using all local maxima, with optional
 #'         quality filtering via \code{power.ratio.threshold}.
 #' }
@@ -134,6 +139,7 @@ calculateTailBeats <- function(data,
                                smooth.window = 10,
                                max.rows.per.batch = 2e5,
                                ridge.only = FALSE,
+                               ridge.threshold = 0.1,
                                power.ratio.threshold = NULL,
                                max.interp.gap = 10,
                                plot.wavelet = TRUE,
@@ -601,6 +607,7 @@ calculateTailBeats <- function(data,
         min.freq.Hz = min.freq.Hz,
         max.freq.Hz = max.freq.Hz,
         ridge.only = ridge.only,
+        ridge.threshold = ridge.threshold,
         power.ratio.threshold = power.ratio.threshold,
         max.interp.gap = max.interp.gap,
         animal_id = animal_id
@@ -685,6 +692,7 @@ calculateTailBeats <- function(data,
           min.freq.Hz = min.freq.Hz,
           max.freq.Hz = max.freq.Hz,
           ridge.only = ridge.only,
+          ridge.threshold = ridge.threshold,
           power.ratio.threshold = power.ratio.threshold,
           max.interp.gap = max.interp.gap,
           animal_id = animal_id
@@ -1132,7 +1140,7 @@ calculateTailBeats <- function(data,
 #' @noRd
 
 .processBatch <- function(batch, valid_data, batch_size, buffer_samples, n_rows_valid,
-                          sampling_freq, min.freq.Hz, max.freq.Hz, ridge.only,
+                          sampling_freq, min.freq.Hz, max.freq.Hz, ridge.only, ridge.threshold,
                           power.ratio.threshold, max.interp.gap, animal_id) {
 
   # initialize empty result list
@@ -1231,7 +1239,7 @@ calculateTailBeats <- function(data,
   # determine dominant tail-beat frequencies
   if (ridge.only) {
     # strict ridge-based approach (connected maxima in wavelet power spectrum)
-    ridges <- WaveletComp::ridge(result$wavelet_result$Power[, central_cols, drop = FALSE])
+    ridges <- WaveletComp::ridge(result$wavelet_result$Power[, central_cols, drop = FALSE], scale.factor = ridge.threshold)
     ridge_indices <- which(colSums(ridges) > 0)
     max_periods <- result$wavelet_result$Period[apply(result$wavelet_result$Power[, central_cols, drop = FALSE], 2, which.max)]
     dominant_periods <- rep(NA_real_, ncol(ridges))

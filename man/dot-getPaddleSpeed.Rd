@@ -10,7 +10,7 @@
   window.size = 5,
   step.size = 1,
   min.freq.Hz = 0.1,
-  max.freq.Hz = 30,
+  max.freq.Hz = 100,
   calibration.slope,
   smooth.window = NULL,
   quality.check = TRUE,
@@ -31,7 +31,7 @@ to remove or impute \code{NA}s if they are present.}
 \item{min.freq.Hz}{Minimum frequency (Hz) to consider for peak detection (default: 0.1).
 This should be chosen based on the expected minimum paddle wheel rotation frequency.}
 
-\item{max.freq.Hz}{Maximum frequency (Hz) to consider for peak detection (default: 5).
+\item{max.freq.Hz}{Maximum frequency (Hz) to consider for peak detection (default: 100).
 This should be chosen based on the expected maximum paddle wheel rotation frequency.}
 
 \item{calibration.slope}{Numeric value representing the slope of the calibration line
