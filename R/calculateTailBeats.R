@@ -20,20 +20,30 @@
 #' @param motion.col Character. The name of the column containing motion data (e.g., "sway") to analyze.
 #' @param min.freq.Hz Numeric. The lowest frequency of interest (in Hz). Default is 0.05 Hz.
 #' @param max.freq.Hz Numeric. The highest frequency of interest (in Hz). Default is 3 Hz.
+#' @param bandpass.filter Logical. Whether to apply bandpass filtering before wavelet analysis.
+#' Default is TRUE. Highly recommended to reduce noise and improve signal quality.
+#' @param filter.low.freq Numeric. Lower cutoff frequency for bandpass filter (in Hz).
+#' If NULL (default), uses min.freq.Hz * 0.9 to allow some margin below the minimum frequency of interest.
+#' @param filter.high.freq Numeric. Upper cutoff frequency for bandpass filter (in Hz).
+#' If NULL (default), uses max.freq.Hz * 1.1 to allow some margin above the maximum frequency of interest.
+#' @param filter.order Integer. Filter order for the Butterworth bandpass filter. Default is 4.
+#' Higher orders provide steeper cutoffs but may introduce artifacts.
 #' @param max.rows.per.batch Numeric. Maximum number of rows to process in each batch when handling large datasets.
 #' The function automatically determines optimal batch sizes based on frequency resolution requirements,
 #' but this parameter sets an upper limit to prevent memory issues. Default is 200,000 rows.
 #' Lower values reduce memory usage but may increase processing time for very large datasets.
 #' @param smooth.window Numeric. Window size (in seconds) for moving average smoothing of frequency estimates.
 #' Set to 0 to disable smoothing. Default is 10 seconds.
-#' @param ridge.only Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
-#' in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.
-#' @param ridge.threshold Scale factor used in the ridge detection step via \code{WaveletComp::ridge()}.
-#' A larger value results in a smoother ridge and potentially fewer oscillations detected,
-#' while a smaller value increases sensitivity to local variations in the wavelet power spectrum.
-#' Default is \code{0.1}.
-#' @param power.ratio.threshold Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
-#' for a frequency to be considered valid. NULL disables this filter. Default is NULL.
+#' @param ridge.only Logical. If TRUE (default), only returns frequencies identified as ridges (connected local maxima)
+#' in the wavelet power spectrum. If FALSE, uses all local maxima in the power spectrum.
+#' @param power.ratio.threshold Numeric or NULL. Power ratio threshold for frequency detection quality control.
+#' This parameter controls the minimum peak-to-average power ratio required to accept a frequency estimate.
+#' When \code{ridge.only = TRUE}: Applied during ridge detection as a minimum power threshold,
+#' replacing the adaptive \code{scale.factor} from \code{WaveletComp::ridge()} with a fixed threshold approach.
+#' When \code{ridge.only = FALSE}: Applied as a post-processing filter on the peak-to-average power ratios
+#' of detected frequencies. Higher values increase selectivity (fewer, stronger signals), lower values
+#' increase sensitivity (more, potentially weaker signals). Set to NULL to disable filtering.
+#' Recommended range: 1.5-3 for typical data. Default is \code{2}.
 #' @param max.interp.gap Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 #' Set to NULL to disable interpolation. Default is 10 seconds.
 #' @param n.cores Number of CPU cores for parallel processing (default = 1)
@@ -58,7 +68,7 @@
 #' @param output.suffix Character. A suffix to append to the file name when saving.
 #' This parameter is only used if `save.files = TRUE`.
 #'
-#'#' @return Depending on parameters:
+#' @return Depending on parameters:
 #' \itemize{
 #'   \item If \code{return.data = TRUE} (default): Returns the input data with added columns \code{tbf_hz}
 #'         containing estimated tail beat frequencies in Hz, and \code{power_ratio}.
@@ -70,24 +80,23 @@
 #'         files if \code{save.files = TRUE}.
 #' }
 #'
-#' @return Depending on parameters:
-#' \itemize{
-#'   \item If \code{return.data = TRUE} (default): Returns the input data with added column \code{tbf_hz}
-#'         containing estimated tail beat frequencies in Hz. For list/file inputs, returns a list of modified
-#'         data frames with results for each individual.
-#'   \item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
-#'         files if \code{save.files = TRUE}.
-#' }
-#'
 #' @details
 #' The function implements a comprehensive workflow for tail beat frequency estimation:
+#'
+#' \strong{Bandpass Filtering (New):}
+#' \itemize{
+#'   \item \code{bandpass.filter = TRUE}: Applies a Butterworth bandpass filter to enhance signal quality
+#'         by removing low-frequency drift and high-frequency noise outside the tail beat range.
+#'   \item Filter cutoffs are automatically set based on frequency of interest with safety margins,
+#'         or can be manually specified via \code{filter.low.freq} and \code{filter.high.freq}.
+#'   \item Recommended for all analyses as it significantly improves signal-to-noise ratio.
+#' }
 #'
 #' \strong{Frequency Detection Methods:}
 #' \itemize{
 #'   \item \code{ridge.only = TRUE}: Conservative approach using only connected maxima (ridges)
 #'         in the wavelet power spectrum, identified via \code{WaveletComp::ridge()}. This method is
-#'         the most robust against noise but may miss weaker signals. The behaviour can be fine-tuned
-#'         with the \code{scale.factor} argument, which controls the smoothness of the ridge.
+#'         the most robust against noise but may miss weaker signals.
 #'   \item \code{ridge.only = FALSE}: More inclusive approach using all local maxima, with optional
 #'         quality filtering via \code{power.ratio.threshold}.
 #' }
@@ -116,8 +125,8 @@
 #' }
 #'
 #' @note
-#' The function requires the 'WaveletComp' package for the wavelet transform. For parallel processing,
-#' it requires the 'foreach', 'doSNOW', and 'parallel' packages.
+#' The function requires the 'WaveletComp' package for the wavelet transform and the 'signal' package
+#' for bandpass filtering. For parallel processing, it requires the 'foreach', 'doSNOW', and 'parallel' packages.
 #'
 #' \strong{Sampling Frequency Requirements:}
 #' The input data must have a sampling frequency (1/timestep) that satisfies the Nyquist criterion:
@@ -125,22 +134,24 @@
 #'   \item Minimum requirement: Sampling frequency > 2 x \code{max.freq.Hz}
 #'   \item Recommended: Sampling frequency ≥ 4 x \code{max.freq.Hz} for reliable results
 #'   \item Example: With \code{max.freq.Hz = 3}, data should be sampled at ≥ 12 Hz (minimum 6 Hz)
-#' }#'
+#' }
 #'
 #' @export
-
 
 calculateTailBeats <- function(data,
                                id.col = "ID",
                                datetime.col = "datetime",
                                motion.col = "sway",
-                               min.freq.Hz = 0.05,
+                               min.freq.Hz = 0.1,
                                max.freq.Hz = 3,
+                               bandpass.filter = TRUE,
+                               filter.low.freq = NULL,
+                               filter.high.freq = NULL,
+                               filter.order = 4,
                                smooth.window = 10,
                                max.rows.per.batch = 2e5,
-                               ridge.only = FALSE,
-                               ridge.threshold = 0.1,
-                               power.ratio.threshold = NULL,
+                               ridge.only = TRUE,
+                               power.ratio.threshold = 2,
                                max.interp.gap = 10,
                                plot.wavelet = TRUE,
                                plot.diagnostic = FALSE,
@@ -163,6 +174,9 @@ calculateTailBeats <- function(data,
 
   # check if the 'WaveletComp' package is installed.
   if(!requireNamespace("WaveletComp", quietly=TRUE)) stop("The 'WaveletComp' package is required but is not installed. Please install 'WaveletComp' using install.packages('WaveletComp') and try again.", call. = FALSE)
+
+  # check if the 'signal' package is installed (for bandpass filtering).
+  if(bandpass.filter && !requireNamespace("signal", quietly=TRUE)) stop("The 'signal' package is required for bandpass filtering but is not installed. Please install 'signal' using install.packages('signal') and try again.", call. = FALSE)
 
   # validate column specifications
   if (!is.character(id.col) || length(id.col) != 1) stop("'id.col' must be a single character value", call. = FALSE)
@@ -243,6 +257,39 @@ calculateTailBeats <- function(data,
   if (max.freq.Hz > 5) warning(paste("Specified max.freq.Hz of", max.freq.Hz, "Hz seems unusually high for tail beat frequencies. Typical fish tail beats range between 0.1-3 Hz."))
   if (min.freq.Hz < 0.01) warning(paste("Specified min.freq.Hz of", min.freq.Hz, "Hz seems unusually low for tail beat frequencies. This may detect non-tail-beat movements."))
 
+  # validate bandpass filter parameters
+  if (!is.logical(bandpass.filter) || length(bandpass.filter) != 1) stop("'bandpass.filter' must be a single logical value (TRUE/FALSE)", call. = FALSE)
+
+  if (bandpass.filter) {
+    # set default filter frequencies if not provided
+    if (is.null(filter.low.freq)) filter.low.freq <- min.freq.Hz * 0.9
+    if (is.null(filter.high.freq)) filter.high.freq <- max.freq.Hz * 1.1
+
+    # validate filter frequencies
+    if (!is.numeric(filter.low.freq) || length(filter.low.freq) != 1 || filter.low.freq <= 0) {
+      stop("'filter.low.freq' must be a single positive numeric value", call. = FALSE)
+    }
+    if (!is.numeric(filter.high.freq) || length(filter.high.freq) != 1 || filter.high.freq <= 0) {
+      stop("'filter.high.freq' must be a single positive numeric value", call. = FALSE)
+    }
+    if (filter.low.freq >= filter.high.freq) {
+      stop("'filter.low.freq' must be less than 'filter.high.freq'", call. = FALSE)
+    }
+
+    # validate filter order
+    if (!is.numeric(filter.order) || length(filter.order) != 1 || filter.order <= 0 || filter.order != round(filter.order)) {
+      stop("'filter.order' must be a single positive integer", call. = FALSE)
+    }
+
+    # warn about filter settings
+    if (filter.low.freq > min.freq.Hz) {
+      warning(paste("Filter low cutoff (", filter.low.freq, "Hz) is higher than min.freq.Hz (", min.freq.Hz, "Hz). This may remove frequencies of interest."))
+    }
+    if (filter.high.freq < max.freq.Hz) {
+      warning(paste("Filter high cutoff (", filter.high.freq, "Hz) is lower than max.freq.Hz (", max.freq.Hz, "Hz). This may remove frequencies of interest."))
+    }
+  }
+
   # validate smoothing window
   if (!is.numeric(smooth.window) || length(smooth.window) != 1 || smooth.window < 0) stop("'smooth.window' must be a single non-negative numeric value", call. = FALSE)
   if (smooth.window > 60) warning(paste("Large smoothing window of", smooth.window, "seconds may obscure true tail beat patterns"))
@@ -308,6 +355,9 @@ calculateTailBeats <- function(data,
     crayon::bold("\n==================== Estimating Tail Beats ====================\n"),
     "Using ", motion.col, " data to estimate tail beat frequencies for ", n_animals,
     " ", ifelse(n_animals == 1, "tag", "tags"), "\n",
+    ifelse(bandpass.filter,
+           paste0("Bandpass filtering: ", filter.low.freq, " - ", filter.high.freq, " Hz (order ", filter.order, ")\n"),
+           "No bandpass filtering applied\n"),
     crayon::bold("===============================================================\n\n")
   ))
 
@@ -449,6 +499,10 @@ calculateTailBeats <- function(data,
       motion.col = motion.col,
       min.freq.Hz = min.freq.Hz,
       max.freq.Hz = max.freq.Hz,
+      bandpass.filter = bandpass.filter,
+      filter.low.freq = filter.low.freq,
+      filter.high.freq = filter.high.freq,
+      filter.order = filter.order,
       max.rows.per.batch = max.rows.per.batch,
       ridge.only = ridge.only,
       power.ratio.threshold = power.ratio.threshold,
@@ -456,6 +510,7 @@ calculateTailBeats <- function(data,
       max.interp.gap = max.interp.gap,
       plot.wavelet = plot.wavelet,
       plot.diagnostic = plot.diagnostic,
+      plot.filtering = plot.filtering,
       plot.output.dir = plot.output.dir,
       png.width = png.width,
       png.height = png.height,
@@ -494,7 +549,6 @@ calculateTailBeats <- function(data,
 }
 
 
-
 ################################################################################
 # Helper function to process individual datasets ###############################
 ################################################################################
@@ -508,11 +562,13 @@ calculateTailBeats <- function(data,
 #' @return data.table with dead-reckoned positions and VPC corrections
 #' @note This function is intended for internal use within the `nautilus` package.
 #' @keywords internal
+#' @noRd
 
 .runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col,
-                    min.freq.Hz, max.freq.Hz, max.rows.per.batch, ridge.only,
+                    min.freq.Hz, max.freq.Hz, bandpass.filter, filter.low.freq,
+                    filter.high.freq, filter.order, max.rows.per.batch, ridge.only,
                     power.ratio.threshold, smooth.window, max.interp.gap,
-                    plot.wavelet, plot.diagnostic, plot.output.dir,
+                    plot.wavelet, plot.diagnostic, plot.filtering, plot.output.dir,
                     png.width, png.height, png.res, return.data,
                     save.files, output.folder, output.suffix, n.cores = 1) {
 
@@ -563,6 +619,67 @@ calculateTailBeats <- function(data,
   coi_exclusions <- list(total_excluded = 0, batches_with_exclusions = 0)
   power_ratios <- numeric(n_rows_valid)
   na_full_mask <- rep(FALSE, n_rows_valid)
+
+  ##############################################################################
+  # Apply Bandpass Filter ######################################################
+  ##############################################################################
+
+  if (bandpass.filter) {
+    cat("Applying bandpass filter...")
+
+    # check if we have enough data points for filtering
+    min_samples_needed <- filter.order * 6  # Rule of thumb: 6x filter order
+    if (nrow(valid_data) < min_samples_needed) {
+      warning(paste("Insufficient data points for filtering (", nrow(valid_data),
+                    " < ", min_samples_needed, "). Skipping filter for ID:", animal_id), call. = FALSE)
+      filtered_motion <- original_motion
+    } else {
+      # normalize frequencies to Nyquist frequency (sampling_freq/2)
+      nyquist_freq <- sampling_freq / 2
+      low_norm <- filter.low.freq / nyquist_freq
+      high_norm <- filter.high.freq / nyquist_freq
+
+      # check if normalized frequencies are valid
+      if (low_norm <= 0 || high_norm >= 1 || low_norm >= high_norm) {
+        warning(paste("Invalid filter frequencies for sampling rate. Skipping filter for ID:", animal_id), call. = FALSE)
+        filtered_motion <- original_motion
+      } else {
+        # handle NAs by interpolating before filtering
+        motion_for_filtering <- valid_data$motion
+        if (any(is.na(motion_for_filtering))) {
+          # simple linear interpolation for filtering
+          motion_for_filtering <- zoo::na.approx(motion_for_filtering, na.rm = FALSE)
+          # fill any remaining NAs at edges
+          motion_for_filtering <- zoo::na.locf(motion_for_filtering, na.rm = FALSE)
+          motion_for_filtering <- zoo::na.locf(motion_for_filtering, fromLast = TRUE, na.rm = FALSE)
+        }
+
+        # design and apply Butterworth bandpass filter
+        tryCatch({
+          # design filter
+          filter_design <- signal::butter(n = filter.order,
+                                          W = c(low_norm, high_norm),
+                                          type = "pass")
+
+          # apply filter (forward and backward to eliminate phase shift)
+          filtered_motion <- signal::filtfilt(filter_design, motion_for_filtering)
+
+          # restore original NAs where they existed
+          filtered_motion[is.na(valid_data$motion)] <- NA_real_
+
+          cat(" done\n")
+
+        }, error = function(e) {
+          warning(paste("Filter application failed for ID:", animal_id, ". Error:", e$message,
+                        "Using unfiltered data."), call. = FALSE)
+          filtered_motion <- original_motion
+        })
+      }
+    }
+
+    # update motion data with filtered version
+    valid_data$motion <- filtered_motion
+  }
 
 
   #####################################################################
@@ -1219,6 +1336,24 @@ calculateTailBeats <- function(data,
     return(result)
   }
 
+  # additional check for effectively constant data (handles floating-point precision issues)
+  motion_range <- range(batch_data$motion, na.rm = TRUE)
+  motion_span <- diff(motion_range)
+  mean_abs_motion <- mean(abs(batch_data$motion), na.rm = TRUE)
+
+  # if the range is extremely small relative to the mean absolute value, treat as constant
+  # this catches cases where bandpass filtering produces tiny floating-point variations
+  relative_variation <- if (mean_abs_motion > 0) motion_span / mean_abs_motion else motion_span
+
+  if (relative_variation < 1e-10 || motion_span < 1e-15) {
+    warning(sprintf("%s - Effectively constant motion data detected in batch %d after filtering (wavelet skipped)", animal_id, batch), call. = FALSE)
+    result$batch_dominant_freqs <- rep(NA_real_, result$core_end - result$core_start + 1)
+    result$dates <- valid_data$date[batch_start:batch_end][central_cols]
+    result$batch_power_ratios <- rep(NA_real_, result$core_end - result$core_start + 1)
+    result$na_mask_plotting <- too_long_na_mask[central_cols]
+    return(result)
+  }
+
   # perform wavelet transform on batch
   result$wavelet_result <- WaveletComp::analyze.wavelet(
     my.data = batch_data,
@@ -1239,7 +1374,7 @@ calculateTailBeats <- function(data,
   # determine dominant tail-beat frequencies
   if (ridge.only) {
     # strict ridge-based approach (connected maxima in wavelet power spectrum)
-    ridges <- WaveletComp::ridge(result$wavelet_result$Power[, central_cols, drop = FALSE], scale.factor = ridge.threshold)
+    ridges <- .ridge2(result$wavelet_result$Power[, central_cols, drop = FALSE], power.threshold = power.ratio.threshold)
     ridge_indices <- which(colSums(ridges) > 0)
     max_periods <- result$wavelet_result$Period[apply(result$wavelet_result$Power[, central_cols, drop = FALSE], 2, which.max)]
     dominant_periods <- rep(NA_real_, ncol(ridges))
@@ -1280,6 +1415,63 @@ calculateTailBeats <- function(data,
   # return
   return(result)
 }
+
+
+################################################################################
+# Adapted Ridge Function #######################################################
+################################################################################
+
+#' Extract Ridge Lines from a Wavelet Power Spectrum
+#'
+#' This internal helper function identifies ridge lines in a wavelet power spectrum matrix.
+#' It detects local maxima within a specified band around each scale level (row) in the spectrum,
+#' and applies a power threshold to filter weak ridges.
+#'
+#' @param wavelet.spectrum Numeric matrix. The wavelet power spectrum with rows representing scale levels and columns time points.
+#' @param power.threshold Numeric scalar, default 2. Minimum power threshold to consider a point part of a ridge.
+#' @param band Integer scalar, default 5. Number of adjacent scale levels to check on each side to find local maxima.
+#'
+#' @return A numeric matrix of the same dimensions as \code{wavelet.spectrum}, with values 1 where ridge points are detected, and 0 elsewhere.
+#'
+#' @details
+#' The function scans each column of the wavelet power spectrum and marks as ridge points those that are local maxima
+#' within the \code{band} neighbourhood along the scale axis and exceed the \code{power.threshold}.
+#' This is useful for identifying dominant periodicities or frequencies over time.
+#'
+#' @note
+#' Adapted by Bruno Saraiva from the \code{ridge} function in the \pkg{waveletComp} package.
+#' @noRd
+
+.ridge2 <- function(wavelet.spectrum, power.threshold = 2, band = 5){
+
+  min.level = power.threshold
+
+  ridge.column = function(column.vec, band = band) {
+    nrows = length(column.vec)
+    ind = seq(1, nrows)
+    band.max.vec = column.vec
+    for (i in (1:band)) {
+      lower.ind = ind - i
+      lower.ind[lower.ind < 1] = 1
+      upper.ind = ind + i
+      upper.ind[upper.ind > nrows] = nrows
+      band.max.vec = pmax(band.max.vec, column.vec[lower.ind],
+                          column.vec[upper.ind])
+    }
+
+    my.ridge.column = rep(0, nrows)
+    my.ridge.column[pmax(band.max.vec) == column.vec] = 1
+    return(my.ridge.column)
+
+  }
+
+  Ridge = apply(wavelet.spectrum, 2, ridge.column, band = band)
+  Ridge = Ridge * (wavelet.spectrum > min.level)
+  return(invisible(Ridge))
+}
+
+
+
 
 #######################################################################################################
 #######################################################################################################

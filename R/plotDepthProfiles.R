@@ -81,8 +81,11 @@ plotDepthProfiles <- function(data,
 
   # if 'same.color.scale', calculate the global color range across all datasets
   if(same.color.scale){
-    color_range <- lapply(data, function(x) range(x[[color.by]], na.rm = TRUE))
-    color_range <- range(unlist(color_range))
+    color_range <- lapply(data, function(x) {
+      vals <- x[[color.by]]
+      if (any(!is.na(vals))) range(vals, na.rm = TRUE) else NULL
+    })
+    color_range <- range(unlist(color_range), na.rm = TRUE)
   }
   # if 'same.depth.scale', calculate the global depth range across all datasets
   if(same.depth.scale){
@@ -94,6 +97,29 @@ plotDepthProfiles <- function(data,
   if(is.null(color.pal)){
     color.pal <- .jet_pal(100)
     color.pal <- colorRampPalette(c(rep(color.pal[1:70], each=2), rep(color.pal[71:100], each=3)))(100)
+  }
+
+  ##############################################################################
+  # Downsample datasets ########################################################
+  ##############################################################################
+
+  for (i in seq_along(data)) {
+    # extract data table
+    dt <- data[[i]]
+    # floor datetime to the nearest 5 seconds
+    dt[, datetime_5s := as.POSIXct(floor(as.numeric(datetime) / 5) * 5, origin = "1970-01-01", tz = attr(datetime, "tzone"))]
+    # get all numeric column names (excluding datetime_1s)
+    numeric_cols <- names(dt)[sapply(dt, is.numeric) & names(dt) != "datetime_1s"]
+    # aggregate all numeric columns by 1-second bins
+    dt_agg <- dt[, lapply(.SD, mean, na.rm = TRUE), by = .(ID, datetime_5s), .SDcols = numeric_cols]
+    # replace NANs by NAs
+    for (col in names(dt_agg)) {
+      if (is.numeric(dt_agg[[col]])) data.table::set(dt_agg, i = which(is.nan(dt_agg[[col]])), j = col, value = NA_real_)
+    }
+    # replace datetime with the rounded one
+    setnames(dt_agg, "datetime_5s", "datetime")
+    # return
+    data[[i]] <- dt_agg
   }
 
 
@@ -149,103 +175,85 @@ plotDepthProfiles <- function(data,
       depth_max <- max(plot_data[[depth.col]], na.rm = TRUE)
       depth_max <-  ceiling(depth_max / 10) * 10
       depth_range <- c(0, depth_max)
-      depth_range[1] <- depth_range[1]-(depth_range[2]-depth_range[1])*0.18
+      depth_range[1] <- depth_range[1] - (depth_range[2] - depth_range[1]) * 0.18
       depth_range <- rev(depth_range)
     }
 
-    # set the color scale range if shared across individuals
-    if (same.color.scale) {
+    # check if the color.by variable has any valid values
+    has_color_data <- color.by %in% names(plot_data) && !all(is.na(plot_data[[color.by]]))
+
+    # determine colour range for individual (if not global and data exists)
+    if (!same.color.scale && has_color_data) {
       color_range <- range(plot_data[[color.by]], na.rm = TRUE)
     }
 
-    # scale color values for visualization
-    plot_data$color_scaled <- round(.rescale(plot_data[[color.by]], from=color_range, to = c(0, 100)))
+    # if variable is available, scale colour values; otherwise use black
+    if (has_color_data) {
+      plot_data$color_scaled <- round(.rescale(plot_data[[color.by]], from = color_range, to = c(0, 100)))
+      plot_col <- color.pal[plot_data$color_scaled]
+    } else {
+      plot_col <- "black"
+    }
 
     ############################################################################
-    # initialize an empty plot with correct axis limits     ####################
+    # initialize an empty plot with correct axis limits
     plot(y = plot_data[[depth.col]], x = plot_data[[datetime.col]], type = "n",
-         axes = FALSE, xaxs="i", xlab = "", ylab = "Depth (m)", ylim = depth_range)
-
+         axes = FALSE, xaxs = "i", xlab = "", ylab = "Depth (m)", ylim = depth_range)
 
     ############################################################################
-    # add daylight background shading ##########################################
+    # add daylight background shading
     if (!is.na(lon) && !is.na(lat)) {
-
-      # create time sequence from plot x-axis limits
       time_seq <- seq(from = par("usr")[1], to = par("usr")[2], by = 60)
-      time_seq <- as.POSIXct(time_seq, tz="UTC")
-
-      # classify each timestamp into diel phases
-      coords <- data.frame("lon"=lon, "lat"=lat)
-      diel_phase <-  getDielPhase(time_seq, coordinates = coords, phases = 3)
-
-      # identify transition points between diel phases
+      time_seq <- as.POSIXct(time_seq, tz = "UTC")
+      coords <- data.frame("lon" = lon, "lat" = lat)
+      diel_phase <- getDielPhase(time_seq, coordinates = coords, phases = 3)
       phase_change <- c(1, which(diff(as.numeric(factor(diel_phase))) != 0) + 1, length(time_seq))
-
-      # Define colors for each diel phase
       diel_colors <- c("day" = "grey98", "crepuscule" = "grey92", "night" = "grey85")
-
-      # convert time to numeric (required for rect() when plotting POSIXct on x-axis)
       time_numeric <- as.numeric(time_seq)
-      xlims <- range(as.numeric(plot_data[[datetime.col]]))  # Match x-axis range of plot
-
-      # draw background rectangles for each diel phase segment
-      for (i in seq_len(length(phase_change) - 1)) {
-        rect(
-          xleft = max(time_numeric[phase_change[i]], xlims[1]),
-          xright = min(time_numeric[phase_change[i + 1]], xlims[2]),
-          ybottom = par("usr")[3], ytop = par("usr")[4],
-          col = diel_colors[diel_phase[phase_change[i]]], border = NA
-        )
+      xlims <- range(as.numeric(plot_data[[datetime.col]]))
+      for (j in seq_len(length(phase_change) - 1)) {
+        rect(xleft = max(time_numeric[phase_change[j]], xlims[1]),
+             xright = min(time_numeric[phase_change[j + 1]], xlims[2]),
+             ybottom = par("usr")[3], ytop = par("usr")[4],
+             col = diel_colors[diel_phase[phase_change[j]]], border = NA)
       }
     }
 
     ############################################################################
-    # add depth data points with color representing the chosen variable
-    points(y = plot_data[[depth.col]], x = plot_data[[datetime.col]], pch = 16,
-           col = color.pal[plot_data$color_scaled], cex = cex.pt)
+    # add depth data points with colour
+    points(y = plot_data[[depth.col]], x = plot_data[[datetime.col]],
+           pch = 16, col = plot_col, cex = cex.pt)
 
     ############################################################################
-    # add axes #################################################################
-
-    # determine datetime range and generate suitable time breaks
+    # add axes
     time_range <- range(plot_data[[datetime.col]])
     time_breaks <- pretty(time_range, n = 5)
-
-    # add X-axis (datetime)
-    axis.POSIXct(1, at = time_breaks, format = ifelse(diff(time_range) > 86400, "%d/%b", "%H:%M"), cex.axis = cex.axis)
-
-    # add Y-axis (depth)
-    axis(2, at = pretty(c(0, depth_range[1]), n=5), las = 1, cex.axis = cex.axis)
+    axis.POSIXct(1, at = time_breaks,
+                 format = ifelse(diff(time_range) > 86400, "%d/%b", "%H:%M"),
+                 cex.axis = cex.axis)
+    axis(2, at = pretty(c(0, depth_range[1]), n = 5), las = 1, cex.axis = cex.axis)
 
     ############################################################################
-    # add depth guidelines #####################################################
-
-    # add surface line
-    abline(h=0, lty=2, lwd=1.2)
-
-    # add max depth line
-    abline(h=max(plot_data[[depth.col]], na.rm = TRUE), lty=2, lwd=1)
-
+    # add depth guidelines
+    abline(h = 0, lty = 2, lwd = 1.2)
+    abline(h = max(plot_data[[depth.col]], na.rm = TRUE), lty = 2, lwd = 1)
 
     ############################################################################
-    # add legend and draw border ###############################################
-
-    # add fish ID
-    legend("topleft", inset=c(0,-0.036), legend = id, text.font = 2, bty = "n", cex=cex.id)
-
-    # draw a box around the plot
+    # add legend and border
+    legend("topleft", inset = c(0, -0.036), legend = id, text.font = 2,
+           bty = "n", cex = cex.id)
     box()
 
-
     ############################################################################
-    # add color legend #########################################################
-    color_labs <- pretty(color_range)
-    color_labs <- color_labs[color_labs>=min(color_range) & color_labs<=max(color_range)]
-    .colorlegend(col=color.pal, zlim=color_range, zval=color_labs,
-                 posx=c(0.915, 0.93), posy = c(0.05, 0.85), main = color.by.label,
-                 main.cex=cex.legend+0.1, digit=1, main.adj=0, cex=cex.legend)
-
+    # add colour legend if applicable
+    if (has_color_data) {
+      color_labs <- pretty(color_range)
+      color_labs <- color_labs[color_labs >= min(color_range) & color_labs <= max(color_range)]
+      .colorlegend(col = color.pal, zlim = color_range, zval = color_labs,
+                   posx = c(0.915, 0.93), posy = c(0.05, 0.85),
+                   main = color.by.label,
+                   main.cex = cex.legend + 0.1, digit = 1, main.adj = 0, cex = cex.legend)
+    }
   }
 }
 

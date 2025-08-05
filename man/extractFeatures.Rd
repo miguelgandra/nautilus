@@ -2,13 +2,14 @@
 % Please edit documentation in R/extractFeatures.R
 \name{extractFeatures}
 \alias{extractFeatures}
-\title{Extract Features from Sensor Data Using Sliding or Aggregated Windows}
+\title{Extract Features from Sensor Data Using Sliding or Aggregated Windows (Enhanced)}
 \usage{
 extractFeatures(
   data,
   variables = NULL,
   metrics = NULL,
   parameter.grid = NULL,
+  enhanced.features = FALSE,
   id.col = "ID",
   datetime.col = "datetime",
   window.size = 5,
@@ -26,108 +27,74 @@ extractFeatures(
 }
 \arguments{
 \item{data}{A list of tables/data frames (one per individual), a single aggregated data table/data frame,
-or a character vector of file paths to RDS files containing sensor data.
-If not a list or file paths, splits data by \code{id.col} (must be present in attributes).
-Must include the variables specified in \code{variables}.}
+or a character vector of file paths to RDS files containing sensor data.}
 
 \item{variables}{(Optional) A character vector of column names from \code{data} for which to calculate metrics.
-If \code{parameter.grid} is supplied, this argument is ignored. If both \code{variables} and \code{parameter.grid} are \code{NULL}, an error will be thrown.}
+If \code{parameter.grid} is supplied, this argument is ignored.}
 
-\item{metrics}{(Optional) A character vector specifying the metrics to calculate. Supported metrics:
-"mean", "median", sd", "min", "max", "sum", "range","iqr", "mad", "skewness", "kurtosis", "energy", "entropy", "mrl".
-If \code{parameter.grid} is supplied, this argument is ignored. If both \code{metrics} and \code{parameter.grid} are \code{NULL}, an error will be thrown.}
+\item{metrics}{(Optional) A character vector specifying the metrics to calculate.}
 
-\item{parameter.grid}{(Optional) A data frame with two columns: \code{variable} and \code{metric}.
-If supplied, the function will use this grid to determine which variable-metric combinations to calculate.
-If \code{NULL} (default), the \code{parameter.grid} will be generated from the \code{variables} and \code{metrics} arguments.}
+\item{parameter.grid}{(Optional) A data frame with columns: \code{variable}, \code{metric}, and optionally \code{window_seconds}.
+If \code{window_seconds} is not provided, uses the global \code{window.size} parameter.}
 
-\item{id.col}{A character string specifying the column containing individual IDs. Required if \code{data} is a single data frame.}
+\item{enhanced.features}{Logical. If TRUE, includes complex ecological features. Default FALSE.}
 
-\item{datetime.col}{A character string specifying the column in \code{data} containing datetime information
-(in POSIXct format). Default: \code{"datetime"}.}
+\item{id.col}{A character string specifying the column containing individual IDs.}
 
-\item{window.size}{An integer specifying the size of the sliding or aggregation window, in seconds.
-The actual number of steps in the window is determined based on the sampling interval of the data.}
+\item{datetime.col}{A character string specifying the column in \code{data} containing datetime information.}
 
-\item{aggregate}{Logical. If TRUE, uses non-overlapping windows for initial feature extraction.
-If FALSE (default), uses sliding windows.}
+\item{window.size}{An integer specifying the default size of the sliding or aggregation window, in seconds.}
 
-\item{downsample.to}{NULL or numeric (seconds). If specified, aggregates
-features into non-overlapping windows after initial extraction. Works with both
-aggregate=TRUE/FALSE. For example:
-\itemize{
-\item aggregate=FALSE, downsample.interval=60: 5s sliding → 1m bins
-\item aggregate=TRUE, downsample.interval=60: 5s epochs → 1m bins
-}}
+\item{aggregate}{Logical. If TRUE, uses non-overlapping windows for initial feature extraction.}
 
-\item{response.col}{(Optional) A character string specifying the column in \code{data} containing response or annotated labels (e.g., feeding events).
-It must be binary (i.e., containing values 0 or 1).}
+\item{downsample.to}{NULL or numeric (seconds). If specified, aggregates features into non-overlapping windows.}
 
-\item{response.aggregation}{Optional. Method to aggregate \code{response.col} when \code{window.size > 1}:
-\itemize{
-\item \code{"majority"}: Assigns \code{1} if >50\% of window values are \code{1} (default).
-\item \code{"any"}: Assigns \code{1} if \strong{any} value in the window is \code{1}.
-Ignored if \code{response.col = NULL}.
-}}
+\item{response.col}{(Optional) A character string specifying the column containing response labels.}
 
-\item{circular.variables}{Character vector specifying variables that should be treated as circular (e.g., angles in degrees). Defaults to "heading" and "roll"}
+\item{response.aggregation}{Method to aggregate \code{response.col}: "majority" or "any".}
 
-\item{return.data}{Logical. If \code{TRUE}, the processed data will be returned as a list. Defaults to \code{TRUE}.}
+\item{circular.variables}{Character vector specifying variables that should be treated as circular.}
 
-\item{save.files}{Logical. If \code{TRUE}, the processed data for each individual will be saved as a separate RDS file. Defaults to \code{FALSE}.}
+\item{return.data}{Logical. If \code{TRUE}, returns processed data as a list.}
 
-\item{output.folder}{(Optional) A character string specifying the directory where processed RDS files should be saved.
-If \code{NULL} and \code{save.files = TRUE}: if \code{data} was provided as file paths, the output will be saved in the same directory as the input files;
-otherwise, it defaults to the current working directory.}
+\item{save.files}{Logical. If \code{TRUE}, saves processed data as separate RDS files.}
 
-\item{output.suffix}{(Optional) A character string to append to the filename of the output RDS files (e.g., "_features").}
+\item{output.folder}{Directory where processed RDS files should be saved.}
 
-\item{n.cores}{The number of processor cores to use for parallel computation. Defaults to 1 (single-core).}
+\item{output.suffix}{Character string to append to output filenames.}
+
+\item{n.cores}{Number of processor cores for parallel computation.}
 }
 \value{
-A list of data frames, each corresponding to an individual animal, containing the calculated features for the specified
-variables and metrics. The structure of the output depends on the \code{aggregate} parameter:
-\itemize{
-\item If \code{aggregate = TRUE}: Each data frame will have fewer rows, with one row per aggregation window. The datetime column
-will be adjusted to represent the midpoint of each aggregation window, if present. The response column, if specified,
-will also be aggregated (e.g., summed or averaged) based on the corresponding window.
-\item If \code{aggregate = FALSE}: Each data frame will retain the original temporal resolution, with calculated metrics for each
-sliding window. The datetime column and response column (if provided) will not be aggregated but will instead match
-the temporal alignment of the sliding windows.
-}
+A list of data frames with calculated features.
 }
 \description{
-This function calculates specified metrics (e.g., mean, standard deviation, circular statistics) for selected variables over a sliding window.
-It can either retain the temporal resolution of the dataset or aggregate data into distinct, non-overlapping windows.
-This is useful for preparing the dataset for machine learning or other analytical methods that require a structured set of features.
+This function calculates specified metrics (e.g., mean, standard deviation, circular statistics,
+and complex ecological features) for selected variables over a sliding window.
+It can either retain the temporal resolution of the dataset or aggregate data into distinct,
+non-overlapping windows. Enhanced version includes complex movement and behavioral features.
 }
 \details{
-This function supports the following metrics:
-\itemize{
-\item "mean": The average value of the data. It provides the central tendency of the dataset within each window.
-\item "median": The middle value of the data when ordered. It divides the dataset into two equal halves, providing a robust measure of central tendency that is less affected by outliers.
-\item "sd": The standard deviation of the data. It quantifies the amount of variation or dispersion of the data values within each window.
-\item "range": The range (max - min) of the data. It represents the difference between the maximum and minimum values within each window.
-\item "min": The minimum value of the data. It indicates the smallest value in the dataset within each window.
-\item "max": The maximum value of the data. It indicates the largest value in the dataset within each window.
-\item "iqr": The interquartile range of the data. It is the difference between the 75th percentile (Q3) and the 25th percentile (Q1) of the dataset, measuring the spread of the middle 50\% of the data.
-\item "sum": The sum of the data. It adds up all the values in the dataset within each window.
-\item "rate": Average rate of change per second of the data values. This metric quantifies how fast the variable changes over time within each window.
-\item "energy": The sum of the squares of the data. It reflects the magnitude of the values, commonly used in signal processing and analysis of periodicity.
-\item "skewness": The skewness of the data, a measure of the asymmetry of the distribution. A positive value indicates a right-skewed distribution, while a negative value indicates a left-skewed distribution.
-\item "kurtosis": The kurtosis of the data, a measure of the "tailedness" or sharpness of the distribution. High kurtosis indicates heavy tails, while low kurtosis indicates lighter tails.
-\item "entropy": The entropy of the data, which measures the unpredictability or randomness. High entropy values indicate more uncertainty or randomness in the data, while low values suggest more predictability.
-}
+Enhanced version supports all original metrics plus complex ecological features:
 
-For circular variables, the function supports:
+Complex Features (when enhanced.features = TRUE):
 \itemize{
-\item "mean": Directional average accounting for wrap-around.
-\item "median": Middle value in circular space.
-\item "sd": Angular dispersion (0° = no dispersion).
-\item "range": Shortest arc containing all angles.
-\item "iqr": Middle 50\% of angles in circular space.
-\item "rate": Average rate of angular change per second, accounting for wrap-around. This represents how quickly the circular variable changes over time.
-\item "mrl": Mean resultant length, indicating concentration of circular values. (0 = uniform, 1 = identical directions).
-Pitch (-90° to 90°) is treated as linear (by default) since it represents inclination rather than direction.
+\item "net_heading_change": Net change in heading over centered window
+\item "cumulative_heading_change": Cumulative sum of absolute heading changes
+\item "circular_variance_heading": Circular variance of heading values
+\item "oscillation_regularity": Regularity of oscillatory patterns
+\item "movement_predictability": Predictability using ratio of SD to mean
+\item "movement_consistency": Consistency using SD metrics
+\item "movement_smoothness": Smoothness using rate of change
+\item "movement_jerk": Enhanced jerk calculation
+\item "posture_stability": Stability from pitch/roll SD metrics
+\item "turning_rate_variability": Variability in turning rates
+\item "activity_index": Combined activity from multiple rates
+\item "rolling_autocorrelation": Rolling autocorrelation
+\item "zero_crossing_rate": Rate of zero crossings
+\item "circling_behavior": Detection of circling patterns
+\item "feeding_posture_index": Index for feeding posture detection
+\item "depth_change_rate": Rate of depth changes
+\item "depth_change_consistency": Consistency of depth changes
 }
 }

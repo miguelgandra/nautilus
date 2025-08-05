@@ -18,7 +18,8 @@ processTagData(
   dba.window = 3,
   dba.smoothing = 2,
   motion.smoothing = 1,
-  speed.smoothing = 2,
+  depth.smoothing = 10,
+  speed.smoothing = 1,
   calculate.paddle.speed = FALSE,
   speed.calibration.values = NULL,
   burst.quantiles = c(0.95, 0.99),
@@ -66,7 +67,7 @@ Uses circular mean. Set to NULL to disable. Default: 1.}
 \item{correct.pitch.offset}{A logical value (TRUE/FALSE) indicating whether to apply a pitch
 offset correction based on the relationship between pitch angle and vertical speed.
 Defaults to FALSE. If TRUE, a linear regression of pitch (in radians) against
-\code{vertical_speed} is performed, and the intercept (pitch at 0 m/s vertical speed)
+\code{vertical_velocity} is performed, and the intercept (pitch at 0 m/s vertical speed)
 is subtracted from all pitch estimates. This method is adapted from Kawatsu et al. (2010)
 to account for potential tag misalignment.}
 
@@ -84,8 +85,18 @@ Uses arithmetic mean. Set to NULL to disable. Default: 2.}
 \item{motion.smoothing}{Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
 Uses arithmetic mean. Set to NULL to disable. Default: 1.}
 
-\item{speed.smoothing}{Optional. Smoothing window (in seconds) for vertical speed.
-Uses arithmetic mean. Set to NULL to disable. Default: 2.}
+\item{depth.smoothing}{Optional. Smoothing window (in seconds) for depth.
+Uses arithmetic mean. Set to NULL to disable smoothing (not recommended).
+Affects the vertical speed computation, which is based on the central difference of smoothed depth values.
+Default: 10 seconds}
+
+\item{speed.smoothing}{Optional. Smoothing window (in seconds) applied to derived speed or velocity time series.
+Specifically, it is used to smooth:
+\itemize{
+\item Vertical velocity, after it is calculated from the central difference of smoothed depth values.
+\item Swimming speed estimated from paddle wheel rotation frequencies (if \code{calculate.paddle.speed = TRUE}).
+}
+Smoothing is performed using an arithmetic moving average. Set to \code{NULL} to disable. Default: 1 second.}
 
 \item{calculate.paddle.speed}{Logical. If TRUE and the tag was equipped with a paddle wheel,
 estimates animal speed based on paddle wheel rotation frequency. Default is FALSE.}
@@ -192,6 +203,7 @@ Output includes:
 \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
 \item Heading (degrees): Directional orientation of the animal, representing the compass heading.
 Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
+\item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between –180° and 180°.
 }
 
 \strong{Linear Motion:}
@@ -199,8 +211,9 @@ Heading is corrected based on the deployment coordinates using global geomagneti
 \item Surge (g): The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
 \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
-\item Vertical Speed (m/s): The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
-Calculated as the difference in depth measurements divided by the time interval
+\item Vertical Velocity (m/s): The rate of change in the animal’s depth over time, including direction (positive for descent, negative for ascent).
+Vertical velocity is calculated using a central difference method on the smoothed depth time series (with smoothing controlled by \code{depth.smoothing}).
+An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 }
 
 \strong{Python Requirements}

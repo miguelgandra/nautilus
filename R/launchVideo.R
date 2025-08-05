@@ -71,9 +71,12 @@ launchVideo <- function(id,
   }
 
   # find the video entry that contains the datetime
-  matching_video <- video.metadata[video.metadata$ID == id & video.metadata$start <= datetime & video.metadata$end >= datetime,]
+  floor_datetime <- as.POSIXct(floor(as.numeric(datetime)), origin = "1970-01-01", tz = "UTC")
+  matching_video <- video.metadata[video.metadata$ID == id &
+      as.POSIXct(floor(as.numeric(video.metadata$start)), origin = "1970-01-01", tz = "UTC") <= floor_datetime &
+      as.POSIXct(floor(as.numeric(video.metadata$end)), origin = "1970-01-01", tz = "UTC") >= floor_datetime,
+  ]
   matching_video <- matching_video[!is.na(matching_video$file),]
-
 
   ###############################################################
   # if a matching video is found, open it at the specified time
@@ -102,11 +105,11 @@ launchVideo <- function(id,
     matching_videos <- video.metadata[video.metadata$ID == id,]
 
     # if the datetime is after the latest video start time
-    if (datetime >= max(matching_videos$start, na.rm=TRUE)) {
+    if (datetime > max(matching_videos$start, na.rm=TRUE)) {
       cat("The specified datetime is later than the latest available video.\n")
 
     # if the datetime is before the earliest video start time
-    } else if (datetime <= min(matching_videos$start, na.rm=TRUE)) {
+    } else if (datetime < min(matching_videos$start, na.rm=TRUE)) {
       cat("The specified datetime is earlier than the earliest available video.\n")
 
     # else

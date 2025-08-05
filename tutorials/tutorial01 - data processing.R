@@ -590,16 +590,52 @@ data_list <- processTagData(data = data_files,
                             dba.window = 5,
                             dba.smoothing = 2,
                             motion.smoothing = 1,
-                            speed.smoothing = 2,
+                            depth.smoothing = 10,
+                            speed.smoothing = 1,
                             calculate.paddle.speed = TRUE,
                             speed.calibration.values = paddle_calibration,
                             burst.quantiles = c(0.95, 0.99),
                             return.data = FALSE,
                             save.files = TRUE,
                             output.folder = "./data processed/processed/20Hz",
-                            output.suffix = NULL,
+                            output.suffix = "-20Hz",
                             data.table.threads = NULL,
                             verbose = TRUE)
+
+
+################################################################################
+# Optional - Clean inaccurate temperature values (from magnet. sensor) if present
+################################################################################
+
+# This section scans all processed biologging datasets and sets the 'temp' column
+# to NA for individuals whose original imported temperature data came from the
+# magnetometer ("Temp. (magnet.) [°C]"), which may be unreliable.
+
+# Retrieve the list of processed .rds files
+data_files <- list.files("./data processed/processed/20Hz", full.names = TRUE)
+
+# Define the name of the problematic column
+# Note: This must match the string in the 'imported.columns' attribute
+target_col <- "Temp. (magnet.) [\xb0C]"
+
+# Iterate through each file
+for (i in seq_along(data_files)) {
+  # Load the processed data.table object from RDS file
+  dt <- readRDS(data_files[i])
+
+  # Retrieve metadata attributes (animal ID and list of imported columns)
+  id <- attr(dt, "id")
+  imported_cols <- attr(dt, "imported.columns")
+
+  # If the problematic column was among the imported ones, replace 'temp' with NA
+  if (!is.null(imported_cols) && target_col %in% imported_cols && "temp" %in% names(dt)) {
+    dt[, temp := NA_real_]  # set all temperature values to NA (as numeric)
+    cat(sprintf("Set temp to NA for %s (magnetometer temperature was imported)\n", id))
+    # Save the modified data.table back to the same RDS file (overwrite)
+    saveRDS(dt, file = data_files[i])
+  }
+}
+
 
 
 ################################################################################
@@ -623,12 +659,13 @@ data_list  <- calculateTailBeats(data = data_files,
                                  id.col = "ID",
                                  datetime.col = "datetime",
                                  motion.col = "surge",
-                                 ridge.only = FALSE,
-                                 min.freq.Hz = 0.05,
-                                 max.freq.Hz = 2,
+                                 ridge.only = TRUE,
+                                 min.freq.Hz = 0.1,
+                                 max.freq.Hz = 2.5,
+                                 bandpass.filter = TRUE,
                                  smooth.window = 5,
                                  power.ratio.threshold = 2,
-                                 max.interp.gap = 10,
+                                 max.interp.gap = 5,
                                  plot.wavelet = TRUE,
                                  plot.diagnostic = TRUE,
                                  plot.output.dir = "./plots/tail beat frequencies",
@@ -682,7 +719,8 @@ summary_metadata$latitudeD <- sprintf("%.4f", summary_metadata$latitudeD)
 
 # Create a new tag label
 summary_metadata$tag[grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "CAM"
-summary_metadata$tag[!grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "MS"
+summary_metadata$tag[!grepl("CAM", summary_metadata$id, fixed=TRUE)] <- "DIARY"
+summary_metadata$tag <- paste(summary_metadata$typeCMD, summary_metadata$tag)
 summary_metadata <- summary_metadata[,-which(colnames(summary_metadata) %in% c("typeCMD", "type"))]
 summary_metadata <- summary_metadata[,c(1:6,9,7:8)]
 
@@ -715,13 +753,21 @@ write.csv2(summary, file = "./summary_table.csv", row.names = FALSE, fileEncodin
 #' Depth values are plotted against time and color-coded by temperature.
 #' The resulting plots are saved as a PDF file for further analysis.
 
+exclude_ids <- c("PIN_CAM_02", "PIN_CAM_03","PIN_CAM_05", "PIN_CAM_06", "PIN_CAM_07",
+                 "PIN_CAM_10", "PIN_CAM_14", "PIN_CAM_15")
+processed_list <- processed_list[!names(processed_list) %in% exclude_ids]
+
+
 # Generate depth profiles and save them to a PDF file
-pdf("./plots/depth-profiles.pdf", width = 13, height = 9)
-plotDepthProfiles(filtered_list,
+pdf("./plots/depth-profiles-v5.pdf", width = 13, height = 16)
+plotDepthProfiles(processed_list,
                   animal_metadata,
                   color.by = "temp",
+                  same.color.scale = TRUE,
                   lon.col="deploy_lon",
-                  lat.col = "deploy_lat")
+                  lat.col = "deploy_lat",
+                  ncols = 2,
+                  nrows = 9)
 # Close the PDF device
 dev.off()
 

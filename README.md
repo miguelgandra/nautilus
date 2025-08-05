@@ -9,7 +9,8 @@
 
 
 **nautilus** is an R package designed for the analysis and visualisation of high-resolution archival tag data from marine animals.
-Although it was specifically designed to interoperate with G-Pilot and i-Pilot tags (Fontes et al., 2022), the package offers broader applicability and can potentially be adapted to other tagging systems.
+Although it was specifically designed to interoperate with CATS Diary and Camera tags (within the G-Pilot and i-Pilot 
+multisensor packages; Fontes et al., 2022), the package offers broader applicability and can potentially be adapted to other tagging systems.
 The package also includes tools for integrating and analysing video data collected by onboard cameras.
 
 **Note:** This package is still in its early stages of development and is being actively improved. Some features may change or expand as the package evolves.

@@ -35,6 +35,8 @@ Suggests:
 	pROC,
 	moments,
 	entropy,
+	circular,
+	signal,
 	tesseract,
 	WaveletComp,
 	geosphere,

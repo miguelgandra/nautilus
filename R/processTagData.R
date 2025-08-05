@@ -55,7 +55,7 @@
 #' @param correct.pitch.offset A logical value (TRUE/FALSE) indicating whether to apply a pitch
 #' offset correction based on the relationship between pitch angle and vertical speed.
 #' Defaults to FALSE. If TRUE, a linear regression of pitch (in radians) against
-#' `vertical_speed` is performed, and the intercept (pitch at 0 m/s vertical speed)
+#' `vertical_velocity` is performed, and the intercept (pitch at 0 m/s vertical speed)
 #' is subtracted from all pitch estimates. This method is adapted from Kawatsu et al. (2010)
 #' to account for potential tag misalignment.
 #' @param pitch.warning.threshold Numeric. Threshold (in degrees) for median pitch values that trigger orientation warnings.
@@ -67,8 +67,17 @@
 #' Uses arithmetic mean. Set to NULL to disable. Default: 2.
 #' @param motion.smoothing Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
 #' Uses arithmetic mean. Set to NULL to disable. Default: 1.
-#' @param speed.smoothing Optional. Smoothing window (in seconds) for vertical speed.
-#' Uses arithmetic mean. Set to NULL to disable. Default: 2.
+#' @param depth.smoothing Optional. Smoothing window (in seconds) for depth.
+#' Uses arithmetic mean. Set to NULL to disable smoothing (not recommended).
+#' Affects the vertical speed computation, which is based on the central difference of smoothed depth values.
+#' Default: 10 seconds
+#' @param speed.smoothing Optional. Smoothing window (in seconds) applied to derived speed or velocity time series.
+#' Specifically, it is used to smooth:
+#' \itemize{
+#'   \item Vertical velocity, after it is calculated from the central difference of smoothed depth values.
+#'   \item Swimming speed estimated from paddle wheel rotation frequencies (if \code{calculate.paddle.speed = TRUE}).
+#' }
+#' Smoothing is performed using an arithmetic moving average. Set to \code{NULL} to disable. Default: 1 second.
 #' @param calculate.paddle.speed Logical. If TRUE and the tag was equipped with a paddle wheel,
 #' estimates animal speed based on paddle wheel rotation frequency. Default is FALSE.
 #' @param speed.calibration.values A data.frame containing paddle wheel calibration values for speed estimation.
@@ -137,6 +146,7 @@
 #'   \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
 #'   \item Heading (degrees): Directional orientation of the animal, representing the compass heading.
 #'         Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
+#'   \item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between –180° and 180°.
 #' }
 #'
 #' \strong{Linear Motion:}
@@ -144,8 +154,9 @@
 #'   \item Surge (g): The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
 #'   \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 #'   \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
-#'   \item Vertical Speed (m/s): The vertical velocity of the animal, representing the speed at which the animal is moving vertically in the water column.
-#'   Calculated as the difference in depth measurements divided by the time interval
+#'   \item Vertical Velocity (m/s): The rate of change in the animal’s depth over time, including direction (positive for descent, negative for ascent).
+#'   Vertical velocity is calculated using a central difference method on the smoothed depth time series (with smoothing controlled by \code{depth.smoothing}).
+#'   An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 #' }
 #'
 #' \strong{Python Requirements}
@@ -187,7 +198,8 @@ processTagData <- function(data,
                            dba.window = 3,
                            dba.smoothing = 2,
                            motion.smoothing = 1,
-                           speed.smoothing = 2,
+                           depth.smoothing = 10,
+                           speed.smoothing = 1,
                            calculate.paddle.speed = FALSE,
                            speed.calibration.values = NULL,
                            burst.quantiles = c(0.95, 0.99),
@@ -276,8 +288,9 @@ processTagData <- function(data,
   if(!is.numeric(dba.window) || dba.window <= 0) stop("`dba.window` must be a positive numeric value.", call. = FALSE)
   if(!is.null(orientation.smoothing)  && (!is.numeric(orientation.smoothing) || orientation.smoothing <= 0)) stop("`orientation.smoothing` must be a positive numeric value.", call. = FALSE)
   if(!is.null(motion.smoothing) && (!is.numeric(motion.smoothing) || motion.smoothing <= 0)) stop("`motion.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.null(speed.smoothing) && (!is.numeric(speed.smoothing) || speed.smoothing <= 0)) stop("`speed.smoothing` must be a positive numeric value.", call. = FALSE)
   if(!is.null(dba.smoothing) && (!is.numeric(dba.smoothing) || dba.smoothing <= 0)) stop("`dba.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.null(depth.smoothing) && (!is.numeric(depth.smoothing) || depth.smoothing <= 0)) stop("`depth.smoothing` must be a positive numeric value.", call. = FALSE)
+  if(!is.null(speed.smoothing) && (!is.numeric(speed.smoothing) || speed.smoothing <= 0)) stop("`speed.smoothing` must be a positive numeric value.", call. = FALSE)
 
   # validate "burst.quantiles"
   if (!is.numeric(burst.quantiles) || any(burst.quantiles <= 0) || any(burst.quantiles > 1)) {
@@ -437,12 +450,14 @@ processTagData <- function(data,
       !all(is.na(mag_data[, "mz"]))
     )
 
+    # check if paddle wheel info is stored as an attribute
+    has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
+
     # proceed with calibration
     if (valid_magnetometer_data) {
 
       # check if the tag was equipped with a paddle wheel
       mz_raw <- NA
-      has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
       if(has_paddle_info && isTRUE(attr(individual_data, "paddle.wheel"))) {
         # store original mz column to estimate paddle speed
         mz_raw <- mag_data[, "mz"]
@@ -575,15 +590,6 @@ processTagData <- function(data,
     # motion along the vertical (Z) axis (up and down, often from diving or wave action)
     individual_data[, heave := az - staticZ]
 
-    # calculate vertical speed (using central diff)
-    individual_data[, vertical_speed := {
-      dz <- data.table::shift(depth, type = "lead") - data.table::shift(depth, type = "lag")
-      dt <- as.numeric(difftime(data.table::shift(datetime, type = "lead"),
-                                data.table::shift(datetime, type = "lag"),
-                                units = "secs"))
-      dz / dt
-    }]
-
     # smooth the signals using a moving average (optional for noise reduction)
     if(!is.null(motion.smoothing)){
       window_size <- sampling_freq * motion.smoothing
@@ -591,9 +597,42 @@ processTagData <- function(data,
       individual_data[, sway := data.table::frollmean(sway, n = window_size, fill = NA, align = "center")]
       individual_data[, heave := data.table::frollmean(heave, n = window_size, fill = NA, align = "center")]
     }
+
+    ############################################################################
+    # Apply depth smoothing if requested ######################################
+    ############################################################################
+
+    # smooth depth using a moving average (optional for noise reduction)
+    if(!is.null(depth.smoothing)){
+      if(verbose) cat("---> Smoothing depth time series\n")
+      window_size <- sampling_freq * depth.smoothing
+      individual_data[, depth := data.table::frollmean(depth, n = window_size, fill = NA, align = "center")]
+    }
+
+    ############################################################################
+    # Calculate vertical velocity ##############################################
+    ############################################################################
+
+    # calculate vertical speed using central difference on smoothed depth
+    individual_data[, vertical_velocity := {
+      # central difference
+      dz <- data.table::shift(depth, type = "lead") - data.table::shift(depth, type = "lag")
+      dt <- as.numeric(difftime(data.table::shift(datetime, type = "lead"), data.table::shift(datetime, type = "lag"), units = "secs"))
+      velocity <- dz / dt
+      # forward difference for the first element
+      dz_first <- depth[2] - depth[1]
+      dt_first <- as.numeric(difftime(datetime[2], datetime[1], units = "secs"))
+      velocity[1] <- dz_first / dt_first
+      # backward difference for the last element
+      dz_last <- depth[.N] - depth[.N - 1]
+      dt_last <- as.numeric(difftime(datetime[.N], datetime[.N - 1], units = "secs"))
+      velocity[.N] <- dz_last / dt_last
+      velocity
+    }]
+
     if(!is.null(speed.smoothing)){
       window_size <- sampling_freq * speed.smoothing
-      individual_data[, vertical_speed := data.table::frollmean(vertical_speed, n = window_size, fill = NA, align = "center")]
+      individual_data[, vertical_velocity := data.table::frollmean(vertical_velocity, n = window_size, fill = NA, align = "center")]
     }
 
 
@@ -779,7 +818,7 @@ processTagData <- function(data,
 
         # calculate 10-second rolling mean of vertical speed
         vv_window <- 10 * sampling_freq
-        individual_data[, vv_smooth := data.table::frollmean(vertical_speed, n = vv_window, fill = NA, align = "center")]
+        individual_data[, vv_smooth := data.table::frollmean(vertical_velocity, n = vv_window, fill = NA, align = "center")]
 
         # convert pitch to radians for regression
         individual_data[, pitch_rad := pitch * (pi/180)]
@@ -857,6 +896,32 @@ processTagData <- function(data,
         roll_anomaly_detected <- TRUE
         warning(sprintf("%s - Potential roll anomaly detected (%.2f\u00b0)", id, median_roll), call. = FALSE)
       }
+    }
+
+
+    ############################################################################
+    # Calculate turning angles #################################################
+    ############################################################################
+
+    # step 1: create the column with NA_real_
+    individual_data[, turning_angle := NA_real_]
+
+    # step 2: fill it only if valid heading values exist
+    if (any(!is.na(individual_data$heading))) {
+      individual_data[, turning_angle := {
+        circular_diff <- function(a, b) ((a - b + 180) %% 360) - 180
+        if (.N < 2 || all(is.na(heading))) {
+          rep(NA_real_, .N)
+        } else {
+          h_back  <- shift(heading, 1)
+          h_front <- shift(heading, type = "lead")
+          turn <- circular_diff(h_front, h_back) / 2
+          # Handle edges if values are not NA
+          turn[1]   <- if (!anyNA(heading[1:2])) circular_diff(heading[2], heading[1]) else NA_real_
+          turn[.N]  <- if (!anyNA(heading[(.N - 1):.N])) circular_diff(heading[.N], heading[.N - 1]) else NA_real_
+          turn
+        }
+      }]
     }
 
 
@@ -980,9 +1045,9 @@ processTagData <- function(data,
     # select columns to keep
     metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
                  "accel","odba","vedba","roll", "pitch", "heading",
-                 "surge", "sway", "heave", "vertical_speed")
+                 "surge", "sway", "heave", "vertical_velocity", "turning_angle")
     if (calculate.paddle.speed) {
-      if(has_paddle_info) metrics <- c(metrics, "paddle_freq", "paddle_speed")
+      if(has_paddle_info & valid_magnetometer_data) metrics <- c(metrics, "paddle_freq", "paddle_speed")
     }
     position_cols <- c("PTT", "position_type", "lat", "lon", "quality")
 
@@ -1086,7 +1151,7 @@ processTagData <- function(data,
       dynamics = list(vars = c("accel", "odba", "vedba"), digits = 3),
       orientation = list(vars = c("roll", "pitch", "heading"), digits = 2),
       movement = list(vars = c("surge", "sway", "heave"), digits = 4),
-      velocity = list(vars = "vertical_speed", digits = 2)
+      velocity = list(vars = "vertical_velocity", digits = 2)
     )
 
     # apply rounding to save memory
@@ -1117,6 +1182,7 @@ processTagData <- function(data,
     attr(processed_data, 'orientation.smoothing') <- orientation.smoothing
     attr(processed_data, 'motion.smoothing') <- motion.smoothing
     attr(processed_data, 'speed.smoothing') <- speed.smoothing
+    attr(processed_data, 'depth.smoothing') <- depth.smoothing
     attr(individual_data, 'pitch.offset.value') <- pitch_offset_deg
     attr(individual_data, 'pitch.offset.model.r2') <- pitch_offset_r2
     attr(processed_data, 'pitch.warning.threshold') <- pitch.warning.threshold
@@ -1132,7 +1198,7 @@ processTagData <- function(data,
                   "original.sampling.frequency", "processed.sampling.frequency")
     sensor_attrs <- c("hard.iron.calibration", "soft.iron.calibration", "orientation.algorithm",
                       "madgwick.beta", "magnetic.declination", "dba.window", "dba.smoothing",
-                       "orientation.smoothing", "motion.smoothing", "speed.smoothing", "paddle.wheel")
+                       "orientation.smoothing", "motion.smoothing", "speed.smoothing", "depth.smoothing", "paddle.wheel")
     checks_attrs <- c("regularization.performed", "pitch.offset.value",  "pitch.offset.model.r2",
                       "pitch.warning.threshold", "roll.warning.threshold","pitch.anomaly.detected", "roll.anomaly.detected")
     final_attrs <- c("nautilus.version", "processing.date")

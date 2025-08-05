@@ -9,13 +9,16 @@ calculateTailBeats(
   id.col = "ID",
   datetime.col = "datetime",
   motion.col = "sway",
-  min.freq.Hz = 0.05,
+  min.freq.Hz = 0.1,
   max.freq.Hz = 3,
+  bandpass.filter = TRUE,
+  filter.low.freq = NULL,
+  filter.high.freq = NULL,
+  filter.order = 4,
   smooth.window = 10,
   max.rows.per.batch = 2e+05,
-  ridge.only = FALSE,
-  ridge.threshold = 0.1,
-  power.ratio.threshold = NULL,
+  ridge.only = TRUE,
+  power.ratio.threshold = 2,
   max.interp.gap = 10,
   plot.wavelet = TRUE,
   plot.diagnostic = FALSE,
@@ -47,6 +50,18 @@ is strongly recommended, as it formats the data appropriately for all downstream
 
 \item{max.freq.Hz}{Numeric. The highest frequency of interest (in Hz). Default is 3 Hz.}
 
+\item{bandpass.filter}{Logical. Whether to apply bandpass filtering before wavelet analysis.
+Default is TRUE. Highly recommended to reduce noise and improve signal quality.}
+
+\item{filter.low.freq}{Numeric. Lower cutoff frequency for bandpass filter (in Hz).
+If NULL (default), uses min.freq.Hz * 0.9 to allow some margin below the minimum frequency of interest.}
+
+\item{filter.high.freq}{Numeric. Upper cutoff frequency for bandpass filter (in Hz).
+If NULL (default), uses max.freq.Hz * 1.1 to allow some margin above the maximum frequency of interest.}
+
+\item{filter.order}{Integer. Filter order for the Butterworth bandpass filter. Default is 4.
+Higher orders provide steeper cutoffs but may introduce artifacts.}
+
 \item{smooth.window}{Numeric. Window size (in seconds) for moving average smoothing of frequency estimates.
 Set to 0 to disable smoothing. Default is 10 seconds.}
 
@@ -55,16 +70,17 @@ The function automatically determines optimal batch sizes based on frequency res
 but this parameter sets an upper limit to prevent memory issues. Default is 200,000 rows.
 Lower values reduce memory usage but may increase processing time for very large datasets.}
 
-\item{ridge.only}{Logical. If TRUE, only returns frequencies identified as ridges (connected local maxima)
-in the wavelet power spectrum. If FALSE (default), uses all local maxima in the power spectrum.}
+\item{ridge.only}{Logical. If TRUE (default), only returns frequencies identified as ridges (connected local maxima)
+in the wavelet power spectrum. If FALSE, uses all local maxima in the power spectrum.}
 
-\item{ridge.threshold}{Scale factor used in the ridge detection step via \code{WaveletComp::ridge()}.
-A larger value results in a smoother ridge and potentially fewer oscillations detected,
-while a smaller value increases sensitivity to local variations in the wavelet power spectrum.
-Default is \code{0.1}.}
-
-\item{power.ratio.threshold}{Numeric or NULL. Minimum ratio between peak power and average power (Peak-to-Average Power Ratio)
-for a frequency to be considered valid. NULL disables this filter. Default is NULL.}
+\item{power.ratio.threshold}{Numeric or NULL. Power ratio threshold for frequency detection quality control.
+This parameter controls the minimum peak-to-average power ratio required to accept a frequency estimate.
+When \code{ridge.only = TRUE}: Applied during ridge detection as a minimum power threshold,
+replacing the adaptive \code{scale.factor} from \code{WaveletComp::ridge()} with a fixed threshold approach.
+When \code{ridge.only = FALSE}: Applied as a post-processing filter on the peak-to-average power ratios
+of detected frequencies. Higher values increase selectivity (fewer, stronger signals), lower values
+increase sensitivity (more, potentially weaker signals). Set to NULL to disable filtering.
+Recommended range: 1.5-3 for typical data. Default is \code{2}.}
 
 \item{max.interp.gap}{Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 Set to NULL to disable interpolation. Default is 10 seconds.}
@@ -97,9 +113,12 @@ This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS
 in the data folder corresponding to each ID. Default is \code{NULL}.}
 
 \item{output.suffix}{Character. A suffix to append to the file name when saving.
-This parameter is only used if \code{save.files = TRUE}.
+This parameter is only used if \code{save.files = TRUE}.}
 
-#' @return Depending on parameters:
+\item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
+}
+\value{
+Depending on parameters:
 \itemize{
 \item If \code{return.data = TRUE} (default): Returns the input data with added columns \code{tbf_hz}
 containing estimated tail beat frequencies in Hz, and \code{power_ratio}.
@@ -107,18 +126,6 @@ The \code{power_ratio} represents the ratio of the peak wavelet power at the est
 \code{tbf_hz} to the average wavelet power across the relevant frequency spectrum,
 providing a measure of the prominence of the tail beat frequency.
 For list/file inputs, returns a list of modified data frames with results for each individual.
-\item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
-files if \code{save.files = TRUE}.
-}}
-
-\item{n.cores}{Number of CPU cores for parallel processing (default = 1)}
-}
-\value{
-Depending on parameters:
-\itemize{
-\item If \code{return.data = TRUE} (default): Returns the input data with added column \code{tbf_hz}
-containing estimated tail beat frequencies in Hz. For list/file inputs, returns a list of modified
-data frames with results for each individual.
 \item If \code{return.data = FALSE}: Returns \code{NULL} invisibly. Processed data will only be saved to
 files if \code{save.files = TRUE}.
 }
@@ -133,12 +140,20 @@ datasets efficiently while maintaining accuracy at batch boundaries.
 \details{
 The function implements a comprehensive workflow for tail beat frequency estimation:
 
+\strong{Bandpass Filtering (New):}
+\itemize{
+\item \code{bandpass.filter = TRUE}: Applies a Butterworth bandpass filter to enhance signal quality
+by removing low-frequency drift and high-frequency noise outside the tail beat range.
+\item Filter cutoffs are automatically set based on frequency of interest with safety margins,
+or can be manually specified via \code{filter.low.freq} and \code{filter.high.freq}.
+\item Recommended for all analyses as it significantly improves signal-to-noise ratio.
+}
+
 \strong{Frequency Detection Methods:}
 \itemize{
 \item \code{ridge.only = TRUE}: Conservative approach using only connected maxima (ridges)
 in the wavelet power spectrum, identified via \code{WaveletComp::ridge()}. This method is
-the most robust against noise but may miss weaker signals. The behaviour can be fine-tuned
-with the \code{scale.factor} argument, which controls the smoothness of the ridge.
+the most robust against noise but may miss weaker signals.
 \item \code{ridge.only = FALSE}: More inclusive approach using all local maxima, with optional
 quality filtering via \code{power.ratio.threshold}.
 }
@@ -167,8 +182,8 @@ continuity during brief measurement drops without over-interpolating prolonged g
 }
 }
 \note{
-The function requires the 'WaveletComp' package for the wavelet transform. For parallel processing,
-it requires the 'foreach', 'doSNOW', and 'parallel' packages.
+The function requires the 'WaveletComp' package for the wavelet transform and the 'signal' package
+for bandpass filtering. For parallel processing, it requires the 'foreach', 'doSNOW', and 'parallel' packages.
 
 \strong{Sampling Frequency Requirements:}
 The input data must have a sampling frequency (1/timestep) that satisfies the Nyquist criterion:
@@ -176,5 +191,5 @@ The input data must have a sampling frequency (1/timestep) that satisfies the Ny
 \item Minimum requirement: Sampling frequency > 2 x \code{max.freq.Hz}
 \item Recommended: Sampling frequency ≥ 4 x \code{max.freq.Hz} for reliable results
 \item Example: With \code{max.freq.Hz = 3}, data should be sampled at ≥ 12 Hz (minimum 6 Hz)
-}#'
+}
 }

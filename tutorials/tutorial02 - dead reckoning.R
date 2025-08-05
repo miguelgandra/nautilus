@@ -51,7 +51,7 @@ animal_metadata$tag[animal_metadata$tag=="Ceiia"] <- "CEIIA"
 ################################################################################
 
 # Loop through each animal dataset and load the processed data in RDS format.
-data_files <- list.files("./data processed/processed/20Hz-tbf", full.names = TRUE)
+data_files <- list.files("./data processed/processed/20Hz", full.names = TRUE)
 processed_list <- vector("list", length(data_files))
 for(i in 1:length(data_files)){
   # Save the combined list as an RDS file
@@ -64,7 +64,6 @@ for(i in 1:length(data_files)){
 ## Analyze Relationship Between Tail-Beat Frequency and Paddle Speed ###########
 ################################################################################
 
-#
 qualifying_IDs <- c()
 for (i in names(processed_list)) {
   # Check if 'tbf_hz' has at least one non-NA value
@@ -74,9 +73,6 @@ for (i in names(processed_list)) {
   # If both conditions are met, add the name to our list
   if (has_non_NA_tbf && has_non_NA_paddle) qualifying_IDs <- c(qualifying_IDs, i)
 }
-
-
-
 
 # Define window parameters
 window_size_sec <- 5
@@ -131,10 +127,15 @@ speed_results <- lapply(processed_list, function(dt) {
   # Only proceed if we have at least 3 windows with data
   if (nrow(window_avgs) < 3) return(NULL)
 
-  # Fit linear model for this individual/trial
+  # Additional check: make sure variables used in model are not NA
+  if (all(is.na(window_avgs$mean_tbf)) || all(is.na(window_avgs$mean_speed))) return(NULL)
+
+
+   # Fit linear model for this individual/trial
   model <- lm(mean_speed ~ mean_tbf, data = window_avgs)
 
-  plot(mean_speed ~ mean_tbf, data = window_avgs)
+  plot(mean_speed ~ mean_tbf, data = window_avgs, main = unique(dt$ID)[1], las=1)
+  legend("topright", legend=paste0("R2 = ", round(summary(model)$r.squared, 2)), bty="n", cex=0.6)
 
   # Return results
   list(window_data = window_avgs,
