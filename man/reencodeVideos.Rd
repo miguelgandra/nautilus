@@ -2,93 +2,69 @@
 % Please edit documentation in R/reencodeVideos.R
 \name{reencodeVideos}
 \alias{reencodeVideos}
-\title{Reencode MOV Videos to HEVC Format}
+\title{Re-encode camera-tag videos to HEVC (H.265)}
 \usage{
 reencodeVideos(
   mov.directory,
-  output.directory = mov.directory,
+  output.dir = mov.directory,
   file.suffix = "",
   encoder = "libx265",
   crf = 18,
   video.quality = 50,
   preset = "medium",
-  overwrite = "ask"
+  overwrite = FALSE,
+  verbose = "detailed"
 )
 }
 \arguments{
-\item{mov.directory}{A string specifying the path to the directory containing \code{.mov} files to re-encode.}
+\item{mov.directory}{Directory containing the \code{.mov}/\code{.mp4} files to re-encode.}
 
-\item{output.directory}{A string specifying the path to the directory where re-encoded \code{.mp4} files will be saved.
-Defaults to the same as \code{mov.directory}.}
+\item{output.dir}{Directory for the re-encoded \code{.mp4} files. Defaults to \code{mov.directory}.}
 
-\item{file.suffix}{Character string to be appended to the base name of the
-output files (before the \code{.mp4} extension). This can be useful for differentiating
-reencoded files.}
+\item{file.suffix}{Character string appended to each output base name (before \code{.mp4}), e.g. to keep
+the re-encoded files distinct from the originals when writing to the same directory. Default \code{""}.}
 
-\item{encoder}{A string specifying the video encoder to use for re-encoding videos.
-Defaults to "hevc_videotoolbox", which utilizes hardware acceleration for faster processing when available.
-Supported values, such as "libx265" for software encoding, depend on the encoders available in \code{ffmpeg}.
-To view the available options, run \code{ffmpeg -codecs} in your terminal.}
+\item{encoder}{FFmpeg video encoder. Default \code{"libx265"} (software). Hardware options such as
+\code{"hevc_videotoolbox"} (macOS), \code{"h265_nvenc"} (NVIDIA), \code{"hevc_amf"} (AMD) or \code{"hevc_qsv"} (Intel)
+are faster when supported. List the available encoders with \code{ffmpeg -encoders}.}
 
-\item{crf}{A numeric value for the Constant Rate Factor (CRF), which controls the quality and file size of the output video.
-The CRF range is from 0 to 51, where:
-\itemize{
-\item A value of 0 represents lossless encoding, resulting in the highest quality but the largest file size.
-\item A value of 18 is the default and provides high-quality output, free from most artifacts.
-\item A higher value (closer to 51) will result in lower quality and smaller file sizes.
-This parameter is \strong{only used when software encoding (libx265)} is selected.
-For hardware-accelerated encoders, such as \code{hevc_videotoolbox}, \code{h265_nvenc}, or \code{hevc_amf}, video quality is controlled by the \code{video.quality} parameter instead.
-}}
+\item{crf}{Constant Rate Factor (0-51; lower = higher quality / larger). Used by the \strong{software}
+encoder (\code{libx265}). Default 18.}
 
-\item{video.quality}{A numeric value between 1 and 100 that defines the quality of the output video. Higher values result in better quality but larger file sizes.
-This parameter is used when hardware acceleration (e.g., \code{hevc_videotoolbox}, \code{h265_nvenc}, etc.) is selected as the encoder.
-Defaults to 50.}
+\item{video.quality}{Quality (1-100; higher = better). Used by the \strong{hardware} encoders. Default 50.}
 
-\item{preset}{A string specifying the encoding speed preset. This controls the trade-off between encoding speed and output file size/quality.
-Valid options are: 'ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium', 'slow', 'slower', 'veryslow'.
-Faster presets result in quicker encoding but lower compression, leading to larger file sizes, while slower presets provide better compression at the cost of longer encoding time.
-The default is "medium".}
+\item{preset}{Encoding speed/compression preset, one of \code{"ultrafast"}, \code{"superfast"}, \code{"veryfast"},
+\code{"faster"}, \code{"fast"}, \code{"medium"} (default), \code{"slow"}, \code{"slower"}, \code{"veryslow"}.}
 
-\item{overwrite}{A string that controls the behavior when output files already exist. Can be one of the following:
-\itemize{
-\item \code{ask}: Prompt the user for each file whether to overwrite it (default).
-\item \code{TRUE}: Automatically overwrite existing files.
-\item \code{FALSE}: Skip re-encoding for existing files.
-}}
+\item{overwrite}{Logical. If \code{FALSE} (default), files whose output already exists are skipped; if
+\code{TRUE}, they are re-encoded and replaced.}
+
+\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
 }
 \value{
-Prints progress and time statistics to the console. The re-encoded videos are saved in the specified output directory.
+The vector of output file paths, invisibly.
 }
 \description{
-This function re-encodes all \code{.mov} video files found in a specified input directory to
-the more efficient HEVC (H.265) format. Users can choose the desired encoder
-(e.g., \code{hevc_videotoolbox}, \code{libx265}, etc.) via the \code{encoder} parameter. By default,
-the function uses \code{libx265} for software encoding, but users can opt for hardware-accelerated
-encoding (\code{hevc_videotoolbox}) for faster processing times.
-The re-encoded files are saved as \code{.mp4} videos in the designated output directory,
-or in the same directory as the input files if no output path is provided.
-The \code{crf} (Constant Rate Factor) or \code{video.quality} argument can be specified to fine-tune
-the trade-off between video quality and file size, depending on the selected encoder.
-Additionally, the \code{overwrite} parameter allows users to control how existing output
-files are handled: overwrite them, skip them, or prompt the user before any action is taken.
+Batch re-encodes the \code{.mov}/\code{.mp4} video files in a directory to the more space-efficient HEVC
+(H.265) format with FFmpeg, for archival or downstream processing. A hardware encoder
+(\code{hevc_videotoolbox}, \code{h265_nvenc}, ...) is much faster when available; the software encoder
+(\code{libx265}) is the portable default. Existing outputs are skipped unless \code{overwrite = TRUE}.
 }
 \details{
-The \code{encoder} parameter specifies the video encoder used for converting files to HEVC format.
-Supported encoders depend on your FFmpeg installation and the hardware or software capabilities of your system.
-
-Below are some commonly used HEVC encoders:
-\itemize{
-\item \strong{libx265}: An open-source software-based HEVC encoder offering high-quality output and extensive customization options.#'
-\item \strong{hevc_videotoolbox}: Apple's hardware-accelerated HEVC encoder available on macOS devices.
-\item \strong{h265_nvenc}: NVIDIA's hardware-accelerated HEVC encoder. Requires an NVIDIA GPU with NVENC support.
-\item \strong{hevc_amf}: AMD's hardware-accelerated HEVC encoder. Requires an AMD GPU with AMF support.
-\item \strong{hevc_qsv}: Intel's hardware-accelerated HEVC encoder using Quick Sync Video technology. Requires a CPU with Quick Sync support.
+Commonly used HEVC encoders: \strong{libx265} (portable software), \strong{hevc_videotoolbox} (macOS hardware),
+\strong{h265_nvenc} (NVIDIA), \strong{hevc_amf} (AMD), \strong{hevc_qsv} (Intel Quick Sync). Audio is dropped
+(\code{-an}) for space-efficient archival.
 }
+\examples{
+\dontrun{
+# Portable software HEVC, written beside the originals with a suffix
+reencodeVideos("./videos/raw", file.suffix = "_hevc")
 
-To check which encoders are available on your system, use the following command:
-
-\if{html}{\out{<div class="sourceCode bash">}}\preformatted{ffmpeg -encoders | grep hevc
-}\if{html}{\out{</div>}}
-
-The output will list all HEVC encoders supported by your FFmpeg installation. Choose the one that best fits your hardware and encoding requirements.
+# Faster macOS hardware encoder into a separate output folder
+reencodeVideos("./videos/raw", output.dir = "./videos/hevc",
+               encoder = "hevc_videotoolbox")
+}
+}
+\seealso{
+\link{getVideoMetadata}, \link{renderOverlayVideo}.
 }

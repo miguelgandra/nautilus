@@ -2,51 +2,50 @@
 % Please edit documentation in R/filterVideoPeriod.R
 \name{filterVideoPeriod}
 \alias{filterVideoPeriod}
-\title{Filter data based on video availability and annotation intervals}
+\title{Restrict tag data to video-covered (and optionally annotated) periods}
 \usage{
 filterVideoPeriod(
   data,
   video.metadata,
   annotation.intervals = NULL,
   id.col = "ID",
-  datetime.col = "datetime"
+  datetime.col = "datetime",
+  verbose = "detailed"
 )
 }
 \arguments{
-\item{data}{A \code{list} where each element is a \code{data.table} for a specific ID
-(e.g., a specific camera or animal). Each dataset should include a column for datetimes.}
+\item{data}{A list of datasets (one per individual), or a single aggregated data.table/data.frame
+with an \code{id.col}. Each must contain a POSIXct \code{datetime.col}.}
 
-\item{video.metadata}{A \code{data.table} containing metadata for each video segment, with columns:
-\code{ID} (unique identifier), \code{start} (start datetime), and \code{end} (end datetime).}
+\item{video.metadata}{A data.frame/data.table of video segments with columns \code{id.col}, \code{start} and
+\code{end} (POSIXct), as returned by \link{getVideoMetadata}.}
 
-\item{annotation.intervals}{An optional \code{data.frame} or \code{data.table} containing annotation intervals
-with columns: \code{ID}, \code{start}, and \code{end} (all datetimes). If \code{NULL} (default),
-filtering is based solely on video availability.}
+\item{annotation.intervals}{Optional data.frame/data.table of annotation intervals with \code{id.col},
+\code{start} and \code{end} (POSIXct). \code{NULL} (default) filters on video availability only.}
 
-\item{id.col}{A \code{character} string indicating the column name in \code{video.metadata} and
-\code{annotation.intervals} that contains the unique IDs matching the \code{data} list names. Default is \code{"ID"}.}
+\item{id.col, datetime.col}{Column names for the ID and datetime. Defaults \code{"ID"}/\code{"datetime"}.}
 
-\item{datetime.col}{A \code{character} string indicating the name of the datetime column
-in each dataset. Default is \code{"datetime"}.}
+\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
 }
 \value{
-A \code{list} of filtered \code{data.table} objects, where each dataset contains only the rows
-falling within both the video availability periods and the annotation intervals (if provided).
-If no matching periods are found for a given ID, an empty \code{data.table} is returned.
+A named list of filtered data.tables (individuals with no retained rows are dropped).
 }
 \description{
-This function subsets a list of \code{data.table} objects in two steps:
-\enumerate{
-\item First retains only periods where video footage was available (from video.metadata)
-\item Then optionally further restricts to periods with manual annotations (from annotation.intervals)
+Subsets each individual's sensor data to the periods for which video footage exists (from
+\code{video.metadata}), and optionally further to manually annotated intervals. Useful for aligning
+sensor analyses with the footage that backs them. Temporal jumps between video segments are handled
+naturally - a row is kept if its timestamp falls within ANY video segment (and ANY annotation
+interval, when supplied). For annotation intervals, a missing \code{start} is filled with the earliest,
+and a missing \code{end} with the latest, video-covered time for that individual.
 }
-
-The function handles temporal jumps between videos by processing each video segment separately.
-Annotation intervals are only applied after establishing video-available periods.
-
-For annotation intervals, missing \code{start} or \code{end} values are automatically filled with:
-\itemize{
-\item the earliest video start time for missing \code{start} values
-\item the latest video end time for missing \code{end} values
+\examples{
+\dontrun{
+processed <- processTagData(imported)
+meta      <- getVideoMetadata("./videos")
+# keep only the sensor rows that fall within video coverage
+filtered  <- filterVideoPeriod(processed, meta)
 }
+}
+\seealso{
+\link{getVideoMetadata}, \link{annotateData}.
 }

@@ -1,65 +1,185 @@
+# nautilus <img src="inst/resources/nautilus-logo.png" align="right" width="110" alt="nautilus logo" />
 
-# nautilus <img src="inst/resources/nautilus-logo.png" align="right" width="100" />
-
-[![Project Status: Work in Progress](https://img.shields.io/badge/status-WIP-orange)](https://www.repostatus.org/#wip)  
-[![](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
-[![CRAN status](https://www.r-pkg.org/badges/version/nautilus)](https://CRAN.R-project.org/package=nautilus)
+<!-- badges: start -->
+[![Project Status: WIP](https://img.shields.io/badge/status-WIP-orange)](https://www.repostatus.org/#wip)
+[![Lifecycle: experimental](https://img.shields.io/badge/lifecycle-experimental-orange.svg)](https://lifecycle.r-lib.org/articles/stages.html#experimental)
 [![R-CMD-check](https://github.com/miguelgandra/nautilus/actions/workflows/R-CMD-check.yaml/badge.svg)](https://github.com/miguelgandra/nautilus/actions/workflows/R-CMD-check.yaml)
-[![Github All Releases](https://img.shields.io/github/downloads/miguelgandra/nautilus/total.svg)]()
+<!-- badges: end -->
+<!-- CRAN badge omitted until the package is published; www.r-pkg.org 500s for packages not yet on CRAN.
+     Re-add on acceptance:
+     [![CRAN status](https://www.r-pkg.org/badges/version/nautilus)](https://CRAN.R-project.org/package=nautilus) -->
 
+**nautilus** turns raw, high-resolution archival-tag recordings into analysis-ready
+biologging datasets. It takes the multi-sensor time series logged by animal-borne tags
+&mdash; depth, temperature, tri-axial acceleration, magnetometer and gyroscope, plus any
+onboard camera video &mdash; and carries them through a single, transparent pipeline:
+import, quality control, sensor-axis alignment, magnetometer calibration, and the
+derivation of orientation, kinematics, swimming speed and dead-reckoned movement tracks.
 
-**nautilus** is an R package designed for the analysis and visualisation of high-resolution archival tag data from marine animals.
-Although it was specifically designed to interoperate with CATS Diary and Camera tags (within the G-Pilot and i-Pilot 
-multisensor packages; Fontes et al., 2022), the package offers broader applicability and can potentially be adapted to other tagging systems.
-The package also includes tools for integrating and analysing video data collected by onboard cameras.
+It was designed around CATS Diary and Camera tags mounted in the towed **PILOT**
+multi-sensor packages ([Fontes et al., 2022](https://doi.org/10.1186/s40317-022-00310-1)),
+but the workflow is general and adapts to other high-rate archival tags.
 
-**Note:** This package is still in its early stages of development and is being actively improved. Some features may change or expand as the package evolves.
+> **Status.** nautilus is under active development ahead of its first release. The public
+> API is stabilising but may still change; please pin a commit if you depend on it in a
+> production analysis.
 
-**Reference:**
-Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalhães, R., Bartolomeu, T., Liebsch, N., Meyer, C. & Afonso, P. (2022). The advantages and challenges of non-invasive towed PILOT tags for free-ranging deep-diving megafauna. *Animal Biotelemetry, 10*(1), 39. https://doi.org/10.1186/s40317-022-00310-1
-<br/><br/>
+<br/>
 
-## Features
+## The workflow
 
-- Process high-resolution time-series data from archival tags, including depth, temperature, 3-axis acceleration, 3-axis magnetometer, and 3-axis gyroscope data.
-- Automatically identify and filter deployment periods (when the tag is attached to the animal) from pre- and post-deployment periods.
-- Identify and handle outliers in sensor time-series data, improving data quality and reliability.
-- Calculate a variety of behavioural and kinematic metrics (e.g., ODBA, surge, heading, pitch, etc.).
-- Estimate tail beat frequencies using continuous wavelet transforms (CWT).
-- Automatically generate publication-ready summary tables with key statistics from the processed datasets.
-- Plot animals' depth profiles as colour-coded time-series, facilitating visual inspection of diving behaviour.
-- Process video data associated with onboard cameras.
-- Easily jump to specific datetimes in video files directly from R.
-- Annotate datasets with events or behaviours of interest, linking time-bound events (e.g., feeding) from video review to the corresponding sensor data.
-- Extract features from a sliding window, calculating metrics (e.g., mean, standard deviation) for selected variables, preparing datasets for machine learning or other analytical methods.
-- Additional features are being developed to further enhance functionality.
-<br/><br/>
+Every deployment follows the same **mandatory spine** &mdash; prepare, clean, orient &mdash;
+which converges on a single call, `processTagData()`, that returns one self-describing
+`nautilus_tag` object. From there the analysis **fans out into optional branches** that you
+pick according to your scientific goal.
 
+<p align="center">
+  <img src="man/figures/nautilus-pipeline.png" width="760"
+       alt="The nautilus workflow. Raw tag data flows through a mandatory linear spine (1: prepare and import; 2: clean and quality-control; 3: orient and calibrate) into processTagData(), which produces an analysis-ready nautilus_tag object and then fans out into four optional branches: summaries and figures, behaviour and kinematics, movement tracks, and onboard video." />
+</p>
+
+The [Getting Started guide](#learning-more) walks through this diagram end to end on a real
+deployment.
+
+<br/>
+
+## What nautilus does
+
+**Prepare and import**
+- Validate and normalise the deployment table before import (`qcDeploymentMetadata()`),
+  mapping arbitrary column names onto canonical roles (`metadataColumns()`).
+- Read each animal's multi-sensor CSVs, standardise sensor names and units, fold in
+  Wildlife Computers location files, and store everything as a `nautilus_tag` object
+  (`importTagData()`).
+
+**Clean and quality-control**
+- Detect the on-animal deployment window and trim pre-/post-deployment noise
+  (`filterDeploymentData()`); place the record on a regular time grid
+  (`regularizeTimeSeries()`).
+- Diagnose and optionally repair sensor faults &mdash; duplication, dead channels, spikes
+  (`checkSensorIntegrity()`, `checkSensorQuality()`); then screen the position fixes for
+  implausible GPS/Argos detections (`filterLocations()`).
+
+**Orient and calibrate**
+- Resolve and apply the signed-permutation transform that rotates each tag's IMU axes into
+  the animal's body frame, with a per-package consensus that can rescue weakly-observed
+  deployments (`checkTagMapping()`, `consensusAxisMapping()`, `applyAxisMapping()`).
+- Estimate hard- and soft-iron magnetometer corrections from free-swimming data, with an
+  explicit, honest heading-confidence flag (`calibrateMagnetometer()`).
+
+**Process** &mdash; the single pivot
+- Derive orientation (tilt-compensated compass or Madgwick fusion), kinematics, dynamic
+  body acceleration and paddle-wheel swimming speed in one call (`processTagData()`).
+
+**Then branch by goal**
+- **Summaries & figures:** `summarizeTagData()`, `plotDepthProfiles()`, `plotTimeAtDepth()`, `plotDistributions()`.
+- **Behaviour & kinematics:** `calculateTailBeats()`, `extractFeatures()` (sliding-window features for machine learning), `getDielPhase()`.
+- **Movement tracks:** dead-reckon a pseudo-track and validate it against held-out fixes &mdash; `reconstructTrack()`, `crossValidateTrack()`, `trackMetrics()`, `plotTracks()`, `exportForSSM()`.
+- **Onboard video:** recover recording timestamps (with an OCR fallback), align sensor data to filmed intervals, annotate behaviours and render sensor overlays &mdash; `getVideoMetadata()`, `filterVideoPeriod()`, `annotateData()`, `renderOverlayVideo()`.
+
+<br/>
 
 ## Installation
 
-You can install the development version of **nautilus** from GitHub with:
+Install the development version from GitHub:
 
 ```r
-# Install devtools if you haven't already
-# install.packages("devtools")
-devtools::install_github("miguelgandra/nautilus")
+# install.packages("remotes")
+remotes::install_github("miguelgandra/nautilus")
 ```
 
-## Tutorial Scripts
+nautilus has a deliberately light dependency footprint and needs **no geospatial system
+libraries** (no GDAL/GEOS/PROJ). A few *optional* branches shell out to external tools when
+you use them:
 
-Three tutorial scripts are available to help you get started:
-- Tutorial 01: Import, process, and analyze archival tag data.
-- Tutorial 02: Filter locations and estimate pseudo-tracks using dead reckoning. 
-- Tutorial 03: Reencode .MOV video files to HEVC format for improved compression efficiency and retrieve video metadata.
+| Feature | Optional tool |
+|---|---|
+| Video re-encoding / overlay rendering | [FFmpeg](https://ffmpeg.org/) |
+| In-R video playback (`launchVideo()`) | [VLC](https://www.videolan.org/) |
+| On-screen-clock OCR (`getVideoMetadata()`) | R package **tesseract** |
 
-All tutorial scripts are available in the `tutorials/` directory of the package.
+The fine-tuned camera-tag OCR model (~11 MB) is **not** bundled with the package: it is
+downloaded on first use and cached locally, or you can fetch it ahead of time with
+`installCamOcrModel()`. Offline, OCR falls back gracefully to Tesseract's generic model.
 
+<br/>
 
-## Documentation
+## A minimal pipeline
 
-For detailed information on how to use nautilus, please refer to the package documentation.
+The mandatory spine is a short, linear sequence; each step reads a `nautilus_tag` and
+returns an annotated one.
 
+```r
+library(nautilus)
+
+# --- Mandatory spine: prepare, clean, orient --------------------------------
+meta <- qcDeploymentMetadata("deployments.csv")        # validate deployment metadata
+tags <- importTagData(data.folders = "tag-data/",      # -> one nautilus_tag per animal
+                      id.metadata  = meta)
+
+tags <- filterDeploymentData(tags)                     # trim to the on-animal period
+tags <- regularizeTimeSeries(tags)                     # place on a regular time grid
+
+mapping <- consensusAxisMapping(checkTagMapping(tags)) # resolve tag -> body axes
+tags    <- applyAxisMapping(tags, mapping)
+tags    <- calibrateMagnetometer(tags)                 # hard-/soft-iron correction
+
+# --- The single pivot -------------------------------------------------------
+tags <- processTagData(tags)                           # orientation, kinematics, speed
+
+# --- Optional branches: choose by your goal ---------------------------------
+summarizeTagData(tags)                                 # per-deployment overview
+```
+
+Large studies can run each stage straight to disk (`return.data = FALSE` plus an `output.dir`)
+instead of holding every deployment in memory &mdash; each stage then returns the written file paths,
+which feed straight into the next. The Getting Started guide covers both styles.
+
+<br/>
+
+<h2 id="learning-more">Learning more</h2>
+
+- **Vignettes** &mdash; long-form guides shipped with the package. Start with *Getting
+  Started with nautilus*, which introduces the pipeline, helps you choose a workflow, and
+  runs a complete example. List them with:
+
+  ```r
+  browseVignettes("nautilus")
+  vignette("getting-started", package = "nautilus")
+  ```
+
+- **Function reference** &mdash; every exported function is documented with runnable
+  examples; open help with `?processTagData` (or any other function name).
+- **Changelog** &mdash; see [`NEWS.md`](NEWS.md) for what is new in each version.
+- **Worked scripts** &mdash; the [`tutorials/`](tutorials/) directory holds end-to-end
+  example scripts used during development.
+
+<br/>
+
+## Citing nautilus
+
+If nautilus contributes to your work, please cite both the software and the PILOT-tag
+reference:
+
+```r
+citation("nautilus")
+```
+
+> Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalh&atilde;es, R.,
+> Bartolomeu, T., Liebsch, N., Meyer, C. & Afonso, P. (2022). The advantages and challenges
+> of non-invasive towed PILOT tags for free-ranging deep-diving megafauna. *Animal
+> Biotelemetry, 10*(1), 39. <https://doi.org/10.1186/s40317-022-00310-1>
+
+<br/>
+
+## Getting help
+
+Found a bug, or something unclear? Please
+[open an issue](https://github.com/miguelgandra/nautilus/issues) with a small reproducible
+example.
+
+<br/>
 
 ## License
-This project is licensed under the GPL v3 license.
+
+GPL (>= 3). See [`LICENSE.md`](LICENSE.md) for the full license text.

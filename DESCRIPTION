@@ -8,45 +8,45 @@ Description: Provides tools for processing and analysing high-resolution archiva
 License: GPL (>= 3)
 Encoding: UTF-8
 Roxygen: list(markdown = TRUE)
-RoxygenNote: 7.3.2	
+Depends:
+	R (>= 4.0)
 Imports:
 	utils,
 	stats,
-	methods,
 	graphics,
 	grDevices,
 	data.table,
 	parallel,
-	dplyr,
-	plyr,
-	sf,
 	lubridate,
-	magick,
 	changepoint,
 	zoo,
-	crayon,
+	cli,
 	oce,
-	suntools
+	signal
 Suggests:
 	foreach,
 	doSNOW,
-	reticulate,
 	randomForest,
 	pROC,
 	moments,
 	entropy,
 	circular,
-	signal,
 	tesseract,
-	WaveletComp,
+	magick,
 	geosphere,
 	maps,
 	mapdata,
 	prettymapr,
+	marmap,
 	leaflet,
-	plot3D
+	plot3D,
+	av,
+	testthat (>= 3.0.0),
+	withr,
+	knitr,
+	rmarkdown
+VignetteBuilder: knitr
 URL: https://github.com/miguelgandra/nautilus
 BugReports: https://github.com/miguelgandra/nautilus/issues
-
-
-
+Config/roxygen2/version: 8.0.0
+Config/testthat/edition: 3

@@ -2,71 +2,92 @@
 % Please edit documentation in R/plotDepthProfiles.R
 \name{plotDepthProfiles}
 \alias{plotDepthProfiles}
-\title{Plot Depth Profiles with Colored Time Series}
+\title{Plot depth profiles, coloured by an environmental variable}
 \usage{
 plotDepthProfiles(
   data,
-  id.metadata,
+  color.by = "temp",
+  color.label = NULL,
+  color.pal = NULL,
+  same.color.scale = TRUE,
+  same.depth.scale = FALSE,
+  shade.diel = TRUE,
+  downsample = 5,
+  plot = TRUE,
+  plot.file = NULL,
+  ncols = NULL,
+  nrows = NULL,
+  cex = 1,
+  point.size = 0.4,
   id.col = "ID",
   datetime.col = "datetime",
   depth.col = "depth",
-  color.by = "temp",
-  color.by.label = "Temp (ºC)",
-  lon.col = "lon",
-  lat.col = "lat",
-  color.pal = NULL,
-  cex.id = 1.2,
-  cex.pt = 0.4,
-  cex.axis = 0.9,
-  cex.legend = 0.8,
-  same.color.scale = TRUE,
-  same.depth.scale = FALSE,
-  ncols = NULL,
-  nrows = NULL
+  verbose = "detailed"
 )
 }
 \arguments{
-\item{data}{A data frame or a list of data frames containing depth profile information.}
+\item{data}{Depth data: a character vector of \code{.rds} file paths, a single \code{nautilus_tag} /
+data.frame, or a list of them (see \code{\link{processTagData}}).}
 
-\item{id.metadata}{Data frame. Metadata about the IDs to associate with the processed data.
-Must contain at least columns for ID, release longitude and release latitude.}
+\item{color.by}{Character. Name of the column mapped to colour. Default \code{"temp"}.}
 
-\item{id.col}{Character. The name of the column identifying individuals (default: "ID").}
+\item{color.label}{Character. Legend title for \code{color.by}. \code{NULL} (default) derives a sensible label
+(e.g. \code{"Temperature (°C)"} for \code{"temp"}).}
 
-\item{datetime.col}{Character. The name of the column containing datetime information (default: "datetime").}
+\item{color.pal}{Character vector of colours for the mapped variable. \code{NULL} (default) uses a
+jet-style palette with extra resolution in the upper range.}
 
-\item{depth.col}{Character. The name of the column containing depth values (default: "depth").}
+\item{same.color.scale}{Logical. If \code{TRUE} (default), all panels share one colour scale and a single
+legend; if \code{FALSE}, each panel is scaled and labelled independently.}
 
-\item{color.by}{Character. The name of the column used for color mapping (default: "temp").}
+\item{same.depth.scale}{Logical. If \code{TRUE}, all panels share one depth axis; if \code{FALSE} (default),
+each panel is scaled to its own maximum depth.}
 
-\item{color.by.label}{Character. Label for the color legend (default: "Temp (ºC)").}
+\item{shade.diel}{Logical. If \code{TRUE} (default), shade the background by diel phase (day / twilight /
+night). Requires deployment coordinates in the metadata; panels without them are left unshaded.}
 
-\item{lon.col}{Character. The name of the column containing longitude information (default: "lon").}
+\item{downsample}{Numeric. Bin width (seconds) for averaging before plotting, which keeps
+high-resolution records legible and fast to draw. Default 5; set \code{NULL} to plot every sample.}
 
-\item{lat.col}{Character. The name of the column containing latitude information (default: "lat").}
+\item{plot}{Logical. If \code{TRUE} (default), draw to the active graphics device.}
 
-\item{color.pal}{Character vector. A color palette for the depth profiles (default: \code{pals::jet(100)}).}
+\item{plot.file}{Character. Path to a multi-page PDF to draw into (one page per grid of deployments).
+Independent of \code{plot}: set either or both. The function manages the device itself. Default \code{NULL}.}
 
-\item{cex.id}{Numeric. The expansion factor for the ID labels in plots. Defaults to 1.2.}
+\item{ncols, nrows}{Integer. Grid columns / rows per page. If \code{NULL} (default) both are chosen
+automatically (up to 2 columns and 5 rows per page).}
 
-\item{cex.pt}{Numeric. The expansion factor for the points. Defaults to 0.4.}
+\item{cex}{Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.}
 
-\item{cex.axis}{Numeric. The expansion factor for axis labels. Defaults to 0.9.}
+\item{point.size}{Numeric. Plotting-character size (\code{cex}) for the depth points. Default 0.4.}
 
-\item{cex.legend}{Numeric. The expansion factor for the legend text. Defaults to 0.8.}
+\item{id.col, datetime.col, depth.col}{Character. Column names for the ID, datetime and depth.
+Defaults \code{"ID"}, \code{"datetime"}, \code{"depth"}.}
 
-\item{same.color.scale}{Logical. If \code{TRUE}, all plots use the same color scale for the mapped variable (default: \code{TRUE}).}
-
-\item{same.depth.scale}{Logical. If \code{TRUE}, all plots use the same depth scale; if \code{FALSE}, each individual has its own scale (default: \code{FALSE}).}
-
-\item{ncols}{Integer. Number of columns for the plot layout. If \code{NULL}, it is determined automatically.}
-
-\item{nrows}{Integer. Number of rows for the plot layout. If \code{NULL}, it is determined automatically.}
+\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
+\code{2}/"detailed" (default): additionally reports per-deployment data-quality notes (deployments missing
+the colour variable or coordinates) and shows a live progress bar while the tags are read.}
 }
 \value{
-A plot displaying depth profiles for each individual, with time on the x-axis and depth on the y-axis, colored by the specified variable.
+Invisibly \code{NULL}; called for its side effect (the plot).
 }
 \description{
-This function generates depth profiles for individual subjects, with depth values plotted against time.
-The points are color-coded based on a specified variable.
+Draws one depth-vs-time profile per deployment, with points coloured by a chosen variable
+(temperature by default) and a diel (day / twilight / night) background shading. Deployments are
+laid out in a grid, paginated automatically when they do not fit on one page.
+
+Like the other workflow functions, \code{data} accepts the package's canonical input forms - a character
+vector of \code{.rds} file paths, a single \code{nautilus_tag} / data.frame, or a list of them - and the
+deployment coordinates used for the diel shading are read from each object's metadata, so no
+separate metadata table is required.
+}
+\examples{
+\dontrun{
+# Draw to a multi-page PDF, coloured by temperature
+plotDepthProfiles(list.files("./processed", full.names = TRUE),
+                  plot = FALSE, plot.file = "./plots/depth-profiles.pdf")
+}
+}
+\seealso{
+\code{\link{processTagData}}, \code{\link{summarizeTagData}}
 }

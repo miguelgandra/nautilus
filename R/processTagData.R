@@ -13,8 +13,16 @@
 #' and magnetometer data to determine body orientation relative to gravity and magnetic north.
 #' Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
 #'
-#' A full 3D magnetic calibration can be applied prior to orientation estimation, including both
-#' hard iron (offset) and soft iron (scaling and misalignment) corrections.
+#' Magnetometer calibration can be applied prior to orientation estimation, using the SAME engine as
+#' \code{\link{calibrateMagnetometer}} (see its Details for the full pipeline and the maths). When the field
+#' cloud is genuinely three-dimensional it fits the full hard + soft iron ellipsoid (correcting cross-axis
+#' misalignment); for the usual thin swimming band it estimates the hard-iron centre only, pinning the
+#' unobservable perpendicular component from the geomagnetic inclination and leaving the soft-iron at
+#' identity. Either way the correction is applied ONLY when it clears an honest confidence gate - if the
+#' animal did not rotate through enough headings to constrain the estimate, the heading is left raw rather
+#' than distorted. A calibration already computed and stored by \code{\link{calibrateMagnetometer}} (e.g. a
+#' per-package pooled or externally-sourced fit) is reused when present and trusted; otherwise the fit is
+#' estimated inline. The switches are grouped in \code{\link{calibrationControl}}.
 #'
 #' For tags equipped with a magnetic paddle wheel, the function can also estimate swimming speed.
 #' This is achieved by extracting the dominant rotation frequency from the magnetometer's
@@ -24,84 +32,79 @@
 #' After metric computation, the data can be downsampled to reduce its resolution and
 #' size for downstream analysis.
 #'
-#' Note: Python and the associated libraries `AHRS` and `numpy` (accessible via `reticulate`) are required
-#' if orientation is estimated using the Madgwick filter.
-#'
 #' @param data A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
 #' containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
 #' `.rds` files, each containing data for a single individual. When a character vector is provided,
 #' files are loaded sequentially to optimize memory use. The output of the \link{importTagData} function
-#' is strongly recommended, as it formats the data appropriately for all downstream analysis.
+#' is strongly recommended, as it formats the data appropriately for all downstream analysis. The IMU
+#' axes are expected to be in the animal body frame: run \link{applyAxisMapping} first, otherwise the
+#' orientation metrics (pitch/roll/heading) are silently wrong - a warning is raised for any deployment
+#' whose axis mapping has not been applied.
 #' @param downsample.to Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 #' Use NULL to retain the original resolution. Defaults to 1.
-#' @param hard.iron.calibration Logical. Whether to apply hard-iron calibration (offset correction) to magnetometer data.
-#' Default is TRUE.
-#' @param soft.iron.calibration Logical. Whether to apply soft-iron calibration (scaling and misalignment correction) to magnetometer data.
-#' Default is TRUE.
 #' @param orientation.algorithm Orientation estimation algorithm:
 #'  \itemize{
 #'    \item \code{"tilt_compass"} (default): Lightweight 6-axis tilt-compensated compass.
-#'    \item \code{"madgwick"}: High-accuracy 9-axis sensor fusion. Requires Python \code{AHRS} module.
+#'    \item \code{"madgwick"}: High-accuracy 9-axis sensor fusion via a native-R implementation
+#'      of Madgwick's gradient-descent AHRS filter (requires gyroscope data).
 #'  }
-#' @param madgwick.beta Numeric. The Madgwick filter's gain parameter (default: 0.02).
-#' This parameter controls the trade-off between gyroscope and accelerometer measurements.
-#'   \itemize{
-#'     \item Higher values (e.g., 0.2-0.3) trust the accelerometer more, leading to faster convergence but potentially more noise
-#'.    \item Lower values (e.g., 0.01-0.05) trust the gyroscope more, resulting in smoother but potentially slower convergence
-#'   }
-#' Only used when \code{orientation.algorithm = "madgwick"}.
-#' @param orientation.smoothing Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
-#' Uses circular mean. Set to NULL to disable. Default: 1.
-#' @param correct.pitch.offset A logical value (TRUE/FALSE) indicating whether to apply a pitch
-#' offset correction based on the relationship between pitch angle and vertical speed.
-#' Defaults to FALSE. If TRUE, a linear regression of pitch (in radians) against
-#' `vertical_velocity` is performed, and the intercept (pitch at 0 m/s vertical speed)
-#' is subtracted from all pitch estimates. This method is adapted from Kawatsu et al. (2010)
-#' to account for potential tag misalignment.
-#' @param pitch.warning.threshold Numeric. Threshold (in degrees) for median pitch values that trigger orientation warnings.
-#' Default: 45 (will warn if median |pitch| > 45 degrees).
-#' @param roll.warning.threshold Numeric. Threshold (in degrees) for median roll values that trigger orientation warnings.
-#' Default: 45 (will warn if median |roll| > 45 degrees).
-#' @param dba.window Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.
-#' @param dba.smoothing Optional. Smoothing window (in seconds) for VeDBA/ODBA metrics.
-#' Uses arithmetic mean. Set to NULL to disable. Default: 2.
-#' @param motion.smoothing Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
-#' Uses arithmetic mean. Set to NULL to disable. Default: 1.
-#' @param depth.smoothing Optional. Smoothing window (in seconds) for depth.
-#' Uses arithmetic mean. Set to NULL to disable smoothing (not recommended).
-#' Affects the vertical speed computation, which is based on the central difference of smoothed depth values.
-#' Default: 10 seconds
-#' @param speed.smoothing Optional. Smoothing window (in seconds) applied to derived speed or velocity time series.
-#' Specifically, it is used to smooth:
-#' \itemize{
-#'   \item Vertical velocity, after it is calculated from the central difference of smoothed depth values.
-#'   \item Swimming speed estimated from paddle wheel rotation frequencies (if \code{calculate.paddle.speed = TRUE}).
-#' }
-#' Smoothing is performed using an arithmetic moving average. Set to \code{NULL} to disable. Default: 1 second.
-#' @param calculate.paddle.speed Logical. If TRUE and the tag was equipped with a paddle wheel,
-#' estimates animal speed based on paddle wheel rotation frequency. Default is FALSE.
-#' @param speed.calibration.values A data.frame containing paddle wheel calibration values for speed estimation.
-#' Must contain at least three columns:
+#' @param orientation A control object from \code{\link{orientationControl}} grouping the specialised
+#'   orientation-estimation knobs: the Madgwick filter gain `madgwick.beta` (used only when
+#'   `orientation.algorithm = "madgwick"`), the mounting-offset corrections `correct.pitch` /
+#'   `correct.roll`, the pitch-offset fit gate `pitch.offset.min.r2`, and the anomaly `warning.threshold`
+#'   (degrees, above which a median |pitch|/|roll| is flagged and an implausibly large offset is not
+#'   applied). Defaults to all on. Pass a named list to override some, e.g.
+#'   `orientation = orientationControl(correct.roll = FALSE)`. The pitch-offset correction is adapted from
+#'   Kawatsu et al. (2010); the roll offset is the median roll over the most level half of the record
+#'   (mirror-imaged for left/right attachment sites, captured empirically).
+#' @param calibration A control object from \code{\link{calibrationControl}} grouping the magnetometer
+#'   calibration switches `hard.iron` and `soft.iron`. Defaults to both on. Pass a named list to override,
+#'   e.g. `calibration = calibrationControl(soft.iron = FALSE)`.
+#' @param smoothing A control object from \code{\link{smoothingControl}} grouping the windows
+#'   (seconds): `static` (3, the gravity-separation window underlying VeDBA/ODBA, surge/sway/heave and
+#'   orientation - it cannot be disabled), and the post-smoothers `orientation` (1), `dba` (2),
+#'   `depth` (10), `speed` (1). Set any post-smoother to `NULL` to disable it, e.g.
+#'   `smoothing = smoothingControl(depth = 15)`.
+#' @param depth.drift A control object from \code{\link{depthDriftControl}} governing the depth zero-offset
+#'   drift correction. The slowly-varying pressure-sensor zero offset is estimated from independent surface
+#'   evidence (the Wildlife Computers wet/dry signal in `meta$ancillary$dry` and surface-implying
+#'   position fixes) and subtracted before depth feeds the vertical velocity and every absolute-depth
+#'   metric. On by default and self-gating: it abstains (leaving depth untouched) when surface evidence
+#'   is too sparse. Set `depth.drift = depthDriftControl(method = "none")` to disable it.
+#' @param paddle.calibration A data.frame of paddle-wheel calibration values. Supplying it is what
+#' enables paddle-wheel speed estimation (there is no separate on/off flag); leave it `NULL` to skip
+#' speed. Must contain at least three columns:
 #'  \itemize{
 #'    \item \code{year}: The year the calibration was performed (integer)
 #'    \item \code{package_id}: The package identifier matching the tag's attribute (character)
 #'    \item \code{slope}: The calibration slope value (numeric)
 #'  }
-#' This parameter is only used when \code{calculate.paddle.speed = TRUE}. Default is NULL.
-#' @param burst.quantiles Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
-#' Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
-#' @param return.data Logical. Controls whether the function returns the processed data
-#' as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
-#' memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
-#' (or both). Default is \code{TRUE}.
-#' @param save.files Logical. If `TRUE`, the processed data for each ID will be saved as RDS files
-#' during the iteration process. This ensures that progress is saved incrementally, which can
-#' help prevent data loss if the process is interrupted or stops midway. Default is `FALSE`.
-#' @param output.folder Character. Path to the folder where the processed files will be saved.
-#' This parameter is only used if `save.files = TRUE`. If `NULL`, the RDS file will be saved
-#' in the data folder corresponding to each ID. Default is `NULL`.
-#' @param output.suffix Character. A suffix to append to the file name when saving.
-#' This parameter is only used if `save.files = TRUE`.
+#' \code{\link{imputePaddleCalibration}} builds a complete, gap-free table of this form from a set of
+#' measured calibrations, projecting slopes for tag-years that were never calibrated.
+#' @param burst.quantiles Numeric vector. Quantiles (0-1) of instantaneous VeDBA used to flag burst
+#' swimming events. Each quantile is a **relative, per-deployment** threshold: it always flags the top
+#' `1 - q` fraction of that record's samples (e.g. 0.95 flags the most active 5%), not an absolute
+#' activity level, so flags are not comparable in magnitude across deployments. Use NULL to disable
+#' burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).
+#' @param plot Logical. If `TRUE`, render the per-deployment correction-diagnostic pages to the active
+#'   graphics device. Intended for a single deployment; for a batch, prefer `plot.file` (a `TRUE` value
+#'   with more than one deployment warns and floods the device). Defaults to `FALSE` (fully headless).
+#' @param plot.file Optional path to a single multi-page PDF. When supplied, `processTagData()` gathers a
+#'   compact, decimated diagnostic bundle for each deployment **while the raw data is in memory** and, after
+#'   processing, writes a QC report so each correction can be visually verified: the magnetometer
+#'   calibration (the raw point cloud collapsing onto a sphere), the depth zero-offset drift, and the
+#'   pitch/roll mounting-offset fit. The heavy processing itself stays headless; nothing is rendered when
+#'   this is `NULL` (default). Must end in `.pdf`.
+#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
+#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
+#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
+#'   `return.data = FALSE` therefore requires an `output.dir`.
+#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
+#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
+#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
+#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
+#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
+#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
 #' @param data.table.threads Integer or NULL. Specifies the number of threads
 #' that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
 #' Notes:
@@ -111,7 +114,9 @@
 #'    \item Can be permanently set via \code{data.table::setDTthreads()}
 #'    \item Current thread count: \code{data.table::getDTthreads()}
 #'  }
-#' @param verbose Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.
+#' @param verbose Verbosity level: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal" (header, per-ID
+#' outcome, summary), or `2`/"detailed" (default; adds the full per-step processing log).
+#' Defaults to `"detailed"`.
 
 #' @details
 #' This function computes a suite of movement and orientation metrics from high-frequency tri-axial sensor data,
@@ -122,8 +127,8 @@
 #' \itemize{
 #'   \item Total Acceleration (g): The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
 #'   \item Vectorial Dynamic Body Acceleration (VeDBA) (g): Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
-#'   \item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
-#'   \item Burst Swimming Events: Identifies periods of high acceleration based on a given acceleration magnitude percentile, which can be used to detect burst swimming behavior. This metric is binary, indicating whether the acceleration exceeds the threshold.
+#'   \item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes. Retained for comparability, but note ODBA is orientation-dependent; \strong{VeDBA is preferred for towed or loosely-attached tags} because it is rotation-invariant.
+#'   \item Burst Swimming Events: A binary flag marking the most energetic samples, defined as the top quantile(s) of instantaneous VeDBA (the magnitude of the dynamic, gravity-removed acceleration). VeDBA is used rather than total acceleration because the latter is dominated by the gravity baseline and biased toward gravity-aligned bursts. The threshold is relative (per-deployment): each quantile always flags the same fraction of a record (see \code{burst.quantiles}).
 #' }
 #'
 #' \strong{Orientation:}
@@ -146,7 +151,7 @@
 #'   \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
 #'   \item Heading (degrees): Directional orientation of the animal, representing the compass heading.
 #'         Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
-#'   \item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between –180° and 180°.
+#'   \item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between -180 and 180 degrees.
 #' }
 #'
 #' \strong{Linear Motion:}
@@ -154,26 +159,18 @@
 #'   \item Surge (g): The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
 #'   \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 #'   \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
-#'   \item Vertical Velocity (m/s): The rate of change in the animal’s depth over time, including direction (positive for descent, negative for ascent).
+#'   \item Vertical Velocity (m/s): The rate of change in the animal's depth over time, including direction (positive for descent, negative for ascent).
 #'   Vertical velocity is calculated using a central difference method on the smoothed depth time series (with smoothing controlled by \code{depth.smoothing}).
 #'   An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 #' }
 #'
-#' \strong{Python Requirements}
-#' \itemize{
-#'   \item Requires the \code{reticulate} R package for interfacing with Python.
-#'   \item The active Python environment must include the \code{AHRS} and \code{numpy} modules.
-#'   \item If unavailable, the function will return an informative error with installation guidance.
-#' }
-#'
-#' @return If \code{return.data = TRUE}, returns a list where each element contains the
-#' processed sensor data for an individual folder. If \code{return.data = FALSE},
-#' returns \code{NULL} invisibly. In all cases, data will be saved to disk if
-#' \code{save.files = TRUE}.
+#' @return If \code{return.data = TRUE}, a list where each element contains the processed sensor data for
+#' an individual (named by ID); if \code{return.data = FALSE}, a character vector of the written \code{.rds}
+#' file paths. Files are written to disk whenever \code{output.dir} is set.
 #'
 #' @references
 #' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal
-#' movements in R: a reappraisal using Gundog. *Animal Biotelemetry*. 9:1–37.
+#' movements in R: a reappraisal using Gundog. *Animal Biotelemetry*. 9:1-37.
 #' \doi{10.1186/s40317-021-00245-z}
 #'
 #' Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, *et al.* (2009).
@@ -182,33 +179,62 @@
 #' \doi{10.1155/2010/732586}
 #'
 #' @seealso \link{importTagData}, \link{filterDeploymentData}.
+#' @examples
+#' \dontrun{
+#' # Axis-map the imported data into the body frame first, then reconstruct
+#' # kinematics/orientation and downsample to 1 Hz.
+#' oriented <- applyAxisMapping(imported)
+#' tag <- processTagData(oriented,
+#'                       downsample.to = 1,
+#'                       orientation.algorithm = "tilt_compass",
+#'                       paddle.calibration = paddle_cal)
+#'
+#' # Batch of saved deployments: write a QC diagnostic PDF and save incrementally.
+#' processTagData(list.files("./oriented", full.names = TRUE),
+#'                plot.file = "./qc/corrections.pdf",
+#'                return.data = FALSE, output.dir = "./processed")
+#' }
 #' @export
 
 
 processTagData <- function(data,
                            downsample.to = 1,
-                           hard.iron.calibration = TRUE,
-                           soft.iron.calibration = TRUE,
                            orientation.algorithm = "tilt_compass",
-                           madgwick.beta = 0.02,
-                           orientation.smoothing = 1,
-                           correct.pitch.offset = TRUE,
-                           pitch.warning.threshold = 45,
-                           roll.warning.threshold = 45,
-                           dba.window = 3,
-                           dba.smoothing = 2,
-                           motion.smoothing = 1,
-                           depth.smoothing = 10,
-                           speed.smoothing = 1,
-                           calculate.paddle.speed = FALSE,
-                           speed.calibration.values = NULL,
+                           orientation = orientationControl(),
+                           calibration = calibrationControl(),
+                           smoothing = smoothingControl(),
+                           depth.drift = depthDriftControl(),
+                           paddle.calibration = NULL,
                            burst.quantiles = c(0.95, 0.99),
+                           plot = FALSE,
+                           plot.file = NULL,
                            return.data = TRUE,
-                           save.files = FALSE,
-                           output.folder = NULL,
+                           output.dir = NULL,
                            output.suffix = NULL,
+                           compress = TRUE,
                            data.table.threads = NULL,
-                           verbose = TRUE) {
+                           verbose = "detailed") {
+
+  # resolve the control objects, then unpack into the local names used throughout the body
+  calibration <- .as_control(calibration, calibrationControl, "nautilus_calibration", "calibration")
+  orientation <- .as_control(orientation, orientationControl, "nautilus_orientation", "orientation")
+  smoothing   <- .as_control(smoothing,   smoothingControl,   "nautilus_smoothing",   "smoothing")
+  depth.control <- .as_control(depth.drift, depthDriftControl, "nautilus_depth_drift", "depth.drift")
+  hard.iron.calibration <- calibration$hard.iron
+  soft.iron.calibration <- calibration$soft.iron
+  use.stored.calibration <- calibration$use.stored %||% TRUE
+  madgwick.beta                 <- orientation$madgwick.beta
+  correct.pitch.offset          <- orientation$correct.pitch
+  correct.roll.offset           <- orientation$correct.roll
+  pitch.offset.min.r2           <- orientation$pitch.offset.min.r2
+  orientation.warning.threshold <- orientation$warning.threshold
+  heading.denoise               <- orientation$heading.denoise %||% "auto"
+  heading.denoise.window        <- orientation$heading.denoise.window %||% 3
+  static.window         <- smoothing$static
+  orientation.smoothing <- smoothing$orientation
+  dba.smoothing         <- smoothing$dba
+  depth.smoothing       <- smoothing$depth
+  speed.smoothing       <- smoothing$speed
 
 
   ##############################################################################
@@ -218,139 +244,85 @@ processTagData <- function(data,
   # measure running time
   start.time <- Sys.time()
 
-  # check if data is a character vector of RDS file paths
+  # verbosity level (0 quiet / 1 normal / 2 detailed)
+  lvl <- .verbosity(verbose)
+  # per-step detail line (level >= 2), routed through the shared cli logger (a `->` bullet) so the
+  # style matches the other workflow functions.
+  say <- function(...) .log_detail(lvl, ...)
+
+  # silence data.table's internal progress messages for the duration of the run (restored on exit)
+  old_dt_progress <- options(datatable.showProgress = FALSE)
+  on.exit(options(old_dt_progress), add = TRUE)
+
+  # scalar argument validation
+  .assert_flag(return.data, "return.data")
+  orientation.algorithm <- match.arg(orientation.algorithm, c("tilt_compass", "madgwick"))
+  if (!is.null(downsample.to)) .assert_number(downsample.to, "downsample.to", min = 0)
+  if (!is.numeric(burst.quantiles) || any(burst.quantiles <= 0) || any(burst.quantiles > 1)) {
+    .abort("{.arg burst.quantiles} must be a numeric vector with values in (0, 1].")
+  }
+  .assert_dir(output.dir, "output.dir")                         # fail-fast: must exist
+  .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
+  .assert_compress(compress)
+  .assert_output(return.data, output.dir)
+  # opt-in per-deployment diagnostic PDF (correction QC): gather while raw data is in memory, render after
+  .assert_flag(plot, "plot")
+  .assert_writable_file(plot.file, "plot.file", ext = "pdf", null_ok = TRUE)
+  collect_diag <- isTRUE(plot) || !is.null(plot.file)
+  diag_bundles <- list()
+
+  # resolve input: a character vector of RDS paths, or an in-memory list / single data.frame
   is_filepaths <- is.character(data)
+  .assert_nonempty(data, "data")             # loud failure on empty input (e.g. a typo'd list.files() -> character(0))
   if (is_filepaths) {
-    # first, check all files exist
     missing_files <- data[!file.exists(data)]
-    if (length(missing_files) > 0) {
-      stop(paste("The following files were not found:\n",
-                 paste("-", missing_files, collapse = "\n")), call. = FALSE)
-    }
+    if (length(missing_files) > 0) .abort(c("These input files were not found:", stats::setNames(missing_files, rep("*", length(missing_files)))))
   } else if (!is.list(data) || inherits(data, "data.frame")) {
-    # if it's a single data.frame, convert it to a list
-    if (!"ID" %in% names(data)) {
-      stop("Input data must contain an 'ID' column when not provided as a list.", call. = FALSE)
-    }
+    .assert_columns(data, "ID", "data")
     data <- split(data, data$ID)
   }
 
+  # define required columns based on the chosen orientation algorithm:
+  #  - always: ID, datetime, tri-axial accelerometer, depth
+  #  - madgwick additionally requires the gyroscope
+  # The magnetometer (needed only for heading) and temperature are optional; any
+  # absent recognized channels are simply skipped downstream.
+  required_cols <- c("ID", "datetime", "ax", "ay", "az", "depth")
+  if (orientation.algorithm == "madgwick") required_cols <- c(required_cols, "gx", "gy", "gz")
 
-  # feedback for save files mode
-  if (!is.logical(save.files)) stop("`save.files` must be a logical value (TRUE or FALSE).", call. = FALSE)
-
-  # validate that at least one output method is selected
-  if (!save.files && !return.data) {
-    stop("Both 'save.files' and 'return.data' cannot be FALSE - this would result in data loss. ",
-         "Please set at least one to TRUE.", call. = FALSE)
-  }
-
-  # define required columns
-  required_cols <- c("ID", "datetime", "ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz", "depth", "temp")
-
-  # if data is already in memory (not file paths), validate upfront
+  # if data is already in memory (not file paths), validate each dataset up front
   if (!is_filepaths) {
-
-    # validate each dataset in the list
-    lapply(data, function(dataset) {
-      # check dataset structure
-      if (!is.data.frame(dataset)) stop("Each element in the data list must be a data.frame or data.table", call. = FALSE)
-      # check for required columns
-      missing_cols <- setdiff(required_cols, names(dataset))
-      if (length(missing_cols) > 0) stop(sprintf("Missing required columns: %s", paste(missing_cols, collapse = ", ")), call. = FALSE)
-      # ensure datetime column is of POSIXct class
-      if (!inherits(dataset$datetime, "POSIXct")) stop("The datetime column must be of class 'Date' or 'POSIXct'.", call. = FALSE)
-    })
-
-    # check for nautilus.version attribute in each dataset
-    missing_attr <- sapply(data, function(x) {is.null(attr(x, "nautilus.version"))})
+    for (nm in names(data)) {
+      .assert_columns(data[[nm]], required_cols, sprintf("data[['%s']]", nm))
+      if (!inherits(data[[nm]]$datetime, "POSIXct")) {
+        .abort("The {.field datetime} column must be POSIXct in {.val {nm}}.")
+      }
+    }
+    missing_attr <- vapply(data, function(x) is.null(attr(x, "nautilus.version")), logical(1))
     if (any(missing_attr)) {
-      message(paste0(
-        "Warning: The following dataset(s) were likely not processed via importTagData():\n  - ",
-        paste(names(data)[missing_attr], collapse = ", "),
-        "\n\nIt is strongly recommended to run them through importTagData() to ensure proper formatting and avoid downstream errors.\n",
-        "Proceed at your own risk."))
+      cli::cli_warn(c("Some datasets were likely not processed via {.fn importTagData}: {.val {names(data)[missing_attr]}}.",
+                      "i" = "Run them through {.fn importTagData} first to ensure correct formatting."))
     }
   }
 
-  # ensure output.folder is a single string
-  if(!is.null(output.folder) && (!is.character(output.folder) || length(output.folder) != 1)) {
-    stop("`output.folder` must be NULL or a single string.", call. = FALSE)
-  }
-
-  # check if the output folder is valid (if specified)
-  if(!is.null(output.folder) && !dir.exists(output.folder)){
-    stop("The specified output folder does not exist. Please provide a valid folder path.", call. = FALSE)
-  }
-
-  # validate smoothing and moving window parameters
-  if(!orientation.algorithm %in% c("madgwick", "tilt_compass")) stop("'orientation.algorithm' must be either 'madgwick' or 'tilt_compass'", call. = FALSE)
-  if(!is.numeric(dba.window) || dba.window <= 0) stop("`dba.window` must be a positive numeric value.", call. = FALSE)
-  if(!is.null(orientation.smoothing)  && (!is.numeric(orientation.smoothing) || orientation.smoothing <= 0)) stop("`orientation.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.null(motion.smoothing) && (!is.numeric(motion.smoothing) || motion.smoothing <= 0)) stop("`motion.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.null(dba.smoothing) && (!is.numeric(dba.smoothing) || dba.smoothing <= 0)) stop("`dba.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.null(depth.smoothing) && (!is.numeric(depth.smoothing) || depth.smoothing <= 0)) stop("`depth.smoothing` must be a positive numeric value.", call. = FALSE)
-  if(!is.null(speed.smoothing) && (!is.numeric(speed.smoothing) || speed.smoothing <= 0)) stop("`speed.smoothing` must be a positive numeric value.", call. = FALSE)
-
-  # validate "burst.quantiles"
-  if (!is.numeric(burst.quantiles) || any(burst.quantiles <= 0) || any(burst.quantiles > 1)) {
-    stop("`burst.quantiles` must be a numeric vector with values in the range (0, 1].", call. = FALSE)
-  }
-
-  # validate "correct.pitch.offset"
-  if (!is.logical(correct.pitch.offset)) stop("`correct.pitch.offset` must be a logical value (TRUE or FALSE).", call. = FALSE)
-
-  # validate speed.calibration.values if paddle speed calculation is requested
-  if (calculate.paddle.speed && !is.null(speed.calibration.values)) {
+  # validate paddle.calibration if supplied (its presence is what enables paddle-speed estimation)
+  if (!is.null(paddle.calibration)) {
     # coerce to data.frame if it's a data.table
-    if (data.table::is.data.table(speed.calibration.values)) speed.calibration.values <- as.data.frame(speed.calibration.values)
-    if (!is.data.frame(speed.calibration.values)) stop("speed.calibration.values must be a data.frame", call. = FALSE)
-    missing_cols <- setdiff(c("year", "package_id", "slope"), names(speed.calibration.values))
+    if (data.table::is.data.table(paddle.calibration)) paddle.calibration <- as.data.frame(paddle.calibration)
+    if (!is.data.frame(paddle.calibration)) .abort("{.arg paddle.calibration} must be a data.frame.")
+    missing_cols <- setdiff(c("year", "package_id", "slope"), names(paddle.calibration))
     if (length(missing_cols) > 0) {
-      stop(paste("speed.calibration.values is missing required columns:",
-                 paste(missing_cols, collapse = ", ")), call. = FALSE)
+      .abort("{.arg paddle.calibration} is missing required column(s): {.val {missing_cols}}.")
     }
-    if (!is.numeric(speed.calibration.values$year)) stop("year column in speed.calibration.values must be numeric", call. = FALSE)
-    if (!is.numeric(speed.calibration.values$slope)) stop("slope column in speed.calibration.values must be numeric", call. = FALSE)
+    if (!is.numeric(paddle.calibration$year)) .abort("Column {.field year} in {.arg paddle.calibration} must be numeric.")
+    if (!is.numeric(paddle.calibration$slope)) .abort("Column {.field slope} in {.arg paddle.calibration} must be numeric.")
   }
 
   # validate data.table threads if specified
   if (!is.null(data.table.threads)) {
-    if (!is.numeric(data.table.threads) || data.table.threads < 1 || data.table.threads > parallel::detectCores()) {
-      stop("data.table.threads must be between 1 and ", parallel::detectCores(), call. = FALSE)
-    }
-  }
-
-  # feedback for verbose mode
-  if (!is.logical(verbose)) stop("`verbose` must be a logical value (TRUE or FALSE).", call. = FALSE)
-
-
-  ##############################################################################
-  # Python checks #############################################################
-  ##############################################################################
-
-  if (orientation.algorithm == "madgwick") {
-
-    # check that 'reticulate' is installed
-    if (!requireNamespace("reticulate", quietly = TRUE)) {
-      stop("The 'reticulate' package is required but not installed. Please install it using install.packages('reticulate') or switch to orientation.algorithm='tilt'.", call. = FALSE)
-    }
-
-    # load reticulate
-    reticulate::use_python(Sys.which("python"), required = FALSE)
-
-    # check that Python is available
-    if (!reticulate::py_available(initialize = TRUE)) {
-      stop("Python is not available in the current environment. Please configure Python using reticulate::use_python().")
-    }
-
-    # check that 'ahrs' and 'numpy' are available in the Python environment
-    py_modules <- reticulate::py_list_packages()
-    if (!"AHRS" %in% py_modules$package) {
-      stop("The Python package 'AHRS' is not installed. Please run: reticulate::py_install('ahrs')")
-    }
-    if (!"numpy" %in% py_modules$package) {
-      stop("The Python package 'numpy' is not installed. Please run: reticulate::py_install('numpy')")
+    n_cores <- parallel::detectCores()
+    if (!is.numeric(data.table.threads) || data.table.threads < 1 || data.table.threads > n_cores) {
+      .abort("{.arg data.table.threads} must be a single number between 1 and {n_cores}.")
     }
   }
 
@@ -362,15 +334,19 @@ processTagData <- function(data,
   # create lists to store processed data, plots, and summaries for each animal
   n_animals <- length(data)
   data_list <- vector("list", length = n_animals)
+  saved     <- vector("list", length = n_animals)    # per-deployment written .rds path (NULL where nothing saved)
+  ids       <- rep(NA_character_, n_animals)          # per-slot deployment id (NA marks a skipped slot)
+  if (isTRUE(plot) && n_animals > 1L)                            # active-device diagnostics flood for a batch
+    warning("processTagData: plot = TRUE renders a page-set per deployment to the active device; for a batch, prefer plot.file = <one PDF>.", call. = FALSE)
 
-  # feedback messages for the user
-  cat(paste0(
-    crayon::bold("\n================= Processing Tag Data =================\n"),
-    "Crunching high-resolution sensor streams from ", n_animals, " ", ifelse(n_animals == 1, "tag", "tags"), "\n",
-    crayon::bold("=======================================================\n\n")
-  ))
-
-  if (verbose & is_filepaths) cat("Loading data from RDS files...\n\n")
+  # header
+  hdr_bullets <- sprintf("Input: %d tag%s", n_animals, if (n_animals != 1) "s" else "")
+  if (!is.null(output.dir)) hdr_bullets <- c(hdr_bullets, paste0("Output: ", output.dir))
+  .log_header(lvl, "processTagData", "Plotting the course: deriving orientation and motion metrics",
+              bullets = hdr_bullets,
+              arrow = paste0("Method: ", orientation.algorithm, " orientation",
+                             if (!is.null(downsample.to)) paste0(", downsample to ", downsample.to, " Hz")))
+  n_done <- 0L
 
 
   # set data.table threads if specified
@@ -386,6 +362,8 @@ processTagData <- function(data,
   ##############################################################################
 
   # iterate over each animal
+  unoriented_ids <- character(0)                 # ordering guard: tags not run through applyAxisMapping()
+  uncalibrated_ids <- character(0)               # requested magnetometer that received ZERO correction (raw heading)
   for (i in seq_along(data)) {
 
     ############################################################################
@@ -400,10 +378,11 @@ processTagData <- function(data,
 
       # perform checks specific to loaded RDS files
       missing_cols <- setdiff(required_cols, names(individual_data))
-      if (length(missing_cols) > 0) stop(sprintf("Missing required columns: %s in file '%s'", paste(missing_cols, collapse = ", "), basename(file_path)), call. = FALSE)
-      if (!inherits(individual_data$datetime, "POSIXct")) stop("The datetime column in file '", basename(file_path), "' must be of class 'POSIXct'.", call. = FALSE)
+      if (length(missing_cols) > 0) .abort("Missing required column(s) in {.file {basename(file_path)}}: {.val {missing_cols}}.")
+      if (!inherits(individual_data$datetime, "POSIXct")) .abort("The datetime column in {.file {basename(file_path)}} must be of class {.cls POSIXct}.")
       if (is.null(attr(individual_data, "nautilus.version"))) {
-        message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
+        cli::cli_warn(c("File {.file {basename(file_path)}} was likely not processed via {.fn importTagData}.",
+                        "i" = "Run it through {.fn importTagData} first to ensure correct formatting."))
       }
 
     ############################################################################
@@ -414,21 +393,57 @@ processTagData <- function(data,
       individual_data <- data[[i]]
     }
 
+    # skip NULL or empty elements before any logging or ID access
+    if (is.null(individual_data) || length(individual_data) == 0) next
+
     # get ID
     id <- unique(individual_data$ID)[1]
+    ids[i] <- as.character(id)                  # index-aligned with data_list / saved (skipped slots stay NA)
 
-    # print current ID
-    cat(crayon::bold(sprintf("[%d/%d] %s\n", i, n_animals, id)))
+    # per-individual sub-header (level-2 only; groups this individual's detail lines)
+    .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals))
 
-    # skip NULL or empty elements in the list
-    if (is.null(individual_data) || length(individual_data) == 0) next
+    # ensure data.table (split() of a single data.frame yields data.frames)
+    if (!data.table::is.data.table(individual_data)) individual_data <- data.table::as.data.table(individual_data)
+
+    # ensure the consolidated nautilus metadata is present (migrating legacy attrs)
+    individual_data <- .ensureMeta(individual_data)
+    imeta <- .getMeta(individual_data)   # input metadata (deployment, tag, etc.)
+
+    # ORDERING GUARD: orientation (pitch/roll/heading) assumes the IMU axes are already in the animal
+    # body frame. If applyAxisMapping() was not run, that assumption is silently violated - flag it.
+    if (!isTRUE(imeta$axis_mapping$applied)) unoriented_ids <- c(unoriented_ids, as.character(id))
 
     # ensure data is ordered by datetime
     data.table::setorder(individual_data, datetime)
 
-    # calculate sampling frequency
+    # calculate sampling frequency (rounded to whole Hz; the windowing below assumes >= 1 Hz)
     sampling_freq <- nrow(individual_data) / length(unique(lubridate::floor_date(individual_data$datetime, "sec")))
-    sampling_freq <- plyr::round_any(sampling_freq, 1)
+    sampling_freq <- round(sampling_freq)
+    if (!is.finite(sampling_freq) || sampling_freq < 1) {
+      .abort(c("Estimated sampling frequency for {.val {id}} is below 1 Hz ({sampling_freq} Hz).",
+               "i" = "{.fn processTagData} requires at least 1 Hz; check the timestamps or regularize the series first."))
+    }
+    # seconds -> whole-sample window, floored at 1 (guards fractional static / smoothing windows)
+    win <- function(seconds) max(1L, as.integer(round(seconds * sampling_freq)))
+
+    # per-deployment diagnostics are collected here and emitted as one ordered block at the end of the
+    # tag (replacing per-step narration with the actual findings). Built only at the detailed level.
+    diag <- character(0)
+    attrs_line <- NULL
+    n_input <- nrow(individual_data)
+    if (lvl >= 2L) {
+      # tag attributes line; each part is dropped when its metadata is absent (no "NA . NA" noise)
+      .has <- function(x) !is.null(x) && length(x) && !is.na(x) && nzchar(as.character(x))
+      attrs_parts <- c(if (.has(imeta$tag$model)) as.character(imeta$tag$model),
+                       if (.has(imeta$tag$type))  as.character(imeta$tag$type),
+                       if (.has(imeta$tag$package_id)) paste0("package ", imeta$tag$package_id))
+      attrs_line <- if (length(attrs_parts)) paste(attrs_parts, collapse = " \u00b7 ") else NULL
+      secs <- as.numeric(difftime(individual_data$datetime[n_input], individual_data$datetime[1], units = "secs"))
+      n_chan_in <- length(intersect(.sensorChannels(), names(individual_data)))
+      diag["input"] <- sprintf("input: %s rows | %d channel%s | ~%g Hz | %s", .formatLargeNumber(n_input),
+                               n_chan_in, if (n_chan_in != 1) "s" else "", sampling_freq, .fmt_duration(secs))
+    }
 
     # store original attributes, excluding internal ones
     discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
@@ -440,85 +455,222 @@ processTagData <- function(data,
     # Calibrate magnetometer ###################################################
     ############################################################################
 
-    # extract raw magnetometer data
-    mag_data <- as.matrix(individual_data[, .(mx, my, mz)])
+    # extract raw magnetometer data (the magnetometer is optional; without it,
+    # heading is left NA and only roll/pitch are derived)
+    has_mag_cols <- all(c("mx", "my", "mz") %in% names(individual_data))
+    if (has_mag_cols) {
+      mag_data <- as.matrix(individual_data[, .(mx, my, mz)])
+      valid_magnetometer_data <- !all(is.na(mag_data[, "mx"])) &&
+        !all(is.na(mag_data[, "my"])) && !all(is.na(mag_data[, "mz"]))
+    } else {
+      valid_magnetometer_data <- FALSE
+    }
 
-    # check if we have valid magnetometer data to calibrate
-    valid_magnetometer_data <- all(
-      !all(is.na(mag_data[, "mx"])),
-      !all(is.na(mag_data[, "my"])),
-      !all(is.na(mag_data[, "mz"]))
-    )
+    # check if paddle wheel info is present in the metadata
+    has_paddle_info <- !is.null(imeta) && !is.na(imeta$tag$paddle_wheel)
 
-    # check if paddle wheel info is stored as an attribute
-    has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
+    # actual calibration outcome (recorded in the processing trail); set inside the block below
+    hard_iron_applied <- FALSE; soft_iron_applied <- FALSE; hard_iron_offset_mag <- NA_real_
+    coverage_ok <- NA                                        # set inside the block; stays NA in the not_requested path
+    calibration_source <- "none"                             # "none" | "inline (...)" | "stored <source> (<confidence>)"
+    paddle_state <- NULL; heading_denoise_used <- 0          # paddle-wheel de-noise state (metadata; set below)
+    mag_diag <- NULL                                          # per-deployment mag diagnostic bundle (when collect_diag)
+    mag_state <- imeta$mag_calibration                       # the nested calibration state to persist (set in the block below)
 
     # proceed with calibration
     if (valid_magnetometer_data) {
 
-      # check if the tag was equipped with a paddle wheel
-      mz_raw <- NA
-      if(has_paddle_info && isTRUE(attr(individual_data, "paddle.wheel"))) {
-        # store original mz column to estimate paddle speed
-        mz_raw <- mag_data[, "mz"]
-        # apply 3-second rolling mean to all axes to remove noise
-        if(verbose) cat("---> Removing paddle-wheel-induced magnetic noise\n")
-        mag_data[, "mx"] <- zoo::rollmean(mag_data[, "mx"], k = sampling_freq * 3, align = "center", fill = "extend")
-        mag_data[, "my"] <- zoo::rollmean(mag_data[, "my"], k = sampling_freq * 3, align = "center", fill = "extend")
-        mag_data[, "mz"] <- zoo::rollmean(mag_data[, "mz"], k = sampling_freq * 3, align = "center", fill = "extend")
+      # paddle-wheel de-noise (shared .paddleState / .magDenoise primitives), applied BEFORE calibration so
+      # the hard/soft-iron fit sees the CLEAN field rather than the oscillation-dominated one (the paddle's
+      # huge per-axis range would otherwise corrupt the soft-iron). A spinning paddle magnet adds a large
+      # high-frequency oscillation that is additive in the field-vector domain and averages to ~0 over a
+      # rotation, so a centred (zero-phase) running mean of the mag vector removes it while keeping the slow
+      # orientation signal. Window: data-derived per deployment ("auto") or fixed ("manual"); see orientationControl().
+      # capture the raw mz for paddle-speed estimation, tied to the PADDLE-WHEEL flag (identical whether or
+      # not heading de-noising runs, since it is taken before .magDenoise) - independent of heading.denoise.
+      mz_raw <- if (isTRUE(imeta$tag$paddle_wheel)) mag_data[, "mz"] else NA
+      mag_denoised <- FALSE
+      if (heading.denoise != "off") {
+        paddle_state <- .paddleState(mag_data, sampling_freq)
+        if (isTRUE(imeta$tag$paddle_wheel) || isTRUE(paddle_state$present)) {
+          if (heading.denoise == "manual") {
+            dn_win <- heading.denoise.window                 # fixed window applied consistently
+          } else {
+            dn_win <- paddle_state$recommend.window          # auto: window from the detected paddle frequency
+            # fall back to the manual window only when the paddle IS present but no window could be derived;
+            # when auto reports the field clean (present = FALSE), trust it and do not over-smooth.
+            if ((!is.finite(dn_win) || dn_win <= 0) && isTRUE(paddle_state$present)) dn_win <- heading.denoise.window
+          }
+          if (is.finite(dn_win) && dn_win > 0) {
+            dn <- .magDenoise(mag_data, sampling_freq, dn_win)
+            na_edges <- !stats::complete.cases(dn)
+            dn[na_edges, ] <- mag_data[na_edges, ]            # keep the raw field at the centred-window edges
+            mag_data <- dn; mag_denoised <- TRUE; heading_denoise_used <- dn_win
+          }
+          if (isFALSE(paddle_state$separation.ok))
+            say("! paddle rotation too slow to separate from turning - heading may be unreliable; consider orientation.algorithm = 'madgwick'")
+        }
       }
 
       # initialize calibrated data with raw data
       mag_calibrated <- mag_data
 
-      # provide feedback to the user if verbose mode is enabled
-      if (verbose && (hard.iron.calibration || soft.iron.calibration)) {
-        hi <- as.integer(hard.iron.calibration)
-        si <- as.integer(soft.iron.calibration)
-        if (hi == 1 && si == 1) {
-          type <- "hard-iron and soft-iron"
-        } else if (hi == 1 && si == 0) {
-          type <- "hard-iron"
-        } else if (hi == 0 && si == 1) {
-          type <- "soft-iron"
-        } else {
-          type <- NULL
+      # A STORED calibration (from calibrateMagnetometer, e.g. a per-package pooled or externally-sourced fit)
+      # is applied when use.stored is on, both switches are requested, and it clears the confidence gate (a
+      # low-confidence stored fit is ignored); a pooled/source fit can determine the full soft-iron that a
+      # single under-covered deployment cannot. Otherwise the SAME engine runs inline (.calibrateMag): the
+      # full ellipsoid when the cloud is well covered and dip-consistent, else the hard-iron-only 2D fallback
+      # (in-plane centre + IGRF-pinned perpendicular + identity soft-iron). Either way the correction is
+      # applied ONLY past the abort gates AND at high/medium confidence; on poorly-sampled deployments a
+      # partial arc's midpoint is BIASED (not the sphere centre), so we leave the heading raw rather than
+      # apply a harmful correction.
+      prop <- imeta$mag_calibration$proposed                 # the estimate from calibrateMagnetometer (or NULL)
+      already_applied <- isTRUE(imeta$mag_calibration$applied)  # idempotency: a prior run already corrected mx/my/mz
+      # a stored (proposed) calibration is only valid in the exact axis-mapping frame it was estimated in; if
+      # the data has since been re-mapped (different net), fall through to the inline estimate instead.
+      use_stored <- !already_applied && isTRUE(use.stored.calibration) && hard.iron.calibration && soft.iron.calibration &&
+                    !is.null(prop) && !is.null(prop$params$soft_iron) &&
+                    isTRUE(prop$qc$confidence %in% c("high", "medium")) && all(is.finite(prop$params$center)) &&
+                    identical(prop$params$axis_net, imeta$axis_mapping$net)
+      applied_center <- c(0, 0, 0); applied_soft_iron <- diag(3)   # the exact transform applied (identity = none)
+      inline_eng <- NULL; applied_status <- NULL                   # shared-engine result + applied status
+      ig <- .magIGRF(imeta$deployment)                             # geomagnetic field once per deployment (reused below)
+
+      if (already_applied) {
+        # do NOT re-apply (that would double-correct); keep the field + the recorded applied state
+        ap <- imeta$mag_calibration$applied_params
+        applied_center <- ap$center %||% c(0, 0, 0); applied_soft_iron <- ap$soft_iron %||% diag(3)
+        hard_iron_applied <- FALSE; soft_iron_applied <- FALSE
+        coverage_ok <- isTRUE(imeta$mag_calibration$qc$coverage_ok)
+        calibration_source <- "already applied"
+        if (lvl >= 1L) say("i magnetometer already calibrated - skipping re-application (idempotent)")
+      } else if (use_stored) {
+        mag_calibrated <- .applyMagCal(mag_data, prop$params$center, prop$params$soft_iron)
+        hard_iron_applied <- TRUE; soft_iron_applied <- TRUE; coverage_ok <- TRUE
+        hard_iron_offset_mag <- sqrt(sum(prop$params$center^2))
+        calibration_source <- sprintf("stored %s (%s)", prop$provenance$source %||% "calibration", prop$qc$confidence)
+        applied_center <- prop$params$center; applied_soft_iron <- prop$params$soft_iron
+        applied_status <- prop$provenance$fit_status %||% "calibrated_3d"
+      } else if (hard.iron.calibration || soft.iron.calibration) {
+        # INLINE via the SHARED engine (.calibrateMag, identical to calibrateMagnetometer), so a thin band
+        # gets the hard-iron 2D fallback + IGRF perpendicular pin rather than being left raw. Fit on a
+        # decimated cloud (bounded cost); apply to the full field. Gravity = a ~2 s low-pass of accel.
+        grav_lp <- NULL
+        if (all(c("ax", "ay", "az") %in% names(individual_data))) {
+          gw <- max(2L, as.integer(round(2 * sampling_freq)))
+          grav_lp <- cbind(data.table::frollmean(individual_data$ax, gw, fill = NA, align = "center"),
+                           data.table::frollmean(individual_data$ay, gw, fill = NA, align = "center"),
+                           data.table::frollmean(individual_data$az, gw, fill = NA, align = "center"))
         }
-        cat("---> Applying", type, "magnetic calibration\n")
+        stride <- max(1L, nrow(mag_data) %/% 8000L); idx <- seq(1L, nrow(mag_data), by = stride)
+        eng <- .calibrateMag(mag_data[idx, , drop = FALSE],
+                             grav = if (!is.null(grav_lp)) grav_lp[idx, , drop = FALSE] else NULL,
+                             igrf.incl = ig$inclination,
+                             target.radius = if (is.finite(ig$intensity)) ig$intensity else NA_real_)
+        # apply only a TRUSTED inline fit (past the abort gates AND high/medium confidence) - an under-
+        # determined band with no IGRF pin (low confidence) is left raw rather than applying a possibly-
+        # worse-than-raw correction, mirroring the use_stored gate.
+        if (!is.null(eng) && isTRUE(eng$recommend_apply) && isTRUE(eng$confidence %in% c("high", "medium"))) {
+          # honour the hard/soft-iron toggles: hard-iron only -> centre with an identity soft-iron
+          applied_center    <- if (hard.iron.calibration) eng$center else c(0, 0, 0)
+          applied_soft_iron <- if (soft.iron.calibration) eng$soft_iron else diag(3)
+          mag_calibrated <- .applyMagCal(mag_data, applied_center, applied_soft_iron)
+          hard_iron_applied <- hard.iron.calibration; soft_iron_applied <- soft.iron.calibration
+          coverage_ok <- isTRUE(eng$coverage_ok); hard_iron_offset_mag <- sqrt(sum(applied_center^2))
+          calibration_source <- sprintf("inline %s", eng$status); inline_eng <- eng; applied_status <- eng$status
+        } else {
+          hard_iron_applied <- FALSE; soft_iron_applied <- FALSE; coverage_ok <- FALSE
+          applied_status <- "uncalibrated_raw"; inline_eng <- eng; calibration_source <- "inline (not applied)"
+        }
       }
 
-      # apply hard-iron calibration if enabled
-      if (hard.iron.calibration) {
-        # estimate hard-iron offset using midpoint method (average of max and min)
-        hard_iron_offset <- 0.5 * (apply(mag_data, 2, max, na.rm = TRUE) + apply(mag_data, 2, min, na.rm = TRUE))
-        # center the data (remove hard-iron bias)
-        mag_calibrated <- sweep(mag_data, 2, hard_iron_offset, FUN = "-")
+      # ---- assemble the nested calibration state (single source of truth). `proposed` preserved. ----
+      requested_cal <- hard.iron.calibration || soft.iron.calibration
+      applied_any   <- already_applied || use_stored || isTRUE(hard_iron_applied) || isTRUE(soft_iron_applied)
+      mag_status <-
+        if (already_applied)               (imeta$mag_calibration$status %||% "calibrated_3d")
+        else if (!requested_cal)           "not_requested"
+        else if (!is.null(applied_status)) applied_status         # stored fit's / inline engine's outcome
+        else                               "uncalibrated_raw"
+      if (already_applied) {
+        mag_state <- imeta$mag_calibration                   # preserve entirely; nothing re-applied this run
+      } else {
+        applied_qc <-
+          if (use_stored)              prop$qc
+          else if (!is.null(inline_eng) && identical(applied_status, inline_eng$status))
+                                       list(confidence = inline_eng$confidence, coverage_ok = isTRUE(inline_eng$coverage_ok),
+                                            radcv = inline_eng$radcv, igrf_residual = inline_eng$igrf_residual,
+                                            axis_span = inline_eng$axis_span)
+          else                         list(confidence = NA_character_, coverage_ok = NA, radcv = NA_real_,
+                                            igrf_residual = NA_real_, axis_span = rep(NA_real_, 3))
+        mag_method <- if (use_stored) (prop$provenance$method %||% "stored")
+                      else if (!is.null(inline_eng)) (inline_eng$method_used %||% "inline") else NA_character_
+        perp_src   <- if (use_stored) (prop$provenance$perp_source %||% "data")
+                      else if (!is.null(inline_eng)) (inline_eng$perp_source %||% "data") else NA_character_
+        mag_state <- imeta$mag_calibration                   # keep `proposed`
+        mag_state$status         <- mag_status
+        mag_state$applied        <- isTRUE(applied_any)
+        mag_state$applied_params <- list(center = applied_center, soft_iron = applied_soft_iron, axis_net = imeta$axis_mapping$net)
+        mag_state$qc             <- applied_qc
+        mag_state$provenance     <- list(method = mag_method, source = calibration_source, perp_source = perp_src)
+        if (identical(mag_status, "uncalibrated_raw")) uncalibrated_ids <- c(uncalibrated_ids, as.character(id))
       }
 
-      # apply soft-iron calibration if enabled
-      if (soft.iron.calibration) {
-        # estimate soft-iron scale factors (half of max chord length for each axis)
-        soft_iron_scales <- 0.5 * (apply(mag_data, 2, max, na.rm = TRUE) - apply(mag_data, 2, min, na.rm = TRUE))
-        # compute average scale (used to normalize all axes)
-        avg_scale <- mean(soft_iron_scales)
-        # apply axis-wise rescaling (soft-iron correction)
-        mag_calibrated <- sweep(mag_calibrated, 2, avg_scale / soft_iron_scales, FUN = "*")
+      # diagnostic: the calibration actually applied (+ offset magnitude / coverage skip reason / paddle)
+      if (lvl >= 2L) {
+        requested <- hard.iron.calibration || soft.iron.calibration
+        if (already_applied) {
+          cal <- "already applied (idempotent skip)"
+        } else if (use_stored) {
+          cal <- sprintf("%s (|offset| %.1f \u00b5T)", calibration_source, hard_iron_offset_mag)
+        } else if (!requested) {
+          cal <- "none"
+        } else if (identical(mag_status, "uncalibrated_raw")) {
+          cal <- "skipped - left raw (insufficient rotation coverage / no IGRF pin)"
+        } else {                                              # inline fit applied
+          cal <- sprintf("inline %s", inline_eng$status %||% "")
+          if (isTRUE(hard_iron_applied)) cal <- sprintf("%s (|offset| %.1f \u00b5T)", cal, hard_iron_offset_mag)
+        }
+        if (mag_denoised) diag["denoise"] <- "paddle-wheel mag de-noised"
+        diag["calibration"] <- paste0("calibration: ", cal)
       }
 
-      # normalize the calibrated data (unit sphere)
-      mag_calibrated <- mag_calibrated / sqrt(rowSums(mag_calibrated^2))
+      # diagnostic capture (opt-in): the cloud the calibration SAW + the transform actually applied, while
+      # both are in memory. Reconstructed corrected cloud (raw -> sphere) is what the mag panel renders.
+      if (collect_diag) {
+        req_any    <- hard.iron.calibration || soft.iron.calibration
+        diag_source <-
+          if (use_stored)                        calibration_source
+          else if (hard_iron_applied || soft_iron_applied)
+            paste0("inline ", paste(c(if (hard_iron_applied) "hard-iron", if (soft_iron_applied) "soft-iron"), collapse = " + "))
+          else if (req_any)                      "no calibration (insufficient rotation coverage)"
+          else                                   "no calibration (not requested)"
+        accel_xyz <- if (all(c("ax", "ay", "az") %in% names(individual_data)))
+                       cbind(individual_data$ax, individual_data$ay, individual_data$az) else NULL
+        # the engine's own verdict (not recomputed from the possibly-identity applied transform)
+        diag_conf <- if (!is.null(inline_eng)) inline_eng$confidence
+                     else if (use_stored)      prop$qc$confidence
+                     else if (already_applied) imeta$mag_calibration$qc$confidence
+                     else                      NA_character_
+        mag_diag <- .captureMagDiag(mag_data, accel_xyz, applied_center, applied_soft_iron,
+                                    coverage_ok, diag_source, ig, fs = sampling_freq,
+                                    confidence = diag_conf, status = mag_status)
+      }
 
-      # update original columns
+      # store the calibrated magnetometer field (keeps the documented uT-scale values;
+      # heading is computed from atan2 ratios downstream, which are scale-invariant, so
+      # no unit-sphere normalization is needed here)
       individual_data[, `:=`(mx = mag_calibrated[,1], my = mag_calibrated[,2], mz = mag_calibrated[,3])]
 
-      # clean up - remove all potential objects
-      objs_to_remove <- c("mag_data", "mag_corrected", "cov_matrix", "eig", "V", "D_inv", "soft_iron_matrix", "mag_calibrated", "hard_iron_offset")
+      # clean up calibration working objects
+      objs_to_remove <- c("mag_data", "mag_calibrated", "hi")
       rm(list = intersect(objs_to_remove, ls()))
-      gc()
 
-    # else print feedback message
+    # else: no usable magnetometer
     }else{
-      if (verbose) message("No valid magnetometer data - skipping magnetic calibration.")
+      if (lvl >= 2L) diag["calibration"] <- "calibration: skipped (no magnetometer)"
+      mag_state <- imeta$mag_calibration
+      mag_state$status <- "no_magnetometer"; mag_state$applied <- FALSE
     }
 
 
@@ -526,28 +678,31 @@ processTagData <- function(data,
     # Calculate acceleration metrics ###########################################
     ############################################################################
 
-    # provide feedback to the user if verbose mode is enabled
-    if(verbose) cat("---> Calculating acceleration metrics\n")
-
     # calculate total acceleration
     individual_data[, accel := sqrt(ax^2 + ay^2 + az^2)]
 
-    # calculate dynamic and vectorial body acceleration using a moving window
+    # Split acceleration into a dynamic (motion) and a static (gravity/posture) part.
     # doi: 10.3354/ab00104
+    #
+    # The dynamic part is a zero-phase Butterworth high-pass, NOT the former moving-average subtraction.
+    # A running mean is a boxcar filter, and the high-pass it induces (raw - boxcar) has deep periodic
+    # sinc nulls: the old 1 s motion post-filter zeroed 1/2/3 Hz outright, silently erasing fast tail-beats
+    # and ray wingbeats before any analysis saw them (validated on reef-manta video ground truth). The
+    # Butterworth passes the whole in-band spectrum flat and rings only near its cutoff. The `static`
+    # window (seconds) is mapped to the equivalent -3 dB cutoff so the default (3 s) reproduces the
+    # previous ~0.25 Hz split; 0.7554 is that boxcar-subtract -3 dB * window constant (from the exact
+    # Dirichlet response at fs). `.filtfiltCorner` pre-compensates for filtfilt squaring the response, and
+    # `.filterSegments` filters each finite run independently so the filter never rings across a data gap.
+    hp_cut <- .filtfiltCorner(0.7554 / static.window, order = 2, type = "high")
+    dynamicX <- .filterSegments(individual_data$ax, sampling_freq, hp_cut, type = "high", order = 2)
+    dynamicY <- .filterSegments(individual_data$ay, sampling_freq, hp_cut, type = "high", order = 2)
+    dynamicZ <- .filterSegments(individual_data$az, sampling_freq, hp_cut, type = "high", order = 2)
 
-    # calculate window parameters
-    window_size <- dba.window * sampling_freq
-    pad_length <- ceiling(window_size / 2)
-
-    # calculate static (low-frequency) acceleration using padded rolling mean
-    staticX = .pad_rollmean(individual_data$ax, window_size, pad_length)
-    staticY = .pad_rollmean(individual_data$ay, window_size, pad_length)
-    staticZ = .pad_rollmean(individual_data$az, window_size, pad_length)
-
-    # calculate dynamic (high-frequency) acceleration by removing static component
-    dynamicX <- individual_data$ax - staticX
-    dynamicY <- individual_data$ay - staticY
-    dynamicZ <- individual_data$az - staticZ
+    # the static (gravity/posture) component is the complement, so static + dynamic == raw exactly; the
+    # high-pass rejects DC, leaving gravity and slow posture in static (the pitch/roll reference below)
+    staticX <- individual_data$ax - dynamicX
+    staticY <- individual_data$ay - dynamicY
+    staticZ <- individual_data$az - dynamicZ
 
     # calculate ODBA (Overall Dynamic Body Acceleration) and VeDBA (Vectorial DBA)
     individual_data[, `:=`(
@@ -555,19 +710,31 @@ processTagData <- function(data,
       vedba = sqrt(dynamicX^2 + dynamicY^2 + dynamicZ^2)
     )]
 
-    # smooth the signals using a moving average (optional for noise reduction)
+    # smooth VeDBA/ODBA with a zero-phase Butterworth low-pass (optional). A moving average would again
+    # impose sinc nulls; the Butterworth rolls off smoothly. The `dba` window maps to the equivalent
+    # -3 dB cutoff (0.4430 = the textbook moving-average -3 dB * window constant, matching the former 2 s
+    # boxcar's ~0.22 Hz). The low-pass preserves the DC level, so the smoothed activity keeps its
+    # magnitude; a low-pass can dip a hair below zero at sharp onsets, so the non-negative energy proxy is
+    # clamped at 0.
     if(!is.null(dba.smoothing)){
-      window_size <- sampling_freq * dba.smoothing
-      individual_data[, odba := data.table::frollmean(odba, n = window_size, fill = NA, align = "center")]
-      individual_data[, vedba := data.table::frollmean(vedba, n = window_size, fill = NA, align = "center")]
+      lp_cut <- .filtfiltCorner(0.4430 / dba.smoothing, order = 2, type = "low")
+      individual_data[, odba := pmax(.filterSegments(odba, sampling_freq, lp_cut, type = "low", order = 2), 0)]
+      individual_data[, vedba := pmax(.filterSegments(vedba, sampling_freq, lp_cut, type = "low", order = 2), 0)]
     }
 
-    # estimate burst swimming events (based on specified percentiles)
+    # estimate burst swimming events: the top quantile(s) of INSTANTANEOUS VeDBA (vectorial dynamic body
+    # acceleration). Keyed on VeDBA, not total |accel|: |accel| = |g + a_dyn| is dominated by the ~1 g
+    # gravity baseline and inflated by the dynamic component's projection onto gravity, so it over-flags
+    # gravity-aligned (e.g. descending) bursts and can MISS an upward burst whose |accel| dips below 1 g;
+    # VeDBA = |a_dyn| is isotropic in the dynamic acceleration. The unsmoothed dynamics are used so brief
+    # bursts are not attenuated by the dba smoothing. NOTE: the threshold is RELATIVE (per-deployment) -
+    # it always flags the top (1 - q) fraction of this record, not an absolute activity level.
     if(!is.null(burst.quantiles)){
+      vedba_inst <- sqrt(dynamicX^2 + dynamicY^2 + dynamicZ^2)
       for(q in burst.quantiles){
-        accel_threshold <- quantile(individual_data$accel, probs = q, na.rm = TRUE)
+        vedba_threshold <- stats::quantile(vedba_inst, probs = q, na.rm = TRUE)
         burst_col <- paste0("burst", q*100)
-        individual_data[, (burst_col) := as.integer(accel >= accel_threshold)]
+        individual_data[, (burst_col) := as.integer(vedba_inst >= vedba_threshold)]
       }
     }
 
@@ -575,65 +742,63 @@ processTagData <- function(data,
     # Calculate linear motion metrics ##########################################
     ############################################################################
 
-    # provide feedback to the user if verbose mode is enabled
-    if (verbose) cat("---> Calculating linear motion metrics\n")
+    # Linear-motion axes are the dynamic acceleration components (surge = ax - staticX = dynamicX, etc.),
+    # i.e. the high-pass output computed above. The former optional 1 s moving-average post-smoother is
+    # gone: it was the worst offender for the sinc nulls (it zeroed 1/2/3 Hz), so smoothing these axes
+    # would re-introduce exactly the tail-beat/wingbeat erasure this change removes. Downstream analyses
+    # (e.g. calculateTailBeats) band-pass these axes themselves, so they need the full spectrum here.
+    individual_data[, surge := dynamicX]   # longitudinal (X): forward/backward
+    individual_data[, sway  := dynamicY]   # lateral (Y): side-to-side
+    individual_data[, heave := dynamicZ]   # vertical (Z): up/down (diving, wave action)
 
-    # calculate surge
-    # motion along the longitudinal (X) axis (forward/backward swimming)
-    individual_data[, surge := ax - staticX]
+    ############################################################################
+    # Depth zero-offset drift correction (before vertical velocity) ############
+    ############################################################################
 
-    # calculate sway
-    # motion along the lateral (Y) axis (side-to-side swaying)
-    individual_data[, sway := ay - staticY]
+    # Correct the slowly-varying pressure-sensor zero offset from independent surface evidence (the WC
+    # wet/dry signal in meta$ancillary$dry + surface-implying position fixes), BEFORE depth feeds the
+    # vertical-velocity and every absolute-depth metric. Self-gating: abstains when evidence is too sparse.
+    drift_res <- NULL; depth_diag <- NULL
+    if ("depth" %in% names(individual_data)) {
+      dry_tab <- if (!is.null(imeta$ancillary$dry)) imeta$ancillary$dry$data else NULL
+      pos_tab <- .tagPositions(individual_data)        # canonical positions (meta$ancillary$positions)
+      drift_res <- .correctDepthDrift(individual_data$depth, individual_data$datetime,
+                                      dry = dry_tab, positions = pos_tab, control = depth.control)
+      # capture BEFORE the in-place overwrite: individual_data$depth is still the raw (pre-correction) trace
+      if (collect_diag) depth_diag <- .captureDepthDiag(individual_data$depth, individual_data$datetime, drift_res)
+      individual_data[, depth := drift_res$depth]
+      if (lvl >= 2L) {
+        dl <- .depthDriftDiag(drift_res)          # scannable one-liner (NULL when the correction is off)
+        if (!is.null(dl)) diag["depthdrift"] <- dl
+      }
+    }
 
-    # calculate heave
-    # motion along the vertical (Z) axis (up and down, often from diving or wave action)
-    individual_data[, heave := az - staticZ]
-
-    # smooth the signals using a moving average (optional for noise reduction)
-    if(!is.null(motion.smoothing)){
-      window_size <- sampling_freq * motion.smoothing
-      individual_data[, surge := data.table::frollmean(surge, n = window_size, fill = NA, align = "center")]
-      individual_data[, sway := data.table::frollmean(sway, n = window_size, fill = NA, align = "center")]
-      individual_data[, heave := data.table::frollmean(heave, n = window_size, fill = NA, align = "center")]
+    # diagnostic: dynamic-acceleration and depth ranges (the headline motion outputs)
+    if (lvl >= 2L) {
+      vedba_r <- range(individual_data$vedba, na.rm = TRUE)             # VeDBA: rotation-invariant, robust for towed tags
+      diag["motion"] <- sprintf("motion: VeDBA %.2f \u2013 %.2f g", vedba_r[1], vedba_r[2])
+      if ("depth" %in% names(individual_data)) {
+        dep_r <- range(individual_data$depth, na.rm = TRUE)
+        diag["depth"] <- sprintf("depth: %.0f \u2013 %.0f m", dep_r[1], dep_r[2])
+      }
     }
 
     ############################################################################
     # Apply depth smoothing if requested ######################################
     ############################################################################
 
-    # smooth depth using a moving average (optional for noise reduction)
-    if(!is.null(depth.smoothing)){
-      if(verbose) cat("---> Smoothing depth time series\n")
-      window_size <- sampling_freq * depth.smoothing
-      individual_data[, depth := data.table::frollmean(depth, n = window_size, fill = NA, align = "center")]
-    }
-
     ############################################################################
-    # Calculate vertical velocity ##############################################
+    # Smooth depth + calculate vertical velocity ###############################
     ############################################################################
 
-    # calculate vertical speed using central difference on smoothed depth
-    individual_data[, vertical_velocity := {
-      # central difference
-      dz <- data.table::shift(depth, type = "lead") - data.table::shift(depth, type = "lag")
-      dt <- as.numeric(difftime(data.table::shift(datetime, type = "lead"), data.table::shift(datetime, type = "lag"), units = "secs"))
-      velocity <- dz / dt
-      # forward difference for the first element
-      dz_first <- depth[2] - depth[1]
-      dt_first <- as.numeric(difftime(datetime[2], datetime[1], units = "secs"))
-      velocity[1] <- dz_first / dt_first
-      # backward difference for the last element
-      dz_last <- depth[.N] - depth[.N - 1]
-      dt_last <- as.numeric(difftime(datetime[.N], datetime[.N - 1], units = "secs"))
-      velocity[.N] <- dz_last / dt_last
-      velocity
-    }]
-
-    if(!is.null(speed.smoothing)){
-      window_size <- sampling_freq * speed.smoothing
-      individual_data[, vertical_velocity := data.table::frollmean(vertical_velocity, n = window_size, fill = NA, align = "center")]
-    }
+    # depth smoothing (optional) and the centered-difference vertical velocity (optionally smoothed)
+    # are computed by the shared .verticalVelocity() helper, so processTagData and checkTagMapping use
+    # an identical estimate. `depth` is overwritten with the smoothed series when depth.smoothing is set.
+    .vv <- .verticalVelocity(individual_data$depth, individual_data$datetime, sampling_freq,
+                             depth.smoothing = depth.smoothing, speed.smoothing = speed.smoothing)
+    individual_data[, depth := .vv$depth]
+    individual_data[, vertical_velocity := .vv$velocity]
+    rm(.vv)
 
 
     ############################################################################
@@ -652,36 +817,24 @@ processTagData <- function(data,
     # determine feasible orientation methods
     use_madgwick <- orientation.algorithm == "madgwick" && valid_accel_data && valid_gyro_data
     use_tilt_compass <- orientation.algorithm == "tilt_compass" && valid_accel_data
+    orient_method <- NA_character_; heading_ok <- FALSE   # captured below for the diagnostic block
 
 
     #############################################################
-    # Python Madgwick filter ####################################
+    # Madgwick filter (native R) ################################
     if(use_madgwick){
 
-      # load Python packages
-      ahrs <- reticulate::import("ahrs", delay_load = TRUE)
-      np <- reticulate::import("numpy", delay_load = TRUE)
+      # prepare sensor matrices (accel + gyro always; magnetometer when valid)
+      acc_mat <- as.matrix(individual_data[, .(ax, ay, az)])
+      gyr_mat <- as.matrix(individual_data[, .(gx, gy, gz)])
+      mag_mat <- if (valid_magnetometer_data) as.matrix(individual_data[, .(mx, my, mz)]) else NULL
 
-      # prepare sensor data (always accel + gyro)
-      acc_np <- np$array(as.matrix(individual_data[, .(ax, ay, az)]))
-      gyr_np <- np$array(as.matrix(individual_data[, .(gx, gy, gz)]))
+      heading_ok <- valid_magnetometer_data
+      orient_method <- sprintf("madgwick (%s, \u03b2 %g)", if (heading_ok) "MARG" else "IMU", madgwick.beta)
 
-      # run Madgwick (with or without mag)
-      if (valid_magnetometer_data) {
-        # run the full Madgwick filter (MARG: acc + gyro + mag)
-        if (verbose) cat("---> Calculating orientation using Madgwick filter (MARG mode)\n")
-        mag_np <- np$array(as.matrix(individual_data[, .(mx, my, mz)]))
-        madgwick <- ahrs$filters$Madgwick(gyr = gyr_np, acc = acc_np, mag = mag_np,
-                                          frequency = sampling_freq, beta = madgwick.beta)
-      } else {
-        if (verbose) cat("---> Calculating orientation using Madgwick filter (IMU mode)\n")
-        if (verbose) message("No valid magnetometer data (accel + gyro only, no heading)")
-        madgwick <- ahrs$filters$Madgwick(gyr = gyr_np, acc = acc_np, mag = NULL,
-                                          frequency = sampling_freq, beta = madgwick.beta)
-      }
-
-      # extract quaternions
-      Q <- madgwick$Q
+      # run the native-R Madgwick filter -> quaternions (w, x, y, z)
+      Q <- .madgwickAHRS(gyr = gyr_mat, acc = acc_mat, mag = mag_mat,
+                         frequency = sampling_freq, beta = madgwick.beta)
       w <- Q[, 1]; x <- Q[, 2]; y <- Q[, 3]; z <- Q[, 4]
 
       # compute pitch and roll
@@ -702,64 +855,34 @@ processTagData <- function(data,
         roll = roll_deg
       )]
 
-      # cleanup - delete Python objects and force garbage collection
-      to_remove <- c("madgwick", "acc_np", "gyr_np", "mag_np", "Q",
-                     "w", "x", "y", "z", "heading_deg", "pitch_deg", "roll_deg")
-      rm(list = intersect(to_remove, ls()))
-      py_gc <- reticulate::import("gc")
-      invisible(py_gc$collect())
-      gc()
+      # clean up working objects
+      rm(acc_mat, gyr_mat, mag_mat, Q, w, x, y, z, heading_deg, pitch_deg, roll_deg)
 
 
     #############################################################
     # else, default to the tilt-compensated compass method ######
     } else if (use_tilt_compass) {
 
-      # provide feedback to the user if verbose mode is enabled
-      if (verbose) cat("---> Calculating tilt-compensated orientation metrics\n")
+      orient_method <- "tilt_compass"; heading_ok <- valid_magnetometer_data
 
-      # add small constant to prevent division by zero
-      epsilon <- 1e-7
+      # roll and pitch (degrees) from the static (gravity) acceleration via the shared tilt helper
+      # (same aerospace convention as checkTagMapping; atan2 is scale-invariant so no normalization needed)
+      tilt <- .tiltFromAccel(staticX, staticY, staticZ)
+      individual_data[, `:=`(roll = tilt$roll, pitch = tilt$pitch)]
 
-      # compute normalized static accelerometer vectors
-      acc_norm <- sqrt(staticX^2 + staticY^2 + staticZ^2 + epsilon)
-      ax_norm <- staticX / acc_norm
-      ay_norm <- staticY / acc_norm
-      az_norm <- staticZ / acc_norm
-
-      # calculate roll and pitch angles
-      individual_data[, `:=`(
-        roll = atan2(ay_norm, sign(az_norm) * sqrt(az_norm^2 + ax_norm^2 * epsilon)),
-        pitch = atan2(-ax_norm, sqrt(ay_norm^2 + az_norm^2 + epsilon))
-      )]
-
-      # calculate heading only if magnetometer readings are valid
+      # heading only if the magnetometer is valid: tilt-compensate the field (roll/pitch in radians),
+      # then take the magnetic heading; NA near the gimbal-lock pole (|pitch| > 89.5 deg)
       if (valid_magnetometer_data) {
-
-        # correct the magnetometer readings using the roll and pitch angles (tilt-compensated magnetic field vector)
-        mx_comp <- individual_data$mx * cos(individual_data$pitch) + individual_data$my * sin(individual_data$pitch) * sin(individual_data$roll) + individual_data$mz * sin(individual_data$pitch) * cos(individual_data$roll)
-        my_comp <- individual_data$my * cos(individual_data$roll) - individual_data$mz * sin(individual_data$roll)
-
-        # convert roll and pitch from radians to degrees
-        individual_data[, roll := roll * (180 / pi)]
-        individual_data[, pitch := pitch * (180 / pi)]
-
-        # calculate the heading and convert from radians to degrees (accounting for gimbal lock)
-        individual_data[, heading := {ifelse(abs(pitch) > 89.5, NA_real_, atan2(-my_comp, mx_comp) * (180/pi))}]
-
+        pr <- tilt$pitch * (pi / 180); rr <- tilt$roll * (pi / 180)
+        mx_comp <- individual_data$mx * cos(pr) + individual_data$my * sin(pr) * sin(rr) + individual_data$mz * sin(pr) * cos(rr)
+        my_comp <- individual_data$my * cos(rr) - individual_data$mz * sin(rr)
+        individual_data[, heading := ifelse(abs(pitch) > 89.5, NA_real_, atan2(-my_comp, mx_comp) * (180 / pi))]
       } else {
-        # set heading to NA
-        if (verbose) message("No valid magnetometer data - setting heading to NA.")
         individual_data[, heading := NA_real_]
-
-        # convert roll and pitch from radians to degrees
-        individual_data[, roll := roll * (180 / pi)]
-        individual_data[, pitch := pitch * (180 / pi)]
       }
 
-    # if all else fails
+    # if all else fails (captured by the orientation diagnostic line below as "insufficient sensor data")
     } else {
-      if (verbose) message("Insufficient sensor data - cannot compute orientation.")
       individual_data[, `:=`(roll = NA_real_, pitch = NA_real_, heading = NA_real_)]
     }
 
@@ -771,9 +894,11 @@ processTagData <- function(data,
     if (!all(is.na(individual_data$heading))) {
 
       # determine location to use for magnetic declination calculation
-      if (!is.null(attr(individual_data, "deployment.info"))) {
-        # use deployment info if available
-        deploy_info <- attr(individual_data, "deployment.info")
+      if (!is.null(imeta) && !is.na(imeta$deployment$lon) && !is.na(imeta$deployment$lat)) {
+        # use deployment info from metadata
+        deploy_info <- data.frame(datetime = imeta$deployment$datetime,
+                                  lon = imeta$deployment$lon,
+                                  lat = imeta$deployment$lat)
       } else {
         # fallback: use the first available row with valid longitude and latitude
         valid_idx <- which(!is.na(individual_data$lon) & !is.na(individual_data$lat))[1]
@@ -782,7 +907,7 @@ processTagData <- function(data,
                                     lon = individual_data$lon[valid_idx],
                                     lat = individual_data$lat[valid_idx])
         } else {
-          stop("No valid location found to estimate magnetic declination.", call. = FALSE)
+          .abort("No valid location found to estimate magnetic declination.")
         }
       }
 
@@ -804,56 +929,56 @@ processTagData <- function(data,
     ############################################################################
     # correct pitch offset if requested ########################################
 
+    off_pitch <- NULL; off_roll <- NULL    # applied-offset diagnostics (NULL = none applied)
+    pitch_diag <- NULL; roll_diag <- NULL  # per-deployment pitch/roll offset diagnostic bundles
     if (correct.pitch.offset) {
 
       # skip if all pitch values are NA
       if (all(is.na(individual_data$pitch))) {
-        if (verbose) message("No valid pitch data - skipping pitch offset correction")
         pitch_offset_deg <- NULL
         pitch_offset_r2 <- NULL
 
       } else {
 
-        if (verbose) cat("---> Correcting for potential pitch offset\n")
-
-        # calculate 10-second rolling mean of vertical speed
-        vv_window <- 10 * sampling_freq
-        individual_data[, vv_smooth := data.table::frollmean(vertical_velocity, n = vv_window, fill = NA, align = "center")]
-
-        # convert pitch to radians for regression
+        # Kawatsu mounting-pitch estimate: the intercept of pitch (rad) vs smoothed vertical velocity
+        # (the pitch at zero vertical speed). It is only trustworthy when the animal dived enough to
+        # define the line AND the linear pitch-vs-vertical-velocity relationship actually holds; a weak
+        # fit means the "offset" is really just the mean pitch, so subtracting it would strip genuine
+        # posture signal. We therefore gate the correction on the model R-squared (pitch.offset.min.r2).
+        individual_data[, vv_smooth := data.table::frollmean(vertical_velocity, n = win(10), fill = NA, align = "center")]
         individual_data[, pitch_rad := pitch * (pi/180)]
+        fit_data <- individual_data[!is.na(vv_smooth) & !is.na(pitch_rad)]
 
-        # perform linear regression between smoothed vertical velocity and pitch (in radians)
-        pitch_model <- lm(pitch_rad ~ vv_smooth, data = individual_data[!is.na(vv_smooth) & !is.na(pitch_rad)])
+        # the line is undefined without enough points spanning a range of vertical velocities
+        vv_sd <- if (nrow(fit_data)) stats::sd(fit_data$vv_smooth) else NA_real_
+        degenerate <- nrow(fit_data) < 100L || !is.finite(vv_sd) || vv_sd < 1e-6
+        pitch_model     <- if (!degenerate) stats::lm(pitch_rad ~ vv_smooth, data = fit_data) else NULL
+        pitch_offset_r2  <- if (!is.null(pitch_model)) summary(pitch_model)$r.squared else NA_real_
+        pitch_offset_deg <- if (!is.null(pitch_model)) unname(coef(pitch_model)[1]) * (180/pi) else NA_real_
 
-        # get R squared
-        pitch_offset_r2 <- summary(pitch_model)$r.squared
-
-        # get intercept (pitch angle in radians when vertical velocity = 0)
-        pitch_offset_rad <- coef(pitch_model)[1]
-
-        # convert intercept back to degrees for correction
-        pitch_offset_deg <- pitch_offset_rad * (180/pi)
-
-        # only apply correction if offset is below threshold
-        if(abs(pitch_offset_deg) < pitch.warning.threshold) {
-
-          # correct pitch values by subtracting the offset (in degrees)
+        # apply only with a sufficiently strong fit AND a physically plausible (sub-threshold) offset
+        apply_offset <- is.finite(pitch_offset_r2) && pitch_offset_r2 >= pitch.offset.min.r2 &&
+                        is.finite(pitch_offset_deg) && abs(pitch_offset_deg) < orientation.warning.threshold
+        if (apply_offset) {
           individual_data[, pitch := pitch - pitch_offset_deg]
-
-          # report the estimated offset in degrees
-          if (verbose) cat(sprintf("     (pitch offset correction: %.2f\u00b0 | R\u00b2 = %.2f)\n", pitch_offset_deg, pitch_offset_r2))
-
+          off_pitch <- sprintf("pitch %+.2f\u00b0 (R\u00b2 %.2f)", pitch_offset_deg, pitch_offset_r2)
         } else {
-
-          if (verbose) cat("     (pitch offset exceeds threshold - no correction applied)\n")
-          pitch_offset_deg <- NULL
-          pitch_offset_r2 <- NULL
+          # record WHY it was skipped (shown in the detailed diagnostic block)
+          off_pitch <- paste0("pitch offset skipped (",
+            if (degenerate) "insufficient diving signal"
+            else if (pitch_offset_r2 < pitch.offset.min.r2) sprintf("weak fit R\u00b2 %.2f < %.2f", pitch_offset_r2, pitch.offset.min.r2)
+            else sprintf("offset %+.1f\u00b0 over threshold", pitch_offset_deg), ")")
+          pitch_offset_deg <- NULL            # not applied; keep pitch_offset_r2 as computed for provenance
         }
+
+        # capture the fit + scatter BEFORE cleanup (intercept kept even when gated, so the panel shows it)
+        if (collect_diag)
+          pitch_diag <- .capturePitchDiag(fit_data, pitch_model, pitch_offset_r2, apply_offset,
+                                          pitch.offset.min.r2, orientation.warning.threshold, off_pitch)
 
         # clean up temporary columns
         individual_data[, c("pitch_rad", "vv_smooth") := NULL]
-        rm(pitch_model, pitch_offset_rad, vv_window)
+        if (!is.null(pitch_model)) rm(pitch_model)
       }
 
     } else {
@@ -863,12 +988,63 @@ processTagData <- function(data,
 
 
     ############################################################################
+    # correct roll offset if requested #########################################
+
+    # The tag's mounting roll (housing->body) shows up as a persistent roll bias during steady,
+    # level swimming, when a symmetric animal cruises upright on average. We estimate it as the
+    # median roll over the most level half of the record and subtract it. For towed fin-clamped
+    # tags this bias depends on the attachment site (a left vs right pectoral mount is mirror-imaged),
+    # which the empirical median captures automatically.
+
+    if (correct.roll.offset) {
+
+      if (all(is.na(individual_data$roll))) {
+        roll_offset_deg <- NULL
+
+      } else {
+
+        # smoothed vertical velocity, to isolate steady (near-level) swimming
+        vv_window <- win(10)
+        individual_data[, vv_smooth := data.table::frollmean(vertical_velocity, n = vv_window, fill = NA, align = "center")]
+
+        # the more level half of the record (smallest |vertical velocity|)
+        horiz_cut <- stats::median(abs(individual_data$vv_smooth), na.rm = TRUE)
+        roll_offset_deg <- stats::median(individual_data[abs(vv_smooth) <= horiz_cut & !is.na(roll), roll], na.rm = TRUE)
+        # diagnostic: the PRE-correction level-swimming roll + the computed median (kept even if the gate rejects)
+        roll_level_samp <- if (collect_diag) individual_data[abs(vv_smooth) <= horiz_cut & !is.na(roll), roll] else NULL
+        roll_median_all <- roll_offset_deg
+
+        # only apply if finite and below the warning threshold
+        roll_applied <- is.finite(roll_offset_deg) && abs(roll_offset_deg) < orientation.warning.threshold
+        if (roll_applied) {
+          # subtract the offset and re-wrap roll into [-180, 180]
+          individual_data[, roll := ((roll - roll_offset_deg + 180) %% 360) - 180]
+          off_roll <- sprintf("roll %+.2f\u00b0", roll_offset_deg)
+        } else {
+          roll_offset_deg <- NULL
+        }
+        if (collect_diag)
+          roll_diag <- .captureRollDiag(roll_level_samp, roll_median_all, roll_applied, orientation.warning.threshold)
+
+        # clean up temporary column
+        individual_data[, vv_smooth := NULL]
+        rm(vv_window, horiz_cut)
+      }
+
+    } else {
+      roll_offset_deg <- NULL
+    }
+
+
+    ############################################################################
     # apply a moving circular mean to smooth the metrics time series ###########
 
     if(!is.null(orientation.smoothing)) {
-      window_size <- sampling_freq * orientation.smoothing
+      window_size <- win(orientation.smoothing)
+      # roll and heading wrap (circular); pitch is bounded [-90, 90] and does NOT wrap,
+      # so it is smoothed with an ordinary moving mean to avoid pole distortion
       individual_data[, roll := .rollingCircularMean(roll, window = window_size, range = c(-180, 180) )]
-      individual_data[, pitch := .rollingCircularMean(pitch, window = window_size,  range = c(-90, 90))]
+      individual_data[, pitch := data.table::frollmean(pitch, n = window_size, fill = NA, align = "center")]
       individual_data[, heading := .rollingCircularMean(heading, window = window_size, range = c(0, 360))]
     }
 
@@ -877,12 +1053,13 @@ processTagData <- function(data,
 
     pitch_anomaly_detected <- FALSE
     roll_anomaly_detected <- FALSE
+    median_pitch <- NA_real_; median_roll <- NA_real_
 
     # only check if pitch contain non-NA values
     if (!all(is.na(individual_data$pitch))) {
       median_pitch <- median(individual_data$pitch, na.rm = TRUE)
-      if (abs(median_pitch) > pitch.warning.threshold) {
-        message("Potential pitch anomaly: Median = ", round(median_pitch, 1), "\u00B0")
+      if (abs(median_pitch) > orientation.warning.threshold) {
+        .log_skip(lvl, "potential pitch anomaly: median = ", round(median_pitch, 1), "\u00B0")
         pitch_anomaly_detected <- TRUE
         warning(sprintf("%s - Potential pitch anomaly detected (%.2f\u00b0)", id, median_pitch), call. = FALSE)
       }
@@ -891,11 +1068,22 @@ processTagData <- function(data,
     # only check if roll contain non-NA values
     if (!all(is.na(individual_data$roll))) {
       median_roll <- median(individual_data$roll, na.rm = TRUE)
-      if (abs(median_roll) > roll.warning.threshold) {
-        message("Potential roll anomaly: Median = ", round(median_roll, 1), "\u00B0")
+      if (abs(median_roll) > orientation.warning.threshold) {
+        .log_skip(lvl, "potential roll anomaly: median = ", round(median_roll, 1), "\u00b0")
         roll_anomaly_detected <- TRUE
         warning(sprintf("%s - Potential roll anomaly detected (%.2f\u00b0)", id, median_roll), call. = FALSE)
       }
+    }
+
+    # diagnostics: orientation (method, posture medians, heading availability) and applied offsets
+    if (lvl >= 2L) {
+      hd <- paste0("heading ", if (heading_ok) "ok" else "NA")
+      diag["orientation"] <- if (is.na(orient_method)) "orientation: insufficient sensor data"
+        else if (is.finite(median_pitch))
+          sprintf("orientation: median pitch %.1f\u00b0 \u00b7 roll %.1f\u00b0 \u00b7 %s", median_pitch, median_roll, hd)
+        else paste0("orientation: ", hd)
+      off <- c(off_pitch, off_roll)
+      if (length(off)) diag["offsets"] <- paste0("offsets: ", paste(off, collapse = " \u00b7 "))
     }
 
 
@@ -929,7 +1117,7 @@ processTagData <- function(data,
     # Estimate paddle wheel rotation frequency #################################
     ############################################################################
 
-    if (calculate.paddle.speed) {
+    if (!is.null(paddle.calibration)) {
 
       # determine if pre-calculated columns exist
       has_precalculated_freq <- "paddle_freq" %in% names(individual_data)
@@ -956,57 +1144,54 @@ processTagData <- function(data,
         length(unique(na.omit(individual_data$paddle_speed))) > 1
 
       if (is_freq_meaningful && is_speed_meaningful) {
-        if (verbose) cat("---> Paddle frequency and speed already present, skipping estimation\n")
+        diag["speed"] <- "speed: paddle freq + speed already present (kept)"
         perform_internal_calculation <- FALSE
 
       } else if (has_precalculated_speed && !has_precalculated_freq && is_speed_meaningful) {
-        if (verbose) cat("---> Paddle speed already present, setting paddle_freq to NA\n")
+        diag["speed"] <- "speed: paddle speed already present (freq set NA)"
         perform_internal_calculation <- FALSE
-
-      } else if ((has_precalculated_freq || has_precalculated_speed) && verbose) {
-        if (verbose) cat("---> Paddle data found but invalid (constant or NA). Recalculating.\n")
       }
 
       #############################################################
       # remaining checks for paddle wheel setup ###################
 
-      # check if the tag was equipped with a paddle whee
+      # check if the tag was equipped with a paddle wheel
       if (perform_internal_calculation) {
-        has_paddle_info <- !is.null(attr(individual_data, "paddle.wheel"))
+        has_paddle_info <- !is.null(imeta) && !is.na(imeta$tag$paddle_wheel)
         if (!has_paddle_info) {
-          if (verbose) cat("---> No paddle wheel info found, skipping speed estimation\n")
+          diag["speed"] <- "speed: skipped (no paddle-wheel info)"
           perform_internal_calculation <- FALSE
-        } else if (attr(individual_data, "paddle.wheel") == FALSE) {
-          if (verbose) cat("---> Tag has no paddle wheel, skipping speed estimation\n")
+        } else if (isFALSE(imeta$tag$paddle_wheel)) {
+          diag["speed"] <- "speed: skipped (no paddle wheel)"
           perform_internal_calculation <- FALSE
         }
       }
 
       # check package ID and calibration
       if (perform_internal_calculation) {
-        has_package <- !is.null(attr(individual_data, "package.id"))
+        package_id <- if (!is.null(imeta)) imeta$tag$package_id else NA
+        has_package <- !is.null(package_id) && !all(is.na(package_id))
         if (!has_package) {
-          message("No packageID found for the current tag, skipping speed estimation")
+          diag["speed"] <- "speed: skipped (no package_id)"
           perform_internal_calculation <- FALSE
         } else {
-          package_id <- attr(individual_data, "package.id")
 
           # Determine deployment year for calibration lookup
-          if (!is.null(attr(individual_data, "deployment.info"))) {
-            deploy_year <- as.integer(format(attr(individual_data, "deployment.info")$datetime, "%Y"))
+          if (!is.null(imeta) && !is.na(imeta$deployment$datetime)) {
+            deploy_year <- as.integer(format(imeta$deployment$datetime, "%Y"))
           } else {
             deploy_year <- as.integer(format(individual_data$datetime[1], "%Y"))
           }
 
-          tag_calibration <- speed.calibration.values[speed.calibration.values$year == deploy_year &
-                                                        speed.calibration.values$package_id == package_id, ]
+          tag_calibration <- paddle.calibration[paddle.calibration$year == deploy_year &
+                                                        paddle.calibration$package_id == package_id, ]
           has_calibration_info <- nrow(tag_calibration) > 0
 
           if (!has_calibration_info) {
-            if (verbose) message("No calibration values found for this tag, skipping speed estimation")
+            diag["speed"] <- "speed: skipped (no calibration values)"
             perform_internal_calculation <- FALSE
           } else if (sampling_freq < 50) {
-            if (verbose) message("Sampling freq too low (\u2264 50Hz), skipping speed estimation")
+            diag["speed"] <- "speed: skipped (sampling < 50 Hz)"
             perform_internal_calculation <- FALSE
           }
         }
@@ -1017,23 +1202,23 @@ processTagData <- function(data,
 
       if (perform_internal_calculation) {
 
-        # print message
-        if (verbose) {
-          cat("---> Estimating paddle wheel rotation speed\n")
-          cat(sprintf("     (calibration slope: %.4f)\n", tag_calibration$slope))
-        }
-
         # calculate frequencies and speed
         paddle_data <- .getPaddleSpeed(
           mz = mz_raw,
           sampling.rate = sampling_freq,
           calibration.slope = tag_calibration$slope,
-          smooth.window = speed.smoothing,
+          smooth.window = speed.smoothing
         )
 
         # add to sensor data
         individual_data[, paddle_freq := paddle_data$freq]
         individual_data[, paddle_speed := paddle_data$speed]
+
+        # diagnostic: estimated speed range + calibration slope used
+        if (lvl >= 2L) {
+          sp_r <- range(paddle_data$speed, na.rm = TRUE)
+          diag["speed"] <- sprintf("speed: %.2f \u2013 %.2f m/s (paddle wheel \u00b7 slope %.4f)", sp_r[1], sp_r[2], tag_calibration$slope)
+        }
       }
     }
 
@@ -1042,14 +1227,13 @@ processTagData <- function(data,
     # Downsample data ##########################################################
     ############################################################################
 
-    # select columns to keep
+    # select columns to keep (raw channels that are absent for partial sensor sets,
+    # e.g. no gyroscope/magnetometer/temperature, are dropped via the intersect below)
     metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
                  "accel","odba","vedba","roll", "pitch", "heading",
-                 "surge", "sway", "heave", "vertical_velocity", "turning_angle")
-    if (calculate.paddle.speed) {
-      if(has_paddle_info & valid_magnetometer_data) metrics <- c(metrics, "paddle_freq", "paddle_speed")
-    }
-    position_cols <- c("PTT", "position_type", "lat", "lon", "quality")
+                 "surge", "sway", "heave", "vertical_velocity", "turning_angle",
+                 "paddle_freq", "paddle_speed")          # paddle cols kept only when present (dropped by intersect below)
+    metrics <- intersect(metrics, names(individual_data))
 
     # store current sampling frequency
     sampling_rate <- sampling_freq
@@ -1059,19 +1243,16 @@ processTagData <- function(data,
 
       # check if the specified downsampling frequency matches the dataset's sampling frequency
       if (downsample.to == sampling_freq) {
-        if (verbose) cat("---> Dataset sampling rate is already", downsample.to, "Hz, skipping downsampling\n")
+        if (lvl >= 2L) diag["downsample"] <- sprintf("downsample: skipped (already %g Hz)", sampling_freq)
         processed_data <- individual_data
 
       # check if the specified downsampling frequency exceeds the dataset's sampling frequency
       } else if(downsample.to > sampling_freq) {
-        if (verbose) cat("---> Dataset sampling rate (", sampling_freq, "Hz) is lower than the specified downsampling rate (", downsample.to, "Hz), skipping downsampling\n", sep = "")
+        if (lvl >= 2L) diag["downsample"] <- sprintf("downsample: skipped (data %g Hz < target %g Hz)", sampling_freq, downsample.to)
         processed_data <- individual_data
 
       # start downsampling
       } else {
-
-        # provide feedback to the user if verbose mode is enabled
-        if (verbose)  cat("---> Downsampling data to", downsample.to, "Hz\n")
 
         # store new sampling frequency
         sampling_rate <- downsample.to
@@ -1079,12 +1260,10 @@ processTagData <- function(data,
         # convert the desired downsample rate to time interval in seconds
         downsample_interval <- 1 / downsample.to
 
-        # round datetime to the nearest downsample interval
+        # round datetime to the nearest downsample interval (seconds explicit, so the
+        # binning never depends on difftime's auto-chosen units)
         first_time <- individual_data$datetime[1]
-        individual_data[, datetime := first_time + floor(as.numeric(datetime - first_time) / downsample_interval) * downsample_interval]
-
-        # temporarily suppress console output (redirect to a temporary file)
-        sink(tempfile())
+        individual_data[, datetime := first_time + floor(as.numeric(datetime - first_time, units = "secs") / downsample_interval) * downsample_interval]
 
         # define columns
         orientation_cols <- c("roll", "pitch", "heading")
@@ -1093,17 +1272,15 @@ processTagData <- function(data,
         # aggregate numeric metrics using arithmetic mean
         processed_data <- individual_data[, lapply(.SD, mean, na.rm=TRUE), by = datetime, .SDcols = numeric_cols]
 
-        # aggregate orientation metrics using circular mean
+        # aggregate orientation metrics: roll and heading wrap (circular mean), but
+        # pitch is bounded [-90, 90] and does not wrap (ordinary mean)
         processed_roll <- individual_data[, .(roll = .circularMean(roll, range = c(-180, 180))), by = datetime]
-        processed_pitch <- individual_data[, .(pitch = .circularMean(pitch, range = c(-90, 90))), by = datetime]
+        processed_pitch <- individual_data[, .(pitch = mean(pitch, na.rm = TRUE)), by = datetime]
         processed_heading <- individual_data[, .(heading = .circularMean(heading, range = c(0, 360))), by = datetime]
-
-        # aggregate location column using first value
-        processed_positions <- individual_data[, lapply(.SD, first), by = datetime, .SDcols = position_cols]
 
         # combine aggregated datasets
         processed_data <- Reduce(function(x, y) merge(x, y, by = "datetime", sort = FALSE),
-                                 list(processed_data, processed_roll, processed_pitch, processed_heading, processed_positions))
+                                 list(processed_data, processed_roll, processed_pitch, processed_heading))
 
         # sum burst swimming events (based on specified percentiles)
         if(!is.null(burst.quantiles)){
@@ -1117,12 +1294,8 @@ processTagData <- function(data,
         processed_data[, ID := id]
 
         # clean up
-        objs_to_remove <- c("processed_roll", "processed_pitch", "processed_heading", "processed_positions", "processed_bursts")
+        objs_to_remove <- c("processed_roll", "processed_pitch", "processed_heading", "processed_bursts")
         rm(list = intersect(objs_to_remove, ls()))
-        gc()
-
-        # restore normal output
-        sink()
       }
 
     } else{
@@ -1130,8 +1303,17 @@ processTagData <- function(data,
       processed_data <- individual_data
     }
 
-    # reorder columns: ID, metrics, burst.quantiles (if exists), and position_cols
-    data.table::setcolorder(processed_data, c("ID", "datetime", metrics, if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100), position_cols))
+    # diagnostic: the downsampling outcome (rows before -> after), when a resample actually happened
+    if (lvl >= 2L && sampling_rate < sampling_freq) {
+      diag["downsample"] <- sprintf("downsample: %s \u2192 %s rows",
+                                    .formatLargeNumber(n_input), .formatLargeNumber(nrow(processed_data)))
+    }
+
+    # reorder columns: ID, metrics, burst.quantiles (if present)
+    # (intersect keeps only columns that exist, supporting partial sensor sets)
+    final_order <- c("ID", "datetime", metrics,
+                     if(!is.null(burst.quantiles)) paste0("burst", burst.quantiles * 100))
+    data.table::setcolorder(processed_data, intersect(final_order, names(processed_data)))
 
 
 
@@ -1154,10 +1336,12 @@ processTagData <- function(data,
       velocity = list(vars = "vertical_velocity", digits = 2)
     )
 
-    # apply rounding to save memory
+    # apply rounding to save memory (only to columns that are present)
     for (group in rounding_specs) {
-      processed_data[, (group$vars) := lapply(.SD, round, digits = group$digits),
-                     .SDcols = group$vars]
+      vars <- intersect(group$vars, names(processed_data))
+      if (length(vars) > 0) {
+        processed_data[, (vars) := lapply(.SD, round, digits = group$digits), .SDcols = vars]
+      }
     }
 
     # convert NaN to NA
@@ -1169,92 +1353,92 @@ processTagData <- function(data,
       attr(processed_data, attr_name) <- original_attributes[[attr_name]]
     }
 
-    # create new attributes to save relevant variables
-    attr(processed_data, 'original.sampling.frequency') <- sampling_freq
-    attr(processed_data, 'processed.sampling.frequency') <- sampling_rate
-    attr(processed_data, 'hard.iron.calibration') <- hard.iron.calibration
-    attr(processed_data, 'soft.iron.calibration') <- soft.iron.calibration
-    attr(processed_data, 'orientation.algorithm') <- orientation.algorithm
-    attr(processed_data, 'madgwick.beta') <- madgwick.beta
-    attr(processed_data, 'magnetic.declination') <- declination_deg
-    attr(processed_data, 'dba.window') <- dba.window
-    attr(processed_data, 'dba.smoothing') <- dba.smoothing
-    attr(processed_data, 'orientation.smoothing') <- orientation.smoothing
-    attr(processed_data, 'motion.smoothing') <- motion.smoothing
-    attr(processed_data, 'speed.smoothing') <- speed.smoothing
-    attr(processed_data, 'depth.smoothing') <- depth.smoothing
-    attr(individual_data, 'pitch.offset.value') <- pitch_offset_deg
-    attr(individual_data, 'pitch.offset.model.r2') <- pitch_offset_r2
-    attr(processed_data, 'pitch.warning.threshold') <- pitch.warning.threshold
-    attr(processed_data, 'roll.warning.threshold') <- roll.warning.threshold
-    attr(processed_data, 'pitch.anomaly.detected') <- pitch_anomaly_detected
-    attr(processed_data, 'roll.anomaly.detected') <- roll_anomaly_detected
-    attr(processed_data, 'processing.date') <- Sys.time()
-
-    # sort final attributes
-    internal_attrs <- c("names", "row.names", "class", ".internal.selfref", "index")
-    id_attrs <- c("id", "directory", "tag.model", "tag.type", "package.id", "original.rows", "imported.columns",
-                  "axis.mapping", "timezone", "deployment.info", "first.datetime", "last.datetime",
-                  "original.sampling.frequency", "processed.sampling.frequency")
-    sensor_attrs <- c("hard.iron.calibration", "soft.iron.calibration", "orientation.algorithm",
-                      "madgwick.beta", "magnetic.declination", "dba.window", "dba.smoothing",
-                       "orientation.smoothing", "motion.smoothing", "speed.smoothing", "depth.smoothing", "paddle.wheel")
-    checks_attrs <- c("regularization.performed", "pitch.offset.value",  "pitch.offset.model.r2",
-                      "pitch.warning.threshold", "roll.warning.threshold","pitch.anomaly.detected", "roll.anomaly.detected")
-    final_attrs <- c("nautilus.version", "processing.date")
-    sorted_attrs <- c(internal_attrs, id_attrs, sensor_attrs, checks_attrs, final_attrs)
-
-    # keep only those attributes that exist in the current object and are in sorted_attrs
-    reordered_attrs <- attributes(processed_data)[intersect(sorted_attrs, names(attributes(processed_data)))]
-    remaining_attrs <-  attributes(processed_data)[setdiff(names( attributes(processed_data)), names(reordered_attrs))]
-    # combine both, with sorted ones first
-    final_attrs <- c(reordered_attrs, remaining_attrs)
-    # reassign the ordered attributes to the object
-    attributes(processed_data) <- final_attrs
-
-
-    # provide feedback to the user if verbose mode is enabled
-    if (verbose) cat("Done! Data processed successfully.\n")
-
-    # save the processed data as an RDS file
-    if(save.files){
-
-      # print without newline and immediately flush output
-      if (verbose) {
-        cat("Saving file... ")
-        flush.console()
+    # update the consolidated metadata (the SINGLE source of provenance - no parallel flat attributes):
+    # record the realised sampling rates / sensors present / declination as structured fields, append a
+    # full processing-step record (parameters + results) to the audit trail, and re-class as nautilus_tag.
+    meta <- .getMeta(processed_data)
+    if (!is.null(meta)) {
+      meta$sensors$sampling_hz_original  <- sampling_freq
+      meta$sensors$sampling_hz_processed <- sampling_rate
+      meta$sensors$present <- intersect(.sensorChannels(), names(processed_data))
+      meta$sensors$heading_denoise_window  <- heading_denoise_used           # paddle-wheel de-noise applied
+      meta$sensors$paddle_contaminated     <- if (!is.null(paddle_state)) isTRUE(paddle_state$present) else NA
+      meta$deployment$magnetic_declination <- declination_deg %||% NA_real_
+      meta$mag_calibration <- mag_state                                      # the single source of truth for calibration state
+      meta <- .appendProcessing(meta, "processTagData",
+                                orientation_algorithm   = orientation.algorithm,
+                                madgwick_beta           = if (orientation.algorithm == "madgwick") madgwick.beta else NA_real_,
+                                hard_iron               = hard.iron.calibration,
+                                soft_iron               = soft.iron.calibration,
+                                hard_iron_applied       = hard_iron_applied,
+                                soft_iron_applied       = soft_iron_applied,
+                                hard_iron_offset_uT     = hard_iron_offset_mag,
+                                calibration_source      = calibration_source,
+                                magnetic_declination    = declination_deg %||% NA_real_,
+                                heading_denoise_window  = heading_denoise_used,
+                                paddle_freq_hz          = if (!is.null(paddle_state)) paddle_state$freq else NA_real_,
+                                static_window           = static.window,
+                                dba_smoothing           = dba.smoothing %||% NA_real_,
+                                orientation_smoothing   = orientation.smoothing %||% NA_real_,
+                                speed_smoothing         = speed.smoothing %||% NA_real_,
+                                depth_smoothing         = depth.smoothing %||% NA_real_,
+                                pitch_offset_deg        = pitch_offset_deg %||% NA_real_,
+                                pitch_offset_r2         = pitch_offset_r2 %||% NA_real_,
+                                roll_offset_deg         = roll_offset_deg %||% NA_real_,
+                                median_pitch_deg        = median_pitch,
+                                median_roll_deg         = median_roll,
+                                orientation_warning_threshold = orientation.warning.threshold,
+                                pitch_offset_min_r2     = pitch.offset.min.r2,
+                                pitch_anomaly_detected  = pitch_anomaly_detected,
+                                roll_anomaly_detected   = roll_anomaly_detected,
+                                attachment_site         = meta$deployment$attachment_site %||% NA_character_,
+                                downsample_to           = downsample.to %||% NA_real_,
+                                n_input                 = n_input,
+                                n_output                = nrow(processed_data))
+      # depth zero-offset drift correction: its own lean record (skipped when the method is disabled)
+      if (!is.null(drift_res) && !identical(drift_res$status, "disabled")) {
+        dd_args <- list(params  = list(method = depth.control$method,
+                                       surface_evidence = depth.control$surface.evidence,
+                                       min_dry_duration_s = depth.control$min.dry.duration,
+                                       max_gap_h = depth.control$max.gap),
+                        status    = drift_res$status,
+                        n_anchors = drift_res$n_anchors,
+                        outcome   = drift_res$outcome)
+        if (nrow(drift_res$low_confidence)) dd_args$details <- list(low_confidence = drift_res$low_confidence)
+        meta <- do.call(.appendProcessing, c(list(meta, "depth_drift"), dd_args))
       }
+      processed_data <- .restoreMeta(processed_data, meta)
+    }
 
-      # determine the output directory: use the specified output folder, or if not provided,
-      # use the folder of the current file (if data[i] is a file path), or default to "./"
-      if (!is.null(output.folder)) {
-        output_dir <- output.folder
-      } else if (is_filepaths) {
-        output_dir <- dirname(data[i])
-      } else {
-        output_dir <- "./"
-      }
 
-      # define the file suffix: use the specified suffix or default to an empty string
-      suffix <- ifelse(!is.null(output.suffix), output.suffix, "")
+    # save the processed data as an RDS file (only when an output directory is provided)
+    saved_to <- .saveOutput(processed_data, id, output.dir = output.dir, output.suffix = output.suffix, compress = compress)
+    saved[i] <- list(saved_to)                  # single-bracket keeps the slot (a NULL path must not shrink the list)
 
-      # construct the output file name
-      output_file <- file.path(output_dir, paste0(id, suffix, ".rds"))
-
-      # save the processed data
-      saveRDS(processed_data, output_file)
-
-      # overwrite the line with completion message
-      if (verbose) {
-        cat("\r")
-        cat(rep(" ", getOption("width")-1))
-        cat("\r")
-        cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
+    # emit the collected diagnostics as one ordered block (detailed level only): the tag attributes
+    # line, then each finding in pipeline order. Slots left unset (e.g. speed when not requested)
+    # are simply skipped, so the block always reflects exactly what happened for this deployment.
+    if (lvl >= 2L) {
+      if (!is.null(attrs_line)) cli::cli_text("{cli::symbol$bullet} {attrs_line}")
+      for (k in c("input", "calibration", "denoise", "orientation", "offsets",
+                  "motion", "depthdrift", "depth", "speed", "downsample")) {
+        if (!is.na(diag[k])) say(diag[[k]])
       }
     }
 
-    # print empty line
-    cat("\n")
+    # curated per-ID outcome. Detailed: a minimal tick (the breakdown is in the block above). Normal: a
+    # compact one-line summary per tag (id . channels . rows . Hz), since the detail block is suppressed.
+    if (lvl >= 2L) {
+      if (!is.null(saved_to)) .log_ok(lvl, "saved ", basename(saved_to))
+      else                    .log_ok(lvl, id, " processed")
+    } else {
+      n_chan <- length(intersect(.sensorChannels(), names(processed_data)))
+      b <- cli::symbol$bullet
+      .log_ok(lvl, id, " ", b, " ", n_chan, " channel", if (n_chan != 1) "s", " ", b, " ",
+              .formatLargeNumber(nrow(processed_data)), " rows ", b, " ", sampling_rate, " Hz")
+    }
+    n_done <- n_done + 1L
+    .log_gap(lvl)                          # blank line separates this individual's block from the next
 
 
     # store processed sensor data in the results list if needed
@@ -1262,37 +1446,61 @@ processTagData <- function(data,
       data_list[[i]] <- processed_data
     }
 
-    # clear unused objects from the environment to free up memory
+    # accumulate this deployment's diagnostic bundle (mag + depth + pitch/roll)
+    if (collect_diag) {
+      pr_diag <- if (!is.null(pitch_diag) || !is.null(roll_diag)) list(pitch = pitch_diag, roll = roll_diag) else NULL
+      diag_bundles[[length(diag_bundles) + 1L]] <- list(id = id, paddle = isTRUE(imeta$tag$paddle_wheel),
+                                                        mag = mag_diag, depth = depth_diag, pitchroll = pr_diag)
+    }
+
+    # drop references before the next iteration (R reclaims memory automatically;
+    # an explicit gc() every iteration would only slow the loop down)
     rm(individual_data)
     rm(processed_data)
-    gc()
   }
+
+  # ORDERING-GUARD warning (fires at any verbosity): computed orientation is only valid on axis-mapped
+  # data. Emitted once with the affected ids rather than once per deployment.
+  if (length(unoriented_ids)) {
+    cli::cli_warn(c(
+      "{length(unoriented_ids)} tag{?s} processed without an applied axis mapping: {.val {utils::head(unoriented_ids, 8)}}.",
+      "i" = "Orientation (pitch/roll/heading) assumes body-frame IMU axes - run {.fn applyAxisMapping} first, unless the data is already in the body frame."))
+  }
+
+  # zero-correction warning: a requested magnetometer received NO hard/soft-iron correction (neither a
+  # trusted stored fit nor a coverage-passing inline estimate). Heading is then computed from a raw field
+  # still carrying the tag's hard-iron offset - the dominant source of dead-reckoning drift. Loud by default.
+  if (length(uncalibrated_ids)) {
+    cli::cli_warn(c(
+      "{length(uncalibrated_ids)} deployment{?s} got NO magnetometer calibration (raw field): {.val {utils::head(uncalibrated_ids, 8)}}.",
+      "!" = "Heading carries the uncorrected hard-iron offset; dead-reckoned tracks will drift.",
+      "i" = "Provide a dedicated calibration via {.code calibrateMagnetometer(calibration.data=)}, or collect more rotation coverage. Status recorded as {.val uncalibrated_raw} in {.code meta$mag_calibration$status}."))
+  }
+
+  # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering
+  # failure must never discard the (expensive) processed data - warn and return it, don't abort the run.
+  if (collect_diag && length(diag_bundles))
+    tryCatch(.renderProcessingDiagnostic(diag_bundles, plot = plot, plot.file = plot.file),
+             error = function(e) warning("processTagData: diagnostic rendering failed (", conditionMessage(e),
+                                         "); returning the processed data anyway.", call. = FALSE))
 
 
   ##############################################################################
   # Return processed data ######################################################
   ##############################################################################
 
-  # print message
-  if (verbose) cat(crayon::bold("That's a wrap!\n"))
-
-  # print time taken
-  end.time <- Sys.time()
-  time.taken <- end.time - start.time
-  cat(crayon::bold("Total execution time:"), sprintf("%.02f", as.numeric(time.taken)), base::units(time.taken), "\n\n")
-
-  # return imported data or NULL based on return.data parameter
-  if (return.data) {
-    # assign names to the data list
-    names(data_list) <- sapply(data_list, function(x) unique(x$ID)[1])
-    # convert NA placeholders back to NULL
-    na_indices <- which(sapply(data_list, function(x) identical(x, NA)))
-    for (index in na_indices) {data_list[[index]] <- NULL}
-    # return the list containing processed sensor data for all folders
-    return(data_list)
-  } else {
-    return(invisible(NULL))
+  # final summary
+  if (lvl >= 1L) {
+    .log_summary(lvl)
+    .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")
+    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    .log_runtime(lvl, start.time)
   }
+
+  # return the processed data (named by ID) or, when return.data = FALSE, the written .rds paths.
+  # `keep` drops skipped slots (their id stays NA), keeping data_list / saved / ids index-aligned.
+  keep <- !is.na(ids)
+  .collectOutput(data_list[keep], saved[keep], return.data, ids[keep])
 
 }
 

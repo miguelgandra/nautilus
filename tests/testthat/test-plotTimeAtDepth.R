@@ -1,0 +1,121 @@
+# Tests for plotTimeAtDepth() (profile-grid model): the tidy return table (data product), the
+# duration-weighting, binning (incl. surface-fine defaults), grouping, diel split, and rendering.
+
+.mk_tad <- function(id, depth_fun, n = 300, species = "A", lon = -8, lat = 37) {
+  t0 <- as.POSIXct("2021-06-01 00:00", tz = "UTC")
+  d <- pmax(0, depth_fun(n))
+  data.table::data.table(ID = id, datetime = t0 + seq_len(n) * 120, depth = d,
+                         temp = pmax(11, 25 - 0.03 * d), lon = lon, lat = lat, species = species)
+}
+.tad_cohort <- function() list(
+  A01 = .mk_tad("A01", function(n) abs(rnorm(n, 8, 5)),  species = "shallow"),
+  A02 = .mk_tad("A02", function(n) abs(rnorm(n, 60, 15)), species = "deep"),
+  A03 = .mk_tad("A03", function(n) abs(rnorm(n, 30, 20)), species = "deep"))
+.to_pdf <- function(...) {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  res <- suppressMessages(plotTimeAtDepth(..., plot = FALSE, plot.file = pf, verbose = FALSE))
+  list(res = res, size = file.size(pf))
+}
+
+test_that("returns a tidy id x variable x phase x bin table; pct sums to 100 per id/variable/phase", {
+  out <- .to_pdf(.tad_cohort())
+  s <- out$res
+  expect_named(s, c("id", "group", "variable", "phase", "bin_min", "bin_max", "bin_mid", "hours", "pct"))
+  expect_setequal(unique(s$id), c("A01", "A02", "A03"))
+  expect_equal(unique(s$variable), "depth"); expect_equal(unique(s$phase), "all")
+  sums <- tapply(s$pct, s$id, sum)
+  expect_true(all(abs(sums - 100) < 1e-6))
+  expect_true(out$size > 0)
+})
+
+test_that("time is DURATION-weighted, not row-counted, and gaps are capped", {
+  t <- as.POSIXct("2021-01-01", tz = "UTC") + c(seq_len(100), 1e6 + seq_len(100))
+  g <- data.table::data.table(ID = "G", datetime = t, depth = c(rep(5, 100), rep(80, 100)))
+  s <- .to_pdf(list(G = g), bin.width = 20)$res
+  shallow <- sum(s$hours[s$bin_mid < 40]); deep <- sum(s$hours[s$bin_mid >= 40])
+  expect_equal(shallow, deep, tolerance = 0.02)                # gap NOT credited to the shallow bin
+  expect_lt(shallow + deep, 0.2)                               # ~200 s total, not ~1e6 s
+})
+
+test_that(".timeAtDepthBins weights a variable-rate record by true durations", {
+  tb <- nautilus:::.timeAtDepthBins(v = c(5, 15, 15), tnum = c(0, 10, 11), breaks = c(0, 10, 20), gap.factor = 3)
+  expect_gt(tb$time[1], tb$time[2])
+  expect_equal(tb$pct[1] + tb$pct[2], 100, tolerance = 1e-6)
+})
+
+test_that("two variables produce a depth AND temperature table", {
+  s <- .to_pdf(.tad_cohort(), variable = c("depth", "temp"))$res
+  expect_setequal(unique(s$variable), c("depth", "temp"))
+  # each variable's pct still sums to 100 per deployment
+  chk <- tapply(s$pct, paste(s$id, s$variable), sum)
+  expect_true(all(abs(chk - 100) < 1e-6))
+})
+
+test_that("grouping by a column facets and tags rows with the group", {
+  s <- .to_pdf(.tad_cohort(), group = "species")$res
+  expect_setequal(unique(s$group), c("shallow", "deep"))
+  expect_equal(s$group[s$id == "A02"][1], "deep")
+})
+
+test_that("grouping accepts a named id -> group vector", {
+  s <- .to_pdf(.tad_cohort(), group = c(A01 = "g1", A02 = "g2", A03 = "g2"))$res
+  expect_setequal(unique(s$group), c("g1", "g2"))
+})
+
+test_that("diel = TRUE splits into night/day, each summing to 100 per deployment/phase", {
+  s <- .to_pdf(.tad_cohort(), diel = TRUE)$res
+  expect_setequal(unique(s$phase), c("night", "day"))
+  sums <- tapply(s$pct, paste(s$id, s$phase), sum)
+  expect_true(all(abs(sums - 100) < 1e-6))
+})
+
+test_that("style = 'heatmap' renders and ignores diel", {
+  expect_no_error(.to_pdf(.tad_cohort(), style = "heatmap"))
+  expect_message(invisible(utils::capture.output(plotTimeAtDepth(.tad_cohort(), style = "heatmap", diel = TRUE,
+                 plot = FALSE, plot.file = tempfile(fileext = ".pdf"), verbose = "normal"))), "ignored", ignore.case = TRUE)
+})
+
+test_that("bin.width and explicit breaks are honoured", {
+  co <- .tad_cohort()
+  s1 <- .to_pdf(co, bin.width = 20)$res
+  expect_equal(unique(round(s1$bin_max - s1$bin_min, 6)), 20)
+  s2 <- .to_pdf(co, breaks = c(0, 10, 25, 50, 200))$res
+  expect_equal(sort(unique(s2$bin_min)), c(0, 10, 25, 50))
+})
+
+test_that("a theme object (or a list of overrides) is accepted", {
+  expect_no_error(.to_pdf(.tad_cohort(), theme = plotTheme("minimal", day = "#EAF3FB")))
+  expect_no_error(.to_pdf(.tad_cohort(), theme = list(preset = "classic")))   # coerced via .as_control
+})
+
+test_that("plot = TRUE restores the caller's device and par (no leak)", {
+  caller <- tempfile(fileext = ".pdf"); grDevices::pdf(caller)
+  on.exit({ grDevices::dev.off(); unlink(caller) }, add = TRUE)
+  cur <- grDevices::dev.cur(); before <- graphics::par(no.readonly = TRUE)
+  suppressMessages(plotTimeAtDepth(.tad_cohort(), plot = TRUE, verbose = FALSE))
+  expect_identical(grDevices::dev.cur(), cur)
+  expect_identical(graphics::par(no.readonly = TRUE), before)
+})
+
+test_that("argument validation aborts clearly", {
+  co <- .tad_cohort()
+  expect_error(plotTimeAtDepth(co, plot = FALSE, verbose = FALSE), "Nothing to plot", ignore.case = TRUE)
+  expect_error(plotTimeAtDepth(co, variable = "nope", plot = FALSE, plot.file = tempfile(fileext = ".pdf"),
+                               verbose = FALSE), "no deployment has usable", ignore.case = TRUE)
+  expect_error(plotTimeAtDepth(co, gap.factor = 0.5, plot = FALSE, plot.file = tempfile(fileext = ".pdf"),
+                               verbose = FALSE), "gap.factor", ignore.case = TRUE)
+  expect_error(plotTimeAtDepth(co, variable = c("a", "b", "c"), plot = FALSE, plot.file = tempfile(fileext = ".pdf"),
+                               verbose = FALSE), "one or two", ignore.case = TRUE)
+})
+
+test_that("depth defaults to surface-fine non-uniform bins; temperature to uniform", {
+  d <- nautilus:::.tadDefaultBreaks("depth", c(0, 500))
+  expect_true(all(diff(d) > 0))
+  expect_lt(d[2] - d[1], utils::tail(diff(d), 1))              # shallow bins narrower than deep bins
+  tt <- nautilus:::.tadDefaultBreaks("temp", c(12, 27))
+  expect_length(unique(diff(tt)), 1L)                          # uniform
+})
+
+test_that(".binLabels ranges and an open-ended top bin", {
+  expect_equal(nautilus:::.binLabels(c(0, 10, 25, 50)), c("0-10", "10-25", ">25"))
+})

@@ -102,12 +102,13 @@ speed_results <- lapply(processed_list, function(dt) {
   # Calculate bout durations and filter
   bout_durations <- dt[, .(duration = max(datetime) - min(datetime)), by = bout_id][duration >= min_duration]
 
-  # Calculate upper 25th percentile of tbf power ratios
-  tbf_threshold <- quantile(dt$tbf_power_ratio, probs = 0.8, na.rm = TRUE)
+  # Keep only the strongest tail beats. Amplitude is an absolute effort proxy in the units of the
+  # motion axis, so a high value means a real, well-resolved beat rather than a noise artefact.
+  tbf_threshold <- quantile(dt$tbf_amplitude, probs = 0.8, na.rm = TRUE)
 
   # Subset only qualifying horizontal bouts
   horizontal_dt <- dt[bout_id %in% bout_durations$bout_id & is_horizontal == TRUE]
-  horizontal_dt <- horizontal_dt[tbf_power_ratio >= tbf_threshold]
+  horizontal_dt <- horizontal_dt[tbf_amplitude >= tbf_threshold]
 
   # Proceed only if sufficient data remains
   if (nrow(horizontal_dt) < min_duration * sampling_rate) return(NULL)
@@ -148,18 +149,14 @@ speed_results <- lapply(processed_list, function(dt) {
 
 
 ################################################################################
-# Filter Fastloc locations #####################################################
+# Position fixes are already screened ##########################################
 ################################################################################
 
-# 10 km/h as a conservative max cruising speed for whale sharks
-processed_list <- filterLocations(data = processed_list,
-                                  id.metadata = animal_metadata,
-                                  deploy.lon.col = "deploy_lon",
-                                  deploy.lat.col = "deploy_lat",
-                                  max.speed.kmh = 10,
-                                  max.distance.km = 200,
-                                  min.satellites = NULL,
-                                  plot = TRUE)
+# Location quality-control (filterLocations()) is now part of the clean / quality-control phase in
+# Tutorial 01 (STEP 6.3), run alongside the sensor-channel checks - it screens the GPS/Argos fixes for
+# implausible detections before anything downstream consumes them. So by the time the processed data
+# reaches this tutorial, its position record is already clean and reconstructTrack() / crossValidateTrack()
+# below anchor to vetted fixes automatically. See ?filterLocations if you want to re-run or tune it.
 
 
 ################################################################################
@@ -167,86 +164,23 @@ processed_list <- filterLocations(data = processed_list,
 ################################################################################
 
 
-for (i in 1:length(processed_list)){
+# ---------------------------------------------------------------------------------------------------
+# Reconstruct the movement path, then summarise its shape.
+# ---------------------------------------------------------------------------------------------------
 
-  individual_data <- processed_list[[i]]
-  individual_data$lon[individual_data$position_type=="Metadata [deploy]"] <- NA
-  individual_data$lat[individual_data$position_type=="Metadata [deploy]"] <- NA
-  has_locs <- any(!is.na(individual_data$lon) & !is.na(individual_data$lat))
-  if(has_locs){
-    lon <- individual_data$lon
-    lat <- individual_data$lat
-  }else{
-    lon <- NULL
-    lat <- NULL
-  }
-
-  gundog_result <- Gundog.Tracks(TS = individual_data$datetime,
-                                 h = individual_data$heading,
-                                 v = 0.5,
-                                 elv = individual_data$depth,
-                                 ch = NULL,
-                                 cs = NULL,
-                                 m = 1,
-                                 c = 1,
-                                 ME = 1,
-                                 la = attributes(individual_data)$deployment.info$lat,
-                                 lo = attributes(individual_data)$deployment.info$lon,
-                                 VP.lat = lon,
-                                 VP.lon = lat,
-                                 method="all",
-                                 Outgoing = TRUE,
-                                 bound = FALSE,
-                                 plot = FALSE)
-
-  if(!has_locs) {
-    gundog_result <- gundog_result[,c("Timestamp", "DR.longitude", "DR.latitude",
-                                      "DR.distance.2D", "DR.distance.3D",
-                                      "DR.speed.2D", "DR.speed.3D")]
-    colnames(gundog_result) <- c("datetime", "pseudo_lon", "pseudo_lat", "pseudo_distance_2D",
-                                 "pseudo_distance_3D", "pseudo_speed_2D", "pseudo_speed_3D")
-  }else{
-    gundog_result <- gundog_result[,c("Timestamp", "DR.longitude.corr", "DR.latitude.corr",
-                                      "DR.distance.2D", "DR.distance.3D",
-                                      "DR.speed.2D", "DR.speed.3D")]
-    colnames(gundog_result) <- c("datetime", "pseudo_lon", "pseudo_lat", "pseudo_distance_2D",
-                                 "pseudo_distance_3D", "pseudo_speed_2D", "pseudo_speed_3D")
-  }
-
-  # merge
-  pseudo_tracks <- merge(individual_data, gundog_result, by="datetime")
-
-
-
-
-pseudo_tracks <- calculateTortuosity(data,
-                                     id.col = "ID",
-                                     lon.col = "lon",
-                                     lat.col = "lat",
-                                     datetime.col = "datetime",
-                                     window.size = 10,
-                                     metrics = "all",
-                                     time.window = 24,
-                                     min.points = 5)
-
-
-
-
-pseudo_tracks <- estimate3DPseudoTrack(data = processed_list[1],
-                                       id.metadata = animal_metadata,
-                                       dba.col = "vedba",
-                                       deploy.lon.col = "deploy_lon",
-                                       deploy.lat.col = "deploy_lat",
-                                       sampling.freq = 20,
-                                       speed.model = "DBA",
-                                       speed.coef = 1.0,
-                                       speed.intercept = 0.0,
-                                       fixed.speed = 1.0,
-                                       smooth.window = 5,
-                                       smooth.type = "median",
-                                       vpc.method = "linear",
-                                       vpc.freq = 60,
-                                       cores = 4)
+# reconstructTrack() reconstructs a 3D pseudo-track by dead reckoning: it integrates the heading + speed
+# that processTagData() already produced, attaches the measured depth as the vertical axis, and pulls the
+# accumulated drift back onto the position fixes via Verified Position Correction (VPC). The speed and
+# correction knobs live in reconstructTrackControl(); swimming speed is held constant by default (a
+# shape-faithful pseudo-track), taken from the paddle wheel ("paddle"), estimated from a VeDBA-based
+# activity model ("vedba", auto-calibrated from the deployment's own GPS fixes), or - for steep dives only -
+# from depth-rate and pitch ("depth_rate"). The VPC spreads drift by reckoned distance travelled (default),
+# and each position carries a 1-sigma uncertainty (pseudo_error). Deployment / pop-up coordinates come from
+# the tag metadata. It adds pseudo_lon / pseudo_lat / pseudo_depth / speed_dr / pseudo_error columns.
+pseudo_tracks <- reconstructTrack(data    = processed_list[1],
+                                  control = reconstructTrackControl(speed.method = "constant",
+                                                                    vpc.method   = "error_weighted"),
+                                  verbose = "detailed")
 
 pseudo_tracks <- as.data.frame(pseudo_tracks$PIN_01)
 p3 <- ggplot(pseudo_tracks, aes(x = pseudo_lon, y = pseudo_lat)) +
@@ -262,6 +196,34 @@ p3 <- ggplot(pseudo_tracks, aes(x = pseudo_lon, y = pseudo_lat)) +
 print(p3)
 
 
+# Summarise each reconstructed track into movement-path metrics - path length, net displacement, and a
+# family of tortuosity / straightness indices describing how convoluted the path is (a proxy for
+# behavioural mode: directed travel vs. area-restricted search). trackMetrics() reads reconstructTrack()'s
+# pseudo_lon / pseudo_lat automatically, and returns one summary row per animal.
+track_stats <- trackMetrics(pseudo_tracks,
+                            control = trackMetricsControl(metrics = "all", min.points = 5),
+                            verbose = "detailed")
+print(track_stats)
+
+
+# ---------------------------------------------------------------------------------------------------
+# Optional: hand the pseudo-track to a state-space model ---------------------------------------------
+# ---------------------------------------------------------------------------------------------------
+
+# A pseudo-track is a reconstruction, not a set of georeferenced observations. For analyses that need a
+# formally smoothed track with per-position credible intervals (e.g. utilisation distributions, behavioural
+# state estimation), delegate to a continuous-time state-space model. exportForSSM() formats the
+# reconstructed positions - thinned, with the reckoning uncertainty (pseudo_error) supplied as per-point
+# observation error - into the tidy frame that aniMotum / crawl expect. nautilus does not re-implement an
+# SSM smoother; it feeds these well-tested packages.
+ssm_input <- exportForSSM(pseudo_tracks, thin.minutes = 10)   # id / date / lc / lon / lat / x.sd / y.sd
+head(ssm_input)
+
+# Then, with aniMotum installed, fit a continuous-time random-walk track that reads the supplied per-point
+# errors (x.sd / y.sd) and returns a regularised path with credible intervals:
+#   fit <- aniMotum::fit_ssm(ssm_input, model = "crw", time.step = 2)   # 2-hour steps
+#   plot(fit, type = 2); aniMotum::grab(fit, "predicted")
+# (crawl users can project the coordinates and pass the metre-scale y.sd to crwMLE()'s error model.)
 
 
 ################################################################################

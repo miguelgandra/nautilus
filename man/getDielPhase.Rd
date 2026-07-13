@@ -16,8 +16,9 @@ will be used for all calculations.}
 
 \item{phases}{Integer indicating the number of diel phases to return (2, 3, or 4).}
 
-\item{solar.depth}{Numeric value indicating the angle of the sun below the horizon (in degrees).
-Passed to the \code{\link[suntools]{crepuscule}} function.}
+\item{solar.depth}{Numeric value indicating the angle of the sun below the horizon (in degrees) that
+defines twilight for the dawn/dusk phases: 6 (civil), 12 (nautical), or 18 (astronomical). Only used
+when \code{phases > 2}.}
 }
 \value{
 A factor indicating the diel phase.

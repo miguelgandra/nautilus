@@ -7,57 +7,76 @@
 getVideoMetadata(
   video.folders,
   video.format = "mp4",
-  tesseract.model = "cam",
-  validate.timestamps = TRUE,
-  max.validation.attempts = 6,
-  expected.gap.range = c(0, 60),
-  gap.tolerance = 2,
+  timestamp.source = c("auto", "filename", "ocr"),
+  cross.check = FALSE,
+  ocr = ocrControl(),
   use.parallel = TRUE,
-  n.cores = NULL
+  n.cores = NULL,
+  verbose = "detailed"
 )
 }
 \arguments{
 \item{video.folders}{Character vector. Paths to directories containing video files.}
 
-\item{video.format}{Character vector. Allowed video formats, such as "mp4" or "mov". Defaults to "mp4".}
+\item{video.format}{Character vector. Allowed video formats, \code{"mp4"} and/or \code{"mov"}. Defaults to \code{"mp4"}.}
 
-\item{tesseract.model}{Character string. Language or configuration used by the OCR engine for recognizing
-text in timestamp overlays. Defaults to "cam", indicating a predefined configuration for the target tag type.}
+\item{timestamp.source}{How to obtain each video's start time:
+\itemize{
+\item \code{"auto"} (default): use the file-name timestamp; fall back to OCR only for videos whose file
+name has none.
+\item \code{"filename"}: use the file-name timestamp only (no OCR); videos without one get \code{NA}.
+\item \code{"ocr"}: read every timestamp by OCR from the on-screen display, ignoring the file name.
+}}
 
-\item{validate.timestamps}{Logical. Whether to perform temporal validation using multiple frames. Defaults to TRUE.}
+\item{cross.check}{Logical. When \code{TRUE}, videos whose start time came from the file name are also read
+by OCR and the two are compared; disagreements beyond 2 seconds are flagged (see the \code{ocr_flag}
+output column). Adds OCR cost but validates the file-name timestamps. Defaults to \code{FALSE}.}
 
-\item{max.validation.attempts}{Integer. Maximum number of frame extractions to attempt for validation. Defaults to 6.}
+\item{ocr}{An \code{\link{ocrControl}} object (or a named list of its fields) bundling the OCR
+settings - the Tesseract model, the on-screen timestamp box geometry, and the frame-search depth.
+Only consulted when OCR is used. Defaults to \code{ocrControl()}.}
 
-\item{expected.gap.range}{Numeric vector of length 2. Expected range (in seconds) for gaps between video files. Defaults to c(10, 60).}
+\item{use.parallel}{Logical. Whether to process videos in parallel. Defaults to \code{TRUE}.}
 
-\item{gap.tolerance}{Numeric. Tolerance factor for gap validation (multiplier). Defaults to 2.0.}
+\item{n.cores}{Integer. Number of cores for parallel processing. If \code{NULL}, uses \code{detectCores() - 1}.}
 
-\item{use.parallel}{Logical. Whether to use parallel processing. Defaults to TRUE.}
-
-\item{n.cores}{Integer. Number of cores to use for parallel processing. If NULL, uses detectCores() - 1.}
+\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
 }
 \value{
-A data frame containing metadata for each video file with enhanced validation metrics.
+A data frame, one row per video, with columns: \code{ID}, \code{video} (file name), \code{start}/\code{end}
+(POSIXct, UTC), \code{duration} (seconds), \code{frame_rate} (fps), \code{file} (full path), and \code{timestamp_source}
+(\code{"filename"}, \code{"ocr"}, or \code{NA} when no timestamp could be obtained). When \code{cross.check = TRUE},
+three further columns are added: \code{ocr_start} (the OCR-read start time), \code{ocr_offset_s}
+(\code{start - ocr_start}, seconds) and \code{ocr_flag} (logical; \code{TRUE} when the two disagree by > 2 s).
 }
 \description{
-This function extracts key metadata from video files located within specified
-directories. The extracted metadata includes the start time, end time, duration,
-and frame rate of the videos. It is specifically designed to process videos
-from biologging tags that feature a black timestamp box positioned in the
-bottom-right corner of the frames.
+Extracts the recording start time, end time, duration and frame rate of every video file found in
+one or more directories, returning one row per video.
 
-The function extracts individual frames using FFMPEG and employs Optical
-Character Recognition (OCR) via the Tesseract engine to read the timestamps
-embedded in the video frames. FFMPEG is also used to retrieve video information
-such as frame rate and duration.
+The recording start time is taken, whenever possible, from the \strong{file name}: on-camera systems
+encode it as \code{YYYYMMDD-HHMMSS} or \code{YYMMDD-HHMMSS} (e.g. \code{CameraCMD71_Spot06-20190831-173658-...mp4}
+or \verb{230831-161949_CAM0bc99448_30.mp4}). File-name timestamps are exact, camera-agnostic and require
+no image processing, so they are the primary and default source.
 
-Because the timestamp box position is hardcoded and fixed, this function may
-not be suitable for videos from biologging tags with different configurations,
-timestamp placements, or video formats. Users should verify compatibility with
-their specific video data prior to use.
+For cameras whose file names carry no timestamp (e.g. MOBIUS units), the start time can instead be
+read by Optical Character Recognition (OCR, via the Tesseract engine) from the timestamp burned into
+the video's on-screen display. OCR is a \emph{secondary} source: it is used only as a fallback where the
+file name has no timestamp, or - with \code{cross.check = TRUE} - as an independent check on the file-name
+time. All OCR settings (model, the on-screen box location, etc.) are bundled in \code{\link{ocrControl}}.
 
-The function supports parallel processing to speed up metadata extraction from
-large datasets. It also implements improved validation strategies based on
-inter-video timing patterns, using gap-based checks to detect and correct
-timestamp inconsistencies.
+Duration and frame rate are always read with \code{ffprobe}; \code{ffmpeg} and the OCR packages are required
+only when OCR is actually used.
+}
+\examples{
+\dontrun{
+# One row per video; start times taken from the file names where present
+meta <- getVideoMetadata(c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02"))
+
+# Cross-check the file-name timestamps against OCR of the on-screen clock
+meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
+}
+
+}
+\seealso{
+\code{\link{ocrControl}}, \code{\link{saveUncertainTimestampFrames}}
 }

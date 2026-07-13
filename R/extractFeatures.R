@@ -25,10 +25,16 @@
 #' @param response.col (Optional) A character string specifying the column containing response labels.
 #' @param circular.variables Character vector specifying variables that should be treated as circular.
 #' @param response.aggregation Method to aggregate `response.col`: "majority" or "any".
-#' @param return.data Logical. If `TRUE`, returns processed data as a list.
-#' @param save.files Logical. If `TRUE`, saves processed data as separate RDS files.
-#' @param output.folder Directory where processed RDS files should be saved.
-#' @param output.suffix Character string to append to output filenames.
+#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
+#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
+#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
+#'   `return.data = FALSE` therefore requires an `output.dir`.
+#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
+#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
+#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
+#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
+#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
+#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
 #' @param n.cores Number of processor cores for parallel computation.
 #'
 #' @details
@@ -53,7 +59,19 @@
 #' - "depth_change_rate": Rate of depth changes
 #' - "depth_change_consistency": Consistency of depth changes
 #'
-#' @return A list of data frames with calculated features.
+#' @return If `return.data = TRUE`, a list of data frames with calculated features; if
+#'   `return.data = FALSE`, a character vector of the written `.rds` file paths.
+#' @examples
+#' # Minimal single deployment: one numeric sensor column sampled at 1 Hz. Pass a
+#' # named list of per-individual tables (a bare data.frame is read as columns).
+#' df <- data.frame(
+#'   ID = "shark01",
+#'   datetime = as.POSIXct("2024-05-30 12:00:00", tz = "UTC") + 0:19,
+#'   vedba = abs(sin(seq(0, 4, length.out = 20)))
+#' )
+#' # 5 s sliding-window mean and SD of VeDBA
+#' extractFeatures(list(shark01 = df), variables = "vedba",
+#'                 metrics = c("mean", "sd"), window.size = 5)
 #' @export
 
 extractFeatures <- function(data,
@@ -70,9 +88,9 @@ extractFeatures <- function(data,
                             response.aggregation = "majority",
                             circular.variables = c("heading", "roll"),
                             return.data = TRUE,
-                            save.files = FALSE,
-                            output.folder = NULL,
+                            output.dir = NULL,
                             output.suffix = NULL,
+                            compress = TRUE,
                             n.cores = 1) {
 
   ##############################################################################
@@ -81,25 +99,20 @@ extractFeatures <- function(data,
 
   start.time <- Sys.time()
   is_filepaths <- is.character(data)
+  .assert_nonempty(data, "data")             # loud failure on empty input (e.g. a typo'd list.files() -> character(0))
+  .assert_compress(compress)
 
-  # Check optional packages for specific metrics
+  # Check optional (Suggests) packages needed only by specific metrics
   optional_packages <- list(
     moments = c("skewness", "kurtosis"),
-    entropy = "entropy",
-    crayon = NULL  # For colored output
+    entropy = "entropy"
   )
 
   for (pkg in names(optional_packages)) {
     if (!requireNamespace(pkg, quietly = TRUE)) {
-      if (pkg == "crayon") {
-        # Crayon is optional for colored output
-        warning(paste("Package", pkg, "not available. Output will not be colored."), call. = FALSE)
-      } else {
-        # Check if any requested metrics need this package
-        needed_metrics <- optional_packages[[pkg]]
-        stop(paste("Package", pkg, "is required for metrics:",
-                   paste(needed_metrics, collapse = ", "), "but not installed."), call. = FALSE)
-      }
+      needed_metrics <- optional_packages[[pkg]]
+      stop(paste("Package", pkg, "is required for metrics:",
+                 paste(needed_metrics, collapse = ", "), "but not installed."), call. = FALSE)
     }
   }
 
@@ -112,11 +125,8 @@ extractFeatures <- function(data,
   }
 
   # Validate output parameters
-  if (!is.logical(save.files)) stop("`save.files` must be logical.", call. = FALSE)
   if (!is.logical(return.data)) stop("`return.data` must be logical.", call. = FALSE)
-  if (!save.files && !return.data) {
-    stop("Both 'save.files' and 'return.data' cannot be FALSE.", call. = FALSE)
-  }
+  .assert_output(return.data, output.dir)
 
   # Validate enhanced.features parameter
   if (!is.logical(enhanced.features)) {
@@ -206,16 +216,16 @@ extractFeatures <- function(data,
   # Process data ###############################################################
   ##############################################################################
 
-  # Calculate nº individuals
+  # Calculate no. individuals
   n_animals <- length(data)
 
   # Print verbose message
   cat(paste0(
-    crayon::bold("\n============= Extracting Data Features =============\n"),
+    cli::style_bold("\n============= Extracting Data Features =============\n"),
     "Processing ", nrow(parameter_grid), " features across ", n_animals,
     ifelse(n_animals == 1, " dataset", " datasets"),
     ifelse(enhanced.features, " (Enhanced Mode)", ""), "\n",
-    crayon::bold("====================================================\n\n")))
+    cli::style_bold("====================================================\n\n")))
 
   # Initialize parallel backend if needed
   if (n.cores > 1) {
@@ -228,6 +238,8 @@ extractFeatures <- function(data,
 
   # Initialize results
   if (return.data) data_processed <- vector("list", length = n_animals)
+  saved <- vector("list", length = n_animals)
+  ids <- character(n_animals)
 
   # Process each dataset
   for (i in 1:length(data)) {
@@ -245,9 +257,10 @@ extractFeatures <- function(data,
     }
 
     if (return.data) names(data_processed)[i] <- id
+    ids[i] <- id
 
     # print current ID
-    cat(crayon::blue$bold(sprintf("[%d/%d] %s\n", i, n_animals, id)))
+    cat(cli::style_bold(cli::col_blue(sprintf("[%d/%d] %s\n", i, n_animals, id))))
 
     # Convert to data.table
     if (!data.table::is.data.table(individual_data)) {
@@ -259,9 +272,14 @@ extractFeatures <- function(data,
     original_attributes <- attributes(individual_data)
     original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
 
-    # Calculate sampling frequency for this individual
-    sampling_freq <- original_attributes$processed.sampling.frequency
-    if (is.null(sampling_freq) || !is.numeric(sampling_freq) || sampling_freq <= 0) {
+    # Calculate sampling frequency for this individual: prefer the rate recorded in the consolidated
+    # metadata (set by processTagData), falling back to the legacy flat attribute, then to timestamps.
+    m <- tryCatch(.getMeta(individual_data), error = function(e) NULL)
+    cand <- c(m$sensors$sampling_hz_processed, m$sensors$sampling_hz_original,
+              original_attributes$processed.sampling.frequency)
+    cand <- cand[is.finite(cand) & cand > 0]
+    sampling_freq <- if (length(cand)) cand[1] else NA_real_
+    if (is.null(sampling_freq) || !is.numeric(sampling_freq) || !is.finite(sampling_freq) || sampling_freq <= 0) {
       if (nrow(individual_data) > 1) {
         time_diffs <- diff(as.numeric(individual_data[[datetime.col]]))
         sampling_freq <- 1 / median(time_diffs)
@@ -593,26 +611,8 @@ extractFeatures <- function(data,
     # Save processed data ######################################################
     ############################################################################
 
-    # save the processed data as an RDS file
-    if (save.files) {
-      if (is_filepaths) {
-        output_dir <- if (!is.null(output.folder)) output.folder else dirname(file_path)
-      } else {
-        output_dir <- if (!is.null(output.folder)) output.folder else "./"
-      }
-      if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
-
-      suffix <- ifelse(!is.null(output.suffix), output.suffix, "")
-      output_file <- file.path(output_dir, paste0(id, suffix, ".rds"))
-
-      cat("Saving file... ")
-      flush.console()
-      saveRDS(final_data, output_file)
-      cat("\r")
-      cat(rep(" ", getOption("width")-1))
-      cat("\r")
-      cat(sprintf("\u2713 Saved: %s\n", basename(output_file)))
-    }
+    # save the processed data as an RDS file (writing is triggered by a non-NULL output.dir)
+    saved[i] <- list(.saveOutput(final_data, id, output.dir = output.dir, output.suffix = output.suffix, compress = compress))
 
     # store data to list if return.data is TRUE
     if (return.data) {
@@ -639,11 +639,7 @@ extractFeatures <- function(data,
   cat(sprintf("\nTotal execution time: %.02f %s\n\n", as.numeric(time.taken), base::units(time.taken)))
 
   # return results
-  if (return.data) {
-    return(data_processed)
-  } else {
-    return(invisible(NULL)) # Return nothing if not returning data
-  }
+  .collectOutput(data_processed, saved, return.data, ids)
 }
 
 

@@ -44,3 +44,16 @@ The function scans the dataset(s) for each animal, checking whether each row's t
 specific events listed in the provided annotations data frame, marking rows that fall within the specified event or behavior
 periods as \code{1} and those outside the periods as \code{0}.
 }
+\examples{
+\dontrun{
+# 'data' is a list of per-individual data frames (e.g. processed tag data);
+# 'annotations' holds event windows scored from the tag's camera footage
+annotations <- data.frame(
+  ID    = c("shark01", "shark01"),
+  event = c("feeding", "social"),
+  start = as.POSIXct(c("2023-05-01 09:15:00", "2023-05-01 11:40:00"), tz = "UTC"),
+  end   = as.POSIXct(c("2023-05-01 09:18:00", "2023-05-01 11:42:00"), tz = "UTC"))
+annotated <- annotateData(data, annotations, id.col = "ID",
+                          datetime.col = "datetime", event.col = "event")
+}
+}

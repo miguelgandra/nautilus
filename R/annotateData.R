@@ -22,6 +22,18 @@
 #' @param selected.events A vector of event types to be annotated. If NULL (default), all events will be annotated.
 #'
 #' @return A list of data frames (one for each individual) with binary columns indicating the presence (1) or absence (0) of each specified event.
+#' @examples
+#' \dontrun{
+#' # 'data' is a list of per-individual data frames (e.g. processed tag data);
+#' # 'annotations' holds event windows scored from the tag's camera footage
+#' annotations <- data.frame(
+#'   ID    = c("shark01", "shark01"),
+#'   event = c("feeding", "social"),
+#'   start = as.POSIXct(c("2023-05-01 09:15:00", "2023-05-01 11:40:00"), tz = "UTC"),
+#'   end   = as.POSIXct(c("2023-05-01 09:18:00", "2023-05-01 11:42:00"), tz = "UTC"))
+#' annotated <- annotateData(data, annotations, id.col = "ID",
+#'                           datetime.col = "datetime", event.col = "event")
+#' }
 #' @export
 
 annotateData <- function(data,
@@ -93,7 +105,7 @@ annotateData <- function(data,
   ##############################################################################
 
   # print a message to the console
-  cat(crayon::bold("Processing Event Annotations\n"))
+  cat(cli::style_bold("Processing Event Annotations\n"))
 
   # get the unique event types from the annotations data
   unique_events <- unique(annotations[[event.col]])
@@ -163,7 +175,7 @@ annotateData <- function(data,
 
       # print the feedback message for the current individual and events added
       if (event_count > 0) {
-        cat(crayon::blue$bold(id), ": ", event_count,
+        cat(cli::style_bold(cli::col_blue(id)), ": ", event_count,
             " event", if (event_count != 1) "s" else "",
             " added for event '", event, "' (", total_rows,
             " rows)\n", sep = "")

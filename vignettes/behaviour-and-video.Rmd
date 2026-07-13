@@ -1,0 +1,255 @@
+---
+title: "Behaviour and Onboard Video"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{Behaviour and Onboard Video}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  eval     = FALSE
+)
+```
+
+There are two ways to know what a tagged animal was doing. The **sensors** tell you how it
+moved -- how hard it beat its tail, how it turned, whether it was in day or night. The
+**camera**, if the tag carried one, tells you what actually happened -- a feeding lunge, a
+social interaction, a cleaning station. This guide covers both, and the point where they
+meet: joining what the camera *saw* to what the sensors *felt* gives you labelled data, and
+labelled data is what turns a biologging dataset into a behavioural classifier.
+
+Both branches start from a processed `nautilus_tag`. If you do not have one yet, see
+`vignette("getting-started", package = "nautilus")`. As before, the chunks below are
+illustrative -- they show the real calls in order but are not executed here.
+
+# Part 1 -- Behaviour from the sensors
+
+## Diel phase
+
+Almost every behavioural question benefits from knowing whether a sample fell in day, night
+or twilight. `getDielPhase()` computes that from the timestamp and the deployment location
+using the NOAA solar-geometry equations (no geospatial system libraries required).
+
+```{r diel}
+library(nautilus)
+
+tag1  <- tags[[1]]                 # a single deployment from the processed list
+meta1 <- tagMetadata(tag1)
+coords <- matrix(c(meta1$deployment$lon, meta1$deployment$lat), ncol = 2)  # lon, lat
+
+tag1$diel <- getDielPhase(tag1$datetime, coords, phases = 3, solar.depth = 12)
+```
+
+`phases` chooses the resolution: `2` gives `day`/`night`, `3` adds a merged `crepuscule`, and
+`4` splits it into `dawn`/`day`/`dusk`/`night`. `solar.depth` sets the twilight definition --
+`6` (civil), `12` (nautical) or `18` (astronomical). It returns a plain factor the same
+length as the input, so you assign it straight onto a column. (Note the coordinate order is
+**longitude first, then latitude**.)
+
+## Tail-beat frequency
+
+How hard and how often an animal beats its tail is a direct readout of swimming effort and
+gait. `calculateTailBeats()` reads that rhythm straight from a band-passed acceleration
+channel.
+
+```{r tailbeats}
+tags <- calculateTailBeats(
+  tags,
+  method      = "peaks",   # per-beat detection (frequency + amplitude)
+  motion.col  = "sway",    # lateral axis for a laterally-swimming shark
+  min.freq.Hz = 0.1,
+  max.freq.Hz = 2.5        # sampling rate must exceed 2x this; >= 4x is comfortable
+)
+```
+
+The `"peaks"` method adds `tbf_hz` (per-beat frequency) and `tbf_amplitude` (a beat-effort
+proxy, in the units of the motion axis); `method = "wavelet"` tracks the strongest in-band
+oscillation through a Morlet wavelet transform and returns the same two on the same footing.
+It also adds `tbf_swimming`, but this is `NA` unless you supply a `min.amplitude` reference:
+whether an oscillation is active swimming rather than gliding (or, on a towed tag, flow and
+tether motion) cannot be told reliably from the sway signal alone, so the function reports the
+frequency and amplitude and leaves the behavioural call to you. The two methods fail in
+opposite directions -- peak detection can lock onto a harmonic and report a multiple of the
+true frequency, while the wavelet can be captured by a
+strong low-frequency component that peak detection ignores -- so where they agree, they are
+worth more than either alone.
+
+Two things govern the choice of axis and rate. Pick the axis the animal actually beats on:
+`"sway"` (lateral) for most sharks and teleosts, `"heave"` for animals that beat vertically
+(cetaceans, some rays) -- feeding `"surge"` or `"heave"` for a laterally-swimming fish can
+report double the true frequency, and the function warns when it detects this. And respect
+the Nyquist limit: you need at least twice `max.freq.Hz` to resolve the beat (the run aborts
+below that), and four times to be comfortable.
+
+## Windowed features for machine learning
+
+To classify behaviour you rarely feed raw samples to a model; you summarise short windows.
+`extractFeatures()` computes per-window statistics for any set of variables over a sliding or
+non-overlapping window.
+
+```{r features}
+feats <- extractFeatures(
+  tags,
+  variables   = c("vedba", "pitch", "odba"),
+  metrics     = c("mean", "sd", "max"),
+  window.size = 5            # seconds
+)
+```
+
+You must supply both `variables` and `metrics` (unless you pass a `parameter.grid` for
+per-feature window sizes). Beyond the linear statistics (`mean`, `sd`, `energy`, `entropy`,
+...), `enhanced.features = TRUE` unlocks a family of movement metrics -- heading change,
+circling, posture stability, activity index -- computed with proper circular statistics
+(needs the **circular** and **zoo** packages). Circular variables (by default `heading` and
+`roll`) are handled on the circle rather than as plain numbers. We return to the
+`response.col` argument -- the one that attaches a behavioural label -- in Part 3.
+
+# Part 2 -- Onboard video
+
+## Recovering each clip's timestamp
+
+Everything downstream depends on knowing exactly when each video frame was recorded, in
+sensor time. `getVideoMetadata()` recovers that **filename-first**: it reads the start time
+from the video's file name wherever the camera encodes one (exact, and independent of any
+on-screen clock), and falls back to reading the burned-in overlay clock by OCR only where the
+name carries no time.
+
+```{r video-metadata}
+vmeta <- getVideoMetadata(
+  "./videos",
+  timestamp.source = "auto",   # file name first, OCR only where needed
+  cross.check      = TRUE      # also OCR the overlay and flag disagreements > 2 s
+)
+```
+
+The result is one row per clip with `start`, `end`, `duration`, `frame_rate` and a
+`timestamp_source` column; `cross.check = TRUE` adds an `ocr_flag` that marks any clip whose
+file-name time and on-screen time disagree. Feed the result to
+`saveUncertainTimestampFrames()` to dump the timestamp crops for every clip that is
+OCR-sourced, missing, or flagged, so you can confirm them by eye:
+
+```{r review-frames}
+vmeta <- saveUncertainTimestampFrames(vmeta, output.dir = "./timestamp-review")
+```
+
+Then correct only the few clips that are genuinely wrong -- typically a camera with a mis-set
+clock -- by overwriting `start` (recompute `end` from `duration`):
+
+```{r override}
+i <- which(vmeta$video == "230831-161949_CAM0bc99448_30.mp4")
+vmeta$start[i] <- as.POSIXct("2023-08-31 16:19:49", tz = "UTC")
+vmeta$end[i]   <- vmeta$start[i] + vmeta$duration[i]
+```
+
+**Dependencies and the OCR model.** `ffprobe` (from FFmpeg) is always needed for duration and
+frame rate; a pure filename run needs nothing more. OCR additionally uses `ffmpeg` and the
+**tesseract** and **magick** packages, plus a fine-tuned camera-tag OCR model (~11 MB) that is
+downloaded on first use and cached -- run `installCamOcrModel()` to pre-fetch it for offline
+work, and it falls back to Tesseract's generic model if unobtainable. The OCR settings (the
+on-screen-clock box geometry, search depth) live in `ocrControl()`; the defaults target a 4K
+camera's bottom-right overlay, so a different camera needs a tuned
+`ocr = ocrControl(box = ..., frame.height = ...)`.
+
+## Re-encoding for archival (optional)
+
+Raw camera-tag footage is bulky. `reencodeVideos()` batch-transcodes a folder to
+space-efficient HEVC (H.265) via FFmpeg -- useful before archiving or shipping clips.
+
+```{r reencode}
+reencodeVideos("./videos/raw", output.dir = "./videos/hevc")
+```
+
+It picks a hardware encoder when one is available and strips audio for size. (If you write
+back to the same folder, set a `file.suffix` so an `.mp4` input is not skipped for having the
+same output path.)
+
+## Jumping to a moment, and overlaying the sensors
+
+To inspect a specific instant -- say a manoeuvre surfaced by `findValidationSegments()` (see
+`vignette("movement-tracks")`) -- `launchVideo()` opens the covering clip in VLC, seeked to
+that exact time:
+
+```{r launch}
+launchVideo("PIN_CAM_01", as.POSIXct("2023-08-31 17:40:00", tz = "UTC"), vmeta)
+```
+
+And to see the sensors and the footage together, `renderOverlayVideo()` composites a live,
+time-synchronised sensor dashboard beside the video:
+
+```{r overlay}
+renderOverlayVideo(
+  vmeta$file[1], tag1, "./overlay/PIN_CAM_01.mp4",
+  dashboard   = "general",       # heading/pitch/roll dials + scrolling depth/VeDBA traces
+  video.start = vmeta$start[1]   # the sync anchor, from getVideoMetadata
+)
+```
+
+The `"general"` dashboard is for presentation; `"validation"` draws a large 3-D attitude
+indicator (heading deliberately omitted, since roll -- not heading -- is the cue for a
+handedness check) to judge an axis mapping by eye; and `"validation-compare"` shows competing
+mappings side by side. `renderOverlayVideo()` needs FFmpeg on the PATH and the **av** package,
+and takes a **single** deployment's data -- pass one element (`tags[[1]]`), not the whole
+list.
+
+# Part 3 -- Where the two branches meet
+
+Now the payoff. You have behavioural events scored from the footage -- a data frame of
+`start`/`end` windows per animal, each tagged with an event type. `annotateData()` joins those
+onto the sensor data, adding a binary column (`1` inside the window, `0` outside) for each
+event type:
+
+```{r annotate}
+tags <- annotateData(
+  tags,
+  annotations     = annotations,   # id / event / start / end, from your video review
+  event.col       = "category",
+  selected.events = c("feeding")
+)
+```
+
+Because unreviewed stretches (night, poor visibility) carry no annotations, a raw `0` there
+would be a false negative. `filterVideoPeriod()` restricts the sensor data to the intervals
+that were actually filmed -- and, optionally, to the intervals you actually reviewed -- so the
+labels mean what you think they mean:
+
+```{r filter-period}
+tags <- filterVideoPeriod(
+  tags,
+  video.metadata       = vmeta,
+  annotation.intervals = annotation_intervals   # optional: only the reviewed windows
+)
+```
+
+With clean labels on the sensor stream, `extractFeatures()` closes the loop: point
+`response.col` at the label column and it carries the label through to each window (aggregated
+by majority vote), producing a feature table ready to train a classifier.
+
+```{r labelled-features}
+model_data <- extractFeatures(
+  tags,
+  variables    = c("vedba", "pitch", "roll"),
+  metrics      = c("mean", "sd"),
+  window.size  = 5,
+  response.col = "feeding"       # the label added by annotateData()
+)
+```
+
+From here you are in ordinary supervised-learning territory -- a random forest, say -- with
+each row a window of sensor features and a behaviour label validated against video.
+
+## Where to go next
+
+- **Getting Started** -- the pipeline that produces the processed tag:
+  `vignette("getting-started", package = "nautilus")`.
+- **Movement tracks** -- the fourth branch, and the source of `findValidationSegments()`:
+  `vignette("movement-tracks", package = "nautilus")`.
+- **Function reference** -- `?calculateTailBeats`, `?extractFeatures`, `?getVideoMetadata`,
+  `?annotateData`, `?renderOverlayVideo`, `?ocrControl`.
+- **Questions and bugs** -- <https://github.com/miguelgandra/nautilus/issues>.

@@ -2,10 +2,7 @@
 % Please edit documentation in R/launchVideo.R
 \name{launchVideo}
 \alias{launchVideo}
-\title{This function searches for the video file that contains the given datetime
-within its start and end times. If a matching video is found, it closes any
-existing VLC instances (by default) and opens the video using VLC at the time
-corresponding to the given datetime.}
+\title{Open camera-tag video at a given datetime}
 \usage{
 launchVideo(
   id,
@@ -16,29 +13,32 @@ launchVideo(
 )
 }
 \arguments{
-\item{id}{A \code{character} or \code{factor} representing the unique ID
-for the animal associated with the video. This ID is used to search for the
-corresponding video entry in the metadata.}
+\item{id}{Character/factor scalar: the individual whose video to open (matched in \code{video.metadata}).}
 
-\item{datetime}{A \code{POSIXct} object representing the datetime to find
-within the video metadata.}
+\item{datetime}{POSIXct: the instant to seek to.}
 
-\item{video.metadata}{A \code{data.frame} containing the metadata for each
-video, as returned by \code{getVideoMetadata}.}
+\item{video.metadata}{A data.frame of video segments with columns \code{ID}, \code{start}, \code{end}, \code{video} and
+\code{file}, as returned by \link{getVideoMetadata}.}
 
-\item{vlc.path}{(Optional) The full path to the VLC application. If not
-provided, a default path will be used based on the user's operating system.}
+\item{vlc.path}{Optional path to the VLC executable. If \code{NULL}, an OS-specific default is used.}
 
-\item{close.existing}{(Optional) Logical value indicating whether to close
-existing VLC instances before opening the new video. Defaults to TRUE.}
+\item{close.existing}{Logical. Close any running VLC instance first. Default \code{TRUE}.}
 }
 \value{
-The function opens the corresponding video at the specified datetime
-using VLC. If no video matches the datetime, an appropriate message is printed.
+\code{TRUE} invisibly if a video was opened, otherwise \code{FALSE}.
 }
 \description{
-This function searches for the video file that contains the given datetime
-within its start and end times. If a matching video is found, it closes any
-existing VLC instances (by default) and opens the video using VLC at the time
-corresponding to the given datetime.
+Finds the video segment for an individual that contains a given datetime and opens it in VLC, seeked
+to that instant - convenient for jumping straight to a moment of interest (e.g. a validation segment
+from \link{findValidationSegments}). By default any running VLC instance is closed first.
+}
+\examples{
+\dontrun{
+meta <- getVideoMetadata("./videos/PIN_CAM_01")
+# jump straight to a moment of interest in VLC
+launchVideo("PIN_CAM_01", as.POSIXct("2019-08-31 17:40:00", tz = "UTC"), meta)
+}
+}
+\seealso{
+\link{getVideoMetadata}, \link{findValidationSegments}.
 }

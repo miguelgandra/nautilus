@@ -13,14 +13,18 @@ filterDeploymentData(
   depth.threshold = 3.5,
   variance.threshold = 6,
   max.changepoints = 6,
-  display.plots = FALSE,
-  save.plots = TRUE,
+  temp.col = "temp",
+  use.temperature = TRUE,
+  min.deployment.hours = 0.25,
+  plot = FALSE,
+  plot.file = NULL,
   plot.metrics = NULL,
   plot.metrics.labels = NULL,
   return.data = TRUE,
-  save.files = FALSE,
-  output.folder = NULL,
-  output.suffix = NULL
+  output.dir = NULL,
+  output.suffix = NULL,
+  compress = TRUE,
+  verbose = "detailed"
 )
 }
 \arguments{
@@ -38,7 +42,8 @@ This column must be in "POSIXct" format for proper processing (default is "datet
 \item{depth.col}{A string specifying the name of the column that contains depth measurements. Depth data is
 used for detecting deployment periods (default is "depth").}
 
-\item{custom.deployment.times}{An optional \code{data.frame} or \code{data.table} with three columns: \code{ID}, \code{start}, and \code{end}.
+\item{custom.deployment.times}{An optional \code{data.frame} or \code{data.table} with three columns: the ID column
+(named as given by \code{id.col}, default "ID"), \code{start}, and \code{end}.
 This allows users to manually specify deployment periods for each individual, overriding or supplementing the depth-based detection.
 \code{start} and \code{end} must be in "POSIXct" format. Users can provide:
 \itemize{
@@ -64,57 +69,72 @@ in partial custom specifications.}
 This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored
 for fully specified custom deployment times but used when estimating missing boundaries in partial custom specifications.}
 
-\item{display.plots}{A logical value indicating whether the diagnostic plots should be displayed.
-These plots generate diagnostic visuals showing depth and additional metrics,
-assisting users in reviewing the extracted deployment periods.
-If set to \code{TRUE}, the plots will be shown in the active graphics device.
+\item{temp.col}{A string giving the temperature column used to corroborate the depth-based detection
+(default "temp"). If the column is absent, temperature corroboration is silently skipped.}
+
+\item{use.temperature}{Logical. If \code{TRUE} (default), temperature is used as a \strong{secondary, strictly
+additive} signal in the fully-automated path: it can rescue a deployment that stayed too shallow for
+the depth criterion to catch (e.g. prolonged surface feeding) and extend the window across shallow
+in-water edges, but it can never shrink the depth-based result. It is gated on a clear, sustained
+difference between the out-of-water (boat/air) and in-water temperature regimes, so a flat or
+uninformative temperature trace leaves the depth result unchanged. Depth remains the primary signal;
+the accelerometer/gyroscope/magnetometer are intentionally \strong{not} used, as the pre-attachment vessel
+and diver phases generate high motion that would confound a motion-based detector. Ignored for custom
+deployment times.}
+
+\item{min.deployment.hours}{Numeric. Minimum duration (hours) for an automatically detected
+deployment window; shorter windows (e.g. a transient depth spike or a brief diver test-dive) are
+treated as "no deployment" and discarded (default 0.25). Ignored for custom deployment times.}
+
+\item{plot}{A logical value indicating whether the diagnostic plots should be drawn to the
+active graphics device. These plots generate diagnostic visuals showing depth and additional
+metrics, assisting users in reviewing the extracted deployment periods.
 Note: If set to \code{TRUE}, the code can take longer to run due to the delay in plotting extensive data series to the screen.
-If set to \code{FALSE}, no plots will be displayed, even if they are saved.
 Default is \code{FALSE}.}
 
-\item{save.plots}{A logical value indicating whether the diagnostic plots should be saved.
-If set to \code{TRUE}, the plots will be recorded and stored in the \code{diagnostic_plots} list.
-The saved plots can later be displayed using \code{replayPlot()}.
-These plots generate diagnostic visuals showing depth and additional metrics, assisting users in reviewing the extracted deployment periods.
-If set to \code{FALSE}, no plots will be saved.
-Default is \code{FALSE}.}
+\item{plot.file}{Character. Path to a single multi-page PDF in which to write the diagnostic
+panels (one page per individual). The parent directory must already exist (a missing directory is
+an error, not silently created). Must end in \code{.pdf}. If \code{NULL} (default), no file is written.
+Independent of \code{plot}: set \code{plot.file} to save without displaying, or set both to do both.}
 
 \item{plot.metrics}{An optional character vector of column names indicating additional metrics
 (e.g., acceleration or temperature) to include in the visualization. These metrics are plotted
 alongside the depth data to aid in visually reviewing the deployment period assignments.
-Required only if \code{display.plots} or \code{save.plots} is \code{TRUE}. If NULL (default) and plots are requested,
-defaults to \code{c("temp", "ax")}. Must be length 2 if provided.}
+Required only if \code{plot} is \code{TRUE} or \code{plot.file} is set. If NULL (default) and plots are requested,
+defaults to \code{c("temp", "ax")}. Must be length 2 if provided. These are cosmetic, not required for
+detection: a metric absent from a dataset (e.g. \code{temp} when only an electronics temperature sensor
+was available) is simply omitted from that individual's panel rather than causing an error.}
 
-\item{plot.metrics.labels}{An optional character vector specifying custom titles for the metrics
-plotted in the output. If NULL (default), the column names provided in \code{plot.metrics} will be
-used as labels. Must be NULL if \code{plot.metrics} is NULL, and must be length 2 if provided.
-Ignored unless plots are being generated (\code{display.plots} or \code{save.plots} is \code{TRUE}).}
+\item{plot.metrics.labels}{An optional character vector of axis labels for the two \code{plot.metrics}.
+If NULL (default), labels are generated automatically as "Name (unit)" for recognised nautilus
+channels (e.g. "Temperature (°C)", "Acc X (g)", "Depth (m)"), falling back to the raw column
+name for any unrecognised or user-derived column. Provide this only to override the automatic
+labels (e.g. for bespoke columns); must be length 2 if given. Ignored unless plots are generated.}
 
-\item{return.data}{Logical. Controls whether the function returns the processed data
-as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
-memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
-(or both). Default is \code{TRUE}.}
+\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
+function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
+step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
+\code{return.data = FALSE} therefore requires an \code{output.dir}.}
 
-\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
-during the iteration process. This ensures that progress is saved incrementally, which can
-help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
+a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
 
-\item{output.folder}{Character. Path to the folder where the processed files will be saved.
-This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
-in the data folder corresponding to each ID. Default is \code{NULL}.}
+\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
+to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
 
-\item{output.suffix}{Character. A suffix to append to the file name when saving.
-This parameter is only used if \code{save.files = TRUE}.}
+\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
+(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+
+\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet" (warnings and errors only), \code{TRUE}/\code{1}/"normal"
+(header, one line per individual, final summary), or \code{2}/"detailed" (the default; adds low-level
+per-step diagnostics). Defaults to \code{"detailed"}.}
 }
 \value{
-The function always returns a consistent named list structure when there are results:
-\itemize{
-\item If both data and plots are available: Returns a list with \code{filtered_data} and \code{plots} elements
-\item If only data is available: Returns a list with just the \code{filtered_data} element
-\item If only plots are available: Returns a list with just the \code{plots} element
-\item If nothing is available (both \code{return.data} and \code{save.plots} are FALSE): Returns \code{NULL} invisibly
-}
-Note that data will be saved to disk if \code{save.files = TRUE}, regardless of the return value.
+A named list with a single \code{filtered_data} element: when \code{return.data = TRUE}, a named
+list of filtered \code{data.table}s (one per successfully filtered individual); when \code{return.data = FALSE},
+a character vector of the written \code{.rds} file paths. Diagnostic plots are emitted as a side effect
+(drawn to the active device when \code{plot = TRUE} and/or written to the multi-page PDF \code{plot.file}), not
+returned. Data is written to disk whenever \code{output.dir} is set, regardless of the return value.
 }
 \description{
 This function identifies and extracts actual deployment periods from high-resolution biologging data.
@@ -134,6 +154,17 @@ preventing memory bottlenecks when handling large datasets.
 The function also provides robust options to visualize the identified deployment periods
 with custom plot options, including additional behavioral metrics, to aid in visual review and validation.
 }
+\examples{
+\dontrun{
+imported <- importTagData(folders, id.metadata = meta)
+# Trim each record to the on-animal window detected from the depth trace:
+deployed <- filterDeploymentData(imported,
+                                 depth.threshold      = 3.5,
+                                 min.deployment.hours = 0.25,
+                                 plot                 = TRUE,
+                                 plot.metrics         = c("temp", "az"))
+}
+}
 \seealso{
-\link{importTagData},, \link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
+\link{importTagData}, \link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
 }

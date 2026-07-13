@@ -1,0 +1,271 @@
+---
+title: "Reconstructing Movement Tracks"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{Reconstructing Movement Tracks}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  eval     = FALSE
+)
+```
+
+An animal-borne tag rarely knows where it is. Satellite fixes arrive only when the
+animal surfaces -- minutes or hours apart, and never during a dive. Between those fixes,
+though, the tag *does* know which way the animal is pointing and how fast it is moving. The
+movement-tracks branch turns that into a continuous path: it **dead-reckons** a fine-scale
+pseudo-track from heading, speed and depth, pulls the accumulated drift back onto the known
+fixes, and -- most importantly -- lets you **measure how far to trust the result** before
+you use it.
+
+This guide covers that branch end to end. It assumes you already have a processed
+`nautilus_tag`; if not, start with `vignette("getting-started", package = "nautilus")`,
+which walks the mandatory pipeline up to `processTagData()`.
+
+The code below is illustrative: it shows the real calls in order, but the chunks are not
+executed here because reconstructing a track needs your own processed deployment.
+
+## What you need, and the one thing to check first
+
+Track reconstruction is a *pure integrator*. It consumes what `processTagData()` already
+produced -- a per-sample `heading`, `pitch`, a swimming-speed channel, and `depth` -- and
+turns them into positions. It does not re-estimate orientation, so the track is **only as
+good as the heading that feeds it**.
+
+That makes one upstream step non-negotiable: **calibrate the magnetometer first.** An
+uncalibrated hard-iron offset is a roughly constant heading bias, and a constant heading
+bias compounds into ever-growing positional drift. `reconstructTrack()` will warn loudly if
+it sees an uncalibrated magnetometer, but the fix belongs upstream -- run
+`calibrateMagnetometer()` (ideally with a dedicated calibration recording) and confirm the
+status on a deployment (`tagMetadata(tags[[1]])$mag_calibration$status`) before reconstructing.
+
+You also need **known positions** to anchor to. These live in the tag's canonical position
+record: the deployment origin, any FastGPS/Argos fixes recorded at the surface, and the
+pop-up location. `reconstructTrack()` reads them automatically.
+
+## 1. Make sure the fixes are clean
+
+Surface fixes are noisy. A single Fastloc fix with a bad fix geometry can sit tens of
+kilometres off the real track, and if you anchor to it, the whole reconstruction bends
+toward that error. Screening the fixes is therefore essential -- but it is a **data-quality
+step, not a track step**, so it belongs in the clean / quality-control phase alongside the
+sensor checks (see `vignette("getting-started")`). If you followed that pipeline, your
+position record is already vetted and you can go straight to reconstruction.
+
+To run or tune it here, `filterLocations()` screens the tag's GPS/Argos fixes and **removes**
+any that imply an impossible swimming speed, were computed from too few satellites, or (as a
+gross-error bound) sit implausibly far from the deployment. It uses the neighbour-consistency
+"root" test of Freitas et al. (2008): a fix is a spike only when it implies an impossible
+speed to *both* its neighbours, so a single genuinely fast segment is kept. Only the
+automatically-acquired FastGPS/Argos fixes are removed -- user-entered positions and the
+deploy/pop-up anchors are trusted and kept. All three checks are opt-in.
+
+```{r filter-locations}
+library(nautilus)
+
+# `tags` is the processed object. Deployment coordinates for the (optional) distance check are
+# taken from each tag's metadata; pass id.metadata = meta only to override or cross-check them.
+tags <- filterLocations(
+  tags,
+  max.speed.kmh  = 10,     # reject fixes implying > 10 km/h to BOTH neighbours
+  min.satellites = 4,      # drop Fastloc fixes computed from < 4 satellites
+  plot           = FALSE   # set TRUE for a diagnostic map (coastline needs maps/mapdata)
+)
+```
+
+Thresholds are species-specific: the 10 km/h above is a conservative cruising cap for a whale
+shark. The distance check (`max.distance.km`) is off by default -- enable it only as a loose
+bound on decoding errors, well beyond the animal's real range, since anchored to the
+deployment it will otherwise clip genuine long-range displacement. The speed and distance
+checks need the **geosphere** package.
+
+## 2. Dead-reckon the track
+
+`reconstructTrack()` integrates heading and speed forward, step by step, on a spherical
+Earth, attaches the measured depth as the vertical axis, and then applies **Verified
+Position Correction (VPC)** to redistribute the reckoning drift so the path lands on each
+known fix. All of its behaviour is grouped in `reconstructTrackControl()`.
+
+```{r reconstruct}
+tracks <- reconstructTrack(
+  tags,
+  control = reconstructTrackControl(
+    speed.method = "paddle",         # where swimming speed comes from
+    vpc.method   = "error_weighted"  # how drift is reconciled with the fixes
+  )
+)
+```
+
+The result is a named list, one element per deployment, with `pseudo_lon`, `pseudo_lat`,
+`pseudo_depth`, `speed_dr` (the speed actually used) and `pseudo_error` (a per-sample
+1-sigma positional uncertainty, in metres) added to each object.
+
+**Choosing a speed method.** Heading sets the *shape* of the track; speed sets its *scale*.
+`reconstructTrackControl(speed.method = ...)` offers four sources:
+
+- `"paddle"` -- the measured paddle-wheel speed. The natural choice for PILOT tags that
+  carry a paddle wheel.
+- `"vedba"` -- speed inferred from a VeDBA activity model, auto-calibrated from the
+  deployment's own GPS fixes when `vedba.model = NULL`.
+- `"depth_rate"` -- speed from dive geometry (vertical velocity and pitch); trusted only on
+  steep segments (`|pitch| >= depth.rate.min.pitch`, default 45 degrees) and back-filled
+  with a constant elsewhere.
+- `"constant"` -- a single fixed speed (`constant.speed`, default 0.5 m/s). Produces a
+  *shape-faithful* pseudo-track when no speed sensor is trustworthy, and is the fallback
+  whenever any other method returns a non-finite value.
+
+**Choosing a VPC method.** `"error_weighted"` (the default) reconciles the reckoned path
+with each fix using a Kalman-style gain based on the fix's own error radius, so a precise
+FastGPS fix pulls the track hard while a coarse Argos fix barely nudges it. `"linear"`
+forces the path exactly through every fix. `"scale_rotate"` applies a single scale-and-rotate
+per segment -- best when the drift is *systematic* (a mis-scaled speed or a constant heading
+bias). `"none"` returns the uncorrected reckoning.
+
+**The reconstructability gate.** For deployments with *no interior fixes* -- anchored only by
+the deployment and pop-up -- the shape of the track is essentially unconstrained, so
+`reconstructTrack()` reports a soft reliability check. It computes *directedness* (net
+start-to-end displacement divided by the reckoned path length) and, when it falls below
+`reconstructability.min` (default 0.1), warns that the reconstruction is weakly supported.
+It never aborts -- a directed track is still returned -- but treat a flagged track with
+caution. This is a triage heuristic, not a verdict; where you *do* have interior fixes, the
+next step measures accuracy directly.
+
+## 3. Validate before you trust it
+
+A pseudo-track always looks plausible -- it is a smooth line through your fixes. The question
+is how far it strays from the truth *between* them, and the honest answer comes from
+`crossValidateTrack()`. It performs leave-one-out cross-validation: it withholds each genuine
+fix in turn, reconstructs the track from the remaining anchors (so neither the VPC nor the
+VeDBA calibration ever sees the withheld fix), and measures the distance from the
+reconstructed position to the true one.
+
+```{r cross-validate}
+cv <- crossValidateTrack(
+  tags,                                # the processed object, NOT the reconstructed track
+  control = reconstructTrackControl(speed.method = "paddle", vpc.method = "error_weighted")
+)
+```
+
+Pass `crossValidateTrack()` the **processed object** and the **same control settings** whose
+accuracy you want to assess -- it re-runs the reconstruction internally. The result is one
+row per withheld fix:
+
+| column | meaning |
+|---|---|
+| `error_m` | great-circle distance between reconstructed and true position |
+| `gap_h` | hours to the nearest *retained* fix |
+| `interpolated` | `TRUE` if retained fixes bracket the withheld one, `FALSE` if extrapolated |
+| `fix_radius_m` | the withheld fix's own measurement radius (a floor on achievable error) |
+| `speed_method`, `vpc_method` | the settings used, so you can stack and compare runs |
+
+The most useful view is `error_m` against `gap_h`. If error grows roughly linearly with the
+gap, the slope is an **empirical drift rate in metres per hour** -- divide it by 3600 to get
+a `drift.rate` (m/s) you can feed back into `reconstructTrackControl()` so the reported
+`pseudo_error` reflects your deployment's real drift. `crossValidateTrack()` prints the
+median and 90th-percentile error and that empirical drift in its summary, and `plot = TRUE`
+draws the error-versus-gap scatter and an error distribution.
+
+One honest caveat, stated plainly in the function's own documentation: a held-out error
+**conflates** heading error, speed error and unmodelled current. It tells you the net
+accuracy of the whole pipeline, not which component failed. To isolate the heading itself,
+compare the magnetometer against the geomagnetic model and the gyroscope, and use the next
+tool to spot-check orientation against video.
+
+### Sanity-checking the heading against video
+
+If your tag carried a camera, you can check the heading that drives the track at the moments
+it matters most. `findValidationSegments()` scans the processed data for the clearest
+manoeuvres -- the sharpest turns, strongest rolls and steepest dives -- and returns short
+time windows to inspect against the synchronised footage.
+
+```{r validation-segments}
+segs <- findValidationSegments(tags, types = c("turn", "roll", "dive"), n = 5)
+# each row is a [start, end] window around a peak manoeuvre; open the video there
+```
+
+It returns the top `n` non-overlapping windows per manoeuvre type per animal, each with a
+`peak_time`, an interpretable `value` and its `unit`. This validates the *orientation* (does
+the computed turn match the observed one?), complementing the *positional* accuracy that
+`crossValidateTrack()` measures.
+
+## 4. Summarise the path
+
+Once you trust a track, `trackMetrics()` reduces each one to a single row of trajectory
+metrics -- path length, net displacement, and a family of tortuosity and straightness
+indices that describe how convoluted the path is (a common proxy for behavioural mode:
+directed travel versus area-restricted search).
+
+```{r track-metrics}
+metrics <- trackMetrics(
+  tracks,                                              # the reconstructed track
+  control = trackMetricsControl(metrics = "all", min.points = 5)
+)
+```
+
+With `lon.col`/`lat.col` left `NULL`, `trackMetrics()` automatically uses `reconstructTrack()`'s
+`pseudo_lon`/`pseudo_lat`. It returns `Total_distance_km` and `Net_displacement_km` alongside
+`Path_ratio`, `Straightness` (net / total), `Sinuosity` (the Bovet & Benhamou index),
+`Fractal_dimension`, `Mean_turning_angle`, and rolling `Hourly_tortuosity` /
+`Daily_tortuosity` (window sizes set on the control). Metrics a track is too short to support
+are returned as `NA` rather than guessed.
+
+## 5. Map it
+
+`plotTracks()` draws a per-animal grid overlaying the surface fixes, the deployment and pop-up
+anchors, and the reconstructed pseudo-track.
+
+```{r plot-tracks}
+plotTracks(tracks, color.by = "depth")
+```
+
+FastGPS/Argos/user fixes, the deploy and pop-up anchors, and the pseudo-track are drawn in
+distinct styles, with the track's start and end marked. Crucially, the track carries its
+**uncertainty**: with `show.uncertainty = TRUE` (the default) a translucent corridor is drawn
+from `pseudo_error`, so a segment that passes close to a fix reads tighter than one that has
+drifted mid-gap; and `color.by = "depth"` (or `"speed"`) colours the track by the reconstructed
+depth or speed on a shared scale. The land outline is a lightweight optional layer (needs
+**maps**/**mapdata**, silently skipped if absent -- no tile server or network); set
+`show.bathymetry = TRUE` to overlay depth contours via **marmap**.
+
+## 6. Hand off to a state-space model
+
+A pseudo-track is a reconstruction, not a set of georeferenced observations. For analyses
+that need a formally smoothed track with per-position credible intervals -- utilisation
+distributions, behavioural-state estimation -- delegate to a continuous-time state-space
+model. `nautilus` does not re-implement an SSM smoother; it formats the track for the
+well-tested packages that do.
+
+```{r export-ssm}
+ssm_input <- exportForSSM(tracks, thin.minutes = 10)
+# columns: id / date / lc / lon / lat / x.sd / y.sd
+```
+
+`exportForSSM()` thins the dense track to one position per `thin.minutes` and passes the
+reckoning uncertainty (`pseudo_error`) through as per-point observation error in the `x.sd` /
+`y.sd` columns (in metres) that **aniMotum** (>= 1.2) expects. With aniMotum installed:
+
+```{r animotum, eval = FALSE}
+fit <- aniMotum::fit_ssm(ssm_input, model = "crw", time.step = 2)  # 2-hour steps
+aniMotum::grab(fit, "predicted")
+```
+
+crawl users can project the coordinates and pass the metre-scale `y.sd` to `crwMLE()`'s error
+model.
+
+## Where to go next
+
+- **Getting Started** -- the mandatory pipeline that produces the processed tag this guide
+  starts from: `vignette("getting-started", package = "nautilus")`.
+- **Function reference** -- `?reconstructTrack`, `?reconstructTrackControl`,
+  `?crossValidateTrack`, `?trackMetrics`, `?exportForSSM`.
+- **Calibration** -- because the track is only as good as its heading:
+  `?calibrateMagnetometer`.
+- **Questions and bugs** -- <https://github.com/miguelgandra/nautilus/issues>.

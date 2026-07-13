@@ -11,11 +11,15 @@ regularizeTimeSeries(
   time.threshold = NULL,
   gap.threshold = 5,
   interpolation.method = "linear",
+  plot = FALSE,
+  plot.file = NULL,
+  review.thresholds = NULL,
+  force.plots = FALSE,
   return.data = TRUE,
-  save.files = FALSE,
-  output.folder = NULL,
+  output.dir = NULL,
   output.suffix = NULL,
-  verbose = TRUE
+  compress = TRUE,
+  verbose = "detailed"
 )
 }
 \arguments{
@@ -47,26 +51,49 @@ interpolation. Default is 5 seconds.}
 \item "locf" - Last observation carried forward via \code{zoo::na.locf}
 }}
 
-\item{return.data}{Logical. Return processed data in memory? If FALSE and
-\code{save.files = FALSE}, issues warning. Default TRUE.}
+\item{plot}{Logical. If \code{TRUE}, draw the diagnostic report (see \code{plot.file}) to the active
+graphics device. Default \code{FALSE}.}
 
-\item{save.files}{Logical. Save processed data as RDS files? Default FALSE.}
+\item{plot.file}{Character. Path to a single multi-page PDF for the diagnostic report. The report
+is a two-level triage: a \strong{global summary page} (a worst-first table of all deployments with
+their status and key regularization metrics) followed by \strong{detailed pages only for deployments
+that exceed the review thresholds} (regularization impact, gap diagnostics, an annotated
+coverage strip, and a zoom on the most severe event). Healthy deployments get no detailed page.
+The parent directory must already exist; must end in \code{.pdf}. If \code{NULL} (default), no file is
+written. Independent of \code{plot}. Regardless of plotting, the per-deployment status and key
+coverage statistics are always recorded in the processing audit trail.}
 
-\item{output.folder}{Character. Directory to save output files when \code{save.files = TRUE}.
-If NULL (default) and input is file paths, saves in same directory as input files.}
+\item{review.thresholds}{Named list overriding the thresholds that classify a deployment as
+\code{"review"} or \code{"critical"} (and thus earns a detailed page). Recognised fields:
+\code{gap_pct_review}/\code{gap_pct_critical} (default 1 / 5), \code{interp_pct_review}/\code{interp_pct_critical}
+(5 / 20), \code{rows_added_pct_review}/\code{rows_added_pct_critical} (10 / 100), and the optional absolute
+\code{large_gap_seconds} (default \code{NULL}, off). \code{NULL} (default) uses all defaults.}
 
-\item{output.suffix}{Character. A suffix to append to the file name when saving.
-This parameter is only used if \code{save.files = TRUE}.}
+\item{force.plots}{Logical. If \code{TRUE}, generate a detailed page for every deployment, not only
+the flagged ones (restores the old one-page-per-deployment behaviour). Default \code{FALSE}.}
 
-\item{verbose}{Logical. Print progress messages? Default TRUE.}
+\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
+function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
+step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
+\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+
+\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
+a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+
+\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
+to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+
+\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
+(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+
+\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or
+\code{2}/"detailed" (default; adds low-level per-step diagnostics). Defaults to \code{"detailed"}.}
 }
 \value{
-Depending on input and parameters:
-\itemize{
-\item If single dataset input: Returns regularized data.table
-\item If list/multiple files input: Returns list of regularized data.tables (when \code{return.data = TRUE})
-\item If \code{return.data = FALSE}: Returns invisibly NULL (use with \code{save.files = TRUE})
-}
+If \code{return.data = TRUE}, a named list of regularized \code{data.table}s (one element
+per individual), regardless of whether the input was a single dataset, a list, or a
+vector of file paths; if \code{return.data = FALSE}, a character vector of the written \code{.rds}
+file paths.
 }
 \description{
 \code{regularizeTimeSeries} processes high-frequency time series data from biologging sensors to
@@ -100,8 +127,17 @@ Longer gaps remain as \code{NA} to avoid spurious data generation.
 }
 }
 \note{
-For large datasets, consider processing in batches with \code{save.files = TRUE} and
+For large datasets, consider processing in batches with an \code{output.dir} and
 \code{return.data = FALSE} to avoid memory overload.
+}
+\examples{
+# Snap an irregular, jittered series onto a uniform grid, filling short gaps:
+d <- data.frame(ID = "shark01",
+                datetime = as.POSIXct("2020-01-01 00:00:00", tz = "UTC") +
+                           c(0, 0.9, 2.1, 3.0, 4.2, 7.0, 8.1, 9.0),
+                depth = c(1.0, 1.2, 1.5, 1.8, 2.0, 3.1, 3.4, 3.6))
+reg <- regularizeTimeSeries(d, gap.threshold = 2, verbose = FALSE)
+reg[["shark01"]]
 }
 \seealso{
 \link{importTagData}

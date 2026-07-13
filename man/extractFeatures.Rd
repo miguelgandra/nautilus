@@ -19,9 +19,9 @@ extractFeatures(
   response.aggregation = "majority",
   circular.variables = c("heading", "roll"),
   return.data = TRUE,
-  save.files = FALSE,
-  output.folder = NULL,
+  output.dir = NULL,
   output.suffix = NULL,
+  compress = TRUE,
   n.cores = 1
 )
 }
@@ -55,18 +55,25 @@ If \code{window_seconds} is not provided, uses the global \code{window.size} par
 
 \item{circular.variables}{Character vector specifying variables that should be treated as circular.}
 
-\item{return.data}{Logical. If \code{TRUE}, returns processed data as a list.}
+\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
+function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
+step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
+\code{return.data = FALSE} therefore requires an \code{output.dir}.}
 
-\item{save.files}{Logical. If \code{TRUE}, saves processed data as separate RDS files.}
+\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
+a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
 
-\item{output.folder}{Directory where processed RDS files should be saved.}
+\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
+to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
 
-\item{output.suffix}{Character string to append to output filenames.}
+\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
+(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
 
 \item{n.cores}{Number of processor cores for parallel computation.}
 }
 \value{
-A list of data frames with calculated features.
+If \code{return.data = TRUE}, a list of data frames with calculated features; if
+\code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
 }
 \description{
 This function calculates specified metrics (e.g., mean, standard deviation, circular statistics,
@@ -97,4 +104,16 @@ Complex Features (when enhanced.features = TRUE):
 \item "depth_change_rate": Rate of depth changes
 \item "depth_change_consistency": Consistency of depth changes
 }
+}
+\examples{
+# Minimal single deployment: one numeric sensor column sampled at 1 Hz. Pass a
+# named list of per-individual tables (a bare data.frame is read as columns).
+df <- data.frame(
+  ID = "shark01",
+  datetime = as.POSIXct("2024-05-30 12:00:00", tz = "UTC") + 0:19,
+  vedba = abs(sin(seq(0, 4, length.out = 20)))
+)
+# 5 s sliding-window mean and SD of VeDBA
+extractFeatures(list(shark01 = df), variables = "vedba",
+                metrics = c("mean", "sd"), window.size = 5)
 }

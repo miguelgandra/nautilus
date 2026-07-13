@@ -2,50 +2,86 @@
 % Please edit documentation in R/summarizeTagData.R
 \name{summarizeTagData}
 \alias{summarizeTagData}
-\title{Generate Summary Statistics for Multiple Individuals}
+\title{Summarise processed tag deployments}
 \usage{
 summarizeTagData(
   data,
-  id.metadata = NULL,
-  id.col = "ID",
-  datetime.col = "datetime",
-  error.stat = "sd"
+  extra.metadata = NULL,
+  deployments = NULL,
+  error.stat = "sd",
+  verbose = "detailed"
 )
 }
 \arguments{
-\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame containing data from multiple animals.}
+\item{data}{Processed deployments, in any of the forms used across the pipeline: a list of datasets
+(one per individual), a single aggregated data.table/data.frame with an \code{ID} column, or a character
+vector of \code{.rds} file paths (loaded lazily, one per deployment). The output of \link{processTagData}
+(optionally after \link{calculateTailBeats}) is expected.}
 
-\item{id.metadata}{A data frame containing metadata about the tagged animals, such as their length,
-sex, or transmitter type. All columns in this data frame will be summarized and included
-in the final table. If there are multiple rows per animal, variables will be collapsed
-before merging with other statistics.}
+\item{extra.metadata}{Optional data frame of EXTERNAL per-animal covariates to attach (e.g. \code{sex},
+\code{size}). Must contain an \code{ID} column. Multiple rows per ID are collapsed (distinct values joined
+by "/"). Fields already captured in the tag metadata (tag model/type, attachment site, sampling
+rate) are filled automatically and need not be provided here. This is also the route for any
+external per-deployment metric, e.g. total video duration from \link{getVideoMetadata}:
+\verb{v <- aggregate(duration ~ ID, getVideoMetadata(...), sum); v$duration <- v$duration / 3600} and
+pass \code{v} (renamed) as a covariate. Default \code{NULL}.}
 
-\item{id.col}{Column name for the animal ID (default is "ID").}
+\item{deployments}{Optional \code{nautilus_deployments} object from \link{qcDeploymentMetadata}. When
+supplied, the summary is completed into the full study roster: every deployment in \code{deployments}
+gets a row, and a \code{status} column marks each as \code{"included"} (processed data present, full metrics)
+or \code{"excluded"} (in the roster but absent from \code{data} - NA metrics, identity filled from the
+roster). The reason for exclusion is not inferred here; see \link{qcIssues}. Default \code{NULL}.}
 
-\item{datetime.col}{Column name for the datetime (default is "datetime").}
+\item{error.stat}{Error statistic for the display-only population row: \code{"sd"} (standard deviation,
+default) or \code{"se"} (standard error).}
 
-\item{error.stat}{The statistic to use for variability/error calculation, either 'sd' (standard deviation)
-or 'se' (standard error). Defaults to 'sd'.}
+\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
+\code{2}/"detailed" (default): additionally reports per-metric coverage across the processed deployments
+and shows a live progress bar while the tags are read (cli auto-hides it for fast runs).}
 }
 \value{
-A data frame with summary statistics for each animal, including the following columns:
+A \code{nautilus_summary} data frame, one row per deployment, with (where available) the columns:
 \itemize{
-\item \strong{ID}: The unique identifier for each individual animal.
-\item \strong{Total duration (h)}: The total dataset duration, in hours (including pre- and post-deployment periods).
-\item \strong{Deploy start}: The estimated start (attachment) datetime of the deployment.
-\item \strong{Deploy end}: The estimated end (pop-up) datetime of the deployment.
-\item \strong{Deploy duration (h)}: The duration of the deployment, in hours, calculated from the deployment start to deployment end.
-\item \strong{Sampling freq (Hz)}: The sampling frequency of the original dataset in Hertz (Hz)..
-\item \strong{Magnetic declination}: The magnetic declination value used to correct heading estimates.
-\item \strong{Max Depth (m)}: The maximum depth recorded during the deployment, in meters.
-\item \strong{Temp range (ºC)}: The temperature range (minimum and maximum temperatures recorded) during the deployment, in degrees Celsius (°C).
-\item \strong{Fastloc GPS}: The number of "Fast GPS" positions recorded during the deployment (if any).
-\item \strong{User Locs}: The number of user-defined GPS positions recorded during the deployment (if any).
+\item \strong{id}, \strong{tag_model}, \strong{tag_type}, \strong{attachment_site}: identity and tag metadata.
+\item \strong{record_start}, \strong{record_end}, \strong{record_duration_h}, \strong{n_samples}: the
+recorded data span - the true on-animal window once the data have been deployment-filtered.
+\item \strong{sampling_hz}: original sampling rate (Hz).
+\item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (°C).
+\item \strong{vedba_mean}, \strong{odba_mean} (g): mean activity (dynamic body acceleration).
+\item \strong{tbf_mean} (Hz): mean tail-beat frequency over beating samples; \strong{pct_swimming}
+(\\%): share of time actively swimming - both present only after \link{calculateTailBeats}.
+\item \strong{paddle_wheel} (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).
+\item \strong{speed_mean}, \strong{speed_max} (m/s): paddle-wheel speed, when available.
+\item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).
+\item \strong{n_positions}: total number of position fixes within the record span, when available.
+\item \strong{status}: \code{"included"}/\code{"excluded"} - only when \code{deployments} is supplied (see that argument).
 }
 }
 \description{
-This function takes processed data from multiple individuals (either a list with a data.table/data.frame for each animal or an aggregated data.table/data.frame containing data from multiple animals)
-and outputs a summary table with key statistics for each individual.
+Builds a tidy, one-row-per-deployment summary of processed archival-tag data: the recording window,
+key acquisition metadata (sampling rate, tag model), and headline environmental and kinematic metrics
+(depth, temperature, activity, tail-beats, speed, vertical speed).
+Descriptive fields are read directly from the consolidated tag metadata, so they do not need to be
+supplied again; an optional \code{extra.metadata} table can attach external per-animal covariates (sex,
+size, ...) that are not part of the tag metadata.
+
+The returned object is a \strong{typed} data frame (numeric columns stay numeric, datetimes stay
+POSIXct), meant for downstream analysis. Its \code{print} method renders a formatted table and, for more
+than one deployment, appends a population \verb{mean ± error} row for display only. To export that same
+formatted table (for a report or paper), call \code{format()} on the result and write it out, e.g.
+\code{write.csv(format(summary), "summary.csv", row.names = FALSE)}.
+}
+\examples{
+\dontrun{
+# One row per deployment from processed (and tail-beat-annotated) tags.
+tag <- calculateTailBeats(processTagData(oriented))
+summarizeTagData(tag)
+
+# Complete the study roster and attach external per-animal covariates.
+summarizeTagData(list.files("./tailbeats", full.names = TRUE),
+                 deployments = deployments,
+                 extra.metadata = animal_metadata[, c("ID", "sex", "size")])
+}
 }
 \seealso{
 \link{processTagData}, \link{filterDeploymentData}.

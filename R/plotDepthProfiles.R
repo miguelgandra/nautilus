@@ -1,260 +1,363 @@
 #######################################################################################################
-# Function to plot depth time series  #################################################################
+# Plot per-deployment depth profiles ##################################################################
 #######################################################################################################
 
-#' Plot Depth Profiles with Colored Time Series
+#' Plot depth profiles, coloured by an environmental variable
 #'
-#' This function generates depth profiles for individual subjects, with depth values plotted against time.
-#' The points are color-coded based on a specified variable.
+#' @description
+#' Draws one depth-vs-time profile per deployment, with points coloured by a chosen variable
+#' (temperature by default) and a diel (day / twilight / night) background shading. Deployments are
+#' laid out in a grid, paginated automatically when they do not fit on one page.
 #'
-#' @param data A data frame or a list of data frames containing depth profile information.
-#' @param id.metadata Data frame. Metadata about the IDs to associate with the processed data.
-#' Must contain at least columns for ID, release longitude and release latitude.
-#' @param id.col Character. The name of the column identifying individuals (default: "ID").
-#' @param datetime.col Character. The name of the column containing datetime information (default: "datetime").
-#' @param depth.col Character. The name of the column containing depth values (default: "depth").
-#' @param color.by Character. The name of the column used for color mapping (default: "temp").
-#' @param color.by.label Character. Label for the color legend (default: "Temp (ºC)").
-#' @param lon.col Character. The name of the column containing longitude information (default: "lon").
-#' @param lat.col Character. The name of the column containing latitude information (default: "lat").
-#' @param color.pal Character vector. A color palette for the depth profiles (default: `pals::jet(100)`).
-#' @param cex.id Numeric. The expansion factor for the ID labels in plots. Defaults to 1.2.
-#' @param cex.pt Numeric. The expansion factor for the points. Defaults to 0.4.
-#' @param cex.axis Numeric. The expansion factor for axis labels. Defaults to 0.9.
-#' @param cex.legend Numeric. The expansion factor for the legend text. Defaults to 0.8.
-#' @param same.color.scale Logical. If `TRUE`, all plots use the same color scale for the mapped variable (default: `TRUE`).
-#' @param same.depth.scale Logical. If `TRUE`, all plots use the same depth scale; if `FALSE`, each individual has its own scale (default: `FALSE`).
-#' @param ncols Integer. Number of columns for the plot layout. If `NULL`, it is determined automatically.
-#' @param nrows Integer. Number of rows for the plot layout. If `NULL`, it is determined automatically.
+#' Like the other workflow functions, `data` accepts the package's canonical input forms - a character
+#' vector of `.rds` file paths, a single `nautilus_tag` / data.frame, or a list of them - and the
+#' deployment coordinates used for the diel shading are read from each object's metadata, so no
+#' separate metadata table is required.
 #'
-#' @return A plot displaying depth profiles for each individual, with time on the x-axis and depth on the y-axis, colored by the specified variable.
+#' @param data Depth data: a character vector of `.rds` file paths, a single `nautilus_tag` /
+#'   data.frame, or a list of them (see \code{\link{processTagData}}).
+#' @param color.by Character. Name of the column mapped to colour. Default `"temp"`.
+#' @param color.label Character. Legend title for `color.by`. `NULL` (default) derives a sensible label
+#'   (e.g. `"Temperature (°C)"` for `"temp"`).
+#' @param color.pal Character vector of colours for the mapped variable. `NULL` (default) uses a
+#'   jet-style palette with extra resolution in the upper range.
+#' @param same.color.scale Logical. If `TRUE` (default), all panels share one colour scale and a single
+#'   legend; if `FALSE`, each panel is scaled and labelled independently.
+#' @param same.depth.scale Logical. If `TRUE`, all panels share one depth axis; if `FALSE` (default),
+#'   each panel is scaled to its own maximum depth.
+#' @param shade.diel Logical. If `TRUE` (default), shade the background by diel phase (day / twilight /
+#'   night). Requires deployment coordinates in the metadata; panels without them are left unshaded.
+#' @param downsample Numeric. Bin width (seconds) for averaging before plotting, which keeps
+#'   high-resolution records legible and fast to draw. Default 5; set `NULL` to plot every sample.
+#' @param plot Logical. If `TRUE` (default), draw to the active graphics device.
+#' @param plot.file Character. Path to a multi-page PDF to draw into (one page per grid of deployments).
+#'   Independent of `plot`: set either or both. The function manages the device itself. Default `NULL`.
+#' @param ncols,nrows Integer. Grid columns / rows per page. If `NULL` (default) both are chosen
+#'   automatically (up to 2 columns and 5 rows per page).
+#' @param cex Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.
+#' @param point.size Numeric. Plotting-character size (`cex`) for the depth points. Default 0.4.
+#' @param id.col,datetime.col,depth.col Character. Column names for the ID, datetime and depth.
+#'   Defaults `"ID"`, `"datetime"`, `"depth"`.
+#' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
+#'   `2`/"detailed" (default): additionally reports per-deployment data-quality notes (deployments missing
+#'   the colour variable or coordinates) and shows a live progress bar while the tags are read.
 #'
+#' @return Invisibly `NULL`; called for its side effect (the plot).
+#' @seealso \code{\link{processTagData}}, \code{\link{summarizeTagData}}
+#' @examples
+#' \dontrun{
+#' # Draw to a multi-page PDF, coloured by temperature
+#' plotDepthProfiles(list.files("./processed", full.names = TRUE),
+#'                   plot = FALSE, plot.file = "./plots/depth-profiles.pdf")
+#' }
 #' @export
 
-
 plotDepthProfiles <- function(data,
-                              id.metadata,
-                              id.col = "ID",
-                              datetime.col = "datetime",
-                              depth.col = "depth",
-                              color.by = "temp",
-                              color.by.label = "Temp (\u00BAC)",
-                              lon.col = "lon",
-                              lat.col = "lat",
-                              color.pal = NULL,
-                              cex.id = 1.2,
-                              cex.pt = 0.4,
-                              cex.axis = 0.9,
-                              cex.legend = 0.8,
+                              color.by         = "temp",
+                              color.label      = NULL,
+                              color.pal        = NULL,
                               same.color.scale = TRUE,
                               same.depth.scale = FALSE,
-                              ncols = NULL,
-                              nrows = NULL) {
+                              shade.diel       = TRUE,
+                              downsample       = 5,
+                              plot             = TRUE,
+                              plot.file        = NULL,
+                              ncols            = NULL,
+                              nrows            = NULL,
+                              cex              = 1,
+                              point.size       = 0.4,
+                              id.col           = "ID",
+                              datetime.col     = "datetime",
+                              depth.col        = "depth",
+                              verbose          = "detailed") {
+
+  start.time <- Sys.time()
+  lvl <- .verbosity(verbose)
+
+  ##############################################################################
+  # Validate arguments #########################################################
+  ##############################################################################
+
+  .assert_string(color.by, "color.by")
+  .assert_string(color.label, "color.label", null_ok = TRUE)
+  .assert_flag(same.color.scale, "same.color.scale")
+  .assert_flag(same.depth.scale, "same.depth.scale")
+  .assert_flag(shade.diel, "shade.diel")
+  .assert_flag(plot, "plot")
+  if (!is.null(downsample)) .assert_number(downsample, "downsample", min = 0)
+  .assert_writable_file(plot.file, "plot.file", ext = "pdf")     # fail-fast: parent dir must exist
+  if (!is.null(ncols)) .assert_count(ncols, "ncols", min = 1)
+  if (!is.null(nrows)) .assert_count(nrows, "nrows", min = 1)
+  .assert_number(cex, "cex", min = 0)
+  .assert_number(point.size, "point.size", min = 0)
+  .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col"); .assert_string(depth.col, "depth.col")
+  if (!is.null(color.pal) && (!is.character(color.pal) || !length(color.pal)))
+    .abort("{.arg color.pal} must be a non-empty character vector of colours.")
+
+  if (!plot && is.null(plot.file))
+    .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
+
+  if (is.null(color.label)) color.label <- .defaultColorLabel(color.by)
 
 
   ##############################################################################
-  # Initial checks #############################################################
+  # Load, validate and downsample every deployment #############################
   ##############################################################################
 
-  # if 'data' is not a list, split it into a list of individual data sets
-  if (!is.list(data)) {
-    data <- split(data, f = data[[id.col]])
+  src <- .resolveInput(data, id.col)
+
+  .log_header(lvl, "plotDepthProfiles", "Plotting depth profiles",
+              bullets = sprintf("Input: %d deployment%s \u00b7 coloured by %s",
+                                src$n, if (src$n != 1) "s" else "", color.by))
+
+  deployments <- list()
+  n_no_color <- 0L; n_no_coord <- 0L
+  pb <- .log_progress_start(lvl, src$n, "Loading")                  # live bar at detailed verbosity (lvl >= 2)
+  for (i in seq_len(src$n)) {
+    .log_progress_step(pb)
+    tag <- src$get(i)
+    .validateColumns(tag, c(datetime.col, depth.col), where = if (src$is_filepaths) basename(src$paths[i]) else NULL)
+    meta <- .getMeta(tag)
+    d <- .downsampleForPlot(tag, id.col, datetime.col, downsample)
+    if (nrow(d) == 0) next
+    lon <- meta$deployment$lon %||% NA_real_
+    lat <- meta$deployment$lat %||% NA_real_
+    has_color <- color.by %in% names(d) && any(!is.na(d[[color.by]]))
+    if (!has_color) n_no_color <- n_no_color + 1L
+    if (!all(is.finite(c(lon, lat)))) n_no_coord <- n_no_coord + 1L
+    deployments[[length(deployments) + 1L]] <-
+      list(id = meta$id %||% src$ids[i], coords = c(lon = lon, lat = lat), data = d, has_color = has_color)
+  }
+  .log_progress_done(pb)
+  if (!length(deployments)) .abort("No non-empty datasets to plot.")
+
+
+  ##############################################################################
+  # Global scales, palette and layout ##########################################
+  ##############################################################################
+
+  # shared colour range across all panels (when requested and any panel has colour data)
+  color_range <- NULL
+  if (same.color.scale) {
+    rng <- unlist(lapply(deployments, function(d) if (d$has_color) range(d$data[[color.by]], na.rm = TRUE) else NULL))
+    if (length(rng)) color_range <- range(rng, na.rm = TRUE)
+  }
+  use_shared_legend <- same.color.scale && !is.null(color_range)
+
+  # shared depth axis (deepest deployment), when requested
+  depth_ylim_global <- NULL
+  if (same.depth.scale)
+    depth_ylim_global <- .depthYlim(max(vapply(deployments, function(d) max(d$data[[depth.col]], na.rm = TRUE), numeric(1)), na.rm = TRUE))
+
+  # default palette: jet-style, with more colour resolution devoted to the upper range
+  if (is.null(color.pal)) {
+    base_pal  <- .jet_pal(100)
+    color.pal <- grDevices::colorRampPalette(c(rep(base_pal[1:70], each = 2), rep(base_pal[71:100], each = 3)))(100)
   }
 
-  # check if specified columns exist in the data
-  if(!id.col %in% names(data[[1]])) stop(paste0("The specified id.col ('", id.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!datetime.col %in% names(data[[1]])) stop(paste0("The specified datetime.col ('", datetime.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!depth.col %in% names(data[[1]])) stop(paste0("The specified depth.col ('", depth.col, "') was not found in the supplied data."), call. = FALSE)
-  if(!color.by %in% names(data[[1]])) stop(paste0("The specified color.by variable ('", color.by, "') was not found in the supplied data."), call. = FALSE)
+  lay <- .depthProfileLayout(length(deployments), ncols, nrows, legend = use_shared_legend)
 
-  # check if specified columns exist in the id metadata
-  if(!lon.col %in% names(id.metadata)) stop(paste0("The specified lon.col ('", lon.col, "') was not found in the supplied metadata"), call. = FALSE)
-  if(!lat.col %in% names(id.metadata)) stop(paste0("The specified lat.col ('", lat.col, "') was not found in the supplied metadata"), call. = FALSE)
+  if (lvl >= 1L)
+    .log_arrow(lvl, sprintf("layout: %d x %d per page%s", lay$nrows, lay$ncols,
+                            if (length(lay$pages) > 1) sprintf(" \u00b7 %d pages", length(lay$pages)) else ""))
 
 
   ##############################################################################
-  # Set plot variables #########################################################
+  # Draw (to the caller's device and/or a multi-page PDF, via the shared helper)#
   ##############################################################################
 
-  # remove empty datasets from the list
-  data <- data[sapply(data, nrow) > 0]
-
-  # if 'same.color.scale', calculate the global color range across all datasets
-  if(same.color.scale){
-    color_range <- lapply(data, function(x) {
-      vals <- x[[color.by]]
-      if (any(!is.na(vals))) range(vals, na.rm = TRUE) else NULL
-    })
-    color_range <- range(unlist(color_range), na.rm = TRUE)
-  }
-  # if 'same.depth.scale', calculate the global depth range across all datasets
-  if(same.depth.scale){
-    depth_range <- lapply(data, function(x) range(x[[depth.col]], na.rm = TRUE))
-    depth_range <- range(unlist(depth_range))
-  }
-
-  # set color palette, if not specified
-  if(is.null(color.pal)){
-    color.pal <- .jet_pal(100)
-    color.pal <- colorRampPalette(c(rep(color.pal[1:70], each=2), rep(color.pal[71:100], each=3)))(100)
-  }
-
-  ##############################################################################
-  # Downsample datasets ########################################################
-  ##############################################################################
-
-  for (i in seq_along(data)) {
-    # extract data table
-    dt <- data[[i]]
-    # floor datetime to the nearest 5 seconds
-    dt[, datetime_5s := as.POSIXct(floor(as.numeric(datetime) / 5) * 5, origin = "1970-01-01", tz = attr(datetime, "tzone"))]
-    # get all numeric column names (excluding datetime_1s)
-    numeric_cols <- names(dt)[sapply(dt, is.numeric) & names(dt) != "datetime_1s"]
-    # aggregate all numeric columns by 1-second bins
-    dt_agg <- dt[, lapply(.SD, mean, na.rm = TRUE), by = .(ID, datetime_5s), .SDcols = numeric_cols]
-    # replace NANs by NAs
-    for (col in names(dt_agg)) {
-      if (is.numeric(dt_agg[[col]])) data.table::set(dt_agg, i = which(is.nan(dt_agg[[col]])), j = col, value = NA_real_)
-    }
-    # replace datetime with the rounded one
-    setnames(dt_agg, "datetime_5s", "datetime")
-    # return
-    data[[i]] <- dt_agg
-  }
-
-
-  ##############################################################################
-  # Set layout variables #######################################################
-  ##############################################################################
-  # Dynamically adjust the number of columns and rows based on the number of plots
-
-  # calculate the total number of plots
-  total_plots <- length(data)
-
-  # if nrows and ncols are not provided, calculate them dynamically
-  if (is.null(nrows) && is.null(ncols)) {
-    # maximum of 2 columns and 5 rows per page
-    max_cols <- 2
-    max_rows <- 5
-    # adjust nrows and ncols for the last page if necessary
-    ncols <- ifelse(total_plots==1, 1, max_cols)
-    nrows <- min(max_rows, ceiling(total_plots / ncols))
-  } else {
-    # if nrows or ncols are provided, use them
-    if (is.null(nrows)) {
-      nrows <- ceiling(total_plots / ncols)
-    }
-    if (is.null(ncols)) {
-      ncols <- ceiling(total_plots / nrows)
-    }
-  }
-
-  # set up the plotting area with specified number of rows and columns.
-  par(mfrow=c(nrows, ncols), mar = c(2, 5, 2, 5), oma = c(3, 0, 0, 0), mgp = c(3, 0.8, 0))
-
-
-  ##############################################################################
-  # Generate depth plots #######################################################
-  ##############################################################################
-
-  # loop through each dataset (individual)
-  for (i in seq_along(data)) {
-
-    # extract data for the current individual
-    plot_data <- data[[i]]
-
-    # get current ID
-    id <- unique(plot_data[[id.col]])
-
-    # extract longitude and latitude for the current ID
-    lon <- id.metadata[[lon.col]][id.metadata[[id.col]] == id]
-    lat <- id.metadata[[lat.col]][id.metadata[[id.col]] == id]
-
-    # set individual depth range if scales are not shared across individuals
-    if (!same.depth.scale) {
-      depth_max <- max(plot_data[[depth.col]], na.rm = TRUE)
-      depth_max <-  ceiling(depth_max / 10) * 10
-      depth_range <- c(0, depth_max)
-      depth_range[1] <- depth_range[1] - (depth_range[2] - depth_range[1]) * 0.18
-      depth_range <- rev(depth_range)
-    }
-
-    # check if the color.by variable has any valid values
-    has_color_data <- color.by %in% names(plot_data) && !all(is.na(plot_data[[color.by]]))
-
-    # determine colour range for individual (if not global and data exists)
-    if (!same.color.scale && has_color_data) {
-      color_range <- range(plot_data[[color.by]], na.rm = TRUE)
-    }
-
-    # if variable is available, scale colour values; otherwise use black
-    if (has_color_data) {
-      plot_data$color_scaled <- round(.rescale(plot_data[[color.by]], from = color_range, to = c(0, 100)))
-      plot_col <- color.pal[plot_data$color_scaled]
-    } else {
-      plot_col <- "black"
-    }
-
-    ############################################################################
-    # initialize an empty plot with correct axis limits
-    plot(y = plot_data[[depth.col]], x = plot_data[[datetime.col]], type = "n",
-         axes = FALSE, xaxs = "i", xlab = "", ylab = "Depth (m)", ylim = depth_range)
-
-    ############################################################################
-    # add daylight background shading
-    if (!is.na(lon) && !is.na(lat)) {
-      time_seq <- seq(from = par("usr")[1], to = par("usr")[2], by = 60)
-      time_seq <- as.POSIXct(time_seq, tz = "UTC")
-      coords <- data.frame("lon" = lon, "lat" = lat)
-      diel_phase <- getDielPhase(time_seq, coordinates = coords, phases = 3)
-      phase_change <- c(1, which(diff(as.numeric(factor(diel_phase))) != 0) + 1, length(time_seq))
-      diel_colors <- c("day" = "grey98", "crepuscule" = "grey92", "night" = "grey85")
-      time_numeric <- as.numeric(time_seq)
-      xlims <- range(as.numeric(plot_data[[datetime.col]]))
-      for (j in seq_len(length(phase_change) - 1)) {
-        rect(xleft = max(time_numeric[phase_change[j]], xlims[1]),
-             xright = min(time_numeric[phase_change[j + 1]], xlims[2]),
-             ybottom = par("usr")[3], ytop = par("usr")[4],
-             col = diel_colors[diel_phase[phase_change[j]]], border = NA)
+  shared_slot <- use_shared_legend && !is.na(lay$legend_cell)             # one horizontal legend in the last cell
+  draw <- function(to.file = FALSE, unicode = TRUE) {
+    graphics::par(oma = c(2.5, 0, 1.2, 0), mgp = c(3, 0.8, 0))
+    for (pg in lay$pages) {
+      graphics::layout(lay$matrix, widths = lay$widths, heights = lay$heights)
+      for (k in pg) {
+        dep <- deployments[[k]]
+        depth_ylim <- if (same.depth.scale) depth_ylim_global else .depthYlim(max(dep$data[[depth.col]], na.rm = TRUE))
+        panel_range <- if (same.color.scale) color_range else if (dep$has_color) range(dep$data[[color.by]], na.rm = TRUE) else NULL
+        .drawDepthPanel(dep, color.by, depth.col, datetime.col, color.pal, panel_range, depth_ylim,
+                        shade.diel = shade.diel, point.size = point.size, cex = cex,
+                        panel.legend = !shared_slot, color.label = color.label)
       }
-    }
-
-    ############################################################################
-    # add depth data points with colour
-    points(y = plot_data[[depth.col]], x = plot_data[[datetime.col]],
-           pch = 16, col = plot_col, cex = cex.pt)
-
-    ############################################################################
-    # add axes
-    time_range <- range(plot_data[[datetime.col]])
-    time_breaks <- pretty(time_range, n = 5)
-    axis.POSIXct(1, at = time_breaks,
-                 format = ifelse(diff(time_range) > 86400, "%d/%b", "%H:%M"),
-                 cex.axis = cex.axis)
-    axis(2, at = pretty(c(0, depth_range[1]), n = 5), las = 1, cex.axis = cex.axis)
-
-    ############################################################################
-    # add depth guidelines
-    abline(h = 0, lty = 2, lwd = 1.2)
-    abline(h = max(plot_data[[depth.col]], na.rm = TRUE), lty = 2, lwd = 1)
-
-    ############################################################################
-    # add legend and border
-    legend("topleft", inset = c(0, -0.036), legend = id, text.font = 2,
-           bty = "n", cex = cex.id)
-    box()
-
-    ############################################################################
-    # add colour legend if applicable
-    if (has_color_data) {
-      color_labs <- pretty(color_range)
-      color_labs <- color_labs[color_labs >= min(color_range) & color_labs <= max(color_range)]
-      .colorlegend(col = color.pal, zlim = color_range, zval = color_labs,
-                   posx = c(0.915, 0.93), posy = c(0.05, 0.85),
-                   main = color.by.label,
-                   main.cex = cex.legend + 0.1, digit = 1, main.adj = 0, cex = cex.legend)
+      # fill empty PANEL cells; the reserved last cell then receives the shared horizontal legend
+      for (b in seq_len(lay$capacity - length(pg))) graphics::plot.new()
+      if (shared_slot) .drawColorbarHorizontal(color.pal, color_range, color.label, cex)
+      else for (b in seq_len(lay$per_page - lay$capacity)) graphics::plot.new()   # (0 when no cell was reserved)
     }
   }
+
+  .renderToDevices(draw, plot = plot, plot.file = plot.file, width = lay$width, height = lay$height)
+
+
+  ##############################################################################
+  # Summary ####################################################################
+  ##############################################################################
+
+  if (lvl >= 1L) {
+    .log_summary(lvl)
+    if (n_no_color > 0) .log_detail(lvl, sprintf("no '%s' data (plotted black): %d/%d", color.by, n_no_color, length(deployments)))
+    if (shade.diel && n_no_coord > 0) .log_detail(lvl, sprintf("no coordinates (diel shading skipped): %d/%d", n_no_coord, length(deployments)))
+    .log_done(lvl, length(deployments), " depth profile", if (length(deployments) != 1) "s", " plotted")
+    if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
+    .log_runtime(lvl, start.time)
+  }
+
+  invisible(NULL)
+}
+
+
+################################################################################
+# Internal helpers ###########################################################
+################################################################################
+
+#' Default colour-legend label for a mapped variable
+#' @keywords internal
+#' @noRd
+.defaultColorLabel <- function(color.by) {
+  known <- c(temp = "Temperature (\u00b0C)", depth = "Depth (m)", speed = "Speed (m/s)")
+  if (color.by %in% names(known)) unname(known[color.by]) else color.by
+}
+
+
+#' Bin-average a deployment's data for plotting (fixes the datetime/ID columns from the arguments)
+#' @keywords internal
+#' @noRd
+.downsampleForPlot <- function(tag, id.col, datetime.col, seconds) {
+  if (is.null(seconds) || seconds <= 0) return(tag)                     # plot every sample (no coercion/copy)
+  dt <- data.table::as.data.table(tag)
+  tvec <- dt[[datetime.col]]
+  tz <- attr(tvec, "tzone"); if (is.null(tz) || !nzchar(tz)) tz <- "UTC"
+  binvec <- as.POSIXct(floor(as.numeric(tvec) / seconds) * seconds, origin = "1970-01-01", tz = tz)
+  num_cols <- setdiff(names(dt)[vapply(dt, is.numeric, logical(1))], c(id.col, datetime.col))
+  # group by externally-computed vectors, so the source table is never modified (no defensive copy needed)
+  by_list <- if (id.col %in% names(dt)) list(.id = dt[[id.col]], .bin = binvec) else list(.bin = binvec)
+  agg <- dt[, lapply(.SD, mean, na.rm = TRUE), by = by_list, .SDcols = num_cols]
+  for (col in num_cols) data.table::set(agg, i = which(is.nan(agg[[col]])), j = col, value = NA_real_)
+  if (".id" %in% names(agg)) data.table::setnames(agg, ".id", id.col)
+  data.table::setnames(agg, ".bin", datetime.col)
+  agg[]
+}
+
+
+#' Inverted, padded depth axis limits (surface at top, deepest at bottom, headroom for the ID label)
+#' @keywords internal
+#' @noRd
+.depthYlim <- function(max_depth) {
+  top <- ceiling(max_depth / 10) * 10
+  if (!is.finite(top) || top <= 0) top <- 10
+  c(top, -top * 0.18)
+}
+
+
+#' Resolve the panel grid and pagination for `n` deployments
+#' @keywords internal
+#' @noRd
+.depthProfileLayout <- function(n, ncols, nrows, legend) {
+  extra <- if (isTRUE(legend) && n >= 2L) 1L else 0L      # a shared legend consumes one grid cell; size for it
+  if (is.null(ncols) && is.null(nrows)) {
+    ncols <- if (n == 1) 1L else 2L
+    nrows <- min(5L, ceiling((n + extra) / ncols))
+  } else if (is.null(nrows)) {
+    nrows <- min(5L, ceiling((n + extra) / ncols))
+  } else if (is.null(ncols)) {
+    ncols <- ceiling((n + extra) / nrows)
+  }
+  ncols <- as.integer(ncols); nrows <- as.integer(nrows)
+  per_page <- ncols * nrows
+  # A shared colour legend takes the LAST grid cell (a single horizontal bar, proportional to one panel)
+  # rather than a full-height side column - far less overwhelming. Only possible when the grid has a spare
+  # cell (>= 2 cells); with a single panel we fall back to that panel's own (compact) legend.
+  reserve  <- isTRUE(legend) && per_page >= 2L
+  capacity <- if (reserve) per_page - 1L else per_page                  # panels per page (last cell = legend)
+  pages    <- split(seq_len(n), ceiling(seq_len(n) / capacity))
+
+  list(matrix = matrix(seq_len(per_page), nrow = nrows, ncol = ncols, byrow = TRUE),
+       widths = rep(1, ncols), heights = rep(1, nrows),
+       per_page = per_page, capacity = capacity, legend_cell = if (reserve) per_page else NA_integer_,
+       pages = pages, nrows = nrows, ncols = ncols,
+       width = 6.5 * ncols, height = 1.9 * nrows + 1)
+}
+
+
+#' Draw a single depth-profile panel
+#' @keywords internal
+#' @noRd
+.drawDepthPanel <- function(dep, color.by, depth.col, datetime.col, color.pal, color_range, depth_ylim,
+                            shade.diel, point.size, cex, panel.legend, color.label) {
+
+  d     <- dep$data
+  depth <- d[[depth.col]]
+  time  <- d[[datetime.col]]
+
+  # map colours (guard the palette index to 1..length; NAs stay transparent)
+  has_color <- !is.null(color_range) && color.by %in% names(d) && any(!is.na(d[[color.by]]))
+  point_col <- rep("black", length(depth))
+  if (has_color) {
+    idx <- round(.rescale(d[[color.by]], from = color_range, to = c(1, length(color.pal))))
+    point_col <- color.pal[idx]
+  }
+
+  graphics::par(mar = c(2.2, 5, 2.2, if (panel.legend) 5 else 1.2))
+  plot(x = time, y = depth, type = "n", axes = FALSE, xaxs = "i", xlab = "", ylab = "Depth (m)",
+       ylim = depth_ylim, cex.lab = cex)
+
+  if (shade.diel && all(is.finite(dep$coords))) .shadeDiel(dep$coords)
+
+  graphics::points(x = time, y = depth, pch = 16, col = point_col, cex = point.size)
+
+  # axes: date or clock time depending on the record length
+  tr   <- range(time, na.rm = TRUE)
+  span <- as.numeric(difftime(tr[2], tr[1], units = "secs"))
+  graphics::axis.POSIXct(1, at = pretty(tr, n = 5), format = if (span > 86400) "%d/%b" else "%H:%M", cex.axis = cex * 0.9)
+  graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.9)
+
+  graphics::abline(h = 0, lty = 2, lwd = 1.2)                                   # surface
+  graphics::abline(h = max(depth, na.rm = TRUE), lty = 2, lwd = 1)             # maximum depth
+  graphics::legend("topleft", inset = c(0, -0.036), legend = dep$id, text.font = 2, bty = "n", cex = cex * 1.2)
+  graphics::box()
+
+  # per-panel legend only when panels are independently scaled - a compact bar (~1/3 panel height, centred)
+  # rather than a full-height strip, so it does not dominate the data
+  if (panel.legend && has_color) {
+    labs <- pretty(color_range); labs <- labs[labs >= color_range[1] & labs <= color_range[2]]
+    .colorlegend(col = color.pal, zlim = color_range, zval = labs, posx = c(0.925, 0.945),
+                 posy = c(0.34, 0.66), main = color.label, main.cex = cex * 0.85,
+                 digit = 1, main.adj = 0, cex = cex * 0.75)
+  }
+}
+
+
+#' Shade the current panel background by diel phase (day / twilight / night)
+#' @keywords internal
+#' @noRd
+.shadeDiel <- function(coords) {
+  usr    <- graphics::par("usr")
+  step   <- max(60, (usr[2] - usr[1]) / 1500)                    # cap resolution so long records stay cheap
+  tseq   <- as.POSIXct(seq(usr[1], usr[2], by = step), origin = "1970-01-01", tz = "UTC")
+  phase  <- getDielPhase(tseq, coordinates = data.frame(lon = coords[["lon"]], lat = coords[["lat"]]), phases = 3)
+  breaks <- c(1, which(diff(as.integer(factor(phase))) != 0) + 1, length(tseq))
+  cols   <- c(day = "grey98", crepuscule = "grey92", night = "grey85")
+  tnum   <- as.numeric(tseq)
+  for (j in seq_len(length(breaks) - 1))
+    graphics::rect(xleft = tnum[breaks[j]], xright = tnum[breaks[j + 1]],
+                   ybottom = usr[3], ytop = usr[4], col = cols[phase[breaks[j]]], border = NA)
+}
+
+
+#' Draw the shared colour bar as a single HORIZONTAL strip in its reserved grid cell (proportional to one
+#' panel, centred), rather than a full-height side column - see .depthProfileLayout(legend = TRUE).
+#' @keywords internal
+#' @noRd
+.drawColorbarHorizontal <- function(color.pal, zlim, label, cex) {
+  graphics::par(mar = c(2.6, 3.0, 2.6, 3.0))                       # inset from the cell edges, so it is not stretched
+  graphics::plot.new(); graphics::plot.window(xlim = zlim, ylim = c(0, 1), xaxs = "i", yaxs = "i")
+  n  <- length(color.pal); xs <- seq(zlim[1], zlim[2], length.out = n + 1)
+  yb <- 0.42; yt <- 0.66                                           # a slim horizontal band, vertically centred
+  graphics::rect(xs[-(n + 1)], yb, xs[-1], yt, col = color.pal, border = NA)
+  graphics::rect(zlim[1], yb, zlim[2], yt)
+  labs <- pretty(zlim); labs <- labs[labs >= zlim[1] & labs <= zlim[2]]
+  graphics::axis(1, at = labs, pos = yb, cex.axis = cex * 0.85, tcl = -0.3, mgp = c(3, 0.35, 0))
+  graphics::text(mean(zlim), yt + 0.17, label, font = 2, cex = cex * 0.95)   # title above the strip
 }
 
 

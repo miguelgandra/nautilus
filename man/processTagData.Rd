@@ -7,28 +7,21 @@
 processTagData(
   data,
   downsample.to = 1,
-  hard.iron.calibration = TRUE,
-  soft.iron.calibration = TRUE,
   orientation.algorithm = "tilt_compass",
-  madgwick.beta = 0.02,
-  orientation.smoothing = 1,
-  correct.pitch.offset = TRUE,
-  pitch.warning.threshold = 45,
-  roll.warning.threshold = 45,
-  dba.window = 3,
-  dba.smoothing = 2,
-  motion.smoothing = 1,
-  depth.smoothing = 10,
-  speed.smoothing = 1,
-  calculate.paddle.speed = FALSE,
-  speed.calibration.values = NULL,
+  orientation = orientationControl(),
+  calibration = calibrationControl(),
+  smoothing = smoothingControl(),
+  depth.drift = depthDriftControl(),
+  paddle.calibration = NULL,
   burst.quantiles = c(0.95, 0.99),
+  plot = FALSE,
+  plot.file = NULL,
   return.data = TRUE,
-  save.files = FALSE,
-  output.folder = NULL,
+  output.dir = NULL,
   output.suffix = NULL,
+  compress = TRUE,
   data.table.threads = NULL,
-  verbose = TRUE
+  verbose = "detailed"
 )
 }
 \arguments{
@@ -36,98 +29,89 @@ processTagData(
 containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
 \code{.rds} files, each containing data for a single individual. When a character vector is provided,
 files are loaded sequentially to optimize memory use. The output of the \link{importTagData} function
-is strongly recommended, as it formats the data appropriately for all downstream analysis.}
+is strongly recommended, as it formats the data appropriately for all downstream analysis. The IMU
+axes are expected to be in the animal body frame: run \link{applyAxisMapping} first, otherwise the
+orientation metrics (pitch/roll/heading) are silently wrong - a warning is raised for any deployment
+whose axis mapping has not been applied.}
 
 \item{downsample.to}{Numeric. Downsampling frequency in Hz (e.g., 1 for 1 Hz) to reduce data resolution.
 Use NULL to retain the original resolution. Defaults to 1.}
 
-\item{hard.iron.calibration}{Logical. Whether to apply hard-iron calibration (offset correction) to magnetometer data.
-Default is TRUE.}
-
-\item{soft.iron.calibration}{Logical. Whether to apply soft-iron calibration (scaling and misalignment correction) to magnetometer data.
-Default is TRUE.}
-
 \item{orientation.algorithm}{Orientation estimation algorithm:
 \itemize{
 \item \code{"tilt_compass"} (default): Lightweight 6-axis tilt-compensated compass.
-\item \code{"madgwick"}: High-accuracy 9-axis sensor fusion. Requires Python \code{AHRS} module.
+\item \code{"madgwick"}: High-accuracy 9-axis sensor fusion via a native-R implementation
+of Madgwick's gradient-descent AHRS filter (requires gyroscope data).
 }}
 
-\item{madgwick.beta}{Numeric. The Madgwick filter's gain parameter (default: 0.02).
-This parameter controls the trade-off between gyroscope and accelerometer measurements.
-\itemize{
-\item Higher values (e.g., 0.2-0.3) trust the accelerometer more, leading to faster convergence but potentially more noise
-.    \item Lower values (e.g., 0.01-0.05) trust the gyroscope more, resulting in smoother but potentially slower convergence
-}
-Only used when \code{orientation.algorithm = "madgwick"}.}
+\item{orientation}{A control object from \code{\link{orientationControl}} grouping the specialised
+orientation-estimation knobs: the Madgwick filter gain \code{madgwick.beta} (used only when
+\code{orientation.algorithm = "madgwick"}), the mounting-offset corrections \code{correct.pitch} /
+\code{correct.roll}, the pitch-offset fit gate \code{pitch.offset.min.r2}, and the anomaly \code{warning.threshold}
+(degrees, above which a median |pitch|/|roll| is flagged and an implausibly large offset is not
+applied). Defaults to all on. Pass a named list to override some, e.g.
+\code{orientation = orientationControl(correct.roll = FALSE)}. The pitch-offset correction is adapted from
+Kawatsu et al. (2010); the roll offset is the median roll over the most level half of the record
+(mirror-imaged for left/right attachment sites, captured empirically).}
 
-\item{orientation.smoothing}{Optional. Smoothing window (in seconds) for orientation metrics (roll, pitch, heading).
-Uses circular mean. Set to NULL to disable. Default: 1.}
+\item{calibration}{A control object from \code{\link{calibrationControl}} grouping the magnetometer
+calibration switches \code{hard.iron} and \code{soft.iron}. Defaults to both on. Pass a named list to override,
+e.g. \code{calibration = calibrationControl(soft.iron = FALSE)}.}
 
-\item{correct.pitch.offset}{A logical value (TRUE/FALSE) indicating whether to apply a pitch
-offset correction based on the relationship between pitch angle and vertical speed.
-Defaults to FALSE. If TRUE, a linear regression of pitch (in radians) against
-\code{vertical_velocity} is performed, and the intercept (pitch at 0 m/s vertical speed)
-is subtracted from all pitch estimates. This method is adapted from Kawatsu et al. (2010)
-to account for potential tag misalignment.}
+\item{smoothing}{A control object from \code{\link{smoothingControl}} grouping the windows
+(seconds): \code{static} (3, the gravity-separation window underlying VeDBA/ODBA, surge/sway/heave and
+orientation - it cannot be disabled), and the post-smoothers \code{orientation} (1), \code{dba} (2),
+\code{depth} (10), \code{speed} (1). Set any post-smoother to \code{NULL} to disable it, e.g.
+\code{smoothing = smoothingControl(depth = 15)}.}
 
-\item{pitch.warning.threshold}{Numeric. Threshold (in degrees) for median pitch values that trigger orientation warnings.
-Default: 45 (will warn if median |pitch| > 45 degrees).}
+\item{depth.drift}{A control object from \code{\link{depthDriftControl}} governing the depth zero-offset
+drift correction. The slowly-varying pressure-sensor zero offset is estimated from independent surface
+evidence (the Wildlife Computers wet/dry signal in \code{meta$ancillary$dry} and surface-implying
+position fixes) and subtracted before depth feeds the vertical velocity and every absolute-depth
+metric. On by default and self-gating: it abstains (leaving depth untouched) when surface evidence
+is too sparse. Set \code{depth.drift = depthDriftControl(method = "none")} to disable it.}
 
-\item{roll.warning.threshold}{Numeric. Threshold (in degrees) for median roll values that trigger orientation warnings.
-Default: 45 (will warn if median |roll| > 45 degrees).}
-
-\item{dba.window}{Integer. Window size (in seconds) for calculating dynamic body acceleration. Defaults to 3.}
-
-\item{dba.smoothing}{Optional. Smoothing window (in seconds) for VeDBA/ODBA metrics.
-Uses arithmetic mean. Set to NULL to disable. Default: 2.}
-
-\item{motion.smoothing}{Optional. Smoothing window (in seconds) for linear motion metrics (surge, sway, heave).
-Uses arithmetic mean. Set to NULL to disable. Default: 1.}
-
-\item{depth.smoothing}{Optional. Smoothing window (in seconds) for depth.
-Uses arithmetic mean. Set to NULL to disable smoothing (not recommended).
-Affects the vertical speed computation, which is based on the central difference of smoothed depth values.
-Default: 10 seconds}
-
-\item{speed.smoothing}{Optional. Smoothing window (in seconds) applied to derived speed or velocity time series.
-Specifically, it is used to smooth:
-\itemize{
-\item Vertical velocity, after it is calculated from the central difference of smoothed depth values.
-\item Swimming speed estimated from paddle wheel rotation frequencies (if \code{calculate.paddle.speed = TRUE}).
-}
-Smoothing is performed using an arithmetic moving average. Set to \code{NULL} to disable. Default: 1 second.}
-
-\item{calculate.paddle.speed}{Logical. If TRUE and the tag was equipped with a paddle wheel,
-estimates animal speed based on paddle wheel rotation frequency. Default is FALSE.}
-
-\item{speed.calibration.values}{A data.frame containing paddle wheel calibration values for speed estimation.
-Must contain at least three columns:
+\item{paddle.calibration}{A data.frame of paddle-wheel calibration values. Supplying it is what
+enables paddle-wheel speed estimation (there is no separate on/off flag); leave it \code{NULL} to skip
+speed. Must contain at least three columns:
 \itemize{
 \item \code{year}: The year the calibration was performed (integer)
 \item \code{package_id}: The package identifier matching the tag's attribute (character)
 \item \code{slope}: The calibration slope value (numeric)
 }
-This parameter is only used when \code{calculate.paddle.speed = TRUE}. Default is NULL.}
+\code{\link{imputePaddleCalibration}} builds a complete, gap-free table of this form from a set of
+measured calibrations, projecting slopes for tag-years that were never calibrated.}
 
-\item{burst.quantiles}{Numeric vector. Quantiles (0-1) to define burst swimming events based on acceleration thresholds.
-Use NULL to disable burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).}
+\item{burst.quantiles}{Numeric vector. Quantiles (0-1) of instantaneous VeDBA used to flag burst
+swimming events. Each quantile is a \strong{relative, per-deployment} threshold: it always flags the top
+\code{1 - q} fraction of that record's samples (e.g. 0.95 flags the most active 5\%), not an absolute
+activity level, so flags are not comparable in magnitude across deployments. Use NULL to disable
+burst detection. Defaults to c(0.95, 0.99) (95th and 99th percentiles).}
 
-\item{return.data}{Logical. Controls whether the function returns the processed data
-as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
-memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
-(or both). Default is \code{TRUE}.}
+\item{plot}{Logical. If \code{TRUE}, render the per-deployment correction-diagnostic pages to the active
+graphics device. Intended for a single deployment; for a batch, prefer \code{plot.file} (a \code{TRUE} value
+with more than one deployment warns and floods the device). Defaults to \code{FALSE} (fully headless).}
 
-\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
-during the iteration process. This ensures that progress is saved incrementally, which can
-help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
+\item{plot.file}{Optional path to a single multi-page PDF. When supplied, \code{processTagData()} gathers a
+compact, decimated diagnostic bundle for each deployment \strong{while the raw data is in memory} and, after
+processing, writes a QC report so each correction can be visually verified: the magnetometer
+calibration (the raw point cloud collapsing onto a sphere), the depth zero-offset drift, and the
+pitch/roll mounting-offset fit. The heavy processing itself stays headless; nothing is rendered when
+this is \code{NULL} (default). Must end in \code{.pdf}.}
 
-\item{output.folder}{Character. Path to the folder where the processed files will be saved.
-This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
-in the data folder corresponding to each ID. Default is \code{NULL}.}
+\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
+function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
+step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
+\code{return.data = FALSE} therefore requires an \code{output.dir}.}
 
-\item{output.suffix}{Character. A suffix to append to the file name when saving.
-This parameter is only used if \code{save.files = TRUE}.}
+\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
+a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+
+\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
+to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+
+\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
+(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
 
 \item{data.table.threads}{Integer or NULL. Specifies the number of threads
 that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
@@ -139,13 +123,14 @@ Notes:
 \item Current thread count: \code{data.table::getDTthreads()}
 }}
 
-\item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
+\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal" (header, per-ID
+outcome, summary), or \code{2}/"detailed" (default; adds the full per-step processing log).
+Defaults to \code{"detailed"}.}
 }
 \value{
-If \code{return.data = TRUE}, returns a list where each element contains the
-processed sensor data for an individual folder. If \code{return.data = FALSE},
-returns \code{NULL} invisibly. In all cases, data will be saved to disk if
-\code{save.files = TRUE}.
+If \code{return.data = TRUE}, a list where each element contains the processed sensor data for
+an individual (named by ID); if \code{return.data = FALSE}, a character vector of the written \code{.rds}
+file paths. Files are written to disk whenever \code{output.dir} is set.
 }
 \description{
 This function processes high-resolution archival tag data, automatically computing a
@@ -156,8 +141,16 @@ Orientation is estimated by default using the tilt-compensated compass method, w
 and magnetometer data to determine body orientation relative to gravity and magnetic north.
 Optionally, a more advanced sensor fusion approach using the Madgwick filter can be applied.
 
-A full 3D magnetic calibration can be applied prior to orientation estimation, including both
-hard iron (offset) and soft iron (scaling and misalignment) corrections.
+Magnetometer calibration can be applied prior to orientation estimation, using the SAME engine as
+\code{\link{calibrateMagnetometer}} (see its Details for the full pipeline and the maths). When the field
+cloud is genuinely three-dimensional it fits the full hard + soft iron ellipsoid (correcting cross-axis
+misalignment); for the usual thin swimming band it estimates the hard-iron centre only, pinning the
+unobservable perpendicular component from the geomagnetic inclination and leaving the soft-iron at
+identity. Either way the correction is applied ONLY when it clears an honest confidence gate - if the
+animal did not rotate through enough headings to constrain the estimate, the heading is left raw rather
+than distorted. A calibration already computed and stored by \code{\link{calibrateMagnetometer}} (e.g. a
+per-package pooled or externally-sourced fit) is reused when present and trusted; otherwise the fit is
+estimated inline. The switches are grouped in \code{\link{calibrationControl}}.
 
 For tags equipped with a magnetic paddle wheel, the function can also estimate swimming speed.
 This is achieved by extracting the dominant rotation frequency from the magnetometer's
@@ -166,9 +159,6 @@ to speed using a tag-specific calibration slope
 
 After metric computation, the data can be downsampled to reduce its resolution and
 size for downstream analysis.
-
-Note: Python and the associated libraries \code{AHRS} and \code{numpy} (accessible via \code{reticulate}) are required
-if orientation is estimated using the Madgwick filter.
 }
 \details{
 This function computes a suite of movement and orientation metrics from high-frequency tri-axial sensor data,
@@ -179,8 +169,8 @@ to improve heading estimation.
 \itemize{
 \item Total Acceleration (g): The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
 \item Vectorial Dynamic Body Acceleration (VeDBA) (g): Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
-\item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes.
-\item Burst Swimming Events: Identifies periods of high acceleration based on a given acceleration magnitude percentile, which can be used to detect burst swimming behavior. This metric is binary, indicating whether the acceleration exceeds the threshold.
+\item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes. Retained for comparability, but note ODBA is orientation-dependent; \strong{VeDBA is preferred for towed or loosely-attached tags} because it is rotation-invariant.
+\item Burst Swimming Events: A binary flag marking the most energetic samples, defined as the top quantile(s) of instantaneous VeDBA (the magnitude of the dynamic, gravity-removed acceleration). VeDBA is used rather than total acceleration because the latter is dominated by the gravity baseline and biased toward gravity-aligned bursts. The threshold is relative (per-deployment): each quantile always flags the same fraction of a record (see \code{burst.quantiles}).
 }
 
 \strong{Orientation:}
@@ -203,7 +193,7 @@ Output includes:
 \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
 \item Heading (degrees): Directional orientation of the animal, representing the compass heading.
 Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
-\item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between –180° and 180°.
+\item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between -180 and 180 degrees.
 }
 
 \strong{Linear Motion:}
@@ -211,21 +201,30 @@ Heading is corrected based on the deployment coordinates using global geomagneti
 \item Surge (g): The forward-backward linear movement of the animal along its body axis, derived from the accelerometer data.
 \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
-\item Vertical Velocity (m/s): The rate of change in the animal’s depth over time, including direction (positive for descent, negative for ascent).
+\item Vertical Velocity (m/s): The rate of change in the animal's depth over time, including direction (positive for descent, negative for ascent).
 Vertical velocity is calculated using a central difference method on the smoothed depth time series (with smoothing controlled by \code{depth.smoothing}).
 An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 }
+}
+\examples{
+\dontrun{
+# Axis-map the imported data into the body frame first, then reconstruct
+# kinematics/orientation and downsample to 1 Hz.
+oriented <- applyAxisMapping(imported)
+tag <- processTagData(oriented,
+                      downsample.to = 1,
+                      orientation.algorithm = "tilt_compass",
+                      paddle.calibration = paddle_cal)
 
-\strong{Python Requirements}
-\itemize{
-\item Requires the \code{reticulate} R package for interfacing with Python.
-\item The active Python environment must include the \code{AHRS} and \code{numpy} modules.
-\item If unavailable, the function will return an informative error with installation guidance.
+# Batch of saved deployments: write a QC diagnostic PDF and save incrementally.
+processTagData(list.files("./oriented", full.names = TRUE),
+               plot.file = "./qc/corrections.pdf",
+               return.data = FALSE, output.dir = "./processed")
 }
 }
 \references{
 Gunner RM, Holton MD, Scantlebury MD, \emph{et al.} (2021) Dead-reckoning animal
-movements in R: a reappraisal using Gundog. \emph{Animal Biotelemetry}. 9:1–37.
+movements in R: a reappraisal using Gundog. \emph{Animal Biotelemetry}. 9:1-37.
 \doi{10.1186/s40317-021-00245-z}
 
 Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, \emph{et al.} (2009).

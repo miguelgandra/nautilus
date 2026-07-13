@@ -10,25 +10,17 @@ importTagData(
   wc.subdirectory = NULL,
   timezone = "UTC",
   import.mapping = NULL,
-  axis.mapping = NULL,
+  required.sensors = NULL,
   id.metadata,
-  id.col = "ID",
-  tag.model.col = "tag",
-  tag.type.col = NULL,
-  deploy.date.col = "tagging_date",
-  deploy.lon.col = "deploy_lon",
-  deploy.lat.col = "deploy_lat",
-  pop.date.col = NULL,
-  pop.lon.col = NULL,
-  pop.lat.col = NULL,
-  package.id.col = NULL,
-  paddle.wheel.col = NULL,
+  columns = metadataColumns(),
   return.data = TRUE,
-  save.files = FALSE,
-  output.folder = NULL,
+  output.dir = NULL,
   output.suffix = NULL,
+  compress = TRUE,
   data.table.threads = NULL,
-  verbose = TRUE
+  import.calibration = TRUE,
+  alignment = alignmentControl(),
+  verbose = "detailed"
 )
 }
 \arguments{
@@ -43,8 +35,15 @@ This subdirectory should include the sensor CSV files for the corresponding anim
 (e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
 This subdirectory should contain the "Locations.csv" file with position data from the tag.}
 
-\item{timezone}{Character string specifying the timezone for all datetime conversions.
-Must be one of the valid timezones from \code{OlsonNames()}. Defaults to "UTC" (Coordinated Universal Time).}
+\item{timezone}{Character. The time zone in which the tag \strong{recorded} its timestamps. It is used
+to \emph{interpret} the (time-zone-naive) clock readings in the sensor files: the recorded clock
+values are preserved and the resulting \code{datetime} column is simply labelled with this zone -
+\strong{no shifting or conversion is performed}. Must be a valid \code{OlsonNames()} zone. Defaults
+to "UTC", which matches standard CATS exports (whose columns are labelled "Date (UTC)" /
+"Time (UTC)"); set it only if your tag was configured to log in local time. If a CATS calibration
+sidecar reporting a non-zero \code{utc_offset} is found and it disagrees with this argument, a warning
+is issued (the clock is never silently shifted). Wildlife Computers location files are always read
+as UTC (their native zone), independent of this argument.}
 
 \item{import.mapping}{Data frame or NULL. Optional specification of column names to import
 from the CSV files and their corresponding sensor type and units. If \code{NULL} (default), uses
@@ -55,71 +54,59 @@ with three columns:
 \item \strong{sensor}: The standardized sensor name to be used in the processed data. Valid options include: \code{"date"}, \code{"time"}, \code{"datetime"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"}, \code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}, \code{"paddle_freq"}, \code{"paddle_speed"}.
 \item \strong{units}: The units of the sensor data. Valid options include: \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"}, \code{"m"}, \code{"Hz"}, \code{"m/s"}, or \code{""} (an empty string) for unitless/dimensionless quantities.
 }
-For date and time columns, use \code{sensor = "datetime"} and \code{units = "UTC"}.}
+For date and time columns, use \code{sensor = "datetime"} and \code{units = "UTC"}.
 
-\item{axis.mapping}{Optional. A data frame containing the axis transformations for the IMU (Inertial Measurement Unit).
-This parameter is used to correctly configure the IMU axes to match the North-East-Down (NED) frame
-or to mark faulty sensor data as NA.
-The data frame should have four columns:
-\itemize{
-\item \emph{type}: A column specifying the tag type (\code{CAM} vs \code{CMD}).
-\item \emph{tag}: A column specifying the tag or sensor identifier. The tags indicated in this column should match the tag types in the \code{id.metadata} data frame.
-\item \emph{from}: A column indicating the original axis in the sensor's coordinate system.
-\item \emph{to}: A column specifying the target axis in the desired coordinate system.
-}
-Both signal and swap transformations are allowed. Transformations can be defined for different tags in case multiple tags were used.}
+\strong{Temperature handling.} Only water-temperature channels are mapped to \code{temp}: the
+pressure-sensor thermistor (\code{"Temperature (depth)"} / \code{"Depth (200bar) 2"}) and the CEIIA
+\code{"Temperature (deg C)"}. Tag-electronics channels (\code{"Temp. (magnet.)"}, the magnetometer
+chip, and \code{"Temperature (imu)"}, the IMU board) are blacklisted and never auto-mapped, because
+they report internal temperature, not the environment. If a deployment's only temperature column is
+a blacklisted one, \code{temp} is left unset (consistent with how any other missing sensor is
+handled) and a per-deployment warning is issued. Explicitly mapping a blacklisted header via
+\code{import.mapping} overrides the blacklist (it is then used as \code{temp}) but still warns.}
+
+\item{required.sensors}{Character vector or \code{NULL}. The sensor channels that must be
+present for a file to be imported. If \code{NULL} (default), a file is imported as long as
+it has a usable datetime and at least one recognized sensor channel — so
+accelerometer-only, gyroscope-free, magnetometer-free, or depth/temperature-only
+(TDR-style) datasets are all supported. Whichever recognized channels are present are
+kept; the rest are simply absent from the output. To enforce a specific set (e.g.
+require depth for dive analysis, or a full IMU), pass their names, e.g.
+\code{c("depth", "temp")} or \code{c("ax","ay","az","gx","gy","gz","mx","my","mz")}. Valid names:
+\code{ax}, \code{ay}, \code{az}, \code{gx}, \code{gy}, \code{gz}, \code{mx}, \code{my}, \code{mz}, \code{depth}, \code{temp}, \code{paddle_speed},
+\code{paddle_freq}. Note that downstream analyses may still require particular sensors.}
 
 \item{id.metadata}{Data frame. Metadata about the IDs to associate with the processed data.
-Must contain at least columns for ID and tag type.}
+Must contain at least columns for ID, tag model, and deployment date/longitude/latitude (see \code{columns}).
+Preferably a \code{nautilus_deployments} object returned by \code{\link{qcDeploymentMetadata}}: it
+carries its own column schema (so \code{columns} is not needed) and a QC verdict that is reported in the
+header and rejected if it failed. If a plain data.frame is supplied instead, the same metadata checks
+are run inline as a guard, and blocking errors abort the import before the long read.}
 
-\item{id.col}{Character. Column name for ID in \code{id.metadata} (default: "ID").}
+\item{columns}{A column-mapping schema built with \code{\link{metadataColumns}}, describing which
+columns of \code{id.metadata} hold each piece of deployment information (ID, tag model/type,
+deployment and pop-up datetime/longitude/latitude, package ID, paddle wheel, attachment site).
+Fields default to the canonical nautilus names, so metadata that already uses those names needs
+no configuration; override only the columns that differ, e.g.
+\code{columns = metadataColumns(deploy_datetime = "tagging_date", package_id = "PackageID")}.}
 
-\item{tag.model.col}{Character. Column name for the tag model in \code{id.metadata} (default: "tag").}
+\item{return.data}{Logical. Return the imported data in memory (default \code{TRUE}). When \code{FALSE}, the
+function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
+step's \code{data} argument -- so a large fleet can be imported without ever holding it all in memory.
+\code{return.data = FALSE} therefore requires an \code{output.dir}.}
 
-\item{tag.type.col}{Character string or \code{NULL}. The name of the column in \code{id.metadata} that specifies the tag's type (e.g., "Camera", "MS").
-If \code{NULL} (default), the tag type is inferred from the animal \code{id} (e.g., by checking for substrings like \code{"CAM"}).
-When specified, \code{axis.mapping} must include a 'type' column with values matching the unique tag types found in this \code{id.metadata} column.}
+\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
+a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
 
-\item{deploy.date.col}{Character. Column name for the tagging date in \code{id.metadata} (default: "tagging_date").}
+\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
+to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
 
-\item{deploy.lon.col}{Character. Column name for longitude in sensor data (default: "deploy_lon").}
-
-\item{deploy.lat.col}{Character. Column name for latitude in sensor data (default: "deploy_lat").}
-
-\item{pop.date.col}{Character or NULL. Column name for the popup date in \code{id.metadata}.
-If NULL (default), popup date information will not be imported. When specified,
-the column must contain POSIXct values.}
-
-\item{pop.lon.col}{Character or NULL. Column name for popup longitude in \code{id.metadata}.
-If NULL (default), popup longitude will not be imported. Must be specified
-together with \code{pop.date.col} and \code{pop.lat.col} to enable popup location integration.}
-
-\item{pop.lat.col}{Character or NULL. Column name for popup latitude in \code{id.metadata}.
-If NULL (default), popup latitude will not be imported. Must be specified
-together with \code{pop.date.col} and \code{pop.lon.col} to enable popup location integration.}
-
-\item{package.id.col}{Character. Column name for the package id in \code{id.metadata} (default: "package_id").}
-
-\item{paddle.wheel.col}{Character string specifying the name of the column in \code{id.metadata}
-that indicates whether each tag was equipped with a magnetic paddle wheel for speed estimation.
-The column should contain logical values (TRUE/FALSE) or binary values (1/0) where 1/TRUE indicates
-presence of a paddle wheel. If NULL (default), the function assumes no paddle wheel data needs to be processed.}
-
-\item{return.data}{Logical. Controls whether the function returns the processed data
-as a list in memory. When processing large or numerous datasets, set to \code{FALSE} to reduce
-memory usage. Note that either \code{return.data} or \code{save.files} must be \code{TRUE}
-(or both). Default is \code{TRUE}.}
-
-\item{save.files}{Logical. If \code{TRUE}, the processed data for each ID will be saved as RDS files
-during the iteration process. This ensures that progress is saved incrementally, which can
-help prevent data loss if the process is interrupted or stops midway. Default is \code{FALSE}.}
-
-\item{output.folder}{Character. Path to the folder where the processed files will be saved.
-This parameter is only used if \code{save.files = TRUE}. If \code{NULL}, the RDS file will be saved
-in the data folder corresponding to each ID. Default is \code{NULL}.}
-
-\item{output.suffix}{Character. A suffix to append to the file name when saving.
-This parameter is only used if \code{save.files = TRUE}.}
+\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set).
+\code{TRUE} (default, gzip) produces smaller files. Set \code{FALSE} to write uncompressed, which is
+markedly faster for very large tags - gzip compression can otherwise dominate the import time -
+at the cost of larger files (typically ~1.5-2x). May also be one of \code{"gzip"}, \code{"bzip2"}, \code{"xz"}
+to choose the codec explicitly. The file content is identical either way; \code{readRDS()} reads both
+transparently. Passed to \code{\link[base]{saveRDS}}.}
 
 \item{data.table.threads}{Integer or NULL. Specifies the number of threads
 that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
@@ -131,13 +118,43 @@ Notes:
 \item Current thread count: \code{data.table::getDTthreads()}
 }}
 
-\item{verbose}{Logical. If TRUE, the function will print detailed processing information. Defaults to TRUE.}
+\item{import.calibration}{Logical. If \code{TRUE} (default), the function looks for a
+calibration sidecar paired with each sensor CSV (a CATS mini-diary \code{.txt}, or a
+camera \verb{_resume.json}) and, when found, attaches the parsed calibration constants
+(per-sensor offsets/factors, magnetometer ASA coefficients, depth zero-offset) to
+the output as a \code{"calibration"} attribute. The values are stored for provenance
+and downstream use but are \strong{not} applied to the sensor data at import time.
+If no sidecar is found, the attribute is \code{NULL}.}
+
+\item{alignment}{A control object from \code{\link{alignmentControl}} governing the temporal alignment
+between a primary archival tag (depth + IMU) and a paired Wildlife Computers tag (wet/dry + GPS),
+which keep independent clocks. When both record depth, the offset between their clocks is recovered
+by cross-correlating the two depth traces and the WC-clock streams (\code{positions}, \code{dry}) are shifted
+onto the primary tag's timeline, so downstream steps that combine them (the depth zero-offset
+correction, dead-reckoning fix anchors) see one consistent clock. The correction abstains when the
+evidence is too weak (no shared depth, too little overlap, a poor correlation) and is recorded in
+\code{meta$ancillary$alignment}. Pass \code{alignmentControl(method = "none")} to disable it.}
+
+\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal" (framed header, one line
+per folder, and a final \code{SUMMARY} block with the run count, runtime and consolidated issues), or
+\code{2}/"detailed" (default; adds per-individual diagnostics: tag attributes, sensor channels, row
+count and sampling rate, span, calibration sidecar, unit conversions, integrated locations and any
+excluded sensors). Defaults to \code{"detailed"}.
+
+\strong{Issue reporting is verbosity-gated.} Data-quality issues (folders with no sensor file,
+locations outside the recording period, timezone mismatches, discarded
+electronics temperature sensors, ...) are surfaced through the console UI when \code{verbose >= 1}
+(pre-flight ones as amber alerts in the header, per-deployment ones inline, all of them echoed in
+the final \code{SUMMARY} tally) and \strong{no base-R \code{warning()} is emitted}. Only when
+\code{verbose = 0}/quiet are these issues emitted as aggregated R \code{warning()} conditions (once
+each, at the very end). Automated / headless callers that catch issues with
+\code{tryCatch()} / \code{withCallingHandlers()} must therefore run with \code{verbose = 0}; at the
+default \code{"detailed"} the cli console is the channel and no warning conditions are raised.}
 }
 \value{
-If \code{return.data = TRUE}, returns a list where each element contains the
-processed sensor data for an individual folder. If \code{return.data = FALSE},
-returns \code{NULL} invisibly. In all cases, data will be saved to disk if
-\code{save.files = TRUE}.
+If \code{return.data = TRUE}, a named list where each element contains the imported sensor
+data for one folder. If \code{return.data = FALSE}, a character vector of the written \code{.rds} file
+paths. Data is written to disk whenever \code{output.dir} is set.
 }
 \description{
 This function provides an end-to-end solution for importing and standardizing
@@ -150,7 +167,7 @@ to process data from multiple individuals sequentially, making it well-suited fo
 large-scale studies.
 
 Sensor time series are automatically processed and converted to standardized units
-— \code{g} for acceleration, \code{rad/s} for angular velocity, and \code{µT} for magnetic fields —
+— \code{g} for acceleration, \code{rad/s} for angular velocity, and \verb{µT} for magnetic fields —
 while preserving the original temporal resolution and structure.
 
 Users can optionally specify a custom column mapping using the \code{import.mapping} argument,
@@ -159,8 +176,9 @@ this mapping defines how columns in the raw data correspond to standard sensor t
 including the associated units. This ensures compatibility with the function's
 standardization routines, even when input data deviates from default naming conventions.
 
-Additionally, the function includes options for axis transformations to
-convert IMU data into animal-centric coordinate frames, such as NED (North-East-Down).
+Sensor data is imported in its raw axis frame; converting the IMU to an animal-centric frame such as
+NED (North-East-Down) is a separate, explicit step afterwards via \code{\link{applyAxisMapping}}
+(optionally validated against the data with \code{\link{checkTagMapping}}).
 
 When available, location data from Wildlife Computers tags (e.g., MiniPAT, MK10, SPOT)
 can be integrated automatically. These should be stored in dedicated subfolders
@@ -174,10 +192,21 @@ using optimized \code{data.table} operations with configurable multi-threading.
 For optimal performance with very large datasets, consider:
 \itemize{
 \item Setting \code{data.table.threads} to match available CPU cores;
-\item Using \code{save.files = TRUE} to reduce memory usage;
+\item Setting \code{return.data = FALSE} with an \code{output.dir} to stream results to disk;
 \item Processing individuals sequentially rather than simultaneously.
 }
 }
+\examples{
+\dontrun{
+# QC the deployment metadata first, then feed it straight to the import:
+meta <- qcDeploymentMetadata(raw_metadata, columns = metadataColumns())
+imported <- importTagData(
+  data.folders        = list.dirs("./tags", recursive = FALSE),
+  sensor.subdirectory = "CMD",
+  id.metadata         = meta,
+  timezone            = "UTC")
+}
+}
 \seealso{
-\link{importTagData}
+\link{processTagData}, \link{filterDeploymentData}
 }
