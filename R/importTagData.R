@@ -792,30 +792,24 @@ importTagData <- function(data.folders,
     # Wildlife Computers ancillary streams + clock alignment ###################
     ############################################################################
 
-    # The COMPLETE WC position record is kept as an independent ancillary stream (meta$ancillary$positions,
-    # attached with the metadata below) at its own cadence - NOT snapped to sensor rows and NOT trimmed to
-    # the recording window - so the full fix history survives downstream analyses (tracks, maps,
-    # post-deployment surface drift). Deploy/pop-up positions live canonically in meta$deployment.
-    positions_anc <- .readPositionsAncillary(locations_file)
-    if (lvl >= 2L && !is.null(positions_anc)) {
+    # A co-deployed WC tag is a separate DEVICE, not a format of this one: it gets its own reader and
+    # attaches to the assembled tag, so no primary reader ever learns about it (see R/read_wc.R). The
+    # COMPLETE position record is kept as an independent ancillary stream at its own cadence - NOT snapped
+    # to sensor rows and NOT trimmed to the recording window - so the full fix history survives downstream
+    # (tracks, maps, post-deployment surface drift). Deploy/pop-up positions live in meta$deployment.
+    wc_anc <- read_wc(locations_file, archive_files[i])
+    if (lvl >= 2L && !is.null(wc_anc$positions)) {
       wc_model <- .wcModel(dirname(wc_files[i])); instr <- if (!is.null(wc_model)) wc_model else "WC"
-      .log_detail(lvl, "locations: ", sprintf("%d %s fix%s", nrow(positions_anc$data), instr,
-                                              if (nrow(positions_anc$data) != 1) "es" else ""))
+      .log_detail(lvl, "locations: ", sprintf("%d %s fix%s", nrow(wc_anc$positions$data), instr,
+                                              if (nrow(wc_anc$positions$data) != 1) "es" else ""))
     }
 
-    # Wildlife Computers wet/dry signal -> ancillary tier (transition-encoded), kept at native rate and
-    # OUT of the measurand grid; consumed by the depth drift correction in processTagData()
-    dry_anc <- .readDryAncillary(archive_files[i])
-
-    # Temporal alignment. The WC tag runs its own clock, offset from the primary tag's by anything from a
-    # few seconds to many minutes. That offset is invisible without a shared signal, yet it silently
-    # corrupts every step that combines the streams (the depth zero-offset correction, dead-reckoning
-    # anchors). Recover it by cross-correlating the two devices' depth traces - the same physical quantity,
-    # logged by both (the WC archive records depth too) - and shift the WC-clock streams (positions, dry)
-    # onto the primary tag's timeline. Conservative: abstains and shifts nothing when evidence is weak.
-    aln <- .alignWCClocks(sensor_data, positions_anc, dry_anc, archive_files[i], alignment)
-    positions_anc <- aln$positions_anc; dry_anc <- aln$dry_anc
-    if (lvl >= 2L && (!is.null(positions_anc) || !is.null(dry_anc))) .reportAlignment(aln$info, lvl)
+    # Align the co-deployed device's clock onto this tag's timeline and attach. attachAncillary() is the
+    # single home for that alignment; it abstains and shifts nothing when the evidence is weak.
+    att <- attachAncillary(sensor_data, wc_anc, align = alignment)
+    # report only when there was actually a stream to shift: the aligner also records an abstention for
+    # tags with no co-deployed device, and that is provenance, not something to narrate.
+    if (lvl >= 2L && length(wc_anc)) .reportAlignment(att$info, lvl)
 
 
     ############################################################################
@@ -868,12 +862,11 @@ importTagData <- function(data.folders,
     cal_to_store <- calibration_info
     if (!is.null(cal_to_store)) cal_to_store$sample_rate <- NULL
     meta$calibration  <- cal_to_store
-    # WC ancillary streams (read + clock-aligned above): wet/dry (transition-encoded, consumed by the
-    # depth drift correction) and the full position record. The clock-alignment provenance is stored
-    # alongside them so the applied offset (or the reason it abstained) is inspectable downstream.
-    if (!is.null(dry_anc)) meta$ancillary$dry <- dry_anc
-    if (!is.null(positions_anc)) meta$ancillary$positions <- positions_anc
-    if (!is.null(aln$info)) meta$ancillary$alignment <- aln$info
+    # ancillary streams from any co-deployed device (read + clock-aligned above): wet/dry
+    # (transition-encoded, consumed by the depth drift correction) and the full position record. The
+    # clock-alignment provenance rides alongside them, so the applied offset - or the reason the aligner
+    # abstained - stays inspectable downstream.
+    for (nm in names(att$ancillary)) meta$ancillary[[nm]] <- att$ancillary[[nm]]
     meta <- .appendProcessing(meta, "importTagData",
                               directory = data.folders[i],
                               imported_columns = selected_cols,
