@@ -143,11 +143,14 @@
 #' }
 #' @param import.calibration Logical. If `TRUE` (default), the function looks for a
 #'   calibration sidecar paired with each sensor CSV (a CATS mini-diary `.txt`, or a
-#'   camera `_resume.json`) and, when found, attaches the parsed calibration constants
-#'   (per-sensor offsets/factors, magnetometer ASA coefficients, depth zero-offset) to
-#'   the output as a `"calibration"` attribute. The values are stored for provenance
-#'   and downstream use but are **not** applied to the sensor data at import time.
-#'   If no sidecar is found, the attribute is `NULL`.
+#'   camera `_resume.json`) and, when found, records the parsed constants (per-sensor
+#'   offsets/factors, magnetometer ASA coefficients, depth zero-offset) in the tag's
+#'   metadata (`meta$calibration`). These are the corrections the tag firmware already
+#'   applied to the exported CSV, so nautilus keeps them **only as an audit record** and
+#'   never re-applies them; they are not consumed by any analysis step. The one
+#'   functional field is the recording UTC offset, which is cross-checked against
+#'   `timezone` (a mismatch raises a warning). If no sidecar is found, `meta$calibration`
+#'   is `NULL`.
 #' @param alignment A control object from \code{\link{alignmentControl}} governing the temporal alignment
 #'   between a primary archival tag (depth + IMU) and a paired Wildlife Computers tag (wet/dry + GPS),
 #'   which keep independent clocks. When both record depth, the offset between their clocks is recovered
@@ -1413,21 +1416,13 @@ importTagData <- function(data.folders,
 .reportCalibration <- function(cal, lvl = 1L) {
   if (lvl < 2L) return(invisible(NULL))
   if (is.null(cal)) { .log_detail(lvl, "no calibration sidecar found"); return(invisible(NULL)) }
-  .log_detail(lvl, "calibration sidecar: ", basename(cal$source))
-
-  sub <- character(0)
-  d <- cal$calibration$depth$offset
-  if (length(d) && !all(is.na(d)) && any(d != 0, na.rm = TRUE)) {
-    sub <- c(sub, paste0("depth offset: ", paste(d[!is.na(d)], collapse = " / "), " m"))
-  }
-  a <- cal$calibration$mag$asa
-  if (length(a) && !all(is.na(a))) {
-    sub <- c(sub, paste0("mag sensitivity (ASA): ", paste(a[!is.na(a)], collapse = " / ")))
-  }
-  # sampling frequency is intentionally NOT shown here: it is inferred from the data and reported
-  # earlier alongside the row count, so the calibration sidecar lists only calibration-specific fields.
-  # indented, no-symbol bullets sit visually subordinate to the sidecar line above
-  if (length(sub)) cli::cli_bullets(stats::setNames(sub, rep(" ", length(sub))))
+  # Provenance only: confirm the sidecar was found and captured, but do NOT recite its constant values
+  # (depth zero-offset, per-sensor offsets/factors, magnetometer ASA). Those are already baked into the
+  # calibrated CSV export by the tag firmware, so nautilus stores them in `meta$calibration` for auditing
+  # but never applies them - printing them each import is noise no analysis step acts on. The one
+  # functional field, the recording UTC offset, is cross-checked against `timezone` and surfaces
+  # separately as a warning when it disagrees; that path is intentionally left loud.
+  .log_detail(lvl, "calibration sidecar: ", basename(cal$source), " (stored in metadata)")
   invisible(NULL)
 }
 

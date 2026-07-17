@@ -204,4 +204,24 @@ test_that("a sidecar utc_offset disagreeing with `timezone` warns and is recorde
     suppressMessages(run("Etc/GMT-2")),
     warning = function(w) { msgs <<- c(msgs, conditionMessage(w)); invokeRestart("muffleWarning") })
   expect_false(any(grepl("UTC-offset mismatch", msgs)))
+
+  # the sidecar constants are still CAPTURED as provenance (only their console display was dropped)
+  suppressWarnings(out <- run("UTC"))
+  cal <- nautilus:::.getMeta(out)$calibration
+  expect_false(is.null(cal))
+  expect_equal(cal$device$utc_offset, 2)
+})
+
+test_that(".reportCalibration confirms the sidecar but does not recite its constant values", {
+  # the values (depth zero-offset, ASA) are firmware corrections already baked into the export; nautilus
+  # keeps them in meta$calibration for auditing but must not print them each import - that was pure noise
+  # no analysis step acts on. Only a one-line provenance confirmation should reach the console.
+  cal <- list(source = "20221017-CamCMD134.txt",
+              calibration = list(depth = list(offset = 14.7), mag = list(asa = c(180, 181, 169))))
+  out <- cli::cli_fmt(nautilus:::.reportCalibration(cal, lvl = 2L))
+  expect_true(any(grepl("calibration sidecar", out)))
+  expect_true(any(grepl("CamCMD134", out)))                       # names the file (provenance)
+  expect_false(any(grepl("depth offset|14\\.7", out)))            # no value dump
+  expect_false(any(grepl("ASA|180|181|169", out)))
+  expect_length(cli::cli_fmt(nautilus:::.reportCalibration(cal, lvl = 1L)), 0L)  # silent below detailed
 })

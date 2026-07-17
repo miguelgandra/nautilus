@@ -15,7 +15,10 @@
 #   $ biometrics   list of passive animal traits (sex, length, species, ...); imported via metadataColumns(traits=)
 #   $ sensors      list(present, excluded, sampling_hz_original, sampling_hz_processed, timezone)
 #   $ span         list(first_datetime, last_datetime, original_rows)
-#   $ calibration  sidecar calibration object or NULL
+#   $ calibration  parsed sidecar constants (depth/sensor offsets+factors, mag ASA) or NULL - an AUDIT
+#                  record of the corrections the tag firmware already applied to the exported CSV; kept for
+#                  provenance, NOT applied by nautilus and not read by any analysis step (the recording UTC
+#                  offset, cross-checked against `timezone`, is the one functional field)
 #   $ axis_mapping structured list (see .newAxisMappingMeta): applied flag, net signed-perm per
 #                  sensor family, determinant (handedness), dropped axes, source, original from/to rows
 #   $ mag_calibration nested list (see .newMagCalibrationMeta): status, applied, applied_params

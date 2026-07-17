@@ -138,11 +138,14 @@ Notes:
 
 \item{import.calibration}{Logical. If \code{TRUE} (default), the function looks for a
 calibration sidecar paired with each sensor CSV (a CATS mini-diary \code{.txt}, or a
-camera \verb{_resume.json}) and, when found, attaches the parsed calibration constants
-(per-sensor offsets/factors, magnetometer ASA coefficients, depth zero-offset) to
-the output as a \code{"calibration"} attribute. The values are stored for provenance
-and downstream use but are \strong{not} applied to the sensor data at import time.
-If no sidecar is found, the attribute is \code{NULL}.}
+camera \verb{_resume.json}) and, when found, records the parsed constants (per-sensor
+offsets/factors, magnetometer ASA coefficients, depth zero-offset) in the tag's
+metadata (\code{meta$calibration}). These are the corrections the tag firmware already
+applied to the exported CSV, so nautilus keeps them \strong{only as an audit record} and
+never re-applies them; they are not consumed by any analysis step. The one
+functional field is the recording UTC offset, which is cross-checked against
+\code{timezone} (a mismatch raises a warning). If no sidecar is found, \code{meta$calibration}
+is \code{NULL}.}
 
 \item{alignment}{A control object from \code{\link{alignmentControl}} governing the temporal alignment
 between a primary archival tag (depth + IMU) and a paired Wildlife Computers tag (wet/dry + GPS),
