@@ -189,8 +189,10 @@ tags <- filterDeploymentData(tags)
 tags <- regularizeTimeSeries(tags)
 
 # Optionally diagnose and repair sensor faults (dead channels, spikes, ...).
-tags <- checkSensorIntegrity(tags)
-tags <- checkSensorQuality(tags)
+# Both return list(curated_data = <tags>, issues = <report>); with apply = TRUE the
+# curated_data has faulty channels dropped/repaired. Keep the tags, inspect $issues as needed.
+tags <- checkSensorIntegrity(tags, apply = TRUE)$curated_data
+tags <- checkSensorQuality(tags, apply = TRUE)$curated_data
 
 # Screen the position fixes too (the location channel): remove GPS/Argos fixes implying an
 # impossible speed or computed from too few satellites. Thresholds are species-specific and opt-in.
