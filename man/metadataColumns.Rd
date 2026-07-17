@@ -22,6 +22,8 @@ metadataColumns(
   paddle_wheel = NULL,
   attachment_site = NULL,
   deployment_type = NULL,
+  tag_format = NULL,
+  data_start = NULL,
   traits = NULL
 )
 }
@@ -77,6 +79,18 @@ data instead). Carried onto each tag's metadata at import. Default \code{NULL}.}
 \item{deployment_type}{Column recording the mount type, \code{"rigid"} or \code{"towed"}; used by
 \code{\link{checkTagMapping}} to choose the posture scorer (rigid rewards near-zero resting
 roll/pitch; towed tolerates resting offsets). Default \code{NULL}.}
+
+\item{tag_format}{Column naming each deployment's raw data format, so a single
+\code{\link{importTagData}} call can mix tag makes: it selects the reader per deployment and
+overrides that call's \code{format} argument. Values are the reader names (\code{"cats"},
+\code{"little_leonardo"}). Mapping this role is the explicit, QC'd alternative to \code{format = "auto"}
+detection. Default \code{NULL} (every deployment uses the \code{format} argument).}
+
+\item{data_start}{Column holding the instant the LOGGER STARTED RECORDING, as POSIXct. Required only
+for loggers whose raw files carry no clock (e.g. Little Leonardo, whose header reads
+\verb{START DATE 0000/00/00}): timestamps are synthesised from it plus the sampling rate. This is \strong{not}
+\code{deploy_datetime} - recording usually starts before the animal is released, and the two are
+different events. Default \code{NULL}.}
 
 \item{traits}{Character \emph{vector} of column names holding passive biological / ecological attributes of
 the animal (e.g. \code{c("sex", "length", "maturity", "species")}), or \code{NULL}. Unlike the roles above,

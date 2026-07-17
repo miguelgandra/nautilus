@@ -7,6 +7,7 @@
 importTagData(
   data.folders,
   sensor.subdirectory = "CMD",
+  format = "cats",
   wc.subdirectory = NULL,
   timezone = "UTC",
   import.mapping = NULL,
@@ -28,7 +29,14 @@ importTagData(
 Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly
 additional (Wildlife Computers) tag data.}
 
-\item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
+\item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").}
+
+\item{format}{Character. The raw data format to read: \code{"cats"} (default; the CATS/CEiiA multi-sensor
+CSV export) or \code{"little_leonardo"} (Little Leonardo archival loggers - a \verb{_A.txt} acceleration file
+plus an optional \verb{_DT.txt} depth/temperature file, which carry no clock and so additionally need the
+\code{data_start} role, see \code{\link{metadataColumns}}). To import several tag makes in ONE call, map
+the \code{tag_format} role instead: a per-deployment value there overrides this argument. Data you have
+already read into R does not need a reader at all - see \code{\link{buildTagData}}.
 This subdirectory should include the sensor CSV files for the corresponding animal.}
 
 \item{wc.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data

@@ -22,6 +22,41 @@
 #     in that order - the pattern `.reportAssembly()` / `.reportCalibration()` already established.
 
 
+#' The supported raw formats, and what each reader needs to find its data
+#'
+#' The dispatch table for `importTagData(format=)` / the `tag_format` metadata role. Each entry pairs a
+#' reader with a `has_data()` probe, because discovery is format-specific too: importTagData's pre-flight
+#' has to know whether a folder holds readable data BEFORE the loop, and "a .csv under sensor.subdirectory"
+#' is only true of CATS. Adding a format means adding an entry here plus its reader file - nothing else.
+#' @keywords internal
+#' @noRd
+.readerFormats <- function() {
+  list(
+    cats = list(
+      label = "CATS / CEiiA",
+      has_data = function(folder, sensor.subdirectory) {
+        length(list.files(file.path(folder, sensor.subdirectory), pattern = "\\.csv$")) > 0L
+      }),
+    little_leonardo = list(
+      label = "Little Leonardo",
+      has_data = function(folder, sensor.subdirectory) .llDetect(folder, sensor.subdirectory))
+  )
+}
+
+#' Validate a format name against the dispatch table.
+#' @keywords internal
+#' @noRd
+.checkFormat <- function(x, arg = "format") {
+  known <- names(.readerFormats())
+  bad <- setdiff(unique(stats::na.omit(x)), known)
+  if (length(bad)) {
+    .abort(c("Unsupported tag {cli::qty(length(bad))}format{?s}: {.val {bad}}.",
+             "i" = "Supported: {.val {known}}."))
+  }
+  invisible(TRUE)
+}
+
+
 #' Read a CATS/CEiiA deployment folder into a canonical sensor frame
 #'
 #' @param folder Path to the deployment folder.

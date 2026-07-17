@@ -521,7 +521,7 @@ test_that("importTagData fails loudly on empty input, not a silent empty import"
                                    import.mapping = .mapping, id.metadata = .meta(c("ID_01", "ID_02")),
                                    columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    return.data = TRUE, verbose = FALSE)),
-    "No sensor", ignore.case = TRUE)
+    "No readable", ignore.case = TRUE)
 
   # (c) a mistyped sensor.subdirectory on otherwise-valid folders aborts the same way
   root2 <- .make_fixture(valid = c("ID_01", "ID_02"))                       # real CSVs, but under "CMD"
@@ -532,5 +532,5 @@ test_that("importTagData fails loudly on empty input, not a silent empty import"
                                    import.mapping = .mapping, id.metadata = .meta(c("ID_01", "ID_02")),
                                    columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    return.data = TRUE, verbose = FALSE)),
-    "No sensor", ignore.case = TRUE)
+    "No readable", ignore.case = TRUE)
 })

@@ -48,6 +48,16 @@
 #' @param deployment_type Column recording the mount type, `"rigid"` or `"towed"`; used by
 #'   \code{\link{checkTagMapping}} to choose the posture scorer (rigid rewards near-zero resting
 #'   roll/pitch; towed tolerates resting offsets). Default `NULL`.
+#' @param tag_format Column naming each deployment's raw data format, so a single
+#'   \code{\link{importTagData}} call can mix tag makes: it selects the reader per deployment and
+#'   overrides that call's `format` argument. Values are the reader names (`"cats"`,
+#'   `"little_leonardo"`). Mapping this role is the explicit, QC'd alternative to `format = "auto"`
+#'   detection. Default `NULL` (every deployment uses the `format` argument).
+#' @param data_start Column holding the instant the LOGGER STARTED RECORDING, as POSIXct. Required only
+#'   for loggers whose raw files carry no clock (e.g. Little Leonardo, whose header reads
+#'   `START DATE 0000/00/00`): timestamps are synthesised from it plus the sampling rate. This is **not**
+#'   `deploy_datetime` - recording usually starts before the animal is released, and the two are
+#'   different events. Default `NULL`.
 #' @param traits Character *vector* of column names holding passive biological / ecological attributes of
 #'   the animal (e.g. `c("sex", "length", "maturity", "species")`), or `NULL`. Unlike the roles above,
 #'   traits drive no processing - they are carried through VERBATIM by \code{\link{importTagData}} into
@@ -109,6 +119,8 @@ metadataColumns <- function(id = "ID",
                         paddle_wheel = NULL,
                         attachment_site = NULL,
                         deployment_type = NULL,
+                        tag_format = NULL,
+                        data_start = NULL,
                         traits = NULL) {
 
   # role fields (each maps ONE column, so each is a single string); `traits` is the one vector-valued
@@ -119,7 +131,7 @@ metadataColumns <- function(id = "ID",
                  popup_datetime = popup_datetime, popup_lon = popup_lon, popup_lat = popup_lat,
                  package_id = package_id, logger_id = logger_id, exclude_sensors = exclude_sensors,
                  axis_config = axis_config, paddle_wheel = paddle_wheel, attachment_site = attachment_site,
-                 deployment_type = deployment_type)
+                 deployment_type = deployment_type, tag_format = tag_format, data_start = data_start)
 
   required <- c("id", "tag_model", "deploy_datetime", "deploy_lon", "deploy_lat")
   for (f in names(fields)) .assert_string(fields[[f]], paste0("columns$", f), null_ok = !(f %in% required))

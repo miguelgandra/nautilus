@@ -48,6 +48,12 @@
 #' Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly
 #' additional (Wildlife Computers) tag data.
 #' @param sensor.subdirectory Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
+#' @param format Character. The raw data format to read: `"cats"` (default; the CATS/CEiiA multi-sensor
+#'   CSV export) or `"little_leonardo"` (Little Leonardo archival loggers - a `_A.txt` acceleration file
+#'   plus an optional `_DT.txt` depth/temperature file, which carry no clock and so additionally need the
+#'   `data_start` role, see \code{\link{metadataColumns}}). To import several tag makes in ONE call, map
+#'   the `tag_format` role instead: a per-deployment value there overrides this argument. Data you have
+#'   already read into R does not need a reader at all - see \code{\link{buildTagData}}.
 #' This subdirectory should include the sensor CSV files for the corresponding animal.
 #' @param wc.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
 #' (e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
@@ -176,6 +182,7 @@
 
 importTagData <- function(data.folders,
                           sensor.subdirectory = "CMD",
+                          format = "cats",
                           wc.subdirectory = NULL,
                           timezone = "UTC",
                           import.mapping = NULL,
@@ -220,6 +227,8 @@ importTagData <- function(data.folders,
   paddle.wheel.col    <- columns$paddle_wheel
   attachment.site.col <- columns$attachment_site
   deployment.type.col <- columns$deployment_type
+  tag.format.col      <- columns$tag_format                    # per-deployment reader (overrides `format`)
+  data.start.col      <- columns$data_start                    # recording start for clock-less loggers
   traits.cols         <- columns$traits                        # passive attribute columns carried to meta$biometrics
 
 
@@ -272,6 +281,8 @@ importTagData <- function(data.folders,
 
   # subdirectories and output folder (fail-fast: output.dir must already exist)
   .assert_string(sensor.subdirectory, "sensor.subdirectory")
+  .assert_string(format, "format")
+  .checkFormat(format, "format")            # fail on an unknown reader before anything is read
   .assert_string(wc.subdirectory, "wc.subdirectory", null_ok = TRUE)
   .assert_dir(output.dir, "output.dir", null_ok = TRUE)
 
@@ -402,27 +413,43 @@ importTagData <- function(data.folders,
              "i" = "Add these IDs to {.arg id.metadata}, or drop the folders from {.arg data.folders}."))
   }
 
-  # identify sensor data files (.csv) in the sensor folder for each directory
-  data_files <- sapply(data.folders, function(x) {
-    files <- list.files(file.path(x, sensor.subdirectory), full.names = TRUE, pattern = "\\.csv$")
-    if (length(files) > 0) files[1] else NA
-  })
-  names(data_files) <- basename(data.folders)
+  # resolve each deployment's raw format: the `tag_format` metadata column wins (so one call can mix tag
+  # makes), otherwise the `format` argument applies to all. Explicit and QC'd - nothing is sniffed.
+  ids_in <- basename(data.folders)
+  fmt_by_folder <- stats::setNames(rep(format, length(data.folders)), ids_in)
+  if (!is.null(tag.format.col)) {
+    for (k in seq_along(ids_in)) {
+      v <- id.metadata[[tag.format.col]][id.metadata[[id.col]] == ids_in[k]]
+      if (length(v) && !is.na(v[1]) && nzchar(as.character(v[1]))) fmt_by_folder[k] <- as.character(v[1])
+    }
+    .checkFormat(fmt_by_folder, "columns$tag_format")
+  }
 
+  # does each folder hold data its reader can read? Discovery is format-specific (a ".csv under
+  # sensor.subdirectory" is only true of CATS), so ask the reader rather than assuming a layout.
+  readers <- .readerFormats()
+  data_files <- vapply(seq_along(data.folders), function(k) {
+    isTRUE(readers[[fmt_by_folder[k]]]$has_data(data.folders[k], sensor.subdirectory))
+  }, logical(1))
+  data_files <- ifelse(data_files, data.folders, NA_character_)
+  names(data_files) <- ids_in
 
   # folders without a sensor file will be skipped (no interactive prompt: keeps the behaviour
   # identical in scripts, notebooks and the console). The warning is emitted after the header below,
   # so it reads as a pre-flight notice under the section title.
   missing_folders <- names(data_files)[is.na(data_files)]
 
-  # whole-run guard: if NOT ONE folder held a sensor CSV (e.g. a mistyped `sensor.subdirectory`, or the
-  # folders lack the sensor subdirectory entirely), fail fast rather than silently importing 0 of N.
-  # This is distinct from folders whose data is later filtered out (e.g. by `required.sensors`) - there a
-  # CSV WAS found, so those runs still return their (possibly empty) result with per-folder warnings.
+  # whole-run guard: if NOT ONE folder held readable data (e.g. a mistyped `sensor.subdirectory`, the
+  # wrong `format`, or folders lacking the sensor subdirectory entirely), fail fast rather than silently
+  # importing 0 of N. This is distinct from folders whose data is later filtered out (e.g. by
+  # `required.sensors`) - there data WAS found, so those runs still return their (possibly empty) result
+  # with per-folder warnings.
   if (all(is.na(data_files))) {
-    .abort(c("No sensor {.file .csv} files were found in any of the {length(data.folders)} {.arg data.folders}.",
-             "i" = "Check that {.arg sensor.subdirectory} ({.val {sensor.subdirectory}}) names the subfolder holding the sensor CSVs.",
-             "i" = "Each folder must contain a {.field {sensor.subdirectory}} subdirectory with sensor {.file .csv} files."))
+    fmt_lab <- paste(unique(vapply(unique(fmt_by_folder), function(f) readers[[f]]$label, character(1))),
+                     collapse = " / ")
+    .abort(c("No readable {fmt_lab} data was found in any of the {length(data.folders)} {.arg data.folders}.",
+             "i" = "Check {.arg format} ({.val {unique(unname(fmt_by_folder))}}) matches your tags.",
+             "i" = "For CATS/CEiiA, each folder needs a {.field {sensor.subdirectory}} subdirectory holding sensor {.file .csv} files."))
   }
 
   # identify Wildlife Computers tag folders or use the specified wc.subdirectory parameter
@@ -431,8 +458,11 @@ importTagData <- function(data.folders,
     wc_folders <- lapply(data.folders, function(main_dir) {
       # list immediate subdirectories
       subdirs <- list.dirs(main_dir, full.names = TRUE, recursive = FALSE)
+      # a deployment folder need not have ANY subdirectory (e.g. a Little Leonardo export sits directly
+      # in it), and sapply() over an empty vector returns list() - which would abort the subscript below.
+      if (!length(subdirs)) return(character(0))
       # filter subdirectories containing a 'Locations' file
-      subdirs[sapply(subdirs, function(subdir) {any(grepl("Locations.csv", list.files(subdir)))})]
+      subdirs[vapply(subdirs, function(subdir) any(grepl("Locations.csv", list.files(subdir))), logical(1))]
     })
   } else {
     # build full paths for the specified wc.subdirectory
@@ -636,20 +666,34 @@ importTagData <- function(data.folders,
     # read_cats() RETURNS its per-deployment status and report data rather than printing or collecting:
     # the collectors below are locals read by an on.exit closure, so a write from inside another frame
     # would silently vanish, and the report has to interleave with metadata lines only known out here.
-    res <- read_cats(
-      folder = data.folders[i], sensor.subdirectory = sensor.subdirectory,
-      active_mapping = active_mapping, active_mapping_norm = active_mapping_norm,
-      temp_blacklist_norm = temp_blacklist_norm,
-      required.sensors = required.sensors, timezone = timezone,
-      import.calibration = import.calibration, exclude.channels = exclude_want,
-      verbose = lvl >= 2L)
+    # dispatch on this deployment's resolved format. A simple switch, not a registry: readers are
+    # internal, so adding one is a reader file + a line here + an entry in .readerFormats().
+    fmt_i <- fmt_by_folder[[i]]
+    res <- switch(
+      fmt_i,
+      cats = read_cats(
+        folder = data.folders[i], sensor.subdirectory = sensor.subdirectory,
+        active_mapping = active_mapping, active_mapping_norm = active_mapping_norm,
+        temp_blacklist_norm = temp_blacklist_norm,
+        required.sensors = required.sensors, timezone = timezone,
+        import.calibration = import.calibration, exclude.channels = exclude_want,
+        verbose = lvl >= 2L),
+      little_leonardo = read_little_leonardo(
+        folder = data.folders[i], sensor.subdirectory = sensor.subdirectory,
+        # the raw carries no clock: the recording start comes from the `data_start` metadata role
+        start = if (!is.null(data.start.col)) animal_info[[data.start.col]][1] else NULL,
+        timezone = timezone, exclude.channels = exclude_want, verbose = lvl >= 2L),
+      .abort("Unsupported tag format: {.val {fmt_i}}."))
 
     # skip this individual if no usable sensor data could be assembled. A "no sensor CSV" folder that
     # was already flagged pre-flight (missing_folders) is covered there - just a quiet inline skip, no
     # double-counting. Anything else (corrupt file, missing required sensors, or a no-CSV not caught
     # pre-flight) is a genuine per-deployment failure -> collected into `failed_ids`.
     if (is.null(res$data)) {
-      preflight_covered <- startsWith(res$reason, "no sensor CSV") && id %in% missing_folders
+      # "no data here" reads differently per format ("no sensor CSV ..." / "no sensor file: ...");
+      # either way, a folder the pre-flight already flagged is a quiet skip, not a second failure.
+      preflight_covered <- (startsWith(res$reason, "no sensor CSV") ||
+                            startsWith(res$reason, "no sensor file")) && id %in% missing_folders
       if (preflight_covered) {
         .log_skip(lvl, id, " skipped ", cli::symbol$bullet, " ", res$reason)
       } else {

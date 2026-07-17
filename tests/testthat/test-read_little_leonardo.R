@@ -101,3 +101,81 @@ test_that("the reader's output feeds buildTagData() and the rest of the pipeline
   expect_setequal(m$sensors$present, c("ax", "ay", "az", "depth", "temp"))
   expect_equal(m$sensors$sampling_hz_original, 10)
 })
+
+# ---- wiring: importTagData(format=) / the tag_format + data_start roles ----------------------------
+
+.ll_deploy <- function(id = "LLTEST", n_sec = 20L, hz = 10L) {
+  root <- tempfile(); dir.create(root)
+  f <- .ll_fixture(dir = file.path(root, id), n_sec = n_sec, hz = hz, id = id)
+  c(f, list(root = root, folder = file.path(root, id)))
+}
+.ll_md <- function(id = "LLTEST", data_start = .t0()) {
+  data.frame(id = id, tag = "Little Leonardo", type = "LL",
+             deploy_date = .t0(), lon = -28.6, lat = 38.6, data_start = data_start,
+             stringsAsFactors = FALSE)
+}
+.ll_cols <- function(...) metadataColumns(id = "id", tag_model = "tag", tag_type = "type",
+                                          deploy_datetime = "deploy_date", deploy_lon = "lon",
+                                          deploy_lat = "lat", data_start = "data_start", ...)
+
+test_that("importTagData(format = 'little_leonardo') imports a LL deployment end to end", {
+  f <- .ll_deploy()
+  tags <- importTagData(data.folders = f$folder, format = "little_leonardo",
+                        id.metadata = .ll_md(), columns = .ll_cols(),
+                        return.data = TRUE, verbose = "quiet")
+  expect_length(tags, 1)
+  tag <- tags[["LLTEST"]]
+  expect_s3_class(tag, "nautilus_tag")
+  expect_equal(nrow(tag), f$n)
+  expect_true(all(c("ID", "datetime", "ax", "ay", "az", "depth", "temp") %in% names(tag)))
+  m <- nautilus:::.getMeta(tag)
+  expect_identical(m$id, "LLTEST")
+  expect_identical(m$tag$model, "Little Leonardo")
+  expect_setequal(m$sensors$present, c("ax", "ay", "az", "depth", "temp"))
+  expect_equal(as.numeric(m$span$first_datetime), as.numeric(.t0()))
+  # the audit trail names the operation the user invoked, not the internal assembler
+  expect_identical(vapply(m$processing, function(p) p$step, character(1)), "importTagData")
+})
+
+test_that("the tag_format metadata role dispatches per deployment, overriding the format argument", {
+  f <- .ll_deploy()
+  md <- .ll_md(); md$fmt <- "little_leonardo"
+  # format = "cats" would find nothing here; the tag_format column must win
+  tags <- importTagData(data.folders = f$folder, format = "cats",
+                        id.metadata = md, columns = .ll_cols(tag_format = "fmt"),
+                        return.data = TRUE, verbose = "quiet")
+  expect_s3_class(tags[["LLTEST"]], "nautilus_tag")
+  expect_equal(nrow(tags[["LLTEST"]]), f$n)
+})
+
+test_that("an unsupported format is rejected, from the argument or the tag_format column", {
+  f <- .ll_deploy()
+  expect_error(importTagData(data.folders = f$folder, format = "nope",
+                             id.metadata = .ll_md(), columns = .ll_cols(), verbose = "quiet"),
+               "Unsupported tag format")
+  md <- .ll_md(); md$fmt <- "not_a_reader"
+  expect_error(importTagData(data.folders = f$folder, format = "little_leonardo",
+                             id.metadata = md, columns = .ll_cols(tag_format = "fmt"), verbose = "quiet"),
+               "Unsupported tag format")
+})
+
+test_that("a clock-less logger without data_start fails loudly rather than inventing a time", {
+  f <- .ll_deploy()
+  # data_start not mapped -> the reader refuses. The files EXIST, so the pre-flight passes and this is a
+  # per-deployment failure (reported + collected), not a whole-run abort: the deployment yields no tag.
+  w <- testthat::capture_warnings(
+    tags <- importTagData(data.folders = f$folder, format = "little_leonardo", id.metadata = .ll_md(),
+                          columns = metadataColumns(id = "id", tag_model = "tag",
+                                                    deploy_datetime = "deploy_date",
+                                                    deploy_lon = "lon", deploy_lat = "lat"),
+                          return.data = TRUE, verbose = "quiet"))
+  expect_true(any(grepl("could not be imported|LLTEST", w)))       # the failure is surfaced, not swallowed
+  expect_true(length(tags) == 0L || !inherits(tags[[1]], "nautilus_tag"))   # and no tag is invented
+})
+
+test_that("the run guard names the format when no folder holds readable data", {
+  empty <- tempfile(); dir.create(file.path(empty, "NOPE"), recursive = TRUE)
+  expect_error(importTagData(data.folders = file.path(empty, "NOPE"), format = "little_leonardo",
+                             id.metadata = .ll_md("NOPE"), columns = .ll_cols(), verbose = "quiet"),
+               "Little Leonardo")
+})
