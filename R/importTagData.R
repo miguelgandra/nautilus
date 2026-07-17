@@ -778,9 +778,7 @@ importTagData <- function(data.folders,
     # Save relevant attributes #################################################
     ############################################################################
 
-    # save original start and end datetimes
-    first_datetime <- min(sensor_data$datetime)
-    last_datetime <- max(sensor_data$datetime)
+    # (the recorded span is derived from the data by the shared assembler below)
 
     # check if this tag has a paddle wheel
     has_paddle <- NULL
@@ -790,41 +788,42 @@ importTagData <- function(data.folders,
     # the consolidated nautilus metadata object built below)
     attr(sensor_data, 'nautilus.version') <- utils::packageVersion("nautilus")
 
-    # build the consolidated nautilus metadata object and class the output as a
-    # nautilus_tag (carried alongside the legacy attributes during the S3 migration)
-    meta <- .newNautilusMeta()
-    meta$id <- id
-    meta$deployment$lon <- animal_info[[deploy.lon.col]]
-    meta$deployment$lat <- animal_info[[deploy.lat.col]]
-    meta$deployment$datetime <- animal_info[[deploy.date.col]]
-    if (!is.null(pop.date.col)) meta$deployment$popup_datetime <- animal_info[[pop.date.col]]
-    if (!is.null(pop.lon.col))  meta$deployment$popup_lon <- animal_info[[pop.lon.col]]
-    if (!is.null(pop.lat.col))  meta$deployment$popup_lat <- animal_info[[pop.lat.col]]
-    if (!is.null(attachment.site.col)) meta$deployment$attachment_site <- as.character(animal_info[[attachment.site.col]])
-    if (!is.null(deployment.type.col)) meta$deployment$deployment_type <- as.character(animal_info[[deployment.type.col]])
-    meta$tag$model        <- tag_model
-    meta$tag$type         <- tag_type
-    meta$tag$package_id   <- package_id %||% NA
-    meta$tag$logger_id    <- if (!is.null(logger.id.col)) as.character(animal_info[[logger.id.col]]) else NA_character_
-    meta$tag$paddle_wheel <- has_paddle %||% NA
-    meta$tag$axis_config  <- if (!is.null(axis.config.col)) as.character(animal_info[[axis.config.col]]) else NA_character_
-    # passive biological traits: carried through verbatim (one value per deployment), keeping their type
-    # (factors -> character, so a stored trait never carries the table's other levels)
-    for (tr in traits.cols) { v <- animal_info[[tr]][1]; meta$biometrics[[tr]] <- if (is.factor(v)) as.character(v) else v }
-    meta$sensors$present  <- intersect(.sensorChannels(), names(sensor_data))
+    # build the consolidated nautilus metadata object and class the output as a nautilus_tag. The schema
+    # is populated by the SHARED assembler (.assembleTagMeta), which buildTagData() also fronts, so the
+    # reader path and the in-memory path cannot drift as new per-format readers are added. This function
+    # supplies the role-named row (it holds the resolved column names) and adds its own extras below.
+    role_meta <- list(
+      deploy_lon      = animal_info[[deploy.lon.col]],
+      deploy_lat      = animal_info[[deploy.lat.col]],
+      deploy_datetime = animal_info[[deploy.date.col]],
+      tag_model       = tag_model,
+      tag_type        = tag_type,
+      package_id      = package_id %||% NA,
+      paddle_wheel    = has_paddle %||% NA
+    )
+    if (!is.null(pop.date.col))        role_meta$popup_datetime  <- animal_info[[pop.date.col]]
+    if (!is.null(pop.lon.col))         role_meta$popup_lon       <- animal_info[[pop.lon.col]]
+    if (!is.null(pop.lat.col))         role_meta$popup_lat       <- animal_info[[pop.lat.col]]
+    if (!is.null(attachment.site.col)) role_meta$attachment_site <- animal_info[[attachment.site.col]]
+    if (!is.null(deployment.type.col)) role_meta$deployment_type <- animal_info[[deployment.type.col]]
+    if (!is.null(logger.id.col))       role_meta$logger_id       <- animal_info[[logger.id.col]]
+    if (!is.null(axis.config.col))     role_meta$axis_config     <- animal_info[[axis.config.col]]
+    # passive biological traits ride along under their own names (carried through verbatim)
+    for (tr in traits.cols) role_meta[[tr]] <- animal_info[[tr]]
+
+    # sampling.hz = NULL: import never persists a rate - it is inferred from the timestamps downstream
+    # (see meta$sensors / processTagData)
+    meta <- .assembleTagMeta(sensor_data, id = id, metadata = role_meta, traits = traits.cols,
+                             timezone = timezone, sampling.hz = NULL)
+
+    # ---- extras only the file-import path has -------------------------------------------------------
     meta$sensors$excluded <- excluded_channels       # channels dropped per the exclude_sensors metadata
-    meta$sensors$timezone <- timezone
     meta$sensors$recording_utc_offset <- if (!is.null(calibration_info)) calibration_info$device$utc_offset else NA_real_
-    meta$span$first_datetime <- first_datetime
-    meta$span$last_datetime  <- last_datetime
-    meta$span$original_rows  <- rows
-    # store only calibration-specific provenance; sampling frequency is inferred from the data
-    # (see meta$sensors / processTagData), never persisted as a calibration-derived attribute
+    # store only calibration-specific provenance; sampling frequency is inferred from the data,
+    # never persisted as a calibration-derived attribute
     cal_to_store <- calibration_info
     if (!is.null(cal_to_store)) cal_to_store$sample_rate <- NULL
     meta$calibration  <- cal_to_store
-    # import is raw: no axis transform applied here (orientation is a downstream applyAxisMapping step)
-    meta$axis_mapping <- .newAxisMappingMeta()
     # WC ancillary streams (read + clock-aligned above): wet/dry (transition-encoded, consumed by the
     # depth drift correction) and the full position record. The clock-alignment provenance is stored
     # alongside them so the applied offset (or the reason it abstained) is inspectable downstream.

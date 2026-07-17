@@ -124,3 +124,27 @@ test_that("the datetime column's tzone matches meta$sensors$timezone (clock inte
   expect_identical(nautilus:::.getMeta(tag)$sensors$timezone, "UTC")
   expect_identical(format(tag$datetime[1], "%H:%M:%S", tz = "UTC"), "08:00:00")  # wall-clock preserved
 })
+
+test_that("a mapped trait is recorded even when NA, matching the importTagData path", {
+  tag <- buildTagData(.mkdf(), id = "T1", metadata = list(TL = 125.5, Sex = NA_character_),
+                      traits = c("TL", "Sex"), verbose = FALSE)
+  b <- nautilus:::.getMeta(tag)$biometrics
+  expect_equal(b$TL, 125.5)
+  expect_true("Sex" %in% names(b))   # the key exists (the trait WAS mapped)...
+  expect_true(is.na(b$Sex))          # ...carrying NA, rather than being silently omitted
+})
+
+test_that("buildTagData and importTagData share one meta assembler (.assembleTagMeta)", {
+  # the shared core populates the schema; sampling.hz is the one parameterised difference
+  d <- .mkdf(n = 400)
+  m1 <- nautilus:::.assembleTagMeta(data.table::as.data.table(d), id = "X1", timezone = "UTC")
+  expect_identical(m1$id, "X1")
+  expect_setequal(m1$sensors$present, c("ax", "ay", "az", "depth", "temp"))
+  expect_true(is.na(m1$sensors$sampling_hz_original))          # NULL sampling.hz -> left NA (import path)
+  expect_equal(m1$span$original_rows, 400L)
+  expect_false(m1$axis_mapping$applied)
+  expect_length(m1$processing, 0)                              # no provenance: each caller appends its own
+  m2 <- nautilus:::.assembleTagMeta(data.table::as.data.table(d), id = "X1", timezone = "UTC",
+                                    sampling.hz = 20)
+  expect_equal(m2$sensors$sampling_hz_original, 20)            # buildTagData path supplies a rate
+})

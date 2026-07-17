@@ -190,19 +190,11 @@ buildTagData <- function(data,
     }
   }
 
-  # ---- consolidated metadata ----
-  meta <- .newNautilusMeta()
-  meta$id <- id
-  meta <- .applyDeploymentMetadata(meta, md, traits)
-  meta$sensors$present  <- present
-  meta$sensors$timezone <- timezone
+  # ---- consolidated metadata (shared assembler; this function is its public face) ----
   n <- nrow(dt)
   samp_hz <- if (synth) sampling.rate else .estimateHz(dt$datetime)
-  meta$sensors$sampling_hz_original <- samp_hz
-  meta$span$first_datetime <- min(dt$datetime)
-  meta$span$last_datetime  <- max(dt$datetime)
-  meta$span$original_rows  <- n
-  meta$axis_mapping <- .newAxisMappingMeta()                     # raw: no transform applied here
+  meta <- .assembleTagMeta(dt, id = id, metadata = md, traits = traits, timezone = timezone,
+                           sampling.hz = samp_hz)
   meta <- .appendProcessing(meta, "buildTagData",
                             source = "in-memory data.frame", rows = n,
                             channels = paste(present, collapse = ", "),
@@ -222,6 +214,42 @@ buildTagData <- function(data,
     .log_ok(lvl, sprintf("built %s (%s)", id, if (synth) "timestamps synthesised" else "timestamps supplied"))
   }
   out
+}
+
+
+#' Assemble the consolidated nautilus metadata shared by every ingestion path.
+#'
+#' The single place the `nautilus_tag` meta SCHEMA is populated, so the reader path
+#' (\code{importTagData()} -> \code{read_cats()}) and the in-memory path (\code{buildTagData()}) cannot
+#' drift apart as new per-format readers are added. \code{buildTagData()} is its public face.
+#'
+#' It deliberately does NOT append a processing record: each caller appends its own, so an imported
+#' tag's audit trail names \code{importTagData} - the operation the user actually invoked - rather than
+#' leaking this internal step. Callers add their own extras afterwards (calibration sidecar, excluded
+#' channels, WC ancillary streams).
+#' @param data The canonical frame (read for the channels present and the recorded span).
+#' @param id Deployment ID.
+#' @param metadata A flattened role-named metadata row (\code{metadataColumns()} roles), or NULL.
+#' @param traits Names in `metadata` to carry through as passive biometric traits.
+#' @param timezone Time zone the tag recorded its clock in.
+#' @param sampling.hz Original sampling rate, or NULL to leave it NA (importTagData does not persist a
+#'   rate - it is inferred from the timestamps downstream).
+#' @return A nautilus metadata list, without a processing record.
+#' @keywords internal
+#' @noRd
+.assembleTagMeta <- function(data, id, metadata = NULL, traits = NULL, timezone = "UTC",
+                             sampling.hz = NULL) {
+  meta <- .newNautilusMeta()
+  meta$id <- as.character(id)
+  meta <- .applyDeploymentMetadata(meta, metadata, traits)
+  meta$sensors$present  <- intersect(.sensorChannels(), names(data))
+  meta$sensors$timezone <- timezone
+  if (!is.null(sampling.hz)) meta$sensors$sampling_hz_original <- sampling.hz
+  meta$span$first_datetime <- min(data$datetime)
+  meta$span$last_datetime  <- max(data$datetime)
+  meta$span$original_rows  <- nrow(data)
+  meta$axis_mapping <- .newAxisMappingMeta()      # raw: no axis transform is applied at assembly
+  meta
 }
 
 
@@ -277,10 +305,16 @@ buildTagData <- function(data,
   if (!is.null(v <- chr(.metaField(md, "logger_id"))))        meta$tag$logger_id <- v
   if (!is.null(v <- .metaField(md, "paddle_wheel")))          meta$tag$paddle_wheel <- v
   if (!is.null(v <- chr(.metaField(md, "axis_config"))))      meta$tag$axis_config <- v
-  # passive traits -> biometrics (kept verbatim, factors flattened to character)
+  # passive traits -> biometrics (kept verbatim, factors flattened to character so a stored trait never
+  # carries the table's other levels). Unlike the role fields above, a trait is recorded even when NA:
+  # the key's presence is the record that the trait was mapped, which is what importTagData() has always
+  # done - so both ingestion paths agree.
   for (tr in traits) {
-    v <- .metaField(md, tr)
-    if (!is.null(v)) meta$biometrics[[tr]] <- if (is.factor(v)) as.character(v) else v
+    if (is.null(md) || !tr %in% names(md)) next
+    v <- md[[tr]]
+    if (length(v) == 0L) next
+    v <- v[[1]]
+    meta$biometrics[[tr]] <- if (is.factor(v)) as.character(v) else v
   }
   meta
 }
