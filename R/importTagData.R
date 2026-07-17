@@ -618,29 +618,42 @@ importTagData <- function(data.folders,
 
 
     ############################################################################
-    # Locate, probe and assemble all sensor CSVs for this individual ###########
+    # Read this individual's sensor data (CATS / CEiiA format) #################
     ############################################################################
 
-    # probe every candidate CSV, keep the schema group of the largest usable file,
-    # and merge it using a maximal-unique-coverage policy (resilient to overlapping
-    # fragments, duplicate exports and corrupt trailing rows). Returns an assembled
-    # data.table with a parsed `datetime` column and renamed sensor columns.
-    assembly <- .assembleSensorData(
+    # channels this deployment's metadata flags unusable (a known data-quality fact, e.g. a firmware
+    # bug). Resolved here (metadata is format-agnostic) and applied by the reader BEFORE unit
+    # conversion, so a dropped channel never reaches the conversion notes.
+    exclude_want <- character(0)
+    if (!is.null(exclude.sensors.col)) {
+      exclude_want <- tryCatch(.expandSensorTokens(animal_info[[exclude.sensors.col]]),
+                               error = function(e) character(0))
+    }
+
+    # files -> canonical frame: probe/merge every candidate CSV (maximal-unique-coverage, resilient to
+    # overlapping fragments and corrupt trailing rows), map the header onto sensor roles, parse the
+    # timestamps, drop excluded channels, read the calibration sidecar and convert to canonical units.
+    # read_cats() RETURNS its per-deployment status and report data rather than printing or collecting:
+    # the collectors below are locals read by an on.exit closure, so a write from inside another frame
+    # would silently vanish, and the report has to interleave with metadata lines only known out here.
+    res <- read_cats(
       folder = data.folders[i], sensor.subdirectory = sensor.subdirectory,
       active_mapping = active_mapping, active_mapping_norm = active_mapping_norm,
       temp_blacklist_norm = temp_blacklist_norm,
-      required.sensors = required.sensors, timezone = timezone, verbose = lvl >= 2L)
+      required.sensors = required.sensors, timezone = timezone,
+      import.calibration = import.calibration, exclude.channels = exclude_want,
+      verbose = lvl >= 2L)
 
     # skip this individual if no usable sensor data could be assembled. A "no sensor CSV" folder that
     # was already flagged pre-flight (missing_folders) is covered there - just a quiet inline skip, no
     # double-counting. Anything else (corrupt file, missing required sensors, or a no-CSV not caught
     # pre-flight) is a genuine per-deployment failure -> collected into `failed_ids`.
-    if (is.null(assembly$data)) {
-      preflight_covered <- startsWith(assembly$reason, "no sensor CSV") && id %in% missing_folders
+    if (is.null(res$data)) {
+      preflight_covered <- startsWith(res$reason, "no sensor CSV") && id %in% missing_folders
       if (preflight_covered) {
-        .log_skip(lvl, id, " skipped ", cli::symbol$bullet, " ", assembly$reason)
+        .log_skip(lvl, id, " skipped ", cli::symbol$bullet, " ", res$reason)
       } else {
-        if (lvl >= 1L) cli::cli_alert_danger("{id}: {assembly$reason}. Data not imported.")
+        if (lvl >= 1L) cli::cli_alert_danger("{id}: {res$reason}. Data not imported.")
         failed_ids <- c(failed_ids, id)
       }
       data_list[[i]] <- NA
@@ -648,33 +661,27 @@ importTagData <- function(data.folders,
       next
     }
 
-    sensor_data   <- assembly$data
-    file_mapping  <- assembly$mapping
-    selected_cols <- file_mapping$colname_in_csv
+    sensor_data       <- res$data
+    file_mapping      <- res$mapping
+    selected_cols     <- res$selected_cols
+    calibration_info  <- res$calibration_info
+    excluded_channels <- res$excluded
+    temp_status       <- res$temp_status
     rows <- nrow(sensor_data)
 
-    # drop channels flagged unusable for this deployment via the `exclude_sensors` metadata column (a
-    # known data-quality fact, e.g. a firmware bug). Dropping - rather than NA-ing - makes the channel
-    # simply ABSENT, so every downstream analysis skips it through the package's partial-sensor support.
-    excluded_channels <- character(0)
-    if (!is.null(exclude.sensors.col)) {
-      want <- tryCatch(.expandSensorTokens(animal_info[[exclude.sensors.col]]), error = function(e) character(0))
-      excluded_channels <- intersect(want, names(sensor_data))
-      if (length(excluded_channels)) {
-        sensor_data[, (excluded_channels) := NULL]
-        if (lvl >= 2L) .log_skip(lvl, "excluded sensors (metadata): ",
-                                 paste(.channelsToFamilies(excluded_channels), collapse = ", "))
-      }
-    }
-
-    # temperature reliability (per-deployment issue). The reliable `temp` is the pressure-sensor
-    # thermistor; electronics channels (IMU board / magnetometer chip) are blacklisted, so `temp` is
-    # left unset (missing-sensor convention) when the only temperature column is blacklisted, while an
-    # explicit user override is honoured but flagged. Collected here; surfaced inline (lvl >= 2) below,
-    # echoed in the final tally (lvl >= 1), and emitted as a deferred warning (lvl == 0).
-    temp_status <- attr(file_mapping, "temp_status") %||% "none"
+    # collect the reader's per-deployment issues. Temperature: the reliable `temp` is the pressure-sensor
+    # thermistor; electronics channels (IMU board / magnetometer chip) are blacklisted, so `temp` is left
+    # unset (missing-sensor convention) when the only temperature column is blacklisted, while an explicit
+    # user override is honoured but flagged. Timezone: the sidecar's UTC offset disagreed with `timezone`.
+    # Surfaced inline (lvl >= 2) below, echoed in the final tally (lvl >= 1), deferred warning (lvl == 0).
     if (identical(temp_status, "blacklisted_only")) temp_discard_ids  <- c(temp_discard_ids, id)
     else if (identical(temp_status, "override"))    temp_override_ids <- c(temp_override_ids, id)
+    if (isTRUE(res$tz_mismatch)) tz_issue_ids <- c(tz_issue_ids, id)
+
+    if (lvl >= 2L && length(excluded_channels)) {
+      .log_skip(lvl, "excluded sensors (metadata): ",
+                paste(.channelsToFamilies(excluded_channels), collapse = ", "))
+    }
 
     # tag attributes (model / type / package): the most fundamental dataset attributes, shown first in
     # the individual's block and reused in the normal-level one-line summary.
@@ -695,7 +702,7 @@ importTagData <- function(data.folders,
       attrs_line <- paste0(cli::symbol$bullet, " ", tag_attrs)
       cli::cli_text("{attrs_line}")            # pass as data, never re-parsed as a cli template
       # per-file assembly decisions, printed after the tag attributes and before the sensor details
-      .reportAssembly(assembly, lvl)
+      .reportAssembly(res$assembly, lvl)
       chans <- intersect(.sensorChannels(), names(sensor_data))
       .log_detail(lvl, "sensors: ", paste(chans, collapse = ", "))
       # temperature reliability, injected directly under the sensors row (punchy, not a wrapped warning)
@@ -714,91 +721,19 @@ importTagData <- function(data.folders,
                   " (", .fmt_duration(secs), ")")
     }
 
-    # read the calibration sidecar paired with the primary CSV (parsed and stored for provenance;
-    # values are NOT applied to the sensor data at this stage)
-    calibration_info <- NULL
+    # calibration sidecar (read by read_cats(); parsed and stored for provenance, values are NOT applied
+    # to the sensor data at this stage) and the recording-zone cross-check: if the sidecar reports a UTC
+    # offset that disagrees with `timezone`, the recorded clock is probably local (never silently
+    # shifted). Rendered in the original order: report, then the timezone note.
     if (isTRUE(import.calibration)) {
-      calibration_info <- .readSidecarCalibration(assembly$primary_file)
       .reportCalibration(calibration_info, lvl)
-
-      # cross-check the recording zone: if the sidecar reports a UTC offset (assumed hours) that
-      # disagrees with `timezone`, the recorded clock is probably local (never silently shifts it). A
-      # per-deployment issue: shown inline at lvl >= 2, echoed in the final tally, deferred at lvl == 0.
-      off <- if (!is.null(calibration_info)) calibration_info$device$utc_offset else NA_real_
-      if (length(off) == 1L && is.finite(off) && off != 0) {
-        tz_off <- .tzOffsetHours(timezone, sensor_data$datetime[1])
-        if (abs(off - tz_off) > 0.5) {
-          tz_issue_ids <- c(tz_issue_ids, id)
-          if (lvl >= 2L) .log_skip(lvl, sprintf(
-            "timezone: sidecar UTC offset %gh vs timestamps read as %s (offset %gh); if logged in local time, set `timezone` to match.",
-            off, timezone, round(tz_off, 1)))
-        }
-      }
+      if (lvl >= 2L && !is.null(res$tz_note)) .log_skip(lvl, res$tz_note)
     }
 
 
-    ############################################################################
-    # Convert units ############################################################
-    ############################################################################
-
-    # Note: the `datetime` column has already been parsed to POSIXct during
-    # assembly (.assembleSensorData / .addDatetime), where a tiny +0.0001 s
-    # offset is added as a floating-point safeguard against off-by-one-second
-    # rounding in downstream operations.
-
-    # define sensor groups, their standard target units, and short labels for the verbose note.
-    sensor_groups <- list(
-      accel = list(cols = c("ax", "ay", "az"), standard_unit = "g", label = "accel"),
-      gyro = list(cols = c("gx", "gy", "gz"), standard_unit = "rad/s", label = "gyro"),
-      mag = list(cols = c("mx", "my", "mz"), standard_unit = "uT", label = "mag")
-    )
-
-    # iterate through each predefined sensor group, collecting one compact note per converted group
-    unit_notes <- character(0)
-    for (group_name in names(sensor_groups)) {
-      group_info <- sensor_groups[[group_name]]
-      group_cols <- group_info$cols
-      group_label <- group_info$label
-      group_units <- group_info$standard_unit
-
-      # filter `file_mapping` to only the relevant columns present
-      rows_to_select <- file_mapping$sensor_name_out %in% group_cols & file_mapping$sensor_name_out %in% names(sensor_data)
-      cols_to_process <- file_mapping[rows_to_select, c("sensor_name_out", "original_units_map")]
-
-      # skip if no columns from this group are present or need processing
-      if (nrow(cols_to_process) == 0) next
-
-      # add the `target_unit` for each column using the pre-built lookup.
-      cols_to_process$target_unit <- group_units
-
-      # determine if any conversion is actually needed within this group
-      conversion_needed <- any(
-        cols_to_process$original_units_map != cols_to_process$target_unit &
-          cols_to_process$target_unit != "" & !is.na(cols_to_process$target_unit))
-
-      # if conversion is needed for any column in this group
-      if (conversion_needed) {
-
-        # apply conversions for each column in the group
-        for (i_col in 1:nrow(cols_to_process)) {
-          col_to_convert <- cols_to_process$sensor_name_out[i_col]
-          original_unit <- cols_to_process$original_units_map[i_col]
-          target_unit <- cols_to_process$target_unit[i_col]
-
-          # only apply if this specific column actually needs conversion
-          if (original_unit != target_unit && target_unit != "" && !is.na(target_unit)) {
-            sensor_data[, (col_to_convert) := .convertUnits(get(col_to_convert), from.unit = original_unit, to.unit = target_unit)]
-          }
-        }
-
-        # record the unit(s) actually converted from, for a single merged level-2 note
-        if (lvl >= 2L) {
-          src_units <- unique(cols_to_process$original_units_map[cols_to_process$original_units_map != group_units])
-          unit_notes <- c(unit_notes, sprintf("%s %s -> %s", group_label, paste(src_units, collapse = "/"), group_units))
-        }
-      }
-    }
-    if (lvl >= 2L && length(unit_notes)) .log_detail(lvl, "units: ", paste(unit_notes, collapse = ", "))
+    # unit conversion happened in read_cats() (every channel to canonical g / rad/s / uT, driven by the
+    # CSV's declared units); render its merged per-group note here, where the original printed it.
+    if (lvl >= 2L && length(res$unit_notes)) .log_detail(lvl, "units: ", paste(res$unit_notes, collapse = ", "))
 
     # add ID column
     sensor_data[, ID := id]
