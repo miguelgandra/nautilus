@@ -32,10 +32,20 @@ additional (Wildlife Computers) tag data.}
 \item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").}
 
 \item{format}{Character. The raw data format to read: \code{"cats"} (default; the CATS/CEiiA multi-sensor
-CSV export) or \code{"little_leonardo"} (Little Leonardo archival loggers - a \verb{_A.txt} acceleration file
+CSV export), \code{"little_leonardo"} (Little Leonardo archival loggers - a \verb{_A.txt} acceleration file
 plus an optional \verb{_DT.txt} depth/temperature file, which carry no clock and so additionally need the
-\code{data_start} role, see \code{\link{metadataColumns}}). To import several tag makes in ONE call, map
-the \code{tag_format} role instead: a per-deployment value there overrides this argument. Data you have
+\code{data_start} role, see \code{\link{metadataColumns}}), or \code{"auto"} to identify each deployment's format
+from its files.
+
+\code{"auto"} inspects the headers of the files in each folder and routes it to the matching reader. It
+never guesses: a folder matching two readers, or none, is reported rather than assumed - so a
+misidentified deployment fails loudly instead of being read as the wrong make. It recognises stock
+exports, using the built-in column mappings only; a custom exporter (i.e. one that needs
+\code{import.mapping}) is reported as unidentifiable and should be named with \code{format} or \code{tag_format}.
+
+To import several tag makes in ONE call, either use \code{"auto"} or map the \code{tag_format} role: a
+per-deployment value there overrides this argument, and the two combine - \code{format = "auto"} with a
+\code{tag_format} column naming only some deployments honours those and detects the rest. Data you have
 already read into R does not need a reader at all - see \code{\link{buildTagData}}.
 This subdirectory should include the sensor CSV files for the corresponding animal.}
 

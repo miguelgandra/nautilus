@@ -67,17 +67,48 @@
 
 #' Does this folder look like a Little Leonardo deployment?
 #'
-#' The reader's own detector, kept beside it so a new format never edits a central sniffer. Conservative
-#' by design: it requires the accel file AND its signature header, so it cannot claim a folder it would
-#' then fail to read.
+#' The reader's own discovery probe (`has_data` in `.readerFormats()`), kept beside it so a new format never
+#' edits a central sniffer. It requires the accel file AND a signature header line, so it cannot claim a
+#' folder in which it would find no file at all.
+#'
+#' The window is 12 lines, matching the reader's own (`read_little_leonardo` reads 12): a shorter one would
+#' skip a folder the reader can read perfectly well, which under `format = "auto"` would make auto weaker
+#' than an explicit `format = "little_leonardo"`.
 #' @keywords internal
 #' @noRd
 .llDetect <- function(folder, sensor.subdirectory = NULL) {
   f <- .llDiscover(folder, sensor.subdirectory)
   if (is.na(f$accel)) return(FALSE)
-  head_lines <- tryCatch(readLines(f$accel, n = 6L, warn = FALSE), error = function(e) character(0))
+  head_lines <- tryCatch(readLines(f$accel, n = 12L, warn = FALSE), error = function(e) character(0))
   any(grepl("ACCELERATION DATA", head_lines, fixed = TRUE)) ||
     any(grepl("msec/point", head_lines, fixed = TRUE))
+}
+
+
+#' Is this positively a Little Leonardo deployment?
+#'
+#' The `confirm` half of the `little_leonardo` entry (see `.readerFormats`). It asks the READER'S OWN
+#' question rather than inventing cues: can the declared sampling rate be parsed? `importTagData()` never
+#' passes `sampling.rate`, so a folder whose rate cannot be read is one `read_little_leonardo()` refuses
+#' outright ("could not determine the sampling rate") - which makes this predicate never stricter than the
+#' explicit format, and impossible to overfit to the single export available.
+#'
+#' It also cannot drift from the parser, because it IS the parser: if a sibling model declares its rate
+#' differently, fixing `.llHeaderRate()` fixes the reader and detection together.
+#'
+#' This is what separates a real LL export from a look-alike: another vendor's file whose header merely says
+#' "ACCELERATION DATA" passes `.llDetect()` (the title cue) but has no `msec/point` rate, so `confirm` - and
+#' therefore `detect` - is FALSE.
+#' @param folder,sensor.subdirectory As passed to `importTagData()`.
+#' @return TRUE / FALSE. Never errors.
+#' @keywords internal
+#' @noRd
+.llConfirm <- function(folder, sensor.subdirectory = NULL) {
+  f <- .llDiscover(folder, sensor.subdirectory)$accel     # the same discovery; never widened
+  if (is.na(f)) return(FALSE)
+  head_lines <- tryCatch(readLines(f, n = 12L, warn = FALSE), error = function(e) character(0))
+  hz <- .llHeaderRate(head_lines)
+  is.finite(hz) && hz > 0
 }
 
 

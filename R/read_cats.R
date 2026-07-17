@@ -22,33 +22,206 @@
 #     in that order - the pattern `.reportAssembly()` / `.reportCalibration()` already established.
 
 
+#' The built-in CATS / CEiiA column mappings
+#'
+#' The two dialects `read_cats()` understands, as `colname -> sensor role + original unit`. They live here,
+#' beside the reader that owns this knowledge, because they are CATS knowledge - not import machinery.
+#'
+#' The two dialects share no header literal (CATS writes `Date (UTC)` / `Accelerometer X [m/s2]`, CEiiA
+#' writes `Date` / `Ax (g)`), which is why identifying the format is a matter of resolving a header through
+#' this table rather than matching any string: see \code{.catsConfirm}.
+#' @return A data.frame with columns `colname`, `sensor`, `units`.
+#' @keywords internal
+#' @noRd
+.defaultMappings <- function() {
+  # default column mappings 1
+  CATS <- rbind(
+    c("Date (UTC)", "date", "UTC"),
+    c("Time (UTC)", "time", "UTC"),
+    c("Accelerometer X [m/s\u00b2]", "ax", "m/s2"),
+    c("Accelerometer Y [m/s\u00b2]", "ay", "m/s2"),
+    c("Accelerometer Z [m/s\u00b2]", "az", "m/s2"),
+    c("Gyroscope X [mrad/s]", "gx", "mrad/s"),
+    c("Gyroscope Y [mrad/s]", "gy", "mrad/s"),
+    c("Gyroscope Z [mrad/s]", "gz", "mrad/s"),
+    c("Magnetometer X [\u00b5T]", "mx", "uT"),
+    c("Magnetometer Y [\u00b5T]", "my", "uT"),
+    c("Magnetometer Z [\u00b5T]", "mz", "uT"),
+    c("Depth (200bar) [m]", "depth", "m"),
+    c("Depth (200bar) 1 [m]", "depth", "m"),
+    c("Depth (100bar) [m]", "depth", "m"),
+    c("Temperature (depth) [\u00b0C]", "temp", "C"),
+    c("Depth (200bar) 2 [\u00b0C]", "temp", "C")
+    # NOTE: "Temp. (magnet.) [\u00b0C]" and "Temperature (imu) [\u00b0C]" are deliberately NOT mapped
+    # here - they report tag electronics (magnetometer chip / IMU board) temperature, not water
+    # temperature, and are blacklisted by the caller (see `temp_blacklist`).
+  )
+
+  # default column mappings 2
+  CEIIA <- rbind(
+    c("Date", "datetime", "UTC"),
+    c("Ax (g)", "ax", "g"),
+    c("Ay (g)", "ay", "g"),
+    c("Az (g)", "az", "g"),
+    c("Gx (\u00b0/s)", "gx", "deg/s"),
+    c("Gy (\u00b0/s)", "gy", "deg/s"),
+    c("Gz (\u00b0/s)", "gz", "deg/s"),
+    c("Mx (\u00b5T)", "mx", "uT"),
+    c("My (\u00b5T)", "my", "uT"),
+    c("Mz (\u00b5T)", "mz", "uT"),
+    c("Temperature (\u00b0C)", "temp", "C"),
+    c("Depth (m)", "depth", "m"),
+    c("Ticks/s", "paddle_freq", "Hz"),
+    c("Velocity (m/s)", "paddle_speed", "m/s")
+  )
+
+  # combine all default mappings
+  out <- as.data.frame(rbind(CATS, CEIIA), stringsAsFactors = FALSE)
+  colnames(out) <- c("colname", "sensor", "units")
+  out
+}
+
+
+#' Probe one candidate sensor CSV: header only, never data
+#'
+#' Reads just the header and resolves it against a mapping table. Shared by `.assembleSensorData()` (which
+#' picks the primary file) and `.catsConfirm()` (which decides whether this is a CATS folder at all), so
+#' "what makes a CSV usable" has ONE definition rather than drifting between the reader and the detector.
+#'
+#' Cheap by contract: candidates reach several GB, so this must stay `nrows = 0`.
+#'
+#' @param f Path to a candidate CSV.
+#' @param active_mapping,active_mapping_norm The mapping table and its normalised header.
+#' @param blacklist_norm Normalised names of blacklisted (electronics) temperature columns.
+#' @return list(file, mapping, schema, sensors, channels, has_dt, size), or NULL when the header is
+#'   unreadable or resolves to nothing. `channels` excludes the date/time roles - a file carrying only a
+#'   bare `Date` column resolves a role but no CHANNEL, which is what keeps Wildlife Computers sidecars
+#'   (Locations, Histos, ...) from looking like sensor data.
+#' @keywords internal
+#' @noRd
+.probeSensorCSV <- function(f, active_mapping, active_mapping_norm, blacklist_norm = character(0)) {
+  header <- tryCatch(names(data.table::fread(f, nrows = 0)), error = function(e) NULL)
+  if (is.null(header) || !length(header)) return(NULL)
+  fm <- .buildFileMapping(header, active_mapping, active_mapping_norm, blacklist_norm)
+  if (is.null(fm)) return(NULL)
+  sensors <- sort(unique(fm$sensor_name_out))
+  list(file = f, mapping = fm,
+       schema = paste(sensors, collapse = "+"),
+       sensors = sensors,
+       channels = setdiff(sensors, c("date", "time", "datetime")),
+       has_dt = ("datetime" %in% sensors) || all(c("date", "time") %in% sensors),
+       size = file.info(f)$size)
+}
+
+
+#' Is this positively a CATS/CEiiA folder?
+#'
+#' The `confirm` half of the `cats` entry's detection (see `.readerFormats`). Content-based, and derived
+#' rather than invented: it asks exactly what `.assembleSensorData()` asks when picking a primary file with
+#' `required.sensors = NULL` - does SOME candidate CSV's header resolve, through the built-in mappings, to a
+#' datetime plus at least one real sensor channel? So `detect("cats")` means precisely "read_cats(), using
+#' built-in mappings, would find a usable file here".
+#'
+#' Semantic, not lexical, because the two dialects share no header literal (see `.defaultMappings`): any
+#' regex catching CATS misses CEiiA. Routing through `.normalizeHeader()` also inherits its encoding folding,
+#' which matters - real CATS headers are Latin-1 and write the degree sign in ways a naive conversion drops.
+#'
+#' Built-in mappings ONLY, never the user's `import.mapping`: detection must be an intrinsic property of the
+#' folder, not a function of an unrelated argument (a user mapping three columns of any CSV would otherwise
+#' make that folder "cats"). The documented consequence is that a custom exporter needs `format = "cats"`.
+#'
+#' EVERY candidate is probed, never just the first or largest: real deployments hold a raw multi-GB export
+#' beside a derived/mangled one, and which is "largest" is a coin flip.
+#' @param folder,sensor.subdirectory As passed to `importTagData()`.
+#' @return TRUE / FALSE. Never errors.
+#' @keywords internal
+#' @noRd
+.catsConfirm <- function(folder, sensor.subdirectory) {
+  files <- .listSensorCSVs(folder, sensor.subdirectory)
+  if (!length(files)) return(FALSE)
+  map      <- .defaultMappings()
+  map_norm <- .normalizeHeader(map$colname)
+  for (f in files) {
+    p <- .probeSensorCSV(f, map, map_norm)
+    # >= 1 channel, not the accel triad: `.meetsRequirement(required.sensors = NULL)` accepts one channel,
+    # so a depth/temp-only CATS export imports fine under format = "cats" and must stay identifiable under
+    # "auto" - auto weaker than explicit is the worst failure mode for an opt-in convenience. Excluding the
+    # date/time roles is what does the real work: it is why a WC sidecar with a bare `Date` column (which
+    # resolves the CEiiA datetime row and nothing else) is not mistaken for sensor data.
+    if (!is.null(p) && p$has_dt && length(p$channels) >= 1L) return(TRUE)
+  }
+  FALSE
+}
+
+
 #' The supported raw formats, and what each reader needs to find its data
 #'
-#' The dispatch table for `importTagData(format=)` / the `tag_format` metadata role. Each entry pairs a
-#' reader with a `has_data()` probe, because discovery is format-specific too: importTagData's pre-flight
-#' has to know whether a folder holds readable data BEFORE the loop, and "a .csv under sensor.subdirectory"
-#' is only true of CATS. Adding a format means adding an entry here plus its reader file - nothing else.
+#' The dispatch table for `importTagData(format=)` / the `tag_format` metadata role. Adding a format means
+#' adding an entry here plus its reader file - nothing else.
+#'
+#' Each entry supplies TWO predicates, because the two questions are genuinely different:
+#' \itemize{
+#'   \item `has_data(folder, sensor.subdirectory)` - "can I find my data, GIVEN the user told me this is my
+#'     format?" Used by the pre-flight, which must know whether a folder holds readable data before the loop
+#'     ("a .csv under sensor.subdirectory" is only true of CATS). It may be permissive.
+#'   \item `confirm(folder, sensor.subdirectory)` - "is this POSITIVELY my format?" Used only by
+#'     `format = "auto"`. It must be content-based; "a file exists" is never a confirmation.
+#' }
+#' `detect` is COMPOSED from them, never authored (see `.withDetect`), which is what makes `has_data` safe to
+#' leave permissive: the cats probe matches any folder with a CSV, and would be a catch-all as a detector.
 #' @keywords internal
 #' @noRd
 .readerFormats <- function() {
-  list(
+  lapply(list(
     cats = list(
       label = "CATS / CEiiA",
       has_data = function(folder, sensor.subdirectory) {
         length(list.files(file.path(folder, sensor.subdirectory), pattern = "\\.csv$")) > 0L
-      }),
+      },
+      confirm = .catsConfirm),
     little_leonardo = list(
       label = "Little Leonardo",
-      has_data = function(folder, sensor.subdirectory) .llDetect(folder, sensor.subdirectory))
-  )
+      has_data = function(folder, sensor.subdirectory) .llDetect(folder, sensor.subdirectory),
+      confirm = .llConfirm)
+  ), .withDetect)
 }
 
-#' Validate a format name against the dispatch table.
+
+#' Compose a reader entry's `detect` from its `has_data` and `confirm`.
+#'
+#' `detect` is derived, not written by the reader author, so the invariant `detect => has_data` holds BY
+#' CONSTRUCTION. That invariant matters because violating it fails SILENTLY: a folder that detect claims but
+#' has_data denies is dropped by the pre-flight as "missing" and skipped with a "no sensor file found"
+#' notice - a confident, wrong, quiet answer. Deriving it makes that unfalsifiable rather than a prose rule
+#' the next reader author must remember.
+#'
+#' Both calls are wrapped: a detector that throws on a malformed folder must not take the run down.
+#' @param e A reader entry with `has_data` and `confirm`.
 #' @keywords internal
 #' @noRd
-.checkFormat <- function(x, arg = "format") {
+.withDetect <- function(e) {
+  force(e)
+  e$detect <- function(folder, sensor.subdirectory) {
+    ok <- function(fn) isTRUE(tryCatch(fn(folder, sensor.subdirectory), error = function(err) FALSE))
+    ok(e$has_data) && ok(e$confirm)
+  }
+  e
+}
+
+
+#' Validate a format name against the dispatch table.
+#'
+#' @param x Format name(s) to check.
+#' @param arg The argument name to blame in the error.
+#' @param allow Extra values legal in THIS position but which are not readers (i.e. `"auto"`). Deliberately
+#'   not listed under "Supported", so `"auto"` never advertises itself as a legal `tag_format` column value -
+#'   and deliberately not an entry in `.readerFormats()`, which would legalise it everywhere at once and
+#'   need a fake label and a switch branch.
+#' @keywords internal
+#' @noRd
+.checkFormat <- function(x, arg = "format", allow = character(0)) {
   known <- names(.readerFormats())
-  bad <- setdiff(unique(stats::na.omit(x)), known)
+  bad <- setdiff(unique(stats::na.omit(x)), c(known, allow))
   if (length(bad)) {
     .abort(c("Unsupported tag {cli::qty(length(bad))}format{?s}: {.val {bad}}.",
              "i" = "Supported: {.val {known}}."))

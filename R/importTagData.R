@@ -49,10 +49,20 @@
 #' additional (Wildlife Computers) tag data.
 #' @param sensor.subdirectory Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").
 #' @param format Character. The raw data format to read: `"cats"` (default; the CATS/CEiiA multi-sensor
-#'   CSV export) or `"little_leonardo"` (Little Leonardo archival loggers - a `_A.txt` acceleration file
+#'   CSV export), `"little_leonardo"` (Little Leonardo archival loggers - a `_A.txt` acceleration file
 #'   plus an optional `_DT.txt` depth/temperature file, which carry no clock and so additionally need the
-#'   `data_start` role, see \code{\link{metadataColumns}}). To import several tag makes in ONE call, map
-#'   the `tag_format` role instead: a per-deployment value there overrides this argument. Data you have
+#'   `data_start` role, see \code{\link{metadataColumns}}), or `"auto"` to identify each deployment's format
+#'   from its files.
+#'
+#'   `"auto"` inspects the headers of the files in each folder and routes it to the matching reader. It
+#'   never guesses: a folder matching two readers, or none, is reported rather than assumed - so a
+#'   misidentified deployment fails loudly instead of being read as the wrong make. It recognises stock
+#'   exports, using the built-in column mappings only; a custom exporter (i.e. one that needs
+#'   `import.mapping`) is reported as unidentifiable and should be named with `format` or `tag_format`.
+#'
+#'   To import several tag makes in ONE call, either use `"auto"` or map the `tag_format` role: a
+#'   per-deployment value there overrides this argument, and the two combine - `format = "auto"` with a
+#'   `tag_format` column naming only some deployments honours those and detects the rest. Data you have
 #'   already read into R does not need a reader at all - see \code{\link{buildTagData}}.
 #' This subdirectory should include the sensor CSV files for the corresponding animal.
 #' @param wc.subdirectory Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
@@ -282,7 +292,9 @@ importTagData <- function(data.folders,
   # subdirectories and output folder (fail-fast: output.dir must already exist)
   .assert_string(sensor.subdirectory, "sensor.subdirectory")
   .assert_string(format, "format")
-  .checkFormat(format, "format")            # fail on an unknown reader before anything is read
+  # fail on an unknown reader before anything is read. "auto" is legal HERE only - never as a `tag_format`
+  # column value, which names a reader.
+  .checkFormat(format, "format", allow = "auto")
   .assert_string(wc.subdirectory, "wc.subdirectory", null_ok = TRUE)
   .assert_dir(output.dir, "output.dir", null_ok = TRUE)
 
@@ -414,22 +426,78 @@ importTagData <- function(data.folders,
   }
 
   # resolve each deployment's raw format: the `tag_format` metadata column wins (so one call can mix tag
-  # makes), otherwise the `format` argument applies to all. Explicit and QC'd - nothing is sniffed.
+  # makes), otherwise the `format` argument applies to all. Both are explicit and QC'd - nothing is sniffed
+  # unless the user asks for it with `format = "auto"` (below).
   ids_in <- basename(data.folders)
   fmt_by_folder <- stats::setNames(rep(format, length(data.folders)), ids_in)
   if (!is.null(tag.format.col)) {
+    col_vals <- character(0)
     for (k in seq_along(ids_in)) {
       v <- id.metadata[[tag.format.col]][id.metadata[[id.col]] == ids_in[k]]
-      if (length(v) && !is.na(v[1]) && nzchar(as.character(v[1]))) fmt_by_folder[k] <- as.character(v[1])
+      if (length(v) && !is.na(v[1]) && nzchar(as.character(v[1]))) {
+        fmt_by_folder[k] <- as.character(v[1])
+        col_vals <- c(col_vals, as.character(v[1]))
+      }
     }
-    .checkFormat(fmt_by_folder, "columns$tag_format")
+    # validate the values that came FROM THE COLUMN, not the merged vector: `fmt_by_folder` was seeded from
+    # `format`, so blaming the column for an argument-sourced value would misattribute the error (and
+    # `format = "auto"` is legal here while a `tag_format` of "auto" is not).
+    .checkFormat(col_vals, "columns$tag_format")
   }
+
+  readers <- .readerFormats()
+
+  # `format = "auto"`: sniff ONLY the folders nobody named. Restricting detection to the still-"auto"
+  # entries is what implements the documented precedence (tag_format column > format= > detection) - and it
+  # gives per-deployment auto for free: a column naming only some rows leaves exactly the rest to detection.
+  auto_present <- stats::setNames(rep(FALSE, length(data.folders)), ids_in)
+  ambiguous <- character(0)
+  for (k in which(fmt_by_folder == "auto")) {
+    # every probe is wrapped, not just the ones `detect` composes: a reader whose `has_data` throws on a
+    # malformed folder must not take the whole run down here either.
+    fires <- function(which_fn) {
+      names(readers)[vapply(readers, function(r) {
+        isTRUE(tryCatch(which_fn(r)(data.folders[k], sensor.subdirectory), error = function(e) FALSE))
+      }, logical(1))]
+    }
+    matched <- fires(function(r) r$detect)
+    if (length(matched) == 1L) {
+      fmt_by_folder[k] <- matched
+    } else if (length(matched) > 1L) {
+      ambiguous <- c(ambiguous, sprintf("%s: matched %s", ids_in[k], paste(
+        sprintf("%s (%s)", matched, vapply(readers[matched], function(r) r$label, character(1))),
+        collapse = " and ")))
+    } else {
+      # nobody claimed it. `has_data` separates the two very different reasons, which must not be
+      # conflated: files ARE here but no reader recognises them (a real per-folder failure, reported in
+      # the loop below) vs there is nothing here at all (the existing quiet pre-flight skip).
+      auto_present[k] <- length(fires(function(r) r$has_data)) > 0L
+      fmt_by_folder[k] <- NA_character_
+    }
+  }
+  if (length(ambiguous)) {
+    # the bullets are DATA (they carry folder ids), but cli hands every string to glue - so a deployment
+    # named "PIN_{01}" would be evaluated and reported as "PIN_1", mangling the one thing this abort exists
+    # to name. Escape the braces rather than trusting ids to be glue-safe.
+    n_amb <- length(ambiguous)
+    esc <- gsub("}", "}}", gsub("{", "{{", ambiguous, fixed = TRUE), fixed = TRUE)
+    .abort(c("{.code format = \"auto\"} matched more than one reader for {n_amb} folder{?s}.",
+             stats::setNames(esc, rep("x", n_amb)),
+             "i" = "Auto-detection never guesses between readers.",
+             "i" = "Set {.arg format} explicitly, or map the {.field tag_format} role in {.fn metadataColumns} to name the reader per deployment."))
+  }
+  # POSTCONDITION: no element of fmt_by_folder is "auto" - each is a reader name or NA. Everything
+  # downstream (the pre-flight probe, the label lookup, the dispatch switch) indexes `readers` by these
+  # values and would fail obscurely on a leaked "auto".
 
   # does each folder hold data its reader can read? Discovery is format-specific (a ".csv under
   # sensor.subdirectory" is only true of CATS), so ask the reader rather than assuming a layout.
-  readers <- .readerFormats()
   data_files <- vapply(seq_along(data.folders), function(k) {
-    isTRUE(readers[[fmt_by_folder[k]]]$has_data(data.folders[k], sensor.subdirectory))
+    fk <- fmt_by_folder[[k]]
+    # NA = auto recognised no reader. Files-but-unidentifiable is NOT a "missing" folder: calling it one
+    # would report "no sensor file found" for a folder full of data the user can see.
+    if (is.na(fk)) return(isTRUE(auto_present[[k]]))
+    isTRUE(readers[[fk]]$has_data(data.folders[k], sensor.subdirectory))
   }, logical(1))
   data_files <- ifelse(data_files, data.folders, NA_character_)
   names(data_files) <- ids_in
@@ -445,10 +513,17 @@ importTagData <- function(data.folders,
   # `required.sensors`) - there data WAS found, so those runs still return their (possibly empty) result
   # with per-folder warnings.
   if (all(is.na(data_files))) {
-    fmt_lab <- paste(unique(vapply(unique(fmt_by_folder), function(f) readers[[f]]$label, character(1))),
-                     collapse = " / ")
+    # drop the NAs an all-auto run leaves behind: they have no reader, so they have no label to name and
+    # nothing useful to echo back as "the format you asked for".
+    fmts <- as.character(stats::na.omit(unique(unname(fmt_by_folder))))
+    if (!length(fmts)) {
+      .abort(c("No readable tag data was found in any of the {length(data.folders)} {.arg data.folders}.",
+               "i" = "{.code format = \"auto\"} found no primary sensor data in any folder: no reader could find its files.",
+               "i" = "Supported formats: {.val {names(readers)}}. Set {.arg format} explicitly if these are a supported make with custom column names (see {.arg import.mapping})."))
+    }
+    fmt_lab <- paste(unique(vapply(fmts, function(f) readers[[f]]$label, character(1))), collapse = " / ")
     .abort(c("No readable {fmt_lab} data was found in any of the {length(data.folders)} {.arg data.folders}.",
-             "i" = "Check {.arg format} ({.val {unique(unname(fmt_by_folder))}}) matches your tags.",
+             "i" = "Check {.arg format} ({.val {fmts}}) matches your tags.",
              "i" = "For CATS/CEiiA, each folder needs a {.field {sensor.subdirectory}} subdirectory holding sensor {.file .csv} files."))
   }
 
@@ -489,50 +564,9 @@ importTagData <- function(data.folders,
   # Specify columns to import and respective mappings ##########################
   ##############################################################################
 
-  # default column mappings 1
-  CATS <- rbind(
-    c("Date (UTC)", "date", "UTC"),
-    c("Time (UTC)", "time", "UTC"),
-    c("Accelerometer X [m/s\u00b2]", "ax", "m/s2"),
-    c("Accelerometer Y [m/s\u00b2]", "ay", "m/s2"),
-    c("Accelerometer Z [m/s\u00b2]", "az", "m/s2"),
-    c("Gyroscope X [mrad/s]", "gx", "mrad/s"),
-    c("Gyroscope Y [mrad/s]", "gy", "mrad/s"),
-    c("Gyroscope Z [mrad/s]", "gz", "mrad/s"),
-    c("Magnetometer X [\u00b5T]", "mx", "uT"),
-    c("Magnetometer Y [\u00b5T]", "my", "uT"),
-    c("Magnetometer Z [\u00b5T]", "mz", "uT"),
-    c("Depth (200bar) [m]", "depth", "m"),
-    c("Depth (200bar) 1 [m]", "depth", "m"),
-    c("Depth (100bar) [m]", "depth", "m"),
-    c("Temperature (depth) [\u00b0C]", "temp", "C"),
-    c("Depth (200bar) 2 [\u00b0C]", "temp", "C")
-    # NOTE: "Temp. (magnet.) [\u00b0C]" and "Temperature (imu) [\u00b0C]" are deliberately NOT mapped
-    # here - they report tag electronics (magnetometer chip / IMU board) temperature, not water
-    # temperature, and are blacklisted below (see `temp_blacklist`).
-  )
-
-  # default column mappings 2
-  CEIIA <- rbind(
-    c("Date", "datetime", "UTC"),
-    c("Ax (g)", "ax", "g"),
-    c("Ay (g)", "ay", "g"),
-    c("Az (g)", "az", "g"),
-    c("Gx (\u00b0/s)", "gx", "deg/s"),
-    c("Gy (\u00b0/s)", "gy", "deg/s"),
-    c("Gz (\u00b0/s)", "gz", "deg/s"),
-    c("Mx (\u00b5T)", "mx", "uT"),
-    c("My (\u00b5T)", "my", "uT"),
-    c("Mz (\u00b5T)", "mz", "uT"),
-    c("Temperature (\u00B0C)", "temp", "C"),
-    c("Depth (m)", "depth", "m"),
-    c("Ticks/s", "paddle_freq", "Hz"),
-    c("Velocity (m/s)", "paddle_speed", "m/s")
-  )
-
-  # combine all default mappings
-  default_mappings <- as.data.frame(rbind(CATS, CEIIA), stringsAsFactors = FALSE)
-  colnames(default_mappings) <- c("colname", "sensor", "units")
+  # the built-in CATS + CEiiA dialects (R/read_cats.R - the reader owns its own header knowledge, and
+  # `format = "auto"` resolves headers through this same table)
+  default_mappings <- .defaultMappings()
 
   # determine the actual mapping to use
   if (!is.null(import.mapping)) {
@@ -669,6 +703,30 @@ importTagData <- function(data.folders,
     # dispatch on this deployment's resolved format. A simple switch, not a registry: readers are
     # internal, so adding one is a reader file + a line here + an entry in .readerFormats().
     fmt_i <- fmt_by_folder[[i]]
+
+    # `format = "auto"` left this folder unresolved (NA). Every folder reaches this loop - there is no
+    # earlier gate - and `switch(NA_character_, ...)` falls through to the default, so without this guard an
+    # unidentified folder would abort the WHOLE run with "Unsupported tag format: NA". Mirrors the reader's
+    # own skip/fail block below, so the tally and the deferred verbose=0 warning pick it up unchanged.
+    if (is.na(fmt_i)) {
+      # `is.na(data_files[[i]])`, NOT `id %in% missing_folders`: the two states are per-FOLDER, but
+      # `missing_folders` holds basenames. Two folders sharing a basename (this project has both
+      # data/PIN_01 and _archive/PIN_01) would let an empty one's id silence the other's failure into
+      # "no sensor file found" - the exact lie this split exists to prevent. `data_files` is positional.
+      if (is.na(data_files[[i]])) {                  # nothing here at all: the pre-flight notice covers it
+        .log_skip(lvl, id, " skipped ", cli::symbol$bullet, " no sensor file found")
+      } else {                                       # files ARE here, none identifiable: a real failure
+        if (lvl >= 1L) {
+          cli::cli_alert_danger(paste0("{id}: could not identify the tag format ({.code format = \"auto\"}); ",
+                                       "set {.arg format} or the {.field tag_format} metadata column. Data not imported."))
+        }
+        failed_ids <- c(failed_ids, id)
+      }
+      data_list[[i]] <- NA
+      .log_gap(lvl)
+      next
+    }
+
     res <- switch(
       fmt_i,
       cats = read_cats(
@@ -1094,17 +1152,14 @@ importTagData <- function(data.folders,
   }
 
   # ---- probe each candidate (cheap: header only) ----
+  # `.probeSensorCSV()` (R/read_cats.R) is shared with the format detector, so "a usable CATS file" has one
+  # definition. Only `has_required` is added here: it depends on this call's `required.sensors`, which
+  # detection deliberately never sees.
   probes <- lapply(files, function(f) {
-    header <- tryCatch(names(data.table::fread(f, nrows = 0)), error = function(e) NULL)
-    if (is.null(header) || !length(header)) return(NULL)
-    fm <- .buildFileMapping(header, active_mapping, active_mapping_norm, temp_blacklist_norm)
-    if (is.null(fm)) return(NULL)
-    sensors <- sort(unique(fm$sensor_name_out))
-    list(file = f, mapping = fm,
-         schema = paste(sensors, collapse = "+"),
-         has_dt = ("datetime" %in% sensors) || all(c("date", "time") %in% sensors),
-         has_required = .meetsRequirement(sensors),
-         size = file.info(f)$size)
+    p <- .probeSensorCSV(f, active_mapping, active_mapping_norm, temp_blacklist_norm)
+    if (is.null(p)) return(NULL)
+    p$has_required <- .meetsRequirement(p$sensors)
+    p
   })
   probes <- Filter(Negate(is.null), probes)
   if (!length(probes)) return(list(data = NULL, reason = "no CSV with recognizable sensor columns"))
