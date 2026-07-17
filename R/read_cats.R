@@ -22,20 +22,17 @@
 #     in that order - the pattern `.reportAssembly()` / `.reportCalibration()` already established.
 
 
-#' The built-in CATS / CEiiA column mappings
+#' The CATS column dialect: `colname -> sensor role + original unit`
 #'
-#' The two dialects `read_cats()` understands, as `colname -> sensor role + original unit`. They live here,
-#' beside the reader that owns this knowledge, because they are CATS knowledge - not import machinery.
-#'
-#' The two dialects share no header literal (CATS writes `Date (UTC)` / `Accelerometer X [m/s2]`, CEiiA
-#' writes `Date` / `Ax (g)`), which is why identifying the format is a matter of resolving a header through
-#' this table rather than matching any string: see \code{.catsConfirm}.
-#' @return A data.frame with columns `colname`, `sensor`, `units`.
+#' The header CATS multi-sensor tags write: separate `Date`/`Time` columns, SI-ish units (m/s2, mrad/s),
+#' and paired depth/temperature channels. Kept as its own helper so the two dialects `read_cats()` handles
+#' are readable side by side, but they compose into one table (\code{.defaultMappings}) because the reader
+#' resolves any header against all of them at once - it does not first decide which dialect a folder is.
+#' @return A character matrix of `colname, sensor, units` rows.
 #' @keywords internal
 #' @noRd
-.defaultMappings <- function() {
-  # default column mappings 1
-  CATS <- rbind(
+.catsMappings <- function() {
+  rbind(
     c("Date (UTC)", "date", "UTC"),
     c("Time (UTC)", "time", "UTC"),
     c("Accelerometer X [m/s\u00b2]", "ax", "m/s2"),
@@ -56,9 +53,21 @@
     # here - they report tag electronics (magnetometer chip / IMU board) temperature, not water
     # temperature, and are blacklisted by the caller (see `temp_blacklist`).
   )
+}
 
-  # default column mappings 2
-  CEIIA <- rbind(
+
+#' The CEiiA column dialect: `colname -> sensor role + original unit`
+#'
+#' The header CEiiA archival tags write: a single `Date` datetime column, g / deg/s units, and the paddle
+#' channels (`Ticks/s`, `Velocity`) that CATS tags lack. Shares no header literal with the CATS dialect
+#' (CATS writes `Date (UTC)` / `Accelerometer X [m/s2]`, CEiiA writes `Date` / `Ax (g)`), which is why the
+#' format can be identified by resolving a header through the mappings rather than matching any one string:
+#' see \code{.catsConfirm}.
+#' @return A character matrix of `colname, sensor, units` rows.
+#' @keywords internal
+#' @noRd
+.ceiiaMappings <- function() {
+  rbind(
     c("Date", "datetime", "UTC"),
     c("Ax (g)", "ax", "g"),
     c("Ay (g)", "ay", "g"),
@@ -74,9 +83,22 @@
     c("Ticks/s", "paddle_freq", "Hz"),
     c("Velocity (m/s)", "paddle_speed", "m/s")
   )
+}
 
-  # combine all default mappings
-  out <- as.data.frame(rbind(CATS, CEIIA), stringsAsFactors = FALSE)
+
+#' The built-in CATS + CEiiA column mappings, combined
+#'
+#' The single table `read_cats()` resolves every header against, and the basis of the format detector
+#' (\code{.catsConfirm}). The two dialects (\code{.catsMappings}, \code{.ceiiaMappings}) are separate for
+#' readability but concatenated here on purpose: the reader identifies neither dialect explicitly, it just
+#' maps whatever columns a folder's CSV carries onto sensor roles - so a mixed or partial header resolves
+#' as far as it can against the union. Order is CATS-then-CEiiA; nothing downstream depends on it, and the
+#' dialects share no header literal, so no row can shadow another.
+#' @return A data.frame with columns `colname`, `sensor`, `units`.
+#' @keywords internal
+#' @noRd
+.defaultMappings <- function() {
+  out <- as.data.frame(rbind(.catsMappings(), .ceiiaMappings()), stringsAsFactors = FALSE)
   colnames(out) <- c("colname", "sensor", "units")
   out
 }

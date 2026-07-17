@@ -190,6 +190,19 @@ test_that(".defaultMappings carries both dialects and is a pure move of the form
   expect_setequal(m$sensor[m$colname %in% c("Ax (g)", "Ay (g)", "Az (g)")], c("ax", "ay", "az"))
 })
 
+test_that(".defaultMappings is exactly the two dialect helpers, concatenated CATS-then-CEiiA", {
+  # the split is for readability only: the combined table must stay the literal union, or the reader and
+  # its golden lock diverge. Guards against editing one dialect helper and forgetting the other exists.
+  cats <- nautilus:::.catsMappings(); ceiia <- nautilus:::.ceiiaMappings()
+  expect_equal(nrow(cats), 16L); expect_equal(nrow(ceiia), 14L)
+  combined <- as.data.frame(rbind(cats, ceiia), stringsAsFactors = FALSE)
+  colnames(combined) <- c("colname", "sensor", "units")
+  expect_identical(nautilus:::.defaultMappings(), combined)
+  # the dialects share no header literal - the property that lets a header be resolved without first
+  # deciding which dialect it is (and that guarantees no row shadows another in the union)
+  expect_length(intersect(cats[, 1], ceiia[, 1]), 0L)
+})
+
 
 # ---- the Little Leonardo detector -----------------------------------------------------------------
 
