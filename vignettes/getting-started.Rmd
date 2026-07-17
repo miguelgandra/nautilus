@@ -153,6 +153,32 @@ tagMetadata(tag1)        # the consolidated metadata record
 processingHistory(tag1)  # what has been done to the data so far
 ```
 
+### If your data isn't a folder of CATS files
+
+`importTagData()` reads the CATS archival/camera format. If your tag is a different make (say a
+Little Leonardo logger), or your sensor data is already in R (exported from another tool, or parsed
+by your own reader), skip the file reader and build the `nautilus_tag` directly from a data frame with
+`buildTagData()`:
+
+```{r byo}
+# a data frame with one row per sample: a POSIXct `datetime` (or a start time + rate for
+# loggers that store no clock) and canonical sensor columns (ax/ay/az, and optionally
+# mx/my/mz, gx/gy/gz, depth, temp). Columns under other names are renamed via `sensor.mapping`.
+tag <- buildTagData(
+  my_sensor_df, id = "LL01",
+  start = as.POSIXct("2025-07-21 22:33:00", tz = "UTC"),   # only needed if there is no datetime column
+  sampling.rate = 100,                                     # Hz
+  metadata = my_deployments_row                            # optional: a qcDeploymentMetadata() row
+)
+```
+
+The result is an ordinary `nautilus_tag`, so it feeds the same pipeline
+(`processTagData()`, `checkTagMapping()`, ...) from here on. **Magnetometer- and gyroscope-free tags are
+fully supported**: with `ax/ay/az` plus `depth`, `processTagData()` returns ODBA/VeDBA, surge/sway/heave
+and pitch/roll from acceleration alone (heading is left `NA`), and `checkTagMapping()` still resolves the
+tag-to-body axes from gravity and diving dynamics -- no magnetometer or gyroscope required.
+(`processTagData()` does need a `depth` channel; the constructor itself does not.)
+
 Next, clean the record and place it on a regular time grid:
 
 ```{r spine-clean}

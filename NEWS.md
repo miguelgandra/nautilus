@@ -13,6 +13,10 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
   in Wildlife Computers location files, and stores everything as a `nautilus_tag` object (a `data.table`
   carrying a single consolidated metadata record; inspect it with `tagMetadata()` and
   `processingHistory()`).
+* `buildTagData()` constructs the same `nautilus_tag` from sensor data already in memory -- for tag
+  makes `importTagData()` does not read (e.g. Little Leonardo loggers), data exported from another tool,
+  or simulated data. It synthesises timestamps from a start time and rate when the raw has no clock, and
+  fully supports accelerometer-only tags (no magnetometer/gyroscope required).
 
 ## Cleaning, quality control and orientation
 
