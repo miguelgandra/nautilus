@@ -142,14 +142,19 @@
 #' Assemble a data function's return value under the unified output contract.
 #'
 #' `return.data = TRUE` -> the processed objects (a named list, keyed by id). `return.data = FALSE` -> the
-#' written file paths as an unnamed character vector, which chain directly into the next step's `data`
-#' argument (a memory-free pipeline). `saved` is the per-item vector of paths from `.saveOutput` (NULLs
-#' for un-saved items are dropped).
+#' written file paths as a character vector, returned **invisibly** so a top-level call does not auto-print
+#' a wall of paths, while the value stays available to chain into the next step's `data` argument (a
+#' memory-free pipeline) or to capture in scripts and tests. `saved` is the per-item vector of paths from
+#' `.saveOutput` (NULLs for un-saved items are dropped).
+#'
+#' Invisibility propagates only if the caller ends with this call as its LAST expression; a caller that
+#' assigns the result and returns the variable (e.g. to attach an attribute) must re-wrap - see
+#' \code{applyAxisMapping}.
 #' @keywords internal
 #' @noRd
 .collectOutput <- function(results, saved, return.data, ids) {
   if (isTRUE(return.data)) return(stats::setNames(results, ids))
-  unlist(saved, use.names = FALSE)
+  invisible(unlist(saved, use.names = FALSE))
 }
 
 

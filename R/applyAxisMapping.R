@@ -435,7 +435,9 @@ applyAxisMapping <- function(data,
   keep <- if (return.data) !vapply(results, is.null, logical(1)) else !vapply(saved, is.null, logical(1))
   out <- .collectOutput(results[keep], saved[keep], return.data, r$ids[keep])
   if (length(excluded_out)) attr(out, "excluded") <- excluded_out
-  out
+  # assigning to `out` and returning it bare would strip the invisibility .collectOutput set on the paths
+  # branch, re-printing the wall of paths; re-apply it (the data branch stays visible, as requested).
+  if (isTRUE(return.data)) out else invisible(out)
 }
 
 

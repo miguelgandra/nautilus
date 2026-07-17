@@ -130,9 +130,10 @@ to tag a processing run or avoid clashes. Only used when \code{output.dir} is se
 per-step diagnostics). Defaults to \code{"detailed"}.}
 }
 \value{
-A named list with a single \code{filtered_data} element: when \code{return.data = TRUE}, a named
-list of filtered \code{data.table}s (one per successfully filtered individual); when \code{return.data = FALSE},
-a character vector of the written \code{.rds} file paths. Diagnostic plots are emitted as a side effect
+When \code{return.data = TRUE}, a named list of filtered \code{data.table}s (one per successfully filtered
+individual, keyed by ID). When \code{return.data = FALSE}, the written \code{.rds} file paths as a character vector,
+returned \strong{invisibly} (so a top-level call does not print them) and ready to chain into the next step's
+\code{data} argument. Diagnostic plots are emitted as a side effect
 (drawn to the active device when \code{plot = TRUE} and/or written to the multi-page PDF \code{plot.file}), not
 returned. Data is written to disk whenever \code{output.dir} is set, regardless of the return value.
 }

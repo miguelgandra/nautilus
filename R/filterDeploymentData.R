@@ -104,9 +104,10 @@
 #' (header, one line per individual, final summary), or `2`/"detailed" (the default; adds low-level
 #' per-step diagnostics). Defaults to `"detailed"`.
 #'
-#' @return A named list with a single \code{filtered_data} element: when `return.data = TRUE`, a named
-#' list of filtered `data.table`s (one per successfully filtered individual); when `return.data = FALSE`,
-#' a character vector of the written `.rds` file paths. Diagnostic plots are emitted as a side effect
+#' @return When `return.data = TRUE`, a named list of filtered `data.table`s (one per successfully filtered
+#' individual, keyed by ID). When `return.data = FALSE`, the written `.rds` file paths as a character vector,
+#' returned **invisibly** (so a top-level call does not print them) and ready to chain into the next step's
+#' `data` argument. Diagnostic plots are emitted as a side effect
 #' (drawn to the active device when `plot = TRUE` and/or written to the multi-page PDF `plot.file`), not
 #' returned. Data is written to disk whenever `output.dir` is set, regardless of the return value.
 #'
@@ -817,13 +818,14 @@ filterDeploymentData <- function(data,
   }
 
 
-  # return the wrapped structure. `filtered_data` holds the objects when return.data = TRUE (discarded/
-  # empty individuals dropped), or the written `.rds` file paths when return.data = FALSE (which chain
-  # into the next step's `data` argument).
+  # unified return contract, matching the rest of the pipeline (no bespoke `filtered_data` wrapper):
+  # return.data = TRUE -> the retained tag objects as a named list keyed by ID (discarded/empty individuals
+  # dropped); return.data = FALSE -> the written `.rds` paths, invisibly, which chain into the next step's
+  # `data` argument. Both feed downstream without unwrapping.
   if (return.data) {
-    return(list(filtered_data = processed_data[!vapply(processed_data, is.null, logical(1))]))
+    return(processed_data[!vapply(processed_data, is.null, logical(1))])
   }
-  list(filtered_data = unlist(saved, use.names = FALSE))
+  invisible(unlist(saved, use.names = FALSE))
 
 }
 

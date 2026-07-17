@@ -1002,7 +1002,9 @@ importTagData <- function(data.folders,
     # return the list containing processed sensor data for all folders
     return(data_list)
   }
-  unlist(saved, use.names = FALSE)
+  # return.data = FALSE: the written .rds paths, invisibly - a top-level import must not auto-print a wall
+  # of paths, but the value stays available to chain into the next step or capture (see .collectOutput).
+  invisible(unlist(saved, use.names = FALSE))
 }
 
 

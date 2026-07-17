@@ -28,6 +28,30 @@ run_quiet <- function(expr) {
   res
 }
 
+test_that("filterDeploymentData returns invisibly with the unified shape (no filtered_data wrapper)", {
+  f <- .make_deployment()
+  custom <- data.frame(ID = "A01", start = f$t0 + f$surf, end = f$t0 + f$surf + f$mid)
+  dir <- file.path(tempdir(), paste0("fdd_out_", as.integer(runif(1, 1, 1e7))))
+  dir.create(dir); on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+
+  # return.data = FALSE -> written paths, returned INVISIBLY (a top-level call must not print a wall of
+  # paths) as a bare character vector - no list(filtered_data = ...) wrapper
+  wv <- withVisible(suppressWarnings(suppressMessages(
+    filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom, plot = FALSE,
+                         return.data = FALSE, output.dir = dir, verbose = FALSE))))
+  expect_false(wv$visible)
+  expect_type(wv$value, "character")
+  expect_match(wv$value, "\\.rds$")
+
+  # return.data = TRUE -> the tag objects, VISIBLE, keyed by ID - again no wrapper
+  wv2 <- withVisible(suppressWarnings(suppressMessages(
+    filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom, plot = FALSE,
+                         return.data = TRUE, verbose = FALSE))))
+  expect_true(wv2$visible)
+  expect_named(wv2$value, "A01")
+  expect_false(is.null(wv2$value$A01))
+})
+
 test_that("filterDeploymentData restores graphics par() when drawing (no leak)", {
   f <- .make_deployment()
   custom <- data.frame(ID = "A01", start = f$t0 + f$surf, end = f$t0 + f$surf + f$mid)
@@ -86,8 +110,8 @@ test_that("filterDeploymentData applies a full custom deployment window", {
  plot = FALSE, return.data = TRUE
   ))
 
-  expect_named(res, "filtered_data")
-  kept <- res$filtered_data$A01
+  expect_named(res, "A01")               # the return is the tag list keyed by ID, no wrapper
+  kept <- res$A01
   expect_false(is.null(kept))
   expect_true(min(kept$datetime) >= custom$start)
   expect_true(max(kept$datetime) <= custom$end)
@@ -104,7 +128,7 @@ test_that("filterDeploymentData works with non-default column names (F4 regressi
  plot = FALSE, return.data = TRUE
   ))
 
-  kept <- res$filtered_data$A01
+  kept <- res$A01
   expect_false(is.null(kept))
   # the automated detection should trim the surface padding
   expect_lt(nrow(kept), nrow(f$data))
@@ -121,7 +145,7 @@ test_that("filterDeploymentData honours custom.deployment.times with a non-defau
  plot = FALSE, return.data = TRUE
   ))
 
-  kept <- res$filtered_data$A01
+  kept <- res$A01
   expect_false(is.null(kept))
   expect_true(min(kept$time) >= custom$start)
   expect_true(max(kept$time) <= custom$end)
@@ -148,8 +172,8 @@ test_that("filterDeploymentData discards datasets with no deployment without cra
  plot = FALSE, return.data = TRUE
     ))
   )
-  # discarded -> filtered_data is present but empty
-  expect_length(res$filtered_data, 0)
+  # discarded -> the returned list is empty
+  expect_length(res, 0)
 })
 
 # --- temperature corroboration + min-duration guard (refinements) ---------------------------------
@@ -173,12 +197,12 @@ test_that("temperature rescues a shallow deployment that depth alone misses", {
   # depth-only: no deployment -> discarded
   res0 <- run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
                                          plot = FALSE, return.data = TRUE))
-  expect_length(res0$filtered_data, 0)
+  expect_length(res0, 0)
 
   # with temperature: the in-water (15 C) period is recovered
   res1 <- run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = TRUE,
                                          plot = FALSE, return.data = TRUE))
-  kept <- res1$filtered_data$A01
+  kept <- res1$A01
   expect_false(is.null(kept))
   expect_gt(nrow(kept), 0.8 * f$mid)                # ~ the 3600 s in-water stretch
   expect_lt(nrow(kept), 1.1 * f$mid)                # but not the warm boat ends
@@ -188,9 +212,9 @@ test_that("temperature rescues a shallow deployment that depth alone misses", {
 test_that("a flat temperature trace leaves the depth result unchanged (temperature is a no-op)", {
   f <- .make_deployment()   # deep 1 h window, flat ~15 C temperature
   on_temp  <- run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = TRUE,
-                                             plot = FALSE, return.data = TRUE))$filtered_data$A01
+                                             plot = FALSE, return.data = TRUE))$A01
   off_temp <- run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
-                                             plot = FALSE, return.data = TRUE))$filtered_data$A01
+                                             plot = FALSE, return.data = TRUE))$A01
   expect_equal(nrow(on_temp), nrow(off_temp))       # identical window
 })
 
@@ -205,12 +229,12 @@ test_that("min.deployment.hours discards windows that are too short", {
 
   # default guard (0.25 h = 15 min) discards the 5-min spike
   res_def <- run_quiet(filterDeploymentData(list(A01 = d), plot = FALSE, return.data = TRUE))
-  expect_length(res_def$filtered_data, 0)
+  expect_length(res_def, 0)
 
   # disabling the guard keeps it
   res_off <- run_quiet(filterDeploymentData(list(A01 = d), min.deployment.hours = 0,
                                             plot = FALSE, return.data = TRUE))
-  expect_false(is.null(res_off$filtered_data$A01))
+  expect_false(is.null(res_off$A01))
 })
 
 test_that("header is not a false global method, and the summary reports the realized custom/auto mix", {
@@ -262,7 +286,7 @@ test_that("a partial custom window honours the supplied boundary (padding-shift 
     list(A01 = f$data),
     custom.deployment.times = data.frame(ID = "A01", start = cstart, end = as.POSIXct(NA)),
     plot = FALSE, return.data = TRUE))
-  kept <- res$filtered_data$A01
+  kept <- res$A01
   expect_equal(as.numeric(min(kept$datetime)), as.numeric(cstart), tolerance = 1)  # custom start respected
   expect_gt(max(kept$datetime), cstart)                                            # end inferred after it
 })
@@ -274,7 +298,7 @@ test_that("an out-of-range custom window is clamped, not discarded", {
     list(A01 = f$data),
     custom.deployment.times = data.frame(ID = "A01", start = span_start - 3600, end = span_end + 3600),
     plot = FALSE, return.data = TRUE))
-  kept <- res$filtered_data$A01
+  kept <- res$A01
   expect_false(is.null(kept))                              # not discarded
   expect_gte(as.numeric(min(kept$datetime)), as.numeric(span_start))  # clamped within data
   expect_lte(as.numeric(max(kept$datetime)), as.numeric(span_end))
@@ -300,12 +324,12 @@ test_that("filterDeploymentData runs without a temp column and just omits its pl
   res <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
                                         plot = FALSE, plot.file = pfile,
                                         return.data = TRUE, verbose = FALSE))
-  expect_true("A01" %in% names(res$filtered_data))          # processed, not aborted on missing temp
-  expect_false("temp" %in% names(res$filtered_data$A01))    # temp stays absent
-  expect_true("ax" %in% names(res$filtered_data$A01))       # the present plot metric is retained
+  expect_true("A01" %in% names(res))                        # processed, not aborted on missing temp
+  expect_false("temp" %in% names(res$A01))    # temp stays absent
+  expect_true("ax" %in% names(res$A01))       # the present plot metric is retained
   expect_true(file.exists(pfile) && file.size(pfile) > 0)   # panel rendered (temp strip simply omitted)
 
   # fully-automatic detection path also runs without temp (temperature corroboration skipped)
   res2 <- run_quiet(filterDeploymentData(list(A01 = f$data), plot = FALSE, return.data = TRUE, verbose = FALSE))
-  expect_false(is.null(res2$filtered_data$A01))
+  expect_false(is.null(res2$A01))
 })
