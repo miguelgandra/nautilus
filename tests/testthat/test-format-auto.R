@@ -38,12 +38,12 @@ sup2 <- intToUtf8(0x00B2)   # superscript two: real CATS headers write "Accelero
   dir.create(file.path(root, id), recursive = TRUE, showWarnings = FALSE)
   n <- n_sec * hz
   set.seed(7)
-  writeLines(c("ACCELERATION DATA ", "", sprintf(" %d msec/point", as.integer(1000L / hz)),
+  .write_crlf(c("ACCELERATION DATA ", "", sprintf(" %d msec/point", as.integer(1000L / hz)),
                "RECORD TIME   0h 1m", "START DATE   0000/00/00", "START TIME    00:00:00", "",
                " X  ,Y   ,Z   ",
                sprintf("%s,%s,%s,", round(stats::rnorm(n), 2), round(stats::rnorm(n), 2),
                        round(stats::rnorm(n, 1), 2))),
-             file.path(root, id, paste0(id, "_A.txt")), sep = "\r\n")
+             file.path(root, id, paste0(id, "_A.txt")))
   list(root = root, folder = file.path(root, id), id = id, n = n)
 }
 .auto_ll_t0 <- function() as.POSIXct("2025-07-21 22:33:00", tz = "UTC")
@@ -201,8 +201,8 @@ test_that(".llConfirm requires a rate the reader could actually use", {
   # discovery probe) fires on the title cue; confirm does not, because there is no parsable rate - and a
   # rate is exactly what read_little_leonardo() refuses to proceed without.
   other <- tempfile(); dir.create(other)
-  writeLines(c("ACCELERATION DATA EXPORT v2", "Rate: 25 Hz", "", "X,Y,Z", "1,2,3"),
-             file.path(other, "TAG_A.txt"), sep = "\r\n")
+  .write_crlf(c("ACCELERATION DATA EXPORT v2", "Rate: 25 Hz", "", "X,Y,Z", "1,2,3"),
+             file.path(other, "TAG_A.txt"))
   expect_true(nautilus:::.llDetect(other))
   expect_false(nautilus:::.llConfirm(other))
   expect_false(nautilus:::.readerFormats()$little_leonardo$detect(other, "CMD"))
@@ -215,8 +215,8 @@ test_that(".llDetect reads as far as the reader does (12 lines, not 6)", {
   # a folder whose rate line sits at line 7 is read fine by format = "little_leonardo"; a 6-line detection
   # window would skip it under "auto", making auto weaker than explicit.
   d <- tempfile(); dir.create(d)
-  writeLines(c("TITLE", "", "", "", "", "", " 10 msec/point", "", "X,Y,Z", "1,2,3"),
-             file.path(d, "T_A.txt"), sep = "\r\n")
+  .write_crlf(c("TITLE", "", "", "", "", "", " 10 msec/point", "", "X,Y,Z", "1,2,3"),
+             file.path(d, "T_A.txt"))
   expect_true(nautilus:::.llDetect(d))
   expect_true(nautilus:::.llConfirm(d))
 })
@@ -311,8 +311,8 @@ test_that("auto aborts when it matches more than one reader, naming the folder a
   # at the folder root, so both readers' discovery fires.
   root <- tempfile(); id <- "BOTH_01"
   dir.create(file.path(root, id), recursive = TRUE)
-  writeLines(c("ACCELERATION DATA", "", " 10 msec/point", "", "X,Y,Z", "1,2,3"),
-             file.path(root, id, "T_A.txt"), sep = "\r\n")
+  .write_crlf(c("ACCELERATION DATA", "", " 10 msec/point", "", "X,Y,Z", "1,2,3"),
+             file.path(root, id, "T_A.txt"))
   writeLines(c("Date,Ax (g),Depth (m)", "2020-01-01 00:00:00,0.1,1.0"), file.path(root, id, "s.csv"))
   expect_error(
     importTagData(data.folders = file.path(root, id), format = "auto", sensor.subdirectory = ".",
@@ -327,8 +327,8 @@ test_that("the ambiguous abort renders cleanly for several folders, and never ev
   # "PIN_{01}" was reported as "PIN_1" - the abort mangling the one thing it exists to name.
   mk_both <- function(root, id) {
     dir.create(file.path(root, id), recursive = TRUE, showWarnings = FALSE)
-    writeLines(c("ACCELERATION DATA", "", " 10 msec/point", "", "X,Y,Z", "1,2,3"),
-               file.path(root, id, "T_A.txt"), sep = "\r\n")
+    .write_crlf(c("ACCELERATION DATA", "", " 10 msec/point", "", "X,Y,Z", "1,2,3"),
+               file.path(root, id, "T_A.txt"))
     writeLines(c("Date,Ax (g),Depth (m)", "2020-01-01 00:00:00,0.1,1.0"), file.path(root, id, "s.csv"))
     file.path(root, id)
   }

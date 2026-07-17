@@ -1,6 +1,7 @@
 # Tests for read_little_leonardo(): the Little Leonardo format reader.
 # Fixtures are synthesised here (the real archive is not shipped), reproducing the format's quirks:
 # a header block, CRLF line endings, padded columns, a trailing comma and no-leading-zero decimals.
+# They are written through `.write_crlf()` (helper-crlf.R) - see the test below for why that matters.
 
 .ll_fixture <- function(dir = tempfile(), n_sec = 5L, hz = 10L, with_dt = TRUE, id = "LLTEST") {
   dir.create(dir, showWarnings = FALSE, recursive = TRUE)
@@ -12,18 +13,32 @@
            "RECORD TIME   0h 1m", "START DATE   0000/00/00", "START TIME    00:00:00", "",
            " X  ,Y   ,Z   ",
            sprintf("%s,%s,%s,", ax, ay, az))              # note the trailing comma
-  writeLines(acc, file.path(dir, paste0(id, "_A.txt")), sep = "\r\n")
+  .write_crlf(acc, file.path(dir, paste0(id, "_A.txt")))
   if (with_dt) {
     dep <- c("Depth, Temp, and Video Data ", "",          # <- title line: must NOT be read as the header
              "RECORD TIME   0 hours 1 minutes", "START DATE   0000/00/00", "START TIME    00:00:00", "",
              "Depth , Temp,  Video ",
              sprintf("%s  ,%s  ,0", seq_len(n_sec), 20 + seq_len(n_sec)))
-    writeLines(dep, file.path(dir, paste0(id, "_DT.txt")), sep = "\r\n")
+    .write_crlf(dep, file.path(dir, paste0(id, "_DT.txt")))
   }
   list(dir = dir, n = n, n_sec = n_sec, hz = hz, ax = ax, ay = ay, az = az)
 }
 
 .t0 <- function() as.POSIXct("2025-07-21 22:33:00", tz = "UTC")
+
+test_that(".write_crlf writes exactly CRLF, with no platform translation", {
+  # A byte-level lock, because this fixture family is only faithful if its line endings are. Writing CRLF
+  # via `writeLines(x, <path>, sep = "\r\n")` uses a TEXT-mode connection, and on Windows that translates
+  # the "\n" in the separator into "\r\n" - emitting "\r\r\n". Nothing errors: `readLines()` is also
+  # text-mode and still reports the right line numbers, but `fread()` memory-maps the file in BINARY, reads
+  # "\r\r\n" as two breaks, and so starts parsing four lines early - mid-header. The frame comes back with
+  # the header block as data and four extra rows. This test fails on Windows the moment that regresses.
+  p <- tempfile()
+  .write_crlf(c("a", "b"), p)
+  expect_identical(readBin(p, "raw", file.info(p)$size),
+                   as.raw(c(0x61, 0x0d, 0x0a, 0x62, 0x0d, 0x0a)))
+  expect_identical(readLines(p, warn = FALSE), c("a", "b"))
+})
 
 test_that(".llHeaderRate parses the declared 'msec/point' rate", {
   expect_equal(nautilus:::.llHeaderRate(c("ACCELERATION DATA", " 10 msec/point")), 100)
@@ -79,7 +94,7 @@ test_that("read_little_leonardo reports a missing or unreadable acceleration fil
   empty <- tempfile(); dir.create(empty)
   expect_match(nautilus:::read_little_leonardo(empty, start = .t0())$reason, "no sensor file")
   bad <- tempfile(); dir.create(bad)
-  writeLines(c("ACCELERATION DATA", " 10 msec/point", "", "1,2,3"), file.path(bad, "X_A.txt"), sep = "\r\n")
+  .write_crlf(c("ACCELERATION DATA", " 10 msec/point", "", "1,2,3"), file.path(bad, "X_A.txt"))
   expect_match(nautilus:::read_little_leonardo(bad, start = .t0())$reason, "unrecognised header")
 })
 

@@ -7,8 +7,8 @@ utils::globalVariables(c(
   "disp_e", "disp_n", "gx", "gy", "gz", "heading", "heave", "horizontal_sum_in_window", "ID", "idx",
   "is_horizontal", "is_stable_horizontal", "mx", "my", "mz", "obs_datetime", "odba", "paddle_freq",
   "paddle_speed", "pitch", "pitch_rad", "pseudo_depth", "pseudo_error", "quality",
-  "roll", "speed_dr", "surge", "sway", "time_diff", "turning_angle", "vedba", "vertical_speed",
-  "vertical_velocity", "vv_smooth"
+  "roll", "speed_dr", "surge", "sway", "temp", "time_diff", "turning_angle", "vedba",
+  "vertical_speed", "vertical_velocity", "vv_smooth"
 ))
 
 # runs when the package's namespace is loaded (before attach)
