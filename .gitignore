@@ -23,3 +23,5 @@ DESIGN_INGESTION.md
 /doc/
 /Meta/
 /nautilus.Rcheck/
+# local plot output (review images, scratch renders)
+plots/

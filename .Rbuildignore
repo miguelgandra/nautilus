@@ -20,3 +20,7 @@
 ^CRAN-SUBMISSION$
 ^doc$
 ^Meta$
+^DESIGN_INGESTION\.md$
+^plots$
+\.Rcheck$
+^\.git$
