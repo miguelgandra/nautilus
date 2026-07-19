@@ -372,17 +372,18 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_match(d2, "Smoothing:")                         # fixed config (smoothing) lives in the header
   expect_match(d2, "A01 \\(1/1\\)")                      # per-individual cli sub-header
   # the detailed block reports findings (key: value), not step narration
+  expect_match(d2, "Methods: peaks \\+ wavelet")         # default runs both -> header names both ("Methods:")
+  expect_match(d2, "Bandpass: [0-9.]+ . [0-9.]+ Hz")     # band is fixed config: its own header line, not per deployment
   expect_match(d2, "input:.*Hz")                         # rows | sampling rate | duration (fs shown ONCE, here)
   expect_match(d2, "axis: sway")                         # selected axis (single candidate present here)
-  expect_match(d2, "bandpass [0-9.]+ . [0-9.]+ Hz")      # the band is fixed config: shown in the HEADER, not per deployment
-  expect_match(d2, "detection:.*beats")                  # peak-detector findings (a real per-deployment count)
   expect_match(d2, "swimming:")                          # merged activity + behaviour line
   expect_match(d2, "frequency: median")                  # dedicated frequency line
   expect_match(d2, "amplitude: median.*g")               # dedicated amplitude line (with unit)
-  # noise removed from the per-deployment block: sampling headroom (folded into input), the redundant
-  # per-deployment bandpass line, and the old split activity/behaviour lines
+  # noise removed from the per-deployment block: sampling headroom (folded into input), the per-deployment
+  # bandpass line (now a header line), the peaks-only detection line, and the old split activity/behaviour
   expect_false(grepl("sampling:", d2, fixed = TRUE))
-  expect_false(grepl("bandpass:", d2, fixed = TRUE))     # header uses "bandpass 0.09 ..." (no colon); the per-line form is gone
+  expect_false(grepl("detection:", d2, fixed = TRUE))
+  expect_false(grepl("wavelet:", d2, fixed = TRUE))
   expect_false(grepl("activity:", d2, fixed = TRUE))
   expect_false(grepl("behaviour:", d2, fixed = TRUE))
   expect_match(d2, "SUMMARY")
@@ -591,14 +592,31 @@ test_that("towed deployments emit ONE consolidated tow-pendulum warning, listing
   expect_true(grepl("T1", towed_w) && grepl("T2", towed_w))     # and lists the affected deployments
 })
 
-test_that("the axis line shows the selected axis, the reason, and the per-axis peak evidence", {
+test_that("the axis line splits into the selected axis and an indented peak-frequency sub-line", {
   skip_if_not_installed("signal")
-  # multiple candidate axes present -> the reformatted line: "axis: <axis> (<reason>) . peaks: ... Hz"
+  # multiple candidate axes present -> headline "axis: <axis> (<reason>)" plus a subordinate sub-line
   out <- paste(cli::cli_fmt(suppressWarnings(
     calculateTailBeats(.multiaxis(), motion.col = c("surge", "sway", "heave"), min.freq.Hz = 0.2,
                        max.freq.Hz = 3, return.data = TRUE, verbose = 2))), collapse = "\n")
-  expect_match(out, "axis: \\w+ \\(")                    # axis + reason in parentheses
-  expect_match(out, "peaks: .*Hz")                       # supporting per-axis peak frequencies, unit once at the end
+  expect_match(out, "axis: \\w+ \\(")                    # headline: selected axis + reason in parentheses
+  expect_match(out, "peak frequencies: .*Hz")            # the supporting evidence, unit once at the end
+  expect_match(out, "\u21b3 peak frequencies:")          # carried on a subordinate sub-line (corner-arrow marker)
+})
+
+test_that("two methods: the header names both and a cross-check agreement line is reported", {
+  skip_if_not_installed("signal")
+  d <- .sway(freq = 0.8, fs = 20, dur = 200)
+  fmt <- function(...) paste(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(list(A01 = d), motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
+                       return.data = TRUE, verbose = 2, ...))), collapse = "\n")
+
+  out2 <- fmt(method = c("peaks", "wavelet"))
+  expect_match(out2, "Methods: peaks \\+ wavelet \\(cross-checked, peaks primary\\)")  # header names both + primary
+  expect_match(out2, "agreement: [0-9]+% . wavelet median [0-9.]+ Hz")                 # the cross-check payoff
+
+  out1 <- fmt(method = "peaks")
+  expect_match(out1, "Method: peaks")                    # single method -> "Method:", no cross-check
+  expect_false(grepl("agreement:", out1, fixed = TRUE))
 })
 
 test_that("disagreeing candidate axes trigger an axis-disagreement warning", {

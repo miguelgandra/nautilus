@@ -173,6 +173,17 @@
   invisible(NULL)
 }
 
+#' An indented sub-line beneath a `.log_detail()` line (level >= 2): supporting evidence subordinate to
+#' the finding above it, marked with a corner arrow so it reads as detail, not a peer.
+#' @keywords internal
+#' @noRd
+.log_subdetail <- function(lvl, ...) {
+  if (lvl < 2L) return(invisible(NULL))
+  txt <- paste0("\u21b3 ", paste0(...))
+  cli::cli_bullets(stats::setNames("{txt}", " "))   # blank-name bullet = indent, no marker; {txt} keeps literal braces literal
+  invisible(NULL)
+}
+
 #' The final summary line (level >= 1), typically counts + elapsed time.
 #' @keywords internal
 #' @noRd

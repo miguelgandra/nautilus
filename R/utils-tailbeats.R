@@ -399,14 +399,9 @@
   # why it is not inferred from the signal alone. Shared with the wavelet method.
   g <- .classifyActivity(r$bandpassed, fs, min.amplitude = min.amplitude)
 
-  # `detection` is a real per-deployment finding (how many beats the detector located), so it stays. The
-  # analysis band is fixed config already shown in the header, and the swimming outcome is reported once by
-  # the driver's merged "swimming:" line -- neither is echoed here.
-  if (lvl >= 2L) {
-    .log_detail(lvl, if (nrow(r$beats) > 0L)
-                  sprintf("detection: %s beats", .formatLargeNumber(nrow(r$beats)))
-                else "detection: no beats in band")
-  }
+  # No per-method console lines here. The analysis band is fixed config shown once in the header; the beat
+  # count is a diagnostic kept in the data, not the log (a genuine no-signal case still surfaces as the
+  # driver's "no tail-beat signal detected" skip); and the swimming outcome is the driver's merged line.
 
   # Undo the band-pass attenuation, at each beat's own frequency. Same |H|^2 correction as the wavelet
   # path (filtfilt applies the filter twice). Verified on both: it restores a unit tone at the band

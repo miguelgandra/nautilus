@@ -380,12 +380,18 @@ calculateTailBeats <- function(data,
   # header
   hdr_bullets <- sprintf("Input: %d tag%s", n_animals, if (n_animals != 1) "s" else "")
   if (!is.null(output.dir)) hdr_bullets <- c(hdr_bullets, paste0("Output: ", output.dir))
+  # header config, one fact per line: the method(s) - naming BOTH and which is primary when cross-checking -
+  # then the fixed analysis band and smoothing. These are shown once here, never repeated per deployment.
   .log_header(lvl, "calculateTailBeats",
               paste0("Estimating tail beats from ", paste(motion.col, collapse = " or ")),
               bullets = hdr_bullets,
-              arrow = c(paste0("Method: ", method, " detection",
-                               if (bandpass.filter) sprintf(", bandpass %g \u2013 %g Hz", filter.low.freq, filter.high.freq) else ", no bandpass"),
-                        if (smooth.window > 0) sprintf("Smoothing: %g s moving average", smooth.window) else "Smoothing: none"))
+              arrow = c(
+                if (length(methods) > 1L)
+                  sprintf("Methods: %s (cross-checked, %s primary)", paste(methods, collapse = " + "), method)
+                else paste0("Method: ", method),
+                if (bandpass.filter) sprintf("Bandpass: %g \u2013 %g Hz", filter.low.freq, filter.high.freq)
+                else "Bandpass: none",
+                if (smooth.window > 0) sprintf("Smoothing: %g s moving average", smooth.window) else "Smoothing: none"))
   n_done <- 0L
 
   # graphics setup (active device for `plot`, single multi-page PDF for `plot.file`)
@@ -586,12 +592,15 @@ calculateTailBeats <- function(data,
       n_in <- nrow(individual_data)
       dur  <- as.numeric(difftime(max(individual_data[[datetime.col]]), min(individual_data[[datetime.col]]), units = "secs"))
       .log_detail(lvl, sprintf("input: %s rows \u00b7 %g Hz \u00b7 %s", .formatLargeNumber(n_in), fs_i, .fmt_duration(dur)))
+      # selected axis on the headline line; the per-axis peak evidence that justified it on a subordinate
+      # sub-line (only when there were several candidates to weigh)
       present <- motion.col[motion.col %in% names(individual_data)]
       if (length(present) > 1L) {
         reason_txt <- switch(sel$reason, consensus = "consensus",
                              power = "power, axes disagree", "power")
         freq_txt <- paste(sprintf("%s %.2f", names(sel$freqs), sel$freqs), collapse = " \u00b7 ")
-        .log_detail(lvl, sprintf("axis: %s (%s) \u00b7 peaks: %s Hz", axis, reason_txt, freq_txt))
+        .log_detail(lvl, sprintf("axis: %s (%s)", axis, reason_txt))
+        .log_subdetail(lvl, sprintf("peak frequencies: %s Hz", freq_txt))
       } else {
         .log_detail(lvl, sprintf("axis: %s", axis))
       }
@@ -704,6 +713,14 @@ calculateTailBeats <- function(data,
       if (lvl >= 2L) {
         fr <- range(tbf_v, na.rm = TRUE)
         .log_detail(lvl, sprintf("frequency: median %.2f Hz (%.2f \u2013 %.2f Hz)", med_f, fr[1], fr[2]))
+        # when both backends ran, surface the cross-check: how often they concur (samples within 10%), the
+        # secondary method's own median, and the typical per-sample gap - the payoff of running both.
+        if (length(methods) > 1L && !is.na(agree) && !is.null(res_i$tbf_hz_alt)) {
+          alt_med  <- stats::median(res_i$tbf_hz_alt, na.rm = TRUE)
+          diff_med <- stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
+          .log_detail(lvl, sprintf("agreement: %.0f%% \u00b7 %s median %.2f Hz (typical diff %.2f Hz)",
+                                   100 * agree, methods[2], alt_med, diff_med))
+        }
         if (!is.null(amp_v) && any(is.finite(amp_v))) {
           ar <- range(amp_v, na.rm = TRUE)
           # the unit follows the axis: hardcoding "g" mislabels a gyro channel as an accelerometer one
