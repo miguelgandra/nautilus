@@ -372,13 +372,19 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_match(d2, "Smoothing:")                         # fixed config (smoothing) lives in the header
   expect_match(d2, "A01 \\(1/1\\)")                      # per-individual cli sub-header
   # the detailed block reports findings (key: value), not step narration
-  expect_match(d2, "input:")
-  expect_match(d2, "axis: sway")                         # selected axis (among candidates)
-  expect_match(d2, "bandpass: [0-9.]+ . [0-9.]+ Hz")     # spaced en-dash range (the '.' matches the dash)
-  expect_match(d2, "detection:.*beats")                  # peak-detector findings (no freq range here)
-  expect_match(d2, "behaviour:.*swimming")               # behaviour line
+  expect_match(d2, "input:.*Hz")                         # rows | sampling rate | duration (fs shown ONCE, here)
+  expect_match(d2, "axis: sway")                         # selected axis (single candidate present here)
+  expect_match(d2, "bandpass [0-9.]+ . [0-9.]+ Hz")      # the band is fixed config: shown in the HEADER, not per deployment
+  expect_match(d2, "detection:.*beats")                  # peak-detector findings (a real per-deployment count)
+  expect_match(d2, "swimming:")                          # merged activity + behaviour line
   expect_match(d2, "frequency: median")                  # dedicated frequency line
   expect_match(d2, "amplitude: median.*g")               # dedicated amplitude line (with unit)
+  # noise removed from the per-deployment block: sampling headroom (folded into input), the redundant
+  # per-deployment bandpass line, and the old split activity/behaviour lines
+  expect_false(grepl("sampling:", d2, fixed = TRUE))
+  expect_false(grepl("bandpass:", d2, fixed = TRUE))     # header uses "bandpass 0.09 ..." (no colon); the per-line form is gone
+  expect_false(grepl("activity:", d2, fixed = TRUE))
+  expect_false(grepl("behaviour:", d2, fixed = TRUE))
   expect_match(d2, "SUMMARY")
   expect_match(d2, "1 of 1 tag processed")
   expect_false(grepl("smoothing:", d2, fixed = TRUE))    # per-block smoothing line moved to the header
@@ -568,14 +574,31 @@ test_that(".selectMotionAxis rejects dead AND near-dead channels via a relative 
   expect_identical(nautilus:::.selectMotionAxis(dn, c("sway", "surge", "heave"), 20, 0.2, 1.5)$axis, "heave")
 })
 
-test_that("a towed deployment triggers a tow-pendulum warning", {
+test_that("towed deployments emit ONE consolidated tow-pendulum warning, listing all of them", {
   skip_if_not_installed("signal")
-  d <- .sway(freq = 0.8, fs = 20, dur = 200)
-  data.table::setattr(d, "nautilus", list(deployment = list(deployment_type = "towed")))
+  towed <- function(id) {
+    d <- .sway(id = id, freq = 0.8, fs = 20, dur = 200)
+    data.table::setattr(d, "nautilus", list(deployment = list(deployment_type = "towed")))
+    d
+  }
   w <- testthat::capture_warnings(
-    invisible(capture.output(calculateTailBeats(d, motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
+    invisible(capture.output(calculateTailBeats(list(T1 = towed("T1"), T2 = towed("T2")),
+                                                motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
                                                 return.data = TRUE, verbose = FALSE))))
-  expect_true(any(grepl("towed", w)))
+  towed_w <- w[grepl("tow-pendulum", w)]
+  expect_length(towed_w, 1L)                                    # consolidated: one warning, not one per tag
+  expect_match(towed_w, "2 towed deployments")                  # names the count
+  expect_true(grepl("T1", towed_w) && grepl("T2", towed_w))     # and lists the affected deployments
+})
+
+test_that("the axis line shows the selected axis, the reason, and the per-axis peak evidence", {
+  skip_if_not_installed("signal")
+  # multiple candidate axes present -> the reformatted line: "axis: <axis> (<reason>) . peaks: ... Hz"
+  out <- paste(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(.multiaxis(), motion.col = c("surge", "sway", "heave"), min.freq.Hz = 0.2,
+                       max.freq.Hz = 3, return.data = TRUE, verbose = 2))), collapse = "\n")
+  expect_match(out, "axis: \\w+ \\(")                    # axis + reason in parentheses
+  expect_match(out, "peaks: .*Hz")                       # supporting per-axis peak frequencies, unit once at the end
 })
 
 test_that("disagreeing candidate axes trigger an axis-disagreement warning", {

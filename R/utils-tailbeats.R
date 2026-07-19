@@ -399,15 +399,13 @@
   # why it is not inferred from the signal alone. Shared with the wavelet method.
   g <- .classifyActivity(r$bandpassed, fs, min.amplitude = min.amplitude)
 
+  # `detection` is a real per-deployment finding (how many beats the detector located), so it stays. The
+  # analysis band is fixed config already shown in the header, and the swimming outcome is reported once by
+  # the driver's merged "swimming:" line -- neither is echoed here.
   if (lvl >= 2L) {
-    .log_detail(lvl, if (bandpass) sprintf("bandpass: %g \u2013 %g Hz (Butterworth order %d)", filter.low, filter.high, as.integer(filter.order))
-                else "bandpass: disabled")
     .log_detail(lvl, if (nrow(r$beats) > 0L)
                   sprintf("detection: %s beats", .formatLargeNumber(nrow(r$beats)))
                 else "detection: no beats in band")
-    .log_detail(lvl, if (identical(g$source, "min.amplitude"))
-                  sprintf("activity: swimming where envelope > %.3g", g$threshold)
-                else "activity: not classified (no min.amplitude)")
   }
 
   # Undo the band-pass attenuation, at each beat's own frequency. Same |H|^2 correction as the wavelet
