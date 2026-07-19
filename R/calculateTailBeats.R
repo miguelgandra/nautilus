@@ -392,7 +392,6 @@ calculateTailBeats <- function(data,
                 if (bandpass.filter) sprintf("Bandpass: %g \u2013 %g Hz", filter.low.freq, filter.high.freq)
                 else "Bandpass: none",
                 if (smooth.window > 0) sprintf("Smoothing: %g s moving average", smooth.window) else "Smoothing: none"))
-  n_done <- 0L
 
   # graphics setup (active device for `plot`, single multi-page PDF for `plot.file`)
   caller_dev <- grDevices::dev.cur()
@@ -411,6 +410,15 @@ calculateTailBeats <- function(data,
   data_list <- vector("list", n_animals)
   saved <- vector("list", n_animals)
   towed_ids <- character(0)   # collected across the loop, warned once at the end (see below)
+  # per-deployment stats, filled in the loop and rolled up into the final SUMMARY block (NA where a
+  # deployment produced no estimate). Vectors, index-aligned with the deployment order.
+  co_freq   <- rep(NA_real_,      n_animals)   # median tail-beat frequency
+  co_axis   <- rep(NA_character_, n_animals)   # selected motion axis
+  co_reason <- rep(NA_character_, n_animals)   # how the axis was chosen ("consensus" / "power")
+  co_harm   <- rep(NA_character_, n_animals)   # a flagged 2f-harmonic alternative, if any
+  co_agree  <- rep(NA_real_,      n_animals)   # method agreement (two backends), as a fraction
+  co_swim   <- rep(NA_real_,      n_animals)   # fraction swimming (only when classified)
+  co_edge   <- rep(NA_real_,      n_animals)   # fraction of estimates sitting on a band edge
 
 
   ##############################################################################
@@ -684,6 +692,15 @@ calculateTailBeats <- function(data,
                       "i" = "Widen the band, or check {.arg motion.col} and the species' expected range."))
     }
 
+    # record this deployment's stats for the cohort roll-up (median is NA when nothing was estimated)
+    co_freq[i]   <- stats::median(tbf_v, na.rm = TRUE)
+    co_axis[i]   <- axis
+    co_reason[i] <- sel$reason
+    co_harm[i]   <- sel$harmonic_alt %||% NA_character_
+    co_agree[i]  <- agree
+    co_swim[i]   <- swim
+    co_edge[i]   <- edge_occ
+
     meta <- .getMeta(res_i)
     if (!is.null(meta)) {
       meta <- .appendProcessing(meta, "calculateTailBeats",
@@ -742,7 +759,6 @@ calculateTailBeats <- function(data,
     } else {
       .log_skip(lvl, id, "  no tail-beat signal detected")
     }
-    n_done <- n_done + 1L
     .log_gap(lvl)
   }
 
@@ -759,10 +775,10 @@ calculateTailBeats <- function(data,
   # Return processed data ####################################################
   ############################################################################
 
-  # final summary
+  # final summary: the outcome tally and a cohort roll-up of the results, then the output/runtime footer
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")
+    .reportTailBeatCohort(lvl, n_animals, co_freq, co_axis, co_reason, co_harm, co_agree, co_swim, co_edge, methods)
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
@@ -773,6 +789,79 @@ calculateTailBeats <- function(data,
   ids <- sapply(data_list, function(x) unique(x[[id.col]])[1])
   .collectOutput(data_list, saved, return.data, ids)
 
+}
+
+
+#' Roll up a batch of tail-beat results into the final SUMMARY block.
+#'
+#' The outcome tally and the cohort frequency distribution are always shown; the axis-usage tally, method
+#' agreement, swimming, and the QC-flag rollup appear only when they apply - so a clean run stays short and
+#' a messy one surfaces exactly what needs a look. Counts, not IDs: the per-deployment warnings already
+#' name the individual tags (towed, harmonic, band-edge), so this is the cohort overview, not a repeat.
+#'
+#' @param n_total Number of deployments the run was asked to process.
+#' @param freq,agree,swim,edge Per-deployment numeric vectors (median frequency; method-agreement fraction;
+#'   swimming fraction; band-edge-occupancy fraction), NA where a deployment produced nothing.
+#' @param axis,reason,harm Per-deployment character vectors: the selected axis, how it was chosen
+#'   ("consensus"/"power"), and a flagged 2f-harmonic alternative (NA when none).
+#' @param methods The requested method vector (its length decides whether the agreement line shows).
+#' @keywords internal
+#' @noRd
+.reportTailBeatCohort <- function(lvl, n_total, freq, axis, reason, harm, agree, swim, edge, methods) {
+  if (lvl < 1L) return(invisible(NULL))
+  b <- "\u00b7"                                        # middot separator
+  sep <- paste0(" ", b, " ")
+  has_est <- is.finite(freq)
+  n_est <- sum(has_est)
+
+  # outcome: how many tags yielded a tail-beat estimate
+  if (n_est == n_total) {
+    .log_done(lvl, sprintf("%d of %d tag%s processed", n_total, n_total, if (n_total != 1) "s" else ""))
+  } else {
+    .log_done(lvl, sprintf("%d tag%s processed %s %d with a tail-beat estimate (%d no signal)",
+                           n_total, if (n_total != 1) "s" else "", b, n_est, n_total - n_est))
+  }
+
+  # cohort frequency distribution (across the tags that produced an estimate)
+  if (n_est == 1L) {
+    .log_arrow(lvl, sprintf("tail-beat frequency: %.2f Hz", freq[has_est]))
+  } else if (n_est > 1L) {
+    q   <- stats::quantile(freq[has_est], c(0.25, 0.5, 0.75), names = FALSE)
+    rng <- range(freq[has_est])
+    .log_arrow(lvl, sprintf("tail-beat frequency: median %.2f Hz (IQR %.2f\u2013%.2f, range %.2f\u2013%.2f Hz)",
+                            q[2], q[1], q[3], rng[1], rng[2]))
+  }
+
+  # axis usage - only when the cohort genuinely used more than one axis
+  ax <- axis[!is.na(axis)]
+  if (length(unique(ax)) > 1L) {
+    tb <- sort(table(ax), decreasing = TRUE)
+    .log_arrow(lvl, "axis used: ", paste(sprintf("%s %d", names(tb), as.integer(tb)), collapse = sep))
+  }
+
+  # method agreement - only when two backends ran
+  if (length(methods) > 1L && any(is.finite(agree))) {
+    .log_arrow(lvl, sprintf("method agreement: median %.0f%% (%s vs %s)",
+                            100 * stats::median(agree, na.rm = TRUE), methods[1], methods[2]))
+  }
+
+  # swimming - only when classification was enabled (a min.amplitude was supplied)
+  if (any(is.finite(swim))) {
+    .log_arrow(lvl, sprintf("swimming: median %.0f%% across tags", 100 * stats::median(swim, na.rm = TRUE)))
+  }
+
+  # QC-flag rollup - counts of concerns already warned per deployment; only the non-zero ones, and the
+  # whole line is omitted on a clean batch
+  flags <- character(0)
+  n_edge <- sum(edge > 0.05, na.rm = TRUE)
+  if (n_edge > 0L) flags <- c(flags, sprintf("%d near band edge", n_edge))
+  n_harm <- sum(!is.na(harm))
+  if (n_harm > 0L) flags <- c(flags, sprintf("%d possible harmonic%s", n_harm, if (n_harm != 1) "s" else ""))
+  n_pow <- sum(reason == "power", na.rm = TRUE)
+  if (n_pow > 0L) flags <- c(flags, sprintf("%d axis chosen without consensus", n_pow))
+  if (length(flags)) .log_attention(lvl, "flags: ", paste(flags, collapse = sep))
+
+  invisible(NULL)
 }
 
 

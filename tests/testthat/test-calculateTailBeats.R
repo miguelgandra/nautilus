@@ -395,6 +395,63 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_match(d1, "swimming")
 })
 
+test_that(".reportTailBeatCohort rolls up the cohort, showing conditional lines only when they apply", {
+  grab <- function(...) paste(cli::cli_fmt(nautilus:::.reportTailBeatCohort(2L, ...)), collapse = "\n")
+
+  # rich case: mixed axes, two methods, swimming classified, and every QC flag tripped
+  rich <- grab(n_total = 5L,
+               freq   = c(0.80, 0.45, 1.20, 0.60, 0.90),
+               axis   = c("surge", "surge", "heave", "sway", "surge"),
+               reason = c("consensus", "power", "consensus", "power", "consensus"),
+               harm   = c(NA, "heave", NA, NA, NA),
+               agree  = c(0.95, 0.70, 0.99, 0.60, 0.90),
+               swim   = c(0.5, 0.4, 0.6, 0.3, 0.5),
+               edge   = c(0.0, 0.20, 0.0, 0.0, 0.0),
+               methods = c("peaks", "wavelet"))
+  expect_match(rich, "5 of 5 tags processed")
+  expect_match(rich, "tail-beat frequency: median 0.80 Hz \\(IQR 0.60.0.90, range 0.45.1.20 Hz\\)")
+  expect_match(rich, "axis used: surge 3 .")                             # tally, most-used first
+  expect_match(rich, "sway 1"); expect_match(rich, "heave 1")            # the rest present (tie order not pinned)
+  expect_match(rich, "method agreement: median 90% \\(peaks vs wavelet\\)")
+  expect_match(rich, "swimming: median 50% across tags")
+  expect_match(rich, "flags: 1 near band edge . 1 possible harmonic . 2 axis chosen without consensus")
+
+  # clean batch: single axis, one method, nothing flagged -> only outcome + frequency
+  clean <- grab(n_total = 3L, freq = c(0.5, 0.6, 0.7), axis = rep("sway", 3),
+                reason = rep("consensus", 3), harm = rep(NA_character_, 3), agree = rep(NA_real_, 3),
+                swim = rep(NA_real_, 3), edge = rep(0, 3), methods = "peaks")
+  expect_match(clean, "3 of 3 tags processed")
+  expect_match(clean, "tail-beat frequency: median")
+  for (line in c("axis used:", "method agreement:", "swimming:", "flags:"))
+    expect_false(grepl(line, clean, fixed = TRUE), info = line)          # each omitted when it does not apply
+
+  # some tags produced no estimate -> the outcome tail spells it out
+  noest <- grab(n_total = 4L, freq = c(0.5, NA, 0.7, NA), axis = c("sway", NA, "sway", NA),
+                reason = c("consensus", NA, "consensus", NA), harm = rep(NA_character_, 4),
+                agree = rep(NA_real_, 4), swim = rep(NA_real_, 4), edge = rep(NA_real_, 4), methods = "peaks")
+  expect_match(noest, "4 tags processed . 2 with a tail-beat estimate \\(2 no signal\\)")
+
+  # a single estimate -> a point value, no IQR/range
+  one <- grab(n_total = 1L, freq = 0.62, axis = "sway", reason = "consensus", harm = NA_character_,
+              agree = NA_real_, swim = NA_real_, edge = 0, methods = "peaks")
+  expect_match(one, "tail-beat frequency: 0.62 Hz")
+  expect_false(grepl("IQR", one, fixed = TRUE))
+})
+
+test_that("the run's SUMMARY block reports cohort frequency and the axis tally end to end", {
+  skip_if_not_installed("signal")
+  mk <- function(id, f) { set.seed(1); fs <- 20; t <- seq(0, 200, by = 1 / fs); n <- length(t)
+    data.table::data.table(ID = id, datetime = as.POSIXct("2020-01-01", tz = "UTC") + t,
+                           surge = sin(2 * pi * f * t) + stats::rnorm(n, 0, 0.05),
+                           sway = stats::rnorm(n, 0, 0.05), heave = stats::rnorm(n, 0, 0.05)) }
+  out <- paste(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(list(A = mk("A", 0.8), B = mk("B", 1.1)), motion.col = c("surge", "sway", "heave"),
+                       method = "peaks", min.freq.Hz = 0.1, max.freq.Hz = 2.5, verbose = 1))), collapse = "\n")
+  expect_match(out, "SUMMARY")
+  expect_match(out, "2 of 2 tags processed")
+  expect_match(out, "tail-beat frequency: median")
+})
+
 test_that("smoothing no longer leaks the data.table 'hasNA' deprecation warning", {
   skip_if_not_installed("signal")
   w <- character(0)

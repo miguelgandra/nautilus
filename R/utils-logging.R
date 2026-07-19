@@ -165,6 +165,15 @@
   invisible(NULL)
 }
 
+#' A cohort-level "attention" line (level >= 1): a `!` rollup of QC concerns worth a second look. Same
+#' glyph as `.log_skip` but named for intent - it flags the batch, not one individual.
+#' @keywords internal
+#' @noRd
+.log_attention <- function(lvl, ...) {
+  if (lvl >= 1L) cli::cli_alert_warning("{paste0(...)}")
+  invisible(NULL)
+}
+
 #' A low-level diagnostic line, shown only at the detailed level (>= 2).
 #' @keywords internal
 #' @noRd
