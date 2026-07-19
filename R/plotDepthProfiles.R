@@ -26,7 +26,13 @@
 #' @param same.depth.scale Logical. If `TRUE`, all panels share one depth axis; if `FALSE` (default),
 #'   each panel is scaled to its own maximum depth.
 #' @param shade.diel Logical. If `TRUE` (default), shade the background by diel phase (day / twilight /
-#'   night). Requires deployment coordinates in the metadata; panels without them are left unshaded.
+#'   night). Requires deployment coordinates in the metadata; panels without them are left unshaded. The
+#'   shading greys are fixed (they must stay neutral so they do not compete with the colour scale); a
+#'   Day / Twilight / Night key is drawn beside the colour bar when a shared legend is shown.
+#' @param geom Character. How each dive trace is drawn: `"line"` (default) maps the colour onto a continuous
+#'   line that traces the dive shape (broken across recording gaps); `"points"` draws coloured samples only;
+#'   `"both"` overlays points on the line. A line reads most clearly for a smoothly-varying colour variable
+#'   (e.g. temperature); `"points"` can suit a noisy or sparse one.
 #' @param downsample Numeric. Bin width (seconds) for averaging before plotting, which keeps
 #'   high-resolution records legible and fast to draw. Default 5; set `NULL` to plot every sample.
 #' @param plot Logical. If `TRUE` (default), draw to the active graphics device.
@@ -34,8 +40,11 @@
 #'   Independent of `plot`: set either or both. The function manages the device itself. Default `NULL`.
 #' @param ncols,nrows Integer. Grid columns / rows per page. If `NULL` (default) both are chosen
 #'   automatically (up to 2 columns and 5 rows per page).
-#' @param cex Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.
-#' @param point.size Numeric. Plotting-character size (`cex`) for the depth points. Default 0.4.
+#' @param cex Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.15.
+#' @param point.size Numeric. Plotting-character size (`cex`) for the depth points, used when `geom` draws
+#'   points (`"points"` or `"both"`). Default 0.4.
+#' @param lwd Numeric. Line width for the dive trace, used when `geom` draws a line (`"line"` or `"both"`).
+#'   Default 1.6.
 #' @param id.col,datetime.col,depth.col Character. Column names for the ID, datetime and depth.
 #'   Defaults `"ID"`, `"datetime"`, `"depth"`.
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
@@ -59,13 +68,15 @@ plotDepthProfiles <- function(data,
                               same.color.scale = TRUE,
                               same.depth.scale = FALSE,
                               shade.diel       = TRUE,
+                              geom             = c("line", "points", "both"),
                               downsample       = 5,
                               plot             = TRUE,
                               plot.file        = NULL,
                               ncols            = NULL,
                               nrows            = NULL,
-                              cex              = 1,
+                              cex              = 1.15,
                               point.size       = 0.4,
+                              lwd              = 1.6,
                               id.col           = "ID",
                               datetime.col     = "datetime",
                               depth.col        = "depth",
@@ -83,6 +94,7 @@ plotDepthProfiles <- function(data,
   .assert_flag(same.color.scale, "same.color.scale")
   .assert_flag(same.depth.scale, "same.depth.scale")
   .assert_flag(shade.diel, "shade.diel")
+  geom <- match.arg(geom)
   .assert_flag(plot, "plot")
   if (!is.null(downsample)) .assert_number(downsample, "downsample", min = 0)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")     # fail-fast: parent dir must exist
@@ -90,6 +102,7 @@ plotDepthProfiles <- function(data,
   if (!is.null(nrows)) .assert_count(nrows, "nrows", min = 1)
   .assert_number(cex, "cex", min = 0)
   .assert_number(point.size, "point.size", min = 0)
+  .assert_number(lwd, "lwd", min = 0)
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col"); .assert_string(depth.col, "depth.col")
   if (!is.null(color.pal) && (!is.character(color.pal) || !length(color.pal)))
     .abort("{.arg color.pal} must be a non-empty character vector of colours.")
@@ -167,6 +180,8 @@ plotDepthProfiles <- function(data,
   ##############################################################################
 
   shared_slot <- use_shared_legend && !is.na(lay$legend_cell)             # one horizontal legend in the last cell
+  # the diel key rides in the shared legend cell, but only when shading was actually drawn somewhere
+  any_shaded  <- shade.diel && any(vapply(deployments, function(d) all(is.finite(d$coords)), logical(1)))
   draw <- function(to.file = FALSE, unicode = TRUE) {
     graphics::par(oma = c(2.5, 0, 1.2, 0), mgp = c(3, 0.8, 0))
     for (pg in lay$pages) {
@@ -176,12 +191,12 @@ plotDepthProfiles <- function(data,
         depth_ylim <- if (same.depth.scale) depth_ylim_global else .depthYlim(max(dep$data[[depth.col]], na.rm = TRUE))
         panel_range <- if (same.color.scale) color_range else if (dep$has_color) range(dep$data[[color.by]], na.rm = TRUE) else NULL
         .drawDepthPanel(dep, color.by, depth.col, datetime.col, color.pal, panel_range, depth_ylim,
-                        shade.diel = shade.diel, point.size = point.size, cex = cex,
+                        shade.diel = shade.diel, geom = geom, point.size = point.size, lwd = lwd, cex = cex,
                         panel.legend = !shared_slot, color.label = color.label)
       }
-      # fill empty PANEL cells; the reserved last cell then receives the shared horizontal legend
+      # fill empty PANEL cells; the reserved last cell then receives the shared colour legend + diel key
       for (b in seq_len(lay$capacity - length(pg))) graphics::plot.new()
-      if (shared_slot) .drawColorbarHorizontal(color.pal, color_range, color.label, cex)
+      if (shared_slot) .drawLegendCell(color.pal, color_range, color.label, cex, show.diel = any_shaded)
       else for (b in seq_len(lay$per_page - lay$capacity)) graphics::plot.new()   # (0 when no cell was reserved)
     }
   }
@@ -283,7 +298,7 @@ plotDepthProfiles <- function(data,
 #' @keywords internal
 #' @noRd
 .drawDepthPanel <- function(dep, color.by, depth.col, datetime.col, color.pal, color_range, depth_ylim,
-                            shade.diel, point.size, cex, panel.legend, color.label) {
+                            shade.diel, geom, point.size, lwd, cex, panel.legend, color.label) {
 
   d     <- dep$data
   depth <- d[[depth.col]]
@@ -303,13 +318,16 @@ plotDepthProfiles <- function(data,
 
   if (shade.diel && all(is.finite(dep$coords))) .shadeDiel(dep$coords)
 
-  graphics::points(x = time, y = depth, pch = 16, col = point_col, cex = point.size)
+  # geometry: a coloured LINE traces the dive (default), coloured POINTS show the raw samples, or BOTH.
+  # The line is drawn as gap-broken segments so it never connects across a recording gap (see .drawColorLine).
+  if (geom %in% c("line", "both")) .drawColorLine(time, depth, point_col, lwd = lwd)
+  if (geom %in% c("points", "both")) graphics::points(x = time, y = depth, pch = 16, col = point_col, cex = point.size)
 
   # axes: date or clock time depending on the record length
   tr   <- range(time, na.rm = TRUE)
   span <- as.numeric(difftime(tr[2], tr[1], units = "secs"))
-  graphics::axis.POSIXct(1, at = pretty(tr, n = 5), format = if (span > 86400) "%d/%b" else "%H:%M", cex.axis = cex * 0.9)
-  graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.9)
+  graphics::axis.POSIXct(1, at = pretty(tr, n = 5), format = if (span > 86400) "%d/%b" else "%H:%M", cex.axis = cex * 0.95)
+  graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.95)
 
   graphics::abline(h = 0, lty = 2, lwd = 1.2)                                   # surface
   graphics::abline(h = max(depth, na.rm = TRUE), lty = 2, lwd = 1)             # maximum depth
@@ -324,6 +342,31 @@ plotDepthProfiles <- function(data,
                  posy = c(0.34, 0.66), main = color.label, main.cex = cex * 0.85,
                  digit = 1, main.adj = 0, cex = cex * 0.75)
   }
+}
+
+
+#' Draw a depth trace as a colour-mapped line, broken across gaps
+#'
+#' Each consecutive pair of samples becomes one segment, coloured by the earlier sample's mapped colour.
+#' Because the colour variable (temperature by default) varies smoothly with depth, adjacent segments blend,
+#' so the trace reads as a continuously-coloured trajectory. Segments are DROPPED where either endpoint is
+#' missing or where the time step is far larger than the record's typical cadence, so the line never invents
+#' a dive across a surface interval or a recording gap. NA colours (samples with no colour value) are skipped
+#' by `segments()` too.
+#' @keywords internal
+#' @noRd
+.drawColorLine <- function(time, depth, col, lwd = 1.1) {
+  n <- length(depth)
+  if (n < 2L) return(invisible(NULL))
+  tnum <- as.numeric(time)
+  dt   <- diff(tnum)
+  step <- stats::median(dt[dt > 0], na.rm = TRUE)                 # the typical sampling interval
+  gap  <- !is.finite(dt) | (is.finite(step) & dt > 4 * step)      # a step far beyond it = a real gap
+  x0 <- tnum[-n]; y0 <- depth[-n]; x1 <- tnum[-1]; y1 <- depth[-1]
+  drop <- gap | is.na(y0) | is.na(y1)
+  x0[drop] <- NA                                                  # segments() skips any NA endpoint
+  graphics::segments(x0, y0, x1, y1, col = col[-n], lwd = lwd, lend = 1)
+  invisible(NULL)
 }
 
 
@@ -344,20 +387,56 @@ plotDepthProfiles <- function(data,
 }
 
 
-#' Draw the shared colour bar as a single HORIZONTAL strip in its reserved grid cell (proportional to one
-#' panel, centred), rather than a full-height side column - see .depthProfileLayout(legend = TRUE).
+#' Draw the shared legend cell: a horizontal colour bar and, beneath it, a compact diel-shading key
+#'
+#' Occupies the reserved last grid cell (see .depthProfileLayout(legend = TRUE)). The bar spans the central
+#' ~75% of the cell width and a slim band, so it reads as a legend rather than a fourth panel; the freed
+#' space below carries a small Day / Twilight / Night key when diel shading was drawn - the grey bands are
+#' meaningless without it. The greys are fixed (not user-settable) so the shading never competes with the
+#' colour scale.
 #' @keywords internal
 #' @noRd
-.drawColorbarHorizontal <- function(color.pal, zlim, label, cex) {
-  graphics::par(mar = c(2.6, 3.0, 2.6, 3.0))                       # inset from the cell edges, so it is not stretched
-  graphics::plot.new(); graphics::plot.window(xlim = zlim, ylim = c(0, 1), xaxs = "i", yaxs = "i")
+.drawLegendCell <- function(color.pal, zlim, label, cex, show.diel = FALSE) {
+  graphics::par(mar = c(0.6, 3.0, 0.6, 3.0))
+  graphics::plot.new()
+  pad <- diff(zlim) * (1 / 0.75 - 1) / 2                           # widen the x-window so the bar fills 75% of it
+  graphics::plot.window(xlim = c(zlim[1] - pad, zlim[2] + pad), ylim = c(0, 1), xaxs = "i", yaxs = "i")
+
+  # The whole legend block (title + bar + tick labels + diel key) is CENTRED in the cell rather than pinned
+  # to its top, so the gap to the panel above and the gap below are balanced. `mid` is the bar's centre,
+  # offset upwards when a diel key has to fit underneath.
+  strip_h <- 0.13                                                  # ~30% shorter than before
+  mid     <- if (isTRUE(show.diel)) 0.55 else 0.47
+  yb <- mid - strip_h / 2; yt <- mid + strip_h / 2
+
   n  <- length(color.pal); xs <- seq(zlim[1], zlim[2], length.out = n + 1)
-  yb <- 0.42; yt <- 0.66                                           # a slim horizontal band, vertically centred
   graphics::rect(xs[-(n + 1)], yb, xs[-1], yt, col = color.pal, border = NA)
   graphics::rect(zlim[1], yb, zlim[2], yt)
   labs <- pretty(zlim); labs <- labs[labs >= zlim[1] & labs <= zlim[2]]
-  graphics::axis(1, at = labs, pos = yb, cex.axis = cex * 0.85, tcl = -0.3, mgp = c(3, 0.35, 0))
-  graphics::text(mean(zlim), yt + 0.17, label, font = 2, cex = cex * 0.95)   # title above the strip
+  graphics::axis(1, at = labs, pos = yb, cex.axis = cex * 0.95, tcl = -0.3, mgp = c(3, 0.35, 0))
+  graphics::text(mean(zlim), yt + 0.10, label, font = 2, cex = cex * 1.0)    # title above the strip
+
+  # Diel key, drawn by hand rather than via legend(): base legend() ties its swatch size to the text
+  # height with no separate control, and these need to be big enough to tell three greys apart. Widths are
+  # converted through the device aspect so the swatches come out SQUARE despite the cell's x/y unit scales.
+  if (isTRUE(show.diel)) {
+    keys  <- c("Day", "Twilight", "Night"); fills <- c("grey98", "grey92", "grey85")
+    cexd  <- cex * 0.9
+    key_y <- mid - 0.255                                           # below the bar's tick labels
+    usr <- graphics::par("usr"); pin <- graphics::par("pin")
+    sq_h <- 0.085                                                  # swatch height, in cell units
+    sq_w <- sq_h * ((usr[2] - usr[1]) / pin[1]) / ((usr[4] - usr[3]) / pin[2])
+    gap  <- sq_w * 0.5                                             # swatch -> its label
+    sep  <- sq_w * 1.2                                             # between entries
+    lw     <- graphics::strwidth(keys, cex = cexd)
+    item_w <- sq_w + gap + lw
+    x <- mean(zlim) - (sum(item_w) + sep * (length(keys) - 1)) / 2
+    for (i in seq_along(keys)) {
+      graphics::rect(x, key_y - sq_h / 2, x + sq_w, key_y + sq_h / 2, col = fills[i], border = "grey55")
+      graphics::text(x + sq_w + gap, key_y, keys[i], adj = c(0, 0.5), cex = cexd)
+      x <- x + item_w[i] + sep
+    }
+  }
 }
 
 

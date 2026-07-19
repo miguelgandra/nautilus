@@ -12,13 +12,15 @@ plotDepthProfiles(
   same.color.scale = TRUE,
   same.depth.scale = FALSE,
   shade.diel = TRUE,
+  geom = c("line", "points", "both"),
   downsample = 5,
   plot = TRUE,
   plot.file = NULL,
   ncols = NULL,
   nrows = NULL,
-  cex = 1,
+  cex = 1.15,
   point.size = 0.4,
+  lwd = 1.6,
   id.col = "ID",
   datetime.col = "datetime",
   depth.col = "depth",
@@ -44,7 +46,14 @@ legend; if \code{FALSE}, each panel is scaled and labelled independently.}
 each panel is scaled to its own maximum depth.}
 
 \item{shade.diel}{Logical. If \code{TRUE} (default), shade the background by diel phase (day / twilight /
-night). Requires deployment coordinates in the metadata; panels without them are left unshaded.}
+night). Requires deployment coordinates in the metadata; panels without them are left unshaded. The
+shading greys are fixed (they must stay neutral so they do not compete with the colour scale); a
+Day / Twilight / Night key is drawn beside the colour bar when a shared legend is shown.}
+
+\item{geom}{Character. How each dive trace is drawn: \code{"line"} (default) maps the colour onto a continuous
+line that traces the dive shape (broken across recording gaps); \code{"points"} draws coloured samples only;
+\code{"both"} overlays points on the line. A line reads most clearly for a smoothly-varying colour variable
+(e.g. temperature); \code{"points"} can suit a noisy or sparse one.}
 
 \item{downsample}{Numeric. Bin width (seconds) for averaging before plotting, which keeps
 high-resolution records legible and fast to draw. Default 5; set \code{NULL} to plot every sample.}
@@ -57,9 +66,13 @@ Independent of \code{plot}: set either or both. The function manages the device 
 \item{ncols, nrows}{Integer. Grid columns / rows per page. If \code{NULL} (default) both are chosen
 automatically (up to 2 columns and 5 rows per page).}
 
-\item{cex}{Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.}
+\item{cex}{Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.15.}
 
-\item{point.size}{Numeric. Plotting-character size (\code{cex}) for the depth points. Default 0.4.}
+\item{point.size}{Numeric. Plotting-character size (\code{cex}) for the depth points, used when \code{geom} draws
+points (\code{"points"} or \code{"both"}). Default 0.4.}
+
+\item{lwd}{Numeric. Line width for the dive trace, used when \code{geom} draws a line (\code{"line"} or \code{"both"}).
+Default 1.6.}
 
 \item{id.col, datetime.col, depth.col}{Character. Column names for the ID, datetime and depth.
 Defaults \code{"ID"}, \code{"datetime"}, \code{"depth"}.}

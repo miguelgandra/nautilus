@@ -102,3 +102,36 @@ test_that("plotDepthProfiles draws a multi-deployment PDF end to end (synthetic 
   expect_no_error(plotDepthProfiles(tags[1], plot = FALSE, plot.file = tmp3, verbose = FALSE))
   expect_gt(file.size(tmp3), 0)
 })
+
+test_that("plotDepthProfiles accepts each geom and rejects an unknown one", {
+  mk <- function(id, n = 200) data.frame(
+    ID = id, datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n),
+    depth = abs(sin(seq_len(n) / 20)) * 40, temp = 15 + cos(seq_len(n) / 30) * 3)
+  tags <- list(A = mk("A"), B = mk("B"))
+  for (g in c("line", "points", "both")) {
+    tmp <- tempfile(fileext = ".pdf")
+    expect_no_error(plotDepthProfiles(tags, geom = g, plot = FALSE, plot.file = tmp, verbose = FALSE))
+    expect_gt(file.size(tmp), 0)
+    unlink(tmp)
+  }
+  expect_error(plotDepthProfiles(tags, geom = "squiggle", plot = FALSE,
+                                 plot.file = tempfile(fileext = ".pdf"), verbose = FALSE),
+               "should be one of")                              # match.arg rejects it before any drawing
+})
+
+test_that(".drawColorLine breaks the trace across recording gaps and missing samples", {
+  captured <- NULL
+  testthat::local_mocked_bindings(
+    segments = function(x0, y0, x1, y1, ...) { captured <<- list(x0 = x0, y0 = y0, y1 = y1); invisible() },
+    .package = "graphics")
+  # 6 samples ~30 s apart, EXCEPT a ~1 h jump between #3 and #4 (a gap), and #5's depth is NA
+  t     <- as.POSIXct("2020-01-01", tz = "UTC") + c(0, 30, 60, 3600, 3630, 3660)
+  depth <- c(5, 10, 15, 20, NA, 30)
+  nautilus:::.drawColorLine(t, depth, rep("red", 6))
+  # segment i joins sample i -> i+1; a dropped segment has x0 = NA (segments() then skips it)
+  expect_false(is.na(captured$x0[1]))                          # 0 -> 30 s: kept
+  expect_false(is.na(captured$x0[2]))                          # 30 -> 60 s: kept
+  expect_true(is.na(captured$x0[3]))                           # 60 s -> 1 h jump: broken
+  expect_true(is.na(captured$x0[4]))                           # into the NA-depth sample: broken
+  expect_true(is.na(captured$x0[5]))                           # out of the NA-depth sample: broken
+})
