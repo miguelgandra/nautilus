@@ -221,3 +221,70 @@ test_that("input problems fail by name instead of surfacing as raw R errors", {
     plotTimeAtDepth(co, variable = c("depth", "temp"), order.by = "median", style = "heatmap",
                     plot = FALSE, plot.file = pf, verbose = FALSE))))
 })
+
+test_that("silently-wrong inputs are corrected or reported, never quietly plotted", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  mk <- function(id, dep) data.frame(ID = id,
+                                     datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(length(dep)) * 60,
+                                     depth = dep, stringsAsFactors = FALSE)
+  quiet <- function(e) suppressWarnings(suppressMessages(e))
+  # messages only: expect_warning() must still see the warning
+  noisy <- function(e) suppressMessages(e)
+
+  # a FACTOR column: as.numeric() on a factor gives level CODES, so 100/200/300 m used to be binned as
+  # 1/2/3 - a completely wrong figure with no warning at all
+  d <- mk("A", rep(c(100, 200, 300), each = 100)); d$depth <- factor(d$depth)
+  s <- quiet(plotTimeAtDepth(list(A = d), plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_gt(max(s$bin_max), 250)                       # binned in metres, not in level codes
+
+  # a datetime column that is not a date-time: the weights are elapsed SECONDS, so this used to give an
+  # all-zero table that the console still reported as plotted
+  d2 <- mk("A", abs(stats::rnorm(200, 50, 20))); d2$datetime <- as.character(d2$datetime)
+  expect_error(quiet(plotTimeAtDepth(list(A = d2), plot = FALSE, plot.file = pf, verbose = FALSE)),
+               "must hold date-times")
+  # Date is in DAYS, and used to come out 86400x too small
+  d3 <- mk("A", abs(stats::rnorm(200, 50, 20))); d3$datetime <- as.Date("2023-01-01") + seq_len(200)
+  s3 <- quiet(plotTimeAtDepth(list(A = d3), plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_equal(sum(s3$hours), 200 * 24, tolerance = 0.01)
+
+  # findInterval(all.inside = TRUE) CLAMPS out-of-range samples into the edge bins, so breaks that miss
+  # the data used to report "100% of time" in a bin holding nothing
+  expect_warning(noisy(plotTimeAtDepth(list(A = mk("A", abs(stats::rnorm(300, 50, 20)))),
+                                       breaks = c(1000, 1500, 2000), plot = FALSE, plot.file = pf,
+                                       verbose = FALSE)),
+                 "fall outside the bin range")
+
+  # a deployment with under two usable samples yielded an all-zero column that was averaged in like any
+  # other, dragging the cohort mean down and breaking the per-id pct contract
+  expect_warning(
+    s4 <- noisy(plotTimeAtDepth(list(A = mk("A", abs(stats::rnorm(300, 50, 20))), B = mk("B", 5)),
+                                plot = FALSE, plot.file = pf, verbose = FALSE)),
+    "too few usable samples")
+  expect_false("B" %in% s4$id)
+  expect_equal(sum(s4$pct[s4$id == "A"]), 100, tolerance = 1e-6)
+
+  # a deployment with no group value is on no facet; it used to disappear while still counting as plotted
+  g <- list(A = mk("A", abs(stats::rnorm(300, 50, 20))), B = mk("B", abs(stats::rnorm(300, 50, 20))),
+            C = mk("C", abs(stats::rnorm(300, 50, 20))))
+  expect_warning(noisy(plotTimeAtDepth(g, group = c(A = "x", B = "x"), plot = FALSE, plot.file = pf,
+                                       verbose = FALSE)),
+                 "no .*group.* value")
+})
+
+test_that("the caller's own tables are not modified in place", {
+  # .ensureMeta uses setDT()/setattr(), which act BY REFERENCE. Passing a list of data.frames used to
+  # convert them to data.tables in the CALLER's environment, so a second call on the same objects could
+  # behave differently for no visible reason.
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  tags <- list(T1 = data.frame(ID = "T1", datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(200) * 60,
+                               depth = abs(stats::rnorm(200, 50, 20)), stringsAsFactors = FALSE))
+  before_class <- class(tags$T1); before_attr <- names(attributes(tags$T1))
+  invisible(suppressWarnings(suppressMessages(
+    plotTimeAtDepth(tags, plot = FALSE, plot.file = pf, verbose = FALSE))))
+  expect_identical(class(tags$T1), before_class)
+  expect_identical(names(attributes(tags$T1)), before_attr)
+
+  # and the call is repeatable on the same objects
+  expect_no_error(suppressWarnings(suppressMessages(
+    plotTimeAtDepth(tags, plot = FALSE, plot.file = pf, verbose = FALSE))))
+})

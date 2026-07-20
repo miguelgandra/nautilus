@@ -136,14 +136,18 @@ plotTimeAtDepth <- function(data,
     x <- data.table::as.data.table(src$get(i))
     id <- as.character(.getMeta(x)$id %||% src$ids[i])
     if (!(datetime.col %in% names(x))) { n_missing <- n_missing + 1L; next }
-    series <- lapply(variable, function(v) if (v %in% names(x)) suppressWarnings(as.numeric(x[[v]])) else NULL)
+    tnum <- .tadTimeSeconds(x[[datetime.col]], datetime.col, id)
+    series <- lapply(variable, function(v) if (v %in% names(x)) .tadNumeric(x[[v]]) else NULL)
     names(series) <- variable
+    # a column that is present but yields nothing finite (all-NA, or character text) is treated as
+    # ABSENT rather than carried forward: it used to reach the binner and die on `rep(0, nb)`
+    series <- lapply(series, function(z) if (is.null(z) || !any(is.finite(z))) NULL else z)
     if (all(vapply(series, is.null, logical(1)))) { n_missing <- n_missing + 1L; next }
     phase <- if (diel) .tadDielPhase(x, coordinates, id, datetime.col, lvl) else NULL
     # `loaded` is keyed by id, so a repeated id would overwrite an earlier record and drop it from the
     # figure without a word. Ids are made unique instead, and the collision is reported.
     if (!is.null(loaded[[id]])) { dup_ids <- c(dup_ids, id); id <- .tadUniqueId(id, names(loaded)) }
-    loaded[[id]] <- list(id = id, group = .deploymentGroup(x, id, group), t = as.numeric(x[[datetime.col]]),
+    loaded[[id]] <- list(id = id, group = .deploymentGroup(x, id, group), t = tnum,
                          series = series, phase = phase)
   }
   .log_progress_done(pb)
@@ -170,13 +174,19 @@ plotTimeAtDepth <- function(data,
 
   ## ---- shared bins per variable, then bin every deployment (duration-weighted, per phase) ----
   phases <- if (diel) c("night", "day") else "all"
-  breaks_by_var <- list(); binned <- list(); summ <- list()
+  breaks_by_var <- list(); binned <- list(); summ <- list(); thin_ids <- character(0); oor <- list()
   for (v in variable) {
     vals <- Filter(Negate(is.null), lapply(loaded, function(d) d$series[[v]]))
     if (!length(vals)) next
     rng <- range(unlist(lapply(vals, function(z) z[is.finite(z)])), na.rm = TRUE)
     br <- .tadResolveBreaks(v, rng, bin.width, breaks, n.bins); breaks_by_var[[v]] <- br
     nb <- length(br) - 1L
+    # .timeAtDepthBins uses findInterval(all.inside = TRUE), which CLAMPS out-of-range samples into the
+    # edge bins rather than dropping them. Silently, that invents a distribution: user breaks above the
+    # data reported "100% of time" in a bin holding nothing. Count the clamped samples and report them.
+    zz <- unlist(lapply(vals, function(z) z[is.finite(z)]))
+    n_out <- sum(zz < br[1] | zz > br[length(br)])
+    if (n_out > 0) oor[[v]] <- list(n = n_out, pct = 100 * n_out / length(zz), rng = rng, br = range(br))
     for (id in names(loaded)) {
       d <- loaded[[id]]; sv <- d$series[[v]]; if (is.null(sv)) next
       for (ph in phases) {
@@ -185,6 +195,10 @@ plotTimeAtDepth <- function(data,
         # record spanning only one phase) is EXCLUDED from that phase's aggregate, not counted as all-zero.
         if (ph != "all" && sum(keep) < 2L) next
         tb <- .timeAtDepthBins(sv[keep], d$t[keep], br, gap.factor)
+        # a deployment with under two usable samples yields an all-zero column. Stored, it would be
+        # averaged in like any other and drag the cohort mean down (and its own pct would sum to 0,
+        # breaking the documented per-id contract), so it is excluded and reported instead.
+        if (!sum(tb$time) > 0) { thin_ids <- c(thin_ids, id); next }
         binned[[v]][[ph]][[id]] <- tb$pct
         summ[[length(summ) + 1L]] <- data.frame(id = id, group = d$group %||% NA_character_, variable = v,
                                                 phase = ph, bin_min = br[-(nb + 1L)], bin_max = br[-1],
@@ -194,11 +208,28 @@ plotTimeAtDepth <- function(data,
     }
   }
   summary <- do.call(rbind, summ); rownames(summary) <- NULL
+  if (length(thin_ids)) {
+    thin <- unique(thin_ids); n_thin <- length(thin)
+    cli::cli_warn(c("{n_thin} deployment{?s} had too few usable samples to bin and {?was/were} excluded.",
+                    "i" = "Excluded: {.val {thin}}."))
+  }
+  for (v in names(oor)) {
+    o <- oor[[v]]
+    cli::cli_warn(c("{.val {v}}: {o$n} sample{?s} ({round(o$pct, 1)}%) fall outside the bin range and were counted in the edge bins.",
+                    "i" = "Data span {round(o$rng[1], 1)} to {round(o$rng[2], 1)}; bins span {round(o$br[1], 1)} to {round(o$br[2], 1)}."))
+  }
 
   ## ---- group levels + colours ----
   grp_of <- vapply(loaded, function(d) d$group %||% NA_character_, character(1))
   grouped <- !is.null(group) && any(!is.na(grp_of))
   glevels <- if (grouped) .tadGroupLevels(loaded, order.by, variable) else "All"
+  if (grouped && any(is.na(grp_of))) {
+    # such deployments appear in the returned table but on no facet - they used to vanish from the
+    # figure while still being counted as "plotted"
+    ungrouped <- names(grp_of)[is.na(grp_of)]; n_ung <- length(ungrouped)
+    cli::cli_warn(c("{n_ung} deployment{?s} ha{?s/ve} no {.arg group} value and {?is/are} not shown in any panel.",
+                    "i" = "Ungrouped: {.val {ungrouped}}."))
+  }
   gcols <- stats::setNames(.themePalette(theme$palette, length(glevels)), glevels)
 
   ## ---- render ----
@@ -359,6 +390,35 @@ plotTimeAtDepth <- function(data,
 .tadTitle <- function(v) switch(v, depth = "time-at-depth", temp = "time-at-temperature", sprintf("time-at-%s", v))
 
 #' Spelled-out variable name for prose (console summary): "temp" is a column name, not a word.
+#' Numeric coercion for a binning variable.
+#'
+#' `as.numeric()` on a FACTOR returns its integer level codes, so a factor depth column of 100/200/300 m
+#' used to be binned as 1/2/3 - a silently wrong figure with no warning anywhere. Factors go via their
+#' labels; anything else is coerced directly, and unparseable text simply becomes NA (the caller then
+#' treats the column as absent).
+#' @keywords internal
+#' @noRd
+.tadNumeric <- function(z) {
+  if (is.factor(z)) z <- as.character(z)
+  suppressWarnings(as.numeric(z))
+}
+
+#' Seconds-since-epoch for a deployment's time column, or abort naming the column.
+#'
+#' The bin weights are elapsed SECONDS. `as.numeric()` was applied blind, so a Date column (days) came
+#' out 86400x too small and a character column came out all-NA - both of which produced a complete,
+#' plausible-looking, entirely zero figure that the console still reported as plotted.
+#' @keywords internal
+#' @noRd
+.tadTimeSeconds <- function(z, datetime.col, id) {
+  if (inherits(z, "POSIXct")) return(as.numeric(z))
+  if (inherits(z, "POSIXlt")) return(as.numeric(as.POSIXct(z)))
+  if (inherits(z, "Date")) return(as.numeric(z) * 86400)          # Date is in DAYS
+  if (is.numeric(z)) return(as.numeric(z))                        # already epoch seconds
+  .abort(c("{.arg datetime.col} ({.val {datetime.col}}) must hold date-times, not {.cls {class(z)[1]}}.",
+           "i" = "Deployment {.val {id}} carries a {.cls {class(z)[1]}} column; convert it with {.fn as.POSIXct} first."))
+}
+
 #' First free `id_2`, `id_3`, ... for a deployment id that collides with one already loaded.
 #' @keywords internal
 #' @noRd
@@ -620,7 +680,12 @@ plotTimeAtDepth <- function(data,
                   if (!length(z)) NA_real_ else stats::median(z)
                 }, numeric(1)), na.last = TRUE)],
                 id = sort(ids0), ids0)
-  mats <- lapply(variable, function(v) do.call(cbind, binned[[v]][["all"]][ord]))
+  # cbind DROPS deployments with no column for this variable, so the label vector has to be subset the
+  # same way - otherwise column k is drawn under the k-th id of the full list and every column after a
+  # gap is captioned with the wrong animal.
+  ord_by_var <- lapply(variable, function(v) ord[!vapply(binned[[v]][["all"]][ord], is.null, logical(1))])
+  names(ord_by_var) <- variable
+  mats <- lapply(variable, function(v) do.call(cbind, binned[[v]][["all"]][ord_by_var[[v]]]))
   zmax <- max(vapply(mats, function(M) max(M, na.rm = TRUE), numeric(1)), 1)
   n_var <- length(variable)
   graphics::layout(matrix(seq_len(n_var + 1L), 1), widths = c(rep(1, n_var), graphics::lcm(3.0)))
@@ -638,7 +703,7 @@ plotTimeAtDepth <- function(data,
     graphics::axis(2, at = seq_len(nb), labels = .binLabels(br), las = 1, col = NA, col.ticks = theme$axis,
                    col.axis = theme$axis, cex.axis = 0.68 * theme$cex)
     graphics::mtext(.tadLabel(v), 2, line = 3.9, font = 2, col = theme$ink, cex = 0.92 * theme$cex)
-    graphics::text(seq_len(ncol(M)), graphics::grconvertY(0, "npc", "user"), labels = ord, srt = 45, adj = c(1, 1.3),
+    graphics::text(seq_len(ncol(M)), graphics::grconvertY(0, "npc", "user"), labels = ord_by_var[[v]], srt = 45, adj = c(1, 1.3),
                    xpd = NA, cex = theme$cex * min(0.8, 22 / ncol(M)), col = theme$axis)
     graphics::mtext(.tadCap1(.tadVarName(v)), 3, line = 0.6, adj = 0, font = 2, col = theme$ink, cex = 0.95 * theme$cex)
     graphics::box(col = theme$axis)                              # frame the heatmap grid

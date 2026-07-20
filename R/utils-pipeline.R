@@ -76,7 +76,24 @@
   ids <- names(data)
   if (is.null(ids)) ids <- as.character(seq_along(data))
   list(n = length(data), ids = ids, is_filepaths = FALSE, paths = NULL,
-       get = function(i) .ensureMeta(data[[i]]))
+       get = function(i) .ensureMetaSafely(data[[i]]))
+}
+
+#' `.ensureMeta()` for CALLER-SUPPLIED tables: same result, without modifying the caller's object.
+#'
+#' `.ensureMeta()` uses `setDT()`/`setattr()`, which act BY REFERENCE - fine for a table we just read
+#' from disk or built ourselves, but not for one the user handed us: passing a list of data.frames used
+#' to convert them to data.tables in the caller's own environment, so a later call on the same objects
+#' could behave differently (or fail) for no visible reason.
+#'
+#' A copy is made only when a mutation would actually happen, so the common pipeline case - data.tables
+#' already carrying metadata from `importTagData()` - still costs nothing.
+#' @keywords internal
+#' @noRd
+.ensureMetaSafely <- function(x) {
+  if (!data.table::is.data.table(x)) return(.ensureMeta(data.table::as.data.table(x)))   # as.data.table copies
+  if (is.null(attr(x, "nautilus", exact = TRUE))) return(.ensureMeta(data.table::copy(x)))
+  x                                                                                      # nothing to do
 }
 
 
