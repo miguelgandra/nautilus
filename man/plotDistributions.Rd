@@ -17,7 +17,7 @@ plotDistributions(
   colors = NULL,
   plot = TRUE,
   plot.file = NULL,
-  cex = 1,
+  cex = 1.15,
   id.col = "ID",
   verbose = "detailed"
 )
@@ -59,7 +59,7 @@ qualitative palette.}
 \item{plot.file}{Character. Path to a PDF to draw into (independent of \code{plot}; set either or both).
 The function manages the device itself. Default \code{NULL}.}
 
-\item{cex}{Numeric. Master text-scaling factor. Default 1.}
+\item{cex}{Numeric. Master text-scaling factor. Default 1.15.}
 
 \item{id.col}{Character. Name of the deployment id column. Default \code{"ID"}.}
 

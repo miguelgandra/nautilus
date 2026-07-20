@@ -43,7 +43,7 @@
 #' @param plot Logical. If `TRUE` (default), draw to the active graphics device.
 #' @param plot.file Character. Path to a PDF to draw into (independent of `plot`; set either or both).
 #'   The function manages the device itself. Default `NULL`.
-#' @param cex Numeric. Master text-scaling factor. Default 1.
+#' @param cex Numeric. Master text-scaling factor. Default 1.15.
 #' @param id.col Character. Name of the deployment id column. Default `"ID"`.
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
 #'   `2`/"detailed" (default): additionally reports per-metric drawn/sample counts and shows a live
@@ -75,7 +75,7 @@ plotDistributions <- function(data,
                               colors        = NULL,
                               plot          = TRUE,
                               plot.file     = NULL,
-                              cex           = 1,
+                              cex           = 1.15,
                               id.col        = "ID",
                               verbose       = "detailed") {
 
@@ -269,6 +269,20 @@ plotDistributions <- function(data,
   ids[order(meds, decreasing = TRUE, na.last = TRUE)]          # highest median at the top
 }
 
+#' Darken a fill colour for use as its own polygon outline.
+#'
+#' The densities are drawn as a semi-transparent fill outlined in the SAME hue, which leaves the edge
+#' barely distinguishable from the interior - so overlapping or adjacent densities blur together. Darkening
+#' the outline defines each shape without introducing a second colour into the palette.
+#' @param col A colour; `factor` < 1 darkens (0.62 = ~40% darker).
+#' @keywords internal
+#' @noRd
+.distDarken <- function(col, factor = 0.62) {
+  v <- grDevices::col2rgb(col)[, 1] * factor
+  grDevices::rgb(v[1], v[2], v[3], maxColorValue = 255)
+}
+
+
 #' Upper-trimmed x-axis limits for a metric's pooled samples (robust to long tails).
 #' @keywords internal
 #' @noRd
@@ -356,7 +370,7 @@ plotDistributions <- function(data,
   .distPanelBackground(g$xlim)                                    # subtle fill + grid, behind the data
   if (!is.null(d)) {
     xx <- c(d$x[1], d$x, d$x[length(d$x)]); yy <- c(0, d$y, 0)
-    graphics::polygon(xx, yy, col = grDevices::adjustcolor(fill, 0.55), border = fill, lwd = 1.4)
+    graphics::polygon(xx, yy, col = grDevices::adjustcolor(fill, 0.55), border = .distDarken(fill), lwd = 1.4)
   }
   .distRefLines(g$refs, cex)
   if (first) {
@@ -384,7 +398,7 @@ plotDistributions <- function(data,
     d <- stats::density(x, n = 512, na.rm = TRUE)                 # natural support: the violin ends at
     d <- .clampDensity(d, g$xlim)                                 # this deployment's own range (clipped to xlim)
     hw <- 0.44 * d$y / max(d$y)                                   # per-row normalised half-width
-    graphics::polygon(c(d$x, rev(d$x)), c(y0 + hw, rev(y0 - hw)), col = fill_t, border = fill, lwd = 0.7)
+    graphics::polygon(c(d$x, rev(d$x)), c(y0 + hw, rev(y0 - hw)), col = fill_t, border = .distDarken(fill), lwd = 0.7)
     graphics::segments(stats::median(x), y0 - 0.34, stats::median(x), y0 + 0.34, col = "grey20", lwd = 0.9)  # median tick
   }
   .distRefLines(g$refs, cex)
