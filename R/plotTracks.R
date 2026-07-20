@@ -246,15 +246,18 @@ plotTracks <- function(data,
   nm <- names(x)
   if (!all(c("pseudo_lon", "pseudo_lat") %in% nm)) return(NULL)
   d <- data.table::as.data.table(x)
-  ord <- if (datetime.col %in% nm) order(d[[datetime.col]]) else seq_len(nrow(d))
-  lon <- d[["pseudo_lon"]][ord]; lat <- d[["pseudo_lat"]][ord]
+  # ordering a CHARACTER timestamp sorts it lexicographically ("01/02" before "28/01"), silently
+  # reordering the track and bending the drawn path; coerce to real time first, or leave the order alone
+  tnum <- if (datetime.col %in% nm) .asPlotTime(d[[datetime.col]]) else NULL
+  ord <- if (!is.null(tnum)) order(tnum) else seq_len(nrow(d))
+  lon <- .asPlotNumeric(d[["pseudo_lon"]])[ord]; lat <- .asPlotNumeric(d[["pseudo_lat"]])[ord]
   keep <- is.finite(lon) & is.finite(lat)
   lon <- lon[keep]; lat <- lat[keep]
   if (length(lon) < 1L) return(NULL)
 
   val <- NULL; err <- NULL
   vcol <- switch(color.by %||% "", depth = "pseudo_depth", speed = "speed_dr", NULL)
-  if (!is.null(vcol) && vcol %in% nm) val <- d[[vcol]][ord][keep]
+  if (!is.null(vcol) && vcol %in% nm) val <- .asPlotNumeric(d[[vcol]])[ord][keep]   # factor colour channel
   if ("pseudo_error" %in% nm) err <- d[["pseudo_error"]][ord][keep]
 
   n <- length(lon)

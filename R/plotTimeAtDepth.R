@@ -143,7 +143,7 @@ plotTimeAtDepth <- function(data,
     id <- as.character(.getMeta(x)$id %||% src$ids[i])
     if (!(datetime.col %in% names(x))) { n_missing <- n_missing + 1L; next }
     tnum <- .tadTimeSeconds(x[[datetime.col]], datetime.col, id)
-    series <- lapply(variable, function(v) if (v %in% names(x)) .tadNumeric(x[[v]]) else NULL)
+    series <- lapply(variable, function(v) if (v %in% names(x)) .asPlotNumeric(x[[v]]) else NULL)
     names(series) <- variable
     # a column that is present but yields nothing finite (all-NA, or character text) is treated as
     # ABSENT rather than carried forward: it used to reach the binner and die on `rep(0, nb)`
@@ -472,19 +472,6 @@ plotTimeAtDepth <- function(data,
 .tadTitle <- function(v) switch(v, depth = "time-at-depth", temp = "time-at-temperature", sprintf("time-at-%s", v))
 
 #' Spelled-out variable name for prose (console summary): "temp" is a column name, not a word.
-#' Numeric coercion for a binning variable.
-#'
-#' `as.numeric()` on a FACTOR returns its integer level codes, so a factor depth column of 100/200/300 m
-#' used to be binned as 1/2/3 - a silently wrong figure with no warning anywhere. Factors go via their
-#' labels; anything else is coerced directly, and unparseable text simply becomes NA (the caller then
-#' treats the column as absent).
-#' @keywords internal
-#' @noRd
-.tadNumeric <- function(z) {
-  if (is.factor(z)) z <- as.character(z)
-  suppressWarnings(as.numeric(z))
-}
-
 #' Seconds-since-epoch for a deployment's time column, or abort naming the column.
 #'
 #' The bin weights are elapsed SECONDS. `as.numeric()` was applied blind, so a Date column (days) came
@@ -493,10 +480,8 @@ plotTimeAtDepth <- function(data,
 #' @keywords internal
 #' @noRd
 .tadTimeSeconds <- function(z, datetime.col, id) {
-  if (inherits(z, "POSIXct")) return(as.numeric(z))
-  if (inherits(z, "POSIXlt")) return(as.numeric(as.POSIXct(z)))
-  if (inherits(z, "Date")) return(as.numeric(z) * 86400)          # Date is in DAYS
-  if (is.numeric(z)) return(as.numeric(z))                        # already epoch seconds
+  tnum <- .asPlotTime(z)                                          # shared contract (see utils-plot.R)
+  if (!is.null(tnum)) return(tnum)
   .abort(c("{.arg datetime.col} ({.val {datetime.col}}) must hold date-times, not {.cls {class(z)[1]}}.",
            "i" = "Deployment {.val {id}} carries a {.cls {class(z)[1]}} column; convert it with {.fn as.POSIXct} first."))
 }

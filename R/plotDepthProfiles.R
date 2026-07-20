@@ -238,11 +238,32 @@ plotDepthProfiles <- function(data,
 #' @keywords internal
 #' @noRd
 .downsampleForPlot <- function(tag, id.col, datetime.col, seconds) {
-  if (is.null(seconds) || seconds <= 0) return(tag)                     # plot every sample (no coercion/copy)
+  if (is.null(seconds) || seconds <= 0) {
+    # no binning, but the same coercion contract must still hold, or a factor depth reaches the renderer
+    dt0 <- data.table::as.data.table(tag)
+    for (col in setdiff(names(dt0), c(id.col, datetime.col))) {
+      if (is.numeric(dt0[[col]])) next
+      z <- .asPlotNumeric(dt0[[col]])
+      if (any(is.finite(z))) data.table::set(dt0, j = col, value = z)
+    }
+    return(dt0)
+  }
   dt <- data.table::as.data.table(tag)
   tvec <- dt[[datetime.col]]
   tz <- attr(tvec, "tzone"); if (is.null(tz) || !nzchar(tz)) tz <- "UTC"
-  binvec <- as.POSIXct(floor(as.numeric(tvec) / seconds) * seconds, origin = "1970-01-01", tz = tz)
+  tnum <- .asPlotTime(tvec)                       # Date counts DAYS: as.numeric() collapsed the record
+  if (is.null(tnum))
+    .abort(c("{.arg datetime.col} ({.val {datetime.col}}) must hold date-times, not {.cls {class(tvec)[1]}}.",
+             "i" = "Convert it with {.fn as.POSIXct} before plotting."))
+  binvec <- as.POSIXct(floor(tnum / seconds) * seconds, origin = "1970-01-01", tz = tz)
+  # a factor/character numeric column would otherwise be dropped by the is.numeric filter below and the
+  # panel drawn empty, so recover anything that is numeric once the shared contract is applied
+  cand <- setdiff(names(dt), c(id.col, datetime.col))
+  for (col in cand) {
+    if (is.numeric(dt[[col]])) next
+    z <- .asPlotNumeric(dt[[col]])
+    if (any(is.finite(z))) data.table::set(dt, j = col, value = z)
+  }
   num_cols <- setdiff(names(dt)[vapply(dt, is.numeric, logical(1))], c(id.col, datetime.col))
   # group by externally-computed vectors, so the source table is never modified (no defensive copy needed)
   by_list <- if (id.col %in% names(dt)) list(.id = dt[[id.col]], .bin = binvec) else list(.bin = binvec)
