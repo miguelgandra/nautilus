@@ -812,7 +812,6 @@ processTagData <- function(data,
     # should smooth it themselves, at a window chosen for their own question.
     .vv <- .verticalVelocity(individual_data$depth, individual_data$datetime, sampling_freq,
                              depth.smoothing = depth.smoothing, speed.smoothing = speed.smoothing)
-    individual_data[, depth := .vv$depth]
     individual_data[, vertical_velocity := .vv$velocity]
     rm(.vv)
 

@@ -592,3 +592,41 @@ test_that(".tagSpanSeconds sums tracked time and never poisons a running total",
   expect_equal(nautilus:::.tagSpanSeconds(t[1]), 0)
   expect_equal(nautilus:::.tagSpanSeconds(numeric(0)), 0)
 })
+
+test_that("the stored depth channel is NOT smoothed, while vertical velocity still is", {
+  # smoothing$depth conditions the series the DERIVATIVE is taken from. It used to also overwrite the
+  # stored `depth` column, and a centred boxcar attenuates any excursion shorter than its window: at the
+  # 10 s default a 3 m / 8 s dive was stored as 1.2 m. Harmless for the minutes-long dives this package
+  # was first used on, fatal for short-dive taxa - and invisible, because the trace still looks like a dive.
+  fs <- 10; secs <- 600
+  n <- fs * secs
+  t0 <- as.POSIXct("2023-01-01", tz = "UTC")
+  # a flat record with one short, sharp 3 m excursion
+  depth <- numeric(n)
+  i0 <- n %/% 2; k <- (8 * fs) %/% 2                        # 8 s dive
+  depth[(i0 - k + 1):i0] <- seq(0, 3, length.out = k)
+  depth[(i0 + 1):(i0 + k)] <- seq(3, 0, length.out = k)
+  d <- data.table::data.table(
+    ID = "A01", datetime = t0 + (seq_len(n) - 1) / fs,
+    ax = 0, ay = 0, az = 1, depth = depth, temp = 20)
+  m <- nautilus:::.newNautilusMeta(); m$id <- "A01"
+  m$deployment$datetime <- t0; m$deployment$lon <- -25; m$deployment$lat <- 11
+  m$axis_mapping$applied <- TRUE
+  data.table::setattr(d, "nautilus", m); data.table::setattr(d, "nautilus.version", "test")
+  class(d) <- c("nautilus_tag", class(d))
+
+  out <- suppressWarnings(processTagData(list(A01 = d), smoothing = smoothingControl(depth = 10),
+                                         downsample.to = NULL, verbose = FALSE))[["A01"]]
+
+  # the excursion keeps its amplitude: a 10 s boxcar would have left 3 * 8/(2*10) = 1.2 m
+  expect_gt(max(out$depth, na.rm = TRUE), 2.5)
+  # and vertical velocity is still computed from a SMOOTHED copy, so it stays bounded and finite
+  expect_true(all(is.finite(out$vertical_velocity[!is.na(out$vertical_velocity)])))
+  expect_lt(max(abs(out$vertical_velocity), na.rm = TRUE), 5)
+
+  # widening the window must not change the stored depth at all (it only feeds the derivative)
+  out2 <- suppressWarnings(processTagData(list(A01 = d), smoothing = smoothingControl(depth = 30),
+                                          downsample.to = NULL, verbose = FALSE))[["A01"]]
+  expect_equal(out$depth, out2$depth)
+  expect_false(isTRUE(all.equal(out$vertical_velocity, out2$vertical_velocity)))
+})
