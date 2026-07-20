@@ -67,7 +67,13 @@
     if (!id.col %in% names(data)) {
       .abort("Input {.arg data} must contain the {.val {id.col}} column when not provided as a list.")
     }
-    data <- split(data, data[[id.col]])
+    # `split()` keeps a factor's UNUSED levels, so an id column that has been subset (the usual way a
+    # cohort loses an animal) produced a zero-row group per dropped level: a phantom deployment that was
+    # counted, reported and carried through every downstream summary. droplevels() keeps only ids the
+    # data actually contains, matching what a character id column has always done.
+    ids_col <- data[[id.col]]
+    if (is.factor(ids_col)) ids_col <- droplevels(ids_col)
+    data <- split(data, ids_col)
   } else if (!is.list(data)) {
     .abort("{.arg data} must be a data.frame/data.table, a list of them, or a character vector of file paths.")
   }

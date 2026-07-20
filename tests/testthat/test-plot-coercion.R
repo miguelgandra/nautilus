@@ -80,3 +80,25 @@ test_that("a track is ordered chronologically and its coordinates survive as num
   expect_lt(max(g2$lon), -20)                                   # real degrees, not level codes
   expect_gt(min(g2$lat), 15)
 })
+
+test_that("splitting an aggregated table on a factor id does not invent empty deployments", {
+  # split() keeps a factor's UNUSED levels, so an id column subset down from a larger cohort - the usual
+  # way an animal gets dropped - yielded a zero-row group per missing level. That phantom was counted in
+  # the deployment total, announced in the header, and carried into every downstream summary.
+  agg <- rbind(data.frame(ID = "A1", depth = seq_len(200), stringsAsFactors = FALSE),
+               data.frame(ID = "B1", depth = seq_len(200), stringsAsFactors = FALSE))
+  agg$ID <- factor(agg$ID, levels = c("A1", "B1", "C1"))        # C1 was dropped upstream
+
+  r <- nautilus:::.resolveInput(agg, "ID")
+  expect_equal(r$n, 2L)
+  expect_setequal(r$ids, c("A1", "B1"))
+  expect_true(all(vapply(seq_len(r$n), function(i) nrow(r$get(i)) > 0, logical(1))))
+
+  # a character id column has always behaved this way; the factor path now matches it
+  agg_chr <- agg; agg_chr$ID <- as.character(agg_chr$ID)
+  expect_equal(nautilus:::.resolveInput(agg_chr, "ID")$n, r$n)
+
+  # a factor with no unused levels is unaffected
+  agg2 <- agg; agg2$ID <- factor(as.character(agg2$ID))
+  expect_equal(nautilus:::.resolveInput(agg2, "ID")$n, 2L)
+})
