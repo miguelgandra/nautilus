@@ -19,7 +19,10 @@
 #' @param dba Window (s) for VeDBA/ODBA smoothing, applied as a zero-phase Butterworth low-pass whose
 #'   -3 dB cutoff is the equivalent of this window (~`0.44 / dba` Hz; the default 2 s gives ~0.22 Hz).
 #'   `NULL` disables the smoothing. Default 2.
-#' @param depth Window (s) for depth (also drives vertical-speed). Default 10.
+#' @param depth Window (s) used to condition the depth series that vertical velocity is
+#'   differentiated from. Default 10. This does NOT smooth the stored `depth` channel, which is
+#'   kept drift-corrected but unsmoothed - a centred boxcar attenuates any excursion shorter than
+#'   its window, which would shrink short dives (a 3 m / 8 s dive reads 1.2 m at the 10 s default).
 #' @param speed Window (s) for derived speed/velocity. Default 1.
 #' @return A validated `nautilus_smoothing` object for the `smoothing` argument of \code{\link{processTagData}}.
 #' @seealso \code{\link{processTagData}}, \code{\link{calibrationControl}}

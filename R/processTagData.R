@@ -160,7 +160,10 @@
 #'   \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 #'   \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
 #'   \item Vertical Velocity (m/s): The rate of change in the animal's depth over time, including direction (positive for descent, negative for ascent).
-#'   Vertical velocity is calculated using a central difference method on the smoothed depth time series (with smoothing controlled by \code{depth.smoothing}).
+#'   Vertical velocity is calculated using a central difference method on a smoothed copy of the depth
+#'   series (window set by \code{smoothing$depth}); differentiating a raw pressure trace would amplify
+#'   its quantisation noise. The stored \code{depth} column itself is drift-corrected but NOT smoothed,
+#'   so short vertical excursions keep their true amplitude.
 #'   An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 #' }
 #'
@@ -796,9 +799,17 @@ processTagData <- function(data,
     # Smooth depth + calculate vertical velocity ###############################
     ############################################################################
 
-    # depth smoothing (optional) and the centered-difference vertical velocity (optionally smoothed)
-    # are computed by the shared .verticalVelocity() helper, so processTagData and checkTagMapping use
-    # an identical estimate. `depth` is overwritten with the smoothed series when depth.smoothing is set.
+    # The centered-difference vertical velocity is computed by the shared .verticalVelocity() helper, so
+    # processTagData and checkTagMapping use an identical estimate.
+    #
+    # `depth.smoothing` conditions the series the DERIVATIVE is taken from - differentiating a raw
+    # pressure trace amplifies its quantisation noise - and nothing more. The stored `depth` channel is
+    # deliberately left UNSMOOTHED (drift-corrected only): a centred boxcar attenuates any excursion
+    # shorter than its window, so overwriting depth with the smoothed series silently shrank short dives.
+    # For the shipped 10 s default a 3 m / 8 s dive was stored as 1.2 m and a 3 m / 20 s dive as 2.25 m
+    # (retention 1 - L/2T for a triangular profile), which is invisible in the deep, minutes-long dives
+    # this package was first used on and severe for short-dive taxa. Consumers that want a smoothed depth
+    # should smooth it themselves, at a window chosen for their own question.
     .vv <- .verticalVelocity(individual_data$depth, individual_data$datetime, sampling_freq,
                              depth.smoothing = depth.smoothing, speed.smoothing = speed.smoothing)
     individual_data[, depth := .vv$depth]
@@ -969,9 +980,14 @@ processTagData <- function(data,
           off_pitch <- sprintf("pitch %+.2f\u00b0 (R\u00b2 %.2f)", pitch_offset_deg, pitch_offset_r2)
         } else {
           # record WHY it was skipped (shown in the detailed diagnostic block)
+          # `apply_offset` above is NA-safe, but this explanation ladder was not: a deployment with no
+          # posture variation (a flat-mounted tag on a level animal, or a synthetic fixture) yields a
+          # non-finite R2 that is not `degenerate`, and `if (NA < x)` aborts the whole run.
           off_pitch <- paste0("pitch offset skipped (",
             if (degenerate) "insufficient diving signal"
+            else if (!is.finite(pitch_offset_r2)) "regression did not converge"
             else if (pitch_offset_r2 < pitch.offset.min.r2) sprintf("weak fit R\u00b2 %.2f < %.2f", pitch_offset_r2, pitch.offset.min.r2)
+            else if (!is.finite(pitch_offset_deg)) "offset not estimable"
             else sprintf("offset %+.1f\u00b0 over threshold", pitch_offset_deg), ")")
           pitch_offset_deg <- NULL            # not applied; keep pitch_offset_r2 as computed for provenance
         }
@@ -1363,9 +1379,15 @@ processTagData <- function(data,
     # Choosing the digits: the quantum must sit BELOW the channel's own per-sample noise, so that the
     # noise dithers the quantiser and later averaging still recovers sub-quantum detail. A quantum at
     # or above the noise makes the error systematic (samples snap the same way) and no downstream
-    # smoothing can undo it. Note this is measured against the noise of the series we actually store,
-    # not the raw sensor LSB: `depth` is a 10 s rolling mean (see .verticalVelocity), which averages
-    # ~200 dithered ADC counts and legitimately resolves far finer than the 6.2 cm CATS pressure LSB.
+    # smoothing can undo it. Measure it against the noise of the series actually STORED, not the raw
+    # sensor LSB.
+    #
+    # `depth` is no longer smoothed before storage (it was, and the 10 s mean of ~200 dithered counts
+    # was what justified 2 dp). It is now drift-corrected raw, so the relevant scale is the sensor
+    # quantum itself - 6.2 cm on CATS, 0.5 m on a Wildlife Computers archive. 2 dp (1 cm) still sits
+    # below the finest of those, so the channel is stored losslessly against its own instrument and
+    # the compression argument is unchanged; the DOWNSAMPLE mean (default 1 Hz) supplies the dithering
+    # that the smoother used to.
     rounding_specs <- list(
       # raw sensor data
       accelerometer = list(vars = c("ax", "ay", "az"), digits = 4),   # [g]
