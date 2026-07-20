@@ -1029,6 +1029,68 @@ NULL
 ##################################################################################################
 ##################################################################################################
 
+#######################################################################################################
+# Shared coercion contract for user-supplied columns ##################################################
+#######################################################################################################
+
+#' Coerce user-supplied table columns to numeric, reporting any that arrived as FACTORS.
+#'
+#' A factor here is almost always a symptom, not an intent: the table was read with
+#' `stringsAsFactors = TRUE` (the default before R 4.0, and still reachable via `read.csv`), which means
+#' other columns in the same file may be affected too. Coercing via labels gives the right answer, but
+#' the user is told, because the underlying read is what needs fixing.
+#'
+#' @param df data.frame. @param cols character. Columns to coerce (missing ones are skipped).
+#' @param what character. What to call the table in the message.
+#' @keywords internal
+#' @noRd
+.coerceNumericCols <- function(df, cols, what) {
+  cols <- intersect(cols, names(df))
+  fac <- cols[vapply(cols, function(c) is.factor(df[[c]]), logical(1))]
+  for (c in cols) df[[c]] <- .asNumericSafe(df[[c]])
+  if (length(fac))
+    cli::cli_warn(c("{length(fac)} numeric column{?s} in {.arg {what}} arrived as {.cls factor}: {.val {fac}}.",
+                    "i" = "Read with {.code stringsAsFactors = FALSE}; other columns in that file may be affected too."))
+  df
+}
+
+#' Numeric coercion for a user-supplied data column.
+#'
+#' `as.numeric()` on a FACTOR returns its integer LEVEL CODES, not its values. Applied blind to a column
+#' the user named, that silently substitutes 1..nlevels for the real measurements: a factor depth column
+#' of 100/200/300 m becomes 1/2/3, and every figure and summary built on it is wrong while looking
+#' entirely plausible. Factors therefore go via their labels; everything else is coerced directly.
+#'
+#' Text that does not parse becomes `NA` rather than an error, so callers can decide whether an unusable
+#' column is fatal or merely skipped - but they must decide, rather than plotting the NAs.
+#' @keywords internal
+#' @noRd
+.asNumericSafe <- function(z) {
+  if (is.factor(z)) z <- as.character(z)
+  suppressWarnings(as.numeric(z))
+}
+
+#' Seconds-since-epoch for a user-supplied time column, or `NULL` if it is not a time at all.
+#'
+#' Elapsed-time arithmetic across the package assumes SECONDS. `as.numeric()` was applied blind, so a
+#' `Date` column - which counts DAYS - came out 86400x too small (a 300-day record drawn on a five-minute
+#' axis), and a character column came out all-`NA`, producing a complete but empty figure. Returning
+#' `NULL` for a non-time column lets each caller raise an error that names its own argument.
+#' @keywords internal
+#' @noRd
+.asTimeSeconds <- function(z) {
+  if (inherits(z, "POSIXct")) return(as.numeric(z))
+  if (inherits(z, "POSIXlt")) return(as.numeric(as.POSIXct(z)))
+  if (inherits(z, "Date")) return(as.numeric(z) * 86400)          # Date counts DAYS, not seconds
+  if (is.numeric(z)) return(as.numeric(z))                        # already epoch seconds
+  NULL
+}
+
+#' Is `z` usable as a time column at all? (cheap guard for callers that only need to reject.)
+#' @keywords internal
+#' @noRd
+.isTimeColumn <- function(z) !is.null(.asTimeSeconds(z))
+
 #' Tracked seconds spanned by one deployment's time column.
 #'
 #' The cohort figure reported by importTagData/processTagData is the SUM of these, i.e. total
@@ -1039,7 +1101,7 @@ NULL
 #' @keywords internal
 #' @noRd
 .tagSpanSeconds <- function(z) {
-  t <- .asPlotTime(z)                                  # shared coercion contract (Date is in DAYS)
+  t <- .asTimeSeconds(z)                                  # shared coercion contract (Date is in DAYS)
   if (is.null(t)) return(0)
   t <- t[is.finite(t)]
   if (length(t) < 2L) return(0)

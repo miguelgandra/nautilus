@@ -1,28 +1,28 @@
-# Shared coercion contract for user-supplied columns (.asPlotNumeric / .asPlotTime, R/utils-plot.R).
+# Shared coercion contract for user-supplied columns (.asNumericSafe / .asTimeSeconds, R/utils-plot.R).
 #
 # Every plotting function reads columns the USER named, so every one of them met the same two traps:
 # as.numeric() on a factor returns level CODES rather than values, and as.numeric() on a Date returns
 # DAYS where the caller wanted seconds. Both produced complete, plausible, wrong figures.
 
-test_that(".asPlotNumeric reads factor labels, not level codes", {
+test_that(".asNumericSafe reads factor labels, not level codes", {
   f <- factor(c("100", "200", "300"))
-  expect_equal(nautilus:::.asPlotNumeric(f), c(100, 200, 300))
+  expect_equal(nautilus:::.asNumericSafe(f), c(100, 200, 300))
   expect_equal(as.numeric(f), c(1, 2, 3))                       # the trap being avoided
-  expect_equal(nautilus:::.asPlotNumeric(c(1.5, 2.5)), c(1.5, 2.5))
-  expect_equal(nautilus:::.asPlotNumeric(c("1.5", "x")), c(1.5, NA))   # unparseable -> NA, not an error
-  expect_equal(nautilus:::.asPlotNumeric(1:3), c(1, 2, 3))
+  expect_equal(nautilus:::.asNumericSafe(c(1.5, 2.5)), c(1.5, 2.5))
+  expect_equal(nautilus:::.asNumericSafe(c("1.5", "x")), c(1.5, NA))   # unparseable -> NA, not an error
+  expect_equal(nautilus:::.asNumericSafe(1:3), c(1, 2, 3))
 })
 
-test_that(".asPlotTime returns seconds for every accepted class, NULL otherwise", {
+test_that(".asTimeSeconds returns seconds for every accepted class, NULL otherwise", {
   t0 <- as.POSIXct("2023-01-01", tz = "UTC")
-  expect_equal(nautilus:::.asPlotTime(t0), as.numeric(t0))
-  expect_equal(nautilus:::.asPlotTime(as.POSIXlt(t0)), as.numeric(t0))
+  expect_equal(nautilus:::.asTimeSeconds(t0), as.numeric(t0))
+  expect_equal(nautilus:::.asTimeSeconds(as.POSIXlt(t0)), as.numeric(t0))
   # a Date counts DAYS: the whole point of the helper
-  expect_equal(nautilus:::.asPlotTime(as.Date("2023-01-01")), as.numeric(as.Date("2023-01-01")) * 86400)
-  expect_equal(nautilus:::.asPlotTime(100), 100)
-  expect_null(nautilus:::.asPlotTime("2023-01-01"))             # character is NOT a time
-  expect_null(nautilus:::.asPlotTime(factor("2023-01-01")))
-  expect_false(nautilus:::.isPlotTime("2023-01-01"))
+  expect_equal(nautilus:::.asTimeSeconds(as.Date("2023-01-01")), as.numeric(as.Date("2023-01-01")) * 86400)
+  expect_equal(nautilus:::.asTimeSeconds(100), 100)
+  expect_null(nautilus:::.asTimeSeconds("2023-01-01"))             # character is NOT a time
+  expect_null(nautilus:::.asTimeSeconds(factor("2023-01-01")))
+  expect_false(nautilus:::.isTimeColumn("2023-01-01"))
 })
 
 test_that("a factor metric no longer becomes its level codes in plotDistributions", {
@@ -141,7 +141,7 @@ test_that("plotDistributions rejects a metric nobody carries and a colour that i
 })
 
 test_that("plotTracks colours by a factor channel without erroring", {
-  # .asPlotNumeric now covers the colour channel too; this was the one case left uncertain after the
+  # .asNumericSafe now covers the colour channel too; this was the one case left uncertain after the
   # coercion sweep, so it is pinned rather than assumed
   pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
   n <- 200
@@ -151,4 +151,48 @@ test_that("plotTracks colours by a factor channel without erroring", {
                   speed_dr = abs(stats::rnorm(n, 1, .3)), stringsAsFactors = FALSE)
   expect_no_error(suppressWarnings(suppressMessages(
     plotTracks(list(A = d), color.by = "depth", plot = FALSE, plot.file = pf, verbose = FALSE))))
+})
+
+test_that("factor columns in user-supplied TABLES no longer become level codes", {
+  # The same as.numeric()-on-a-factor trap as the plot family, but on tables the user hands in directly.
+  # A factor here is a symptom of stringsAsFactors = TRUE, so it is coerced correctly AND reported.
+  quiet <- function(e) suppressWarnings(suppressMessages(e))
+
+  # imputePaddleCalibration was the severe case. A factor year and slope both coerce to the codes 1,2,3,
+  # so the two columns become the SAME vector; the shared-rate fit is then the identity (slope ~ year,
+  # rate 1.0/yr) and predicting at a real deployment year returns THAT YEAR as the slope - 0.35 -> 2020.
+  cal <- data.frame(year = c(2019, 2020, 2021), package_id = c(1, 1, 1), slope = c(0.30, 0.35, 0.40))
+  dep <- data.frame(year = 2020, package_id = 1)
+  calf <- cal; calf$year <- factor(calf$year); calf$slope <- factor(calf$slope)
+
+  num <- quiet(imputePaddleCalibration(cal,  dep, verbose = FALSE))
+  fac <- quiet(imputePaddleCalibration(calf, dep, verbose = FALSE))
+  expect_equal(unname(fac$slope), unname(num$slope), tolerance = 1e-8)
+  expect_lt(unname(fac$slope), 1)                     # a slope, not a year
+  # the call also emits an unrelated `paddle.col` warning, so collect them all and assert on the one
+  ws <- character(0)
+  withCallingHandlers(suppressMessages(imputePaddleCalibration(calf, dep, verbose = FALSE)),
+                      warning = function(w) { ws <<- c(ws, conditionMessage(w)); invokeRestart("muffleWarning") })
+  expect_true(any(grepl("arrived as", ws)))
+
+  # qcDeploymentMetadata: factor coordinates became lon 1 / lat 2, which then feed declination and diel
+  md <- data.frame(ID = c("A", "B"), tag = c("t1", "t2"),
+                   tagging_date = as.POSIXct(c("2023-01-01", "2023-01-02"), tz = "UTC"),
+                   deploy_lon = c(-25.5, -24.9), deploy_lat = c(37.1, 37.4), stringsAsFactors = FALSE)
+  mdf <- md; mdf$deploy_lon <- factor(mdf$deploy_lon); mdf$deploy_lat <- factor(mdf$deploy_lat)
+  expect_equal(quiet(qcDeploymentMetadata(mdf, verbose = FALSE))$deploy_lon,
+               quiet(qcDeploymentMetadata(md,  verbose = FALSE))$deploy_lon, tolerance = 1e-8)
+})
+
+test_that(".coerceNumericCols converts via labels and names the offending columns", {
+  df <- data.frame(a = factor(c("10", "20")), b = c(1.5, 2.5), chr = c("x", "y"), stringsAsFactors = FALSE)
+  expect_warning(out <- nautilus:::.coerceNumericCols(df, c("a", "b"), "calibration"), "arrived as")
+  expect_equal(out$a, c(10, 20))                      # labels, not the codes 1,2
+  expect_equal(out$b, c(1.5, 2.5))                    # untouched
+  expect_type(out$chr, "character")                   # columns not named are left alone
+
+  # no factor -> no warning at all (the message must not fire on well-formed input)
+  expect_silent(nautilus:::.coerceNumericCols(df["b"], "b", "calibration"))
+  # a named column that is absent is skipped, not an error
+  expect_silent(nautilus:::.coerceNumericCols(df["b"], c("b", "nosuch"), "calibration"))
 })

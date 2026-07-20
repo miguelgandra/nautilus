@@ -132,7 +132,7 @@ summarizeTagData <- function(data,
       for (cc in cov_cols[is_num]) {
         if (any(grepl("/", agg[[cc]]), na.rm = TRUE))
           warning(sprintf("summarizeTagData: numeric covariate '%s' has multiple values for some ID(s); those become NA (provide one value per ID).", cc), call. = FALSE)
-        agg[[cc]] <- suppressWarnings(as.numeric(agg[[cc]]))
+        agg[[cc]] <- .asNumericSafe(agg[[cc]])
       }
       if (!length(intersect(agg$id, summary_table$id)))
         warning("summarizeTagData: no 'extra.metadata' ID matches any deployment - covariates attached as all-NA (check the ID column values/type).", call. = FALSE)
@@ -224,7 +224,7 @@ summarizeTagData <- function(data,
 
   # scalar coercions tolerant of NULL / NA / wrong-length metadata fields
   s_chr <- function(v) { v <- v %||% NA_character_; if (length(v) != 1) NA_character_ else as.character(v) }
-  s_num <- function(v) { v <- suppressWarnings(as.numeric(v %||% NA_real_)); if (length(v) != 1) NA_real_ else v }
+  s_num <- function(v) { v <- .asNumericSafe(v %||% NA_real_); if (length(v) != 1) NA_real_ else v }
   s_lgl <- function(v) {                                   # tolerant logical (handles 0/1, "TRUE"/"yes", NA)
     v <- v %||% NA; if (length(v) != 1 || is.na(v)) return(NA)
     if (is.character(v)) tolower(v) %in% c("true", "1", "yes", "y", "t") else as.logical(v)

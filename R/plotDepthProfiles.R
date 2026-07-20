@@ -243,7 +243,7 @@ plotDepthProfiles <- function(data,
     dt0 <- data.table::as.data.table(tag)
     for (col in setdiff(names(dt0), c(id.col, datetime.col))) {
       if (is.numeric(dt0[[col]])) next
-      z <- .asPlotNumeric(dt0[[col]])
+      z <- .asNumericSafe(dt0[[col]])
       if (any(is.finite(z))) data.table::set(dt0, j = col, value = z)
     }
     return(dt0)
@@ -251,7 +251,7 @@ plotDepthProfiles <- function(data,
   dt <- data.table::as.data.table(tag)
   tvec <- dt[[datetime.col]]
   tz <- attr(tvec, "tzone"); if (is.null(tz) || !nzchar(tz)) tz <- "UTC"
-  tnum <- .asPlotTime(tvec)                       # Date counts DAYS: as.numeric() collapsed the record
+  tnum <- .asTimeSeconds(tvec)                       # Date counts DAYS: as.numeric() collapsed the record
   if (is.null(tnum))
     .abort(c("{.arg datetime.col} ({.val {datetime.col}}) must hold date-times, not {.cls {class(tvec)[1]}}.",
              "i" = "Convert it with {.fn as.POSIXct} before plotting."))
@@ -261,7 +261,7 @@ plotDepthProfiles <- function(data,
   cand <- setdiff(names(dt), c(id.col, datetime.col))
   for (col in cand) {
     if (is.numeric(dt[[col]])) next
-    z <- .asPlotNumeric(dt[[col]])
+    z <- .asNumericSafe(dt[[col]])
     if (any(is.finite(z))) data.table::set(dt, j = col, value = z)
   }
   num_cols <- setdiff(names(dt)[vapply(dt, is.numeric, logical(1))], c(id.col, datetime.col))

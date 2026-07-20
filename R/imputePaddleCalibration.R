@@ -127,11 +127,16 @@ imputePaddleCalibration <- function(calibration,
   # Normalise the measured calibrations ########################################
   ##############################################################################
 
+  # A FACTOR year/slope used to become its integer LEVEL CODES. Because both columns then held the same
+  # small codes, the shared-rate fit below became the IDENTITY (slope ~ year, rate 1.0/yr) and predicting
+  # at a real deployment year returned that year AS THE SLOPE - 2020 instead of 0.35. The `bad` filter
+  # further down cannot catch it: a factor coerces cleanly to a code, so nothing is ever NA.
+  calibration <- .coerceNumericCols(calibration, c(year.col, slope.col, weights.col), "calibration")
   cal <- data.frame(
     package_id = as.character(calibration[[id.col]]),
-    year       = suppressWarnings(as.numeric(calibration[[year.col]])),
-    slope      = suppressWarnings(as.numeric(calibration[[slope.col]])),
-    w          = if (!is.null(weights.col)) suppressWarnings(as.numeric(calibration[[weights.col]])) else 1,
+    year       = .asNumericSafe(calibration[[year.col]]),
+    slope      = .asNumericSafe(calibration[[slope.col]]),
+    w          = if (!is.null(weights.col)) .asNumericSafe(calibration[[weights.col]]) else 1,
     stringsAsFactors = FALSE)
   cal$w[is.na(cal$w) | cal$w <= 0] <- 1                      # missing/invalid weights -> neutral
 
@@ -157,8 +162,9 @@ imputePaddleCalibration <- function(calibration,
   # Build the deployment grid to fill ##########################################
   ##############################################################################
 
+  deployments <- .coerceNumericCols(deployments, year.col, "deployments")
   dep <- data.frame(package_id = as.character(deployments[[id.col]]),
-                    year = suppressWarnings(as.numeric(deployments[[year.col]])),
+                    year = .asNumericSafe(deployments[[year.col]]),
                     stringsAsFactors = FALSE)
   if (!is.null(paddle.col)) {
     if (paddle.col %in% names(deployments)) {

@@ -152,7 +152,7 @@ plotDistributions <- function(data,
     for (m in metrics) {
       # shared coercion contract: a FACTOR metric used to become its level codes, which silently
       # replaced the measurements (and inverted the cohort order under order.by = "median")
-      x <- if (m %in% names(dt)) .asPlotNumeric(dt[[m]]) else numeric(0)
+      x <- if (m %in% names(dt)) .asNumericSafe(dt[[m]]) else numeric(0)
       x <- x[is.finite(x)]
       values[[m]][[id]] <- x
       summary_rows[[length(summary_rows) + 1L]] <- .distSummaryRow(id, m, x)

@@ -143,7 +143,7 @@ plotTimeAtDepth <- function(data,
     id <- as.character(.getMeta(x)$id %||% src$ids[i])
     if (!(datetime.col %in% names(x))) { n_missing <- n_missing + 1L; next }
     tnum <- .tadTimeSeconds(x[[datetime.col]], datetime.col, id)
-    series <- lapply(variable, function(v) if (v %in% names(x)) .asPlotNumeric(x[[v]]) else NULL)
+    series <- lapply(variable, function(v) if (v %in% names(x)) .asNumericSafe(x[[v]]) else NULL)
     names(series) <- variable
     # a column that is present but yields nothing finite (all-NA, or character text) is treated as
     # ABSENT rather than carried forward: it used to reach the binner and die on `rep(0, nb)`
@@ -480,7 +480,7 @@ plotTimeAtDepth <- function(data,
 #' @keywords internal
 #' @noRd
 .tadTimeSeconds <- function(z, datetime.col, id) {
-  tnum <- .asPlotTime(z)                                          # shared contract (see utils-plot.R)
+  tnum <- .asTimeSeconds(z)                                          # shared contract (see utils-plot.R)
   if (!is.null(tnum)) return(tnum)
   .abort(c("{.arg datetime.col} ({.val {datetime.col}}) must hold date-times, not {.cls {class(z)[1]}}.",
            "i" = "Deployment {.val {id}} carries a {.cls {class(z)[1]}} column; convert it with {.fn as.POSIXct} first."))

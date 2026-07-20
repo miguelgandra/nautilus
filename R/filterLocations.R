@@ -254,7 +254,7 @@ filterLocations <- function(data,
 
     # ---- 1. satellite count (Fastloc-GPS only) ------------------------------------------------
     if (do_sat) {
-      sat <- suppressWarnings(as.numeric(pos$quality))       # WC Fastloc Quality = satellite count
+      sat <- .asNumericSafe(pos$quality)                     # WC Fastloc Quality = satellite count
       hit <- which(!removed & removable & pos$type == "FastGPS" & !is.na(sat) & sat < min.satellites)
       if (length(hit)) { removed[hit] <- TRUE; reason[hit] <- "satellite"; counts$satellite <- length(hit) }
     }
@@ -395,7 +395,7 @@ filterLocations <- function(data,
   if (!is.null(id.metadata)) {
     row <- id.metadata[as.character(id.metadata[[id.col]]) == as.character(id), , drop = FALSE]
     if (nrow(row) > 0) {
-      dl <- suppressWarnings(as.numeric(row[[deploy.lon.col]][1])); da <- suppressWarnings(as.numeric(row[[deploy.lat.col]][1]))
+      dl <- .asNumericSafe(row[[deploy.lon.col]][1]); da <- .asNumericSafe(row[[deploy.lat.col]][1])
       if (!is.na(dl) && !is.na(da)) from_md <- list(lon = dl, lat = da, source = "id.metadata")
     }
   }

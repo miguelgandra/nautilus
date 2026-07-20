@@ -173,7 +173,7 @@ qcDeploymentMetadata <- function(metadata,
   }
   # numeric coordinate roles
   for (r in intersect(c("deploy_lon", "deploy_lat", "popup_lon", "popup_lat"), roles)) {
-    d[[r]] <- suppressWarnings(as.numeric(d[[r]]))
+    d[[r]] <- .asNumericSafe(d[[r]])          # factor coords became level codes (lon 1, lat 2)
   }
 
   # chronological order (stable) by deployment datetime when available

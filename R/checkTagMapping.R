@@ -417,8 +417,8 @@ checkTagMapping <- function(data,
     }
     posture_metric <- if (identical(dep_type, "rigid")) "median" else "mad"
 
-    deploy_lon  <- suppressWarnings(as.numeric(dmeta$lon %||% NA_real_))
-    deploy_lat  <- suppressWarnings(as.numeric(dmeta$lat %||% NA_real_))
+    deploy_lon  <- .asNumericSafe(dmeta$lon %||% NA_real_)
+    deploy_lat  <- .asNumericSafe(dmeta$lat %||% NA_real_)
     deploy_time <- dmeta$datetime %||% as.POSIXct(NA)
 
     # expected geomagnetic inclination at the deployment (IGRF via oce), for cross-checking the
