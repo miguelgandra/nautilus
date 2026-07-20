@@ -351,10 +351,143 @@ test_that("a partial-coverage covariate join preserves the deployment/roster row
 })
 
 test_that(".summaryTemplate() matches the .summarize() schema exactly (empty-path type-safety)", {
+  # NOTE: this guard is deliberately blind to the dive block. .summaryTemplate() is dive-free because
+  # the block only exists for deployments detectDives() has annotated, and .mk() is not one - so the
+  # eight dive columns are pinned by the dive-block tests below, not here.
   tmpl <- nautilus:::.summaryTemplate()
   real <- nautilus:::.summarize(.mk("A"))
   expect_equal(names(tmpl), names(real))                          # same columns, same order
   expect_equal(nrow(tmpl), 0L)
   expect_equal(vapply(tmpl, function(x) class(x)[1], character(1)),   # same column classes -> rbind is type-safe
                vapply(real, function(x) class(x)[1], character(1)))
+})
+
+
+# --- the dive block -----------------------------------------------------------
+# Eight columns appear once detectDives() has annotated a deployment. They are NOT recomputed here: the
+# block calls the same reducer diveMetrics() calls, which is the only reason a dive count quoted from
+# the summary and one quoted from the per-dive table cannot disagree in a paper.
+
+.sumDiveCols <- c("n_dives", "dive_duration_median_min", "dive_duration_max_min",
+                  "dive_depth_median_m", "dive_depth_max_m",
+                  "dives_incomplete", "dives_truncated", "dives_gapped")
+
+# six dives of deliberately different character, so no two of the eight numbers coincide by accident:
+# three clean (299 s / 20 m, 599 s / 40 m, 199 s / 10 m), two left behind by a 99 s depth dropout, and
+# one running off the end of the record
+.sumDiveProfile <- c(rep(0, 60), rep(20, 300), rep(0, 60), rep(40, 600), rep(0, 60), rep(10, 200),
+                     rep(0, 60), rep(30, 300), rep(NA_real_, 100), rep(30, 300),
+                     rep(0, 60), rep(25, 300))
+
+# a deployment carrying that profile, put through detectDives() exactly as a user would before summarising
+.mk_dived <- function(id, depth = .sumDiveProfile) {
+  n  <- length(depth)
+  t0 <- as.POSIXct("2020-01-01 00:00:00", tz = "UTC")
+  d  <- data.table::data.table(ID = id, datetime = t0 + 0:(n - 1), depth = as.numeric(depth))
+  m  <- nautilus:::.newNautilusMeta(); m$id <- id
+  m$tag$model <- "CATS"
+  m$sensors$sampling_hz_original <- 50
+  m <- nautilus:::.appendProcessing(m, "depth_drift", status = "applied",
+                                    outcome = list(residual_m = 0.1))
+  ctl <- diveControl(reference = "surface", depth.threshold = 5, surface.band = 2,
+                     min.prominence = 5, min.duration = 10, max.gap = 60)
+  detectDives(list(nautilus:::new_nautilus_tag(d, m)), control = ctl, verbose = FALSE)[[1]]
+}
+
+test_that("an annotated deployment gains the eight dive columns, correctly typed", {
+  out <- .run(list(A = .mk_dived("A")))
+  expect_true(all(.sumDiveCols %in% names(out)))
+  # counts stay integer and statistics stay double, so a later rbind with an unannotated cohort is safe
+  expect_type(out$n_dives, "integer")
+  expect_type(out$dives_incomplete, "integer")
+  expect_type(out$dives_truncated, "integer")
+  expect_type(out$dives_gapped, "integer")
+  for (cc in c("dive_duration_median_min", "dive_duration_max_min",
+               "dive_depth_median_m", "dive_depth_max_m")) expect_type(out[[cc]], "double")
+  # the block is appended after the kinematic metrics, in the documented order
+  expect_equal(utils::tail(names(out), 8L), .sumDiveCols)
+  # a deployment that never saw detectDives() carries none of them
+  expect_false(any(.sumDiveCols %in% names(.run(list(B = .mk("B"))))))
+})
+
+test_that("a MIXED cohort binds: the unannotated deployments come back NA, not an error", {
+  out <- .run(list(A = .mk_dived("A"), B = .mk("B")))
+  expect_equal(nrow(out), 2L)
+  expect_true(all(.sumDiveCols %in% names(out)))
+  a <- out[out$id == "A", , drop = FALSE]
+  b <- out[out$id == "B", , drop = FALSE]
+  expect_equal(a$n_dives, 6L)
+  expect_true(all(vapply(.sumDiveCols, function(cc) is.na(b[[cc]]), logical(1))))
+  # NA of the RIGHT type - a fill that flipped the column to logical would break the next bind
+  expect_type(out$n_dives, "integer")
+  expect_type(out$dive_depth_max_m, "double")
+  # and the schema does not depend on which deployment came first - identical, not merely the same SET,
+  # since a column ORDER that tracked the input order is exactly the drift this is meant to catch
+  expect_identical(names(.run(list(B = .mk("B"), A = .mk_dived("A")))), names(out))
+})
+
+test_that("a deployment annotated with no dives reports 0, and NA statistics rather than 0 statistics", {
+  flat <- .mk_dived("FLAT", rep(0.2, 300))
+  expect_true(all(flat$dive_id == 0L))                      # annotated, but nothing detected
+  out <- .run(list(FLAT = flat))
+  expect_equal(out$n_dives, 0L)
+  expect_equal(out$dives_incomplete, 0L)
+  expect_equal(out$dives_truncated, 0L)
+  expect_equal(out$dives_gapped, 0L)
+  # "no dives" is not "dives of length zero": counting over an empty table is 0, averaging over it is NA
+  expect_true(is.na(out$dive_duration_median_min))
+  expect_true(is.na(out$dive_duration_max_min))
+  expect_true(is.na(out$dive_depth_median_m))
+  expect_true(is.na(out$dive_depth_max_m))
+})
+
+test_that("the dive block is exactly a reduction of diveMetrics() on the same data", {
+  # The test that catches the two functions drifting apart. Every column is checked against a hand
+  # reduction of the per-dive table, on a cohort chosen so a plausible shortcut gets a different answer.
+  tags <- list(RICH  = .mk_dived("RICH"),
+               # a dive that occupies the WHOLE record: dive_id never takes the value 0 here, so a count
+               # taken from the per-sample column rather than from the reducer reads 0 instead of 1
+               WHOLE = .mk_dived("WHOLE", rep(20, 400)))
+  out <- as.data.frame(.run(tags))
+  for (k in seq_along(tags)) {
+    dm <- diveMetrics(tags[[k]], verbose = FALSE)
+    r  <- out[out$id == names(tags)[k], , drop = FALSE]
+    expect_equal(r$n_dives, nrow(dm))
+    expect_equal(r$dive_duration_median_min, stats::median(dm$duration_s) / 60, tolerance = 1e-10)
+    expect_equal(r$dive_duration_max_min, max(dm$duration_s) / 60, tolerance = 1e-10)
+    expect_equal(r$dive_depth_median_m, stats::median(dm$max_depth_m), tolerance = 1e-10)
+    expect_equal(r$dive_depth_max_m, max(dm$max_depth_m), tolerance = 1e-10)
+    expect_equal(r$dives_incomplete, sum(!dm$complete))
+    expect_equal(r$dives_truncated, sum(dm$truncated_start | dm$truncated_end))
+    expect_equal(r$dives_gapped, sum(dm$n_gaps > 0))
+  }
+  # the eight numbers really are distinguishable - a fixture where they coincided would prove nothing
+  rich <- out[out$id == "RICH", , drop = FALSE]
+  expect_equal(rich$n_dives, 6L)
+  expect_equal(rich$dive_duration_median_min, 299 / 60, tolerance = 1e-10)
+  expect_equal(rich$dive_duration_max_min, 599 / 60, tolerance = 1e-10)
+  expect_equal(rich$dive_depth_median_m, 27.5, tolerance = 1e-10)
+  expect_equal(rich$dive_depth_max_m, 40, tolerance = 1e-10)
+  expect_equal(rich$dives_incomplete, 3L)                   # 2 gap-interrupted + 1 boundary-truncated
+  expect_equal(rich$dives_truncated, 1L)
+  expect_equal(rich$dives_gapped, 2L)
+  # and the whole-record deployment is ONE dive, not none
+  whole <- out[out$id == "WHOLE", , drop = FALSE]
+  expect_equal(whole$n_dives, 1L)
+  expect_equal(whole$dives_truncated, 1L)
+  expect_equal(whole$dive_duration_max_min, 399 / 60, tolerance = 1e-10)
+})
+
+test_that("dive_id WITHOUT dive_phase yields no dive columns, matching diveMetrics' own guard", {
+  x <- data.table::copy(.mk_dived("A"))
+  x[, dive_phase := NULL]
+  expect_true("dive_id" %in% names(x))
+  out <- .run(list(A = x))
+  expect_equal(nrow(out), 1L)
+  expect_equal(out$id, "A")                                  # the deployment is still summarised...
+  expect_equal(out$depth_max, 40, tolerance = 1e-10)
+  expect_false(any(.sumDiveCols %in% names(out)))            # ...it just carries no dive block
+  # diveMetrics() skips such a deployment too, so a silent summary is the MATCHING behaviour, not a loss
+  expect_warning(dm <- diveMetrics(x, verbose = FALSE), "skipped")
+  expect_equal(nrow(dm), 0L)
 })

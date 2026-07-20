@@ -54,6 +54,26 @@
 #' function says so. Records processed before nautilus stopped smoothing the stored depth channel carry
 #' this bias; re-process with `smoothingControl(depth = ...)` lowered to reach shorter dives.
 #'
+#' \strong{An interruption in the record ends a dive; it is never interpolated across.} Two events count
+#' as an interruption, and `max.gap` (seconds) is the longest of either a dive may span: a jump in time
+#' between consecutive samples, and a run of samples whose depth is non-finite. They are the same event -
+#' the record stopped saying where the animal was - but only the first is visible in the timestamps.
+#' Deployment PIN_03's depth channel went dark for 8.72 h while rows kept arriving at 20 Hz, so the
+#' sampling interval stayed perfectly regular (median dt == max dt == 0.050 s) and there was no time gap
+#' to find; the dive stayed open across the whole dark stretch and was reported as one 8.9 h excursion to
+#' 37 m, of which 97.6% of samples carried no depth at all. Counting the dark run as an interruption
+#' brings that deployment's longest dive down to 1.14 h. The dive is split there and both parts marked
+#' censored, because both alternatives are worse: interpolating invents an excursion shape that was never
+#' measured, and dropping the interrupted dive biases the duration distribution against exactly the long
+#' dives that interruptions tend to fall inside. \code{\link{diveMetrics}} reports what each dive lost.
+#'
+#' \strong{Long dives are flagged, never split.} No maximum duration is imposed. For an air-breather a
+#' multi-hour dive would be impossible, but this package also serves fish, sharks and rays, for which a
+#' multi-hour excursion may be entirely real - a duration cap would quietly turn one true observation
+#' into two false ones, and it would do so most often in the taxa the cap was never designed for.
+#' \code{\link{diveMetrics}} instead reports dives longer than the median + 5 x MAD (and at least 2 h)
+#' with their `depth_coverage` alongside, which is what separates a genuine foray from a sensor dropout.
+#'
 #' \strong{Zero dives is a result, not a failure.} It is reported with the threshold that produced it,
 #' the observed depth range and the reference used. The threshold is never relaxed until dives appear.
 #'
@@ -151,6 +171,7 @@ detectDives <- function(data,
                               surface_band_m = settings$surface.band,
                               min_prominence_m = settings$min.prominence,
                               min_duration_s = settings$min.duration,
+                              max_gap_s = settings$max.gap,
                               threshold_source = settings$threshold_source,
                               phase_method = control$phase.method,
                               baseline_stat = control$baseline.stat,

@@ -68,8 +68,12 @@ an artefact of the smoothing window.}
 \item{bottom.prop}{Numeric in (0, 1). For \code{phase.method = "prop.depth"}: the bottom phase is
 the span deeper than this proportion of the dive's amplitude. Default 0.80.}
 
-\item{max.gap}{Numeric (s). A sampling gap longer than this splits a dive and marks it censored.
-\code{NULL} uses \code{max(60, 10 x} median interval\code{)}.}
+\item{max.gap}{Numeric (seconds). The longest interruption of the record a single dive may span. An
+interruption is either a jump in time between consecutive samples or a run of samples carrying no
+finite depth - both mean the record stopped saying where the animal was. A longer one SPLITS the
+dive and marks both parts censored; nothing is interpolated across it. \code{NULL} derives
+\code{max(60, 10 x} median sampling interval\code{)} once per cohort, so gap handling is comparable
+between deployments - see \code{\link{detectDives}} Details.}
 
 \item{wiggle.amplitude}{Numeric (m). Minimum amplitude for a within-dive reversal to count.
 \code{NULL} uses \code{max(0.5, 3 x} the stored series' noise\code{)}.}

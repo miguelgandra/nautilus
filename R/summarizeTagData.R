@@ -55,9 +55,27 @@
 #'   \item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).
 #'   \item \strong{n_positions}: total number of position fixes within the record span, when available.
 #'   \item \strong{status}: `"included"`/`"excluded"` - only when `deployments` is supplied (see that argument).
+#'   \item \strong{n_dives}; \strong{dive_duration_median_min}, \strong{dive_duration_max_min} (min);
+#'     \strong{dive_depth_median_m}, \strong{dive_depth_max_m} (m, per-dive maximum depths);
+#'     \strong{dives_incomplete}, \strong{dives_truncated}, \strong{dives_gapped}: the dive block -
+#'     present only for deployments annotated by \link{detectDives}, and computed with the same reducer
+#'     \link{diveMetrics} uses (see Details).
 #' }
 #'
-#' @seealso \link{processTagData}, \link{filterDeploymentData}.
+#' @details
+#' \strong{The dive block.} When the data carry a `dive_id` column, the summary gains a per-deployment
+#' dive block. Its numbers are not recomputed here: the deployment is reduced by the very engine behind
+#' \link{diveMetrics}, so a dive count or median duration quoted from the summary is by construction the
+#' one the per-dive table gives - at the canonical `datetime` / `depth` columns, which is what the
+#' pipeline produces and what this block requires to be present. Note that the printed cohort line
+#' reports a median of per-deployment medians, not a pooled median over all dives; the per-deployment
+#' columns are exact, and a pooled figure is one \code{\link{diveMetrics}} call away. `dives_incomplete` counts the dives whose extent was set by the record
+#' rather than by the animal, split into `dives_truncated` (the tag started or stopped mid-dive) and
+#' `dives_gapped` (an interruption in time, or a depth channel that went dark, bounds the dive); a dive
+#' can be both. Deployments that have not been through \link{detectDives} simply have no dive columns,
+#' and in a mixed cohort they come back `NA`, as for any absent metric.
+#'
+#' @seealso \link{processTagData}, \link{filterDeploymentData}, \link{detectDives}, \link{diveMetrics}.
 #' @examples
 #' \dontrun{
 #' # One row per deployment from processed (and tail-beat-annotated) tags.
@@ -104,7 +122,10 @@ summarizeTagData <- function(data,
   if (any(dropped))
     warning(sprintf("summarizeTagData: %d of %d deployment(s) were empty or malformed and omitted: %s",
                     sum(dropped), r$n, paste(r$ids[dropped], collapse = ", ")), call. = FALSE)
-  summary_table <- if (any(!dropped)) do.call(rbind, parts[!dropped]) else .summaryTemplate()
+  # fill: the dive block exists only for deployments annotated by detectDives(), so a mixed cohort has
+  # ragged columns - the deployments without it come back NA, as for any absent metric
+  summary_table <- if (any(!dropped)) as.data.frame(data.table::rbindlist(parts[!dropped], fill = TRUE))
+                   else .summaryTemplate()
   rownames(summary_table) <- NULL
 
   # optionally complete the study roster: every deployment in `deployments` gets a row - processed ones
@@ -179,6 +200,42 @@ summarizeTagData <- function(data,
   parts <- sprintf(c("depth %d", "temp %d", "activity %d", "tail-beats %d", "paddle %d", "positions %d"),
                    c(cnt("depth_max"), cnt("temp_max"), cnt("vedba_mean"), cnt("tbf_mean"), cnt("speed_mean"), npos))
   .log_detail(lvl, sprintf("metric coverage (of %d processed): %s", n, paste(parts, collapse = sep)))
+  # dive block: only once detectDives() has annotated at least one of the processed deployments
+  if ("n_dives" %in% names(incl)) {
+    nd    <- incl$n_dives
+    have  <- is.finite(nd)                                  # the deployments that carry the block
+    n_dep <- sum(have)
+    tot   <- sum(nd[have])
+    if (tot == 0) {
+      .log_detail(lvl, sprintf("dives: none detected in %d annotated deployment%s",
+                               n_dep, if (n_dep != 1) "s" else ""))
+    } else {
+      # the summary holds no pooled dive list, so the typical duration is the median of the
+      # per-deployment medians; the extremes are true cohort extremes
+      # "across N deployments" must count the ones that HAVE dives, not the ones that were annotated -
+      # a cohort where 3 of 10 tags dived reads "across 10 deployments" otherwise
+      n_with <- sum(nd[have] > 0)
+      # no pooled dive list exists here, so this is a median of per-deployment medians. Said plainly,
+      # because it is the kind of number that gets copied into a methods section.
+      med <- stats::median(incl$dive_duration_median_min[have], na.rm = TRUE)
+      bits <- c(sprintf("typical duration %.1f min (median of deployment medians)", med),
+                sprintf("longest %.1f min", max(incl$dive_duration_max_min[have], na.rm = TRUE)),
+                sprintf("deepest %.1f m", max(incl$dive_depth_max_m[have], na.rm = TRUE)))
+      .log_detail(lvl, sprintf("dives: %s across %d deployment%s%s%s", format(tot, big.mark = ","),
+                               n_with, if (n_with != 1) "s" else "", sep, paste(bits, collapse = sep)))
+      n_inc <- sum(incl$dives_incomplete[have], na.rm = TRUE)
+      if (n_inc > 0) {
+        n_tr <- sum(incl$dives_truncated[have], na.rm = TRUE)
+        n_gp <- sum(incl$dives_gapped[have], na.rm = TRUE)
+        # the two causes overlap, so they can sum past the total. Say so when they actually do, rather
+        # than let "2 incomplete: 2 truncated + 1 gap-interrupted" read as an arithmetic error.
+        .log_subdetail(lvl, sprintf("%s incomplete: %s truncated at a record boundary%s%s gap-interrupted%s",
+                                    format(n_inc, big.mark = ","), format(n_tr, big.mark = ","),
+                                    sep, format(n_gp, big.mark = ","),
+                                    if (n_tr + n_gp > n_inc) " (a dive can be both)" else ""))
+      }
+    }
+  }
   if ("status" %in% names(st)) {
     ex <- st$id[st$status == "excluded"]
     if (length(ex))
@@ -259,7 +316,7 @@ summarizeTagData <- function(data,
     if (length(sw)) 100 * mean(as.numeric(sw)) else NA_real_
   } else NA_real_
 
-  data.frame(
+  out <- data.frame(
     id                    = id,
     tag_model             = s_chr(meta$tag$model),
     tag_type              = s_chr(meta$tag$type),
@@ -286,6 +343,55 @@ summarizeTagData <- function(data,
     n_positions           = n_positions,
     stringsAsFactors      = FALSE,
     check.names           = FALSE
+  )
+
+  # optional dive block, appended only for data that have been through detectDives(). A non-numeric
+  # dive_id is not a dive annotation, and is left out rather than guessed at (same tolerance as cstat()).
+  if (all(c("dive_id", "dive_phase", "depth") %in% names(dt)) && is.numeric(dt[["dive_id"]]))
+    out <- cbind(out, .summarizeDives(dt, id))
+  out
+}
+
+
+#' Per-deployment dive block for the summary table.
+#'
+#' The statistics are NOT recomputed here: the deployment is reduced with \code{.diveMetricsOne()}, the
+#' same engine \code{\link{diveMetrics}} calls, so a dive count or a median duration quoted from the
+#' summary is by construction the one the per-dive table gives. Reimplementing them is how the two
+#' functions would drift apart and disagree in a publication.
+#'
+#' The reduction is pinned to the canonical `datetime` / `depth` columns, which is what everything
+#' upstream of here produces. A caller who ran \code{\link{diveMetrics}} against differently named
+#' columns would get a table this block does not match - the guard below requires the canonical names
+#' to be present, so the mismatch cannot pass silently as a wrong number.
+#'
+#' A deployment whose `dive_id` is 0 throughout yields a 0-row reduction, hence `n_dives = 0` and NA
+#' statistics - a clean "no dives detected" row rather than an error. The censoring counts stay 0 there,
+#' since counting over an empty table is unambiguous.
+#' @keywords internal
+#' @noRd
+.summarizeDives <- function(dt, id) {
+  dm <- .diveMetricsOne(dt, id, "datetime", "depth",
+                        variables = NULL, circular.variables = NULL,
+                        statistics = "mean", by.phase = FALSE)
+  # statistic over a per-dive column -> NA when there are no dives (or no usable values)
+  dstat <- function(col, fun) {
+    v <- dm[[col]]; v <- v[is.finite(v)]
+    if (!length(v)) return(NA_real_)
+    as.numeric(fun(v))
+  }
+  data.frame(
+    n_dives                  = nrow(dm),
+    dive_duration_median_min = dstat("duration_s", stats::median) / 60,
+    dive_duration_max_min    = dstat("duration_s", max) / 60,
+    dive_depth_median_m      = dstat("max_depth_m", stats::median),
+    dive_depth_max_m         = dstat("max_depth_m", max),
+    # the record, not the animal, set the extent of these dives (a dive can be both truncated and gapped)
+    dives_incomplete         = sum(!dm$complete, na.rm = TRUE),
+    dives_truncated          = sum(dm$truncated_start | dm$truncated_end, na.rm = TRUE),
+    dives_gapped             = sum(dm$n_gaps > 0, na.rm = TRUE),
+    stringsAsFactors         = FALSE,
+    check.names              = FALSE
   )
 }
 
@@ -406,7 +512,10 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   prec_map <- c(record_duration_h = 1, sampling_hz = 0,
                 depth_mean = 1, depth_max = 1, temp_mean = 1, temp_min = 1, temp_max = 1,
                 vedba_mean = 3, odba_mean = 3, tbf_mean = 2, pct_swimming = 1, speed_mean = 2, speed_max = 2,
-                descent_rate_max = 2, ascent_rate_max = 2, n_samples = 0, n_positions = 0)
+                descent_rate_max = 2, ascent_rate_max = 2, n_samples = 0, n_positions = 0,
+                n_dives = 0, dive_duration_median_min = 1, dive_duration_max_min = 1,
+                dive_depth_median_m = 1, dive_depth_max_m = 1,
+                dives_incomplete = 0, dives_truncated = 0, dives_gapped = 0)
   prec_of <- function(nm) { p <- unname(prec_map[nm]); if (is.na(p)) 2L else as.integer(p) }
 
   num_cols <- names(df)[vapply(df, is.numeric, logical(1))]
@@ -461,7 +570,11 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     tbf_mean = "Mean tail-beat freq. (Hz)", pct_swimming = "Time swimming (%)", paddle_wheel = "Paddle wheel",
     speed_mean = "Mean speed (m/s)", speed_max = "Max speed (m/s)",
     descent_rate_max = "Max descent rate (m/s)", ascent_rate_max = "Max ascent rate (m/s)",
-    n_positions = "Positions (n)")
+    n_positions = "Positions (n)",
+    n_dives = "Dives (n)", dive_duration_median_min = "Median dive duration (min)",
+    dive_duration_max_min = "Max dive duration (min)", dive_depth_median_m = "Median dive depth (m)",
+    dive_depth_max_m = "Max dive depth (m)", dives_incomplete = "Incomplete dives (n)",
+    dives_truncated = "Boundary-truncated dives (n)", dives_gapped = "Gap-interrupted dives (n)")
   concise <- c(
     id = "ID", tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attach. site",
     status = "Status", record_start = "Start", record_end = "End",
@@ -472,7 +585,11 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     tbf_mean = "Mean TBF (Hz)", pct_swimming = "Swimming (%)", paddle_wheel = "Paddle wheel",
     speed_mean = "Mean speed (m s\u207b\u00b9)", speed_max = "Max speed (m s\u207b\u00b9)",
     descent_rate_max = "Max descent (m s\u207b\u00b9)", ascent_rate_max = "Max ascent (m s\u207b\u00b9)",
-    n_positions = "Positions (n)")
+    n_positions = "Positions (n)",
+    n_dives = "Dives (n)", dive_duration_median_min = "Med. dive dur. (min)",
+    dive_duration_max_min = "Max dive dur. (min)", dive_depth_median_m = "Med. dive depth (m)",
+    dive_depth_max_m = "Max dive depth (m)", dives_incomplete = "Incompl. dives (n)",
+    dives_truncated = "Truncated dives (n)", dives_gapped = "Gapped dives (n)")
   dict <- if (identical(style, "concise")) concise else report
   out <- unname(dict[cols])
   miss <- is.na(out)

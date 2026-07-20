@@ -96,16 +96,18 @@
 }
 
 
-#' Two-threshold hysteresis over the residual, with prominence, duration and gap handling.
+#' Two-threshold hysteresis over the residual.
 #'
-#' Returns a data.frame of candidate excursions with the index span, the sign, and the flags a caller
-#' needs to judge them. Contains NO ecology: it is a run-finder over a residual series.
+#' Returns a data.frame of candidate excursions with the index span and the sign. Contains NO ecology
+#' and NO judgement: it is a run-finder over a residual series. Everything that decides whether a run
+#' is a dive happens downstream - `.diveSplitOnGaps()` cuts it where the record stopped informing us,
+#' `.diveScreenRuns()` applies prominence and duration and flags boundary truncation.
 #'
-#' Gap handling: a sampling gap longer than `max.gap` SPLITS a dive rather than being interpolated
-#' across, and both parts carry `n_gaps`/`gap_s`. Interpolating would invent an excursion shape that
-#' was never measured; dropping the dive would bias against exactly the long dives that gaps tend to
-#' interrupt. Truncated dives at the record boundary are RETAINED and flagged, following tagtools'
-#' `findall`, because discarding them biases the duration distribution.
+#' NA carries the current state forward here, which is right for the one-sample dropouts this loop
+#' exists to tolerate and WRONG for a long one - carried far enough it holds a dive open across hours
+#' of missing depth. That is not fixed here, because this function cannot see how long a run of NAs
+#' lasts in SECONDS without the `max.gap` rule; `.diveSplitOnGaps()` owns it and cuts what this leaves
+#' joined. Keep the two together: relaxing the splitter re-opens the PIN_03 artefact described there.
 #' @keywords internal
 #' @noRd
 .diveRuns <- function(resid, tnum, threshold, band, sign = 1) {
@@ -176,14 +178,19 @@
     seg <- cumsum(c(0L, as.integer(cut_after[-length(idx)] | drop[-1] != drop[-length(idx)])))
     keep <- !drop
     if (!any(keep)) next
+    # Each surviving segment is charged only the interruptions that BOUND IT - the dropout or jump it
+    # begins after and the one it ends before. Charging every segment the whole run's lost time (the
+    # first version of this) would report the same seconds two or three times over.
     for (g in unique(seg[keep])) {
       w <- which(seg == g & keep)
       if (!length(w)) next
-      gs <- max(0, suppressWarnings(max(diff(tv[w]), na.rm = TRUE)))
+      a <- min(w); z <- max(w)
+      lost <- 0; ninter <- 0L
+      if (a > 1L) { lost <- lost + (tv[a] - tv[a - 1L]); ninter <- ninter + 1L }
+      if (z < length(idx)) { lost <- lost + (tv[z + 1L] - tv[z]); ninter <- ninter + 1L }
       out[[length(out) + 1L]] <- data.frame(
-        start_i = idx[min(w)], end_i = idx[max(w)], sign = runs$sign[k],
-        n_gaps = as.integer(any(drop) || length(brk_t) > 0),
-        gap_s = if (any(drop)) sum(diff(tv)[drop[-1]], na.rm = TRUE) else if (length(brk_t)) sum(diff(tv)[brk_t]) else 0)
+        start_i = idx[a], end_i = idx[z], sign = runs$sign[k],
+        n_gaps = ninter, gap_s = if (is.finite(lost)) lost else 0)
     }
   }
   if (!length(out)) return(cbind(runs[0, , drop = FALSE], n_gaps = integer(0), gap_s = numeric(0)))
@@ -494,18 +501,94 @@
     vertical_distance_m = numeric(0), n_reversals = integer(0),
     inter_dive_s = numeric(0), inter_dive_censored = logical(0),
     complete = logical(0), truncated_start = logical(0), truncated_end = logical(0),
-    n_gaps = integer(0), gap_s = numeric(0), depth_attenuation = numeric(0),
+    n_gaps = integer(0), gap_s = numeric(0), censoring = character(0),
+    depth_attenuation = numeric(0),
     depth_coverage = numeric(0), shape_supported = logical(0), stringsAsFactors = FALSE)
   for (v in variables) {
     circ <- v %in% circular.variables
     nms <- if (circ) c(paste0(v, "_mean_angle"), paste0(v, "_mrl"))
            else paste0(v, "_", statistics)
-    if (by.phase) nms <- c(nms, as.vector(outer(paste0(v, c("_descent", "_bottom", "_ascent")),
-                                                if (circ) c("_mean_angle") else paste0("_", statistics),
-                                                paste0)))
+    # t() so the statistic varies fastest, matching the order .diveMetricsOne() assigns columns in.
+    # Without it the empty table and a populated one hold the same NAMES in a different ORDER, and the
+    # fixed-schema promise (rbind across a mixed cohort always works) quietly stops being true.
+    if (by.phase) nms <- c(nms, as.vector(t(outer(paste0(v, c("_descent", "_bottom", "_ascent")),
+                                                  if (circ) c("_mean_angle") else paste0("_", statistics),
+                                                  paste0))))
     for (nm in nms) base[[nm]] <- numeric(0)
   }
   base
+}
+
+#' Why a dive's extent may not be the animal's: the record's own limits.
+#'
+#' A dive is CENSORED when something other than the animal ended it. Three causes, deliberately kept
+#' distinct because they mean different things to an analyst:
+#' \itemize{
+#'   \item \code{"boundary"} - the tag started or stopped mid-dive. The dive is real; its duration is a
+#'     lower bound. Retained rather than dropped (following tagtools' `findall`), because discarding
+#'     boundary dives biases the duration distribution against long ones.
+#'   \item \code{"time_gap"} - the record itself stopped: no samples at all for longer than `max.gap`.
+#'   \item \code{"depth_gap"} - samples kept arriving but the DEPTH channel went dark for longer than
+#'     `max.gap`. Indistinguishable from `time_gap` in what it costs us, invisible in the timestamps.
+#' }
+#' `"mixed"` when more than one applies, `"none"` when the animal alone opened and closed the dive.
+#'
+#' Both gap causes are charged at the EDGES, not the interior: `.diveSplitOnGaps()` has already cut the
+#' dive at any interruption longer than `max.gap`, so a surviving dive contains none. What remains to
+#' record is which of its two ends an interruption made, and how much record was lost there. The interior
+#' is still counted, because a caller may hand-annotate `dive_id` without going through
+#' \code{\link{detectDives}} at all.
+#' @keywords internal
+#' @noRd
+.diveCensorMap <- function(tnum, depth, max.gap) {
+  # O(n) once per deployment. Returns, per sample, the SPAN of the censoring dropout it belongs to (0
+  # if none) and that dropout's id. The span is what `gap_s` charges: a depth channel that goes dark
+  # for 8.7 h while samples keep arriving at 20 Hz costs exactly as much record as 8.7 h of silence,
+  # and the timestamps alone will never say so.
+  n <- length(depth)
+  span <- numeric(n); rid <- integer(n)
+  rr <- rle(!is.finite(depth))
+  e <- cumsum(rr$lengths); st <- e - rr$lengths + 1L
+  for (m in which(rr$values)) {
+    sp <- tnum[e[m]] - tnum[st[m]]
+    if (is.finite(sp) && sp > max.gap) { span[st[m]:e[m]] <- sp; rid[st[m]:e[m]] <- m }
+  }
+  list(span = span, rid = rid)
+}
+
+#' @keywords internal
+#' @noRd
+.diveCensoring <- function(i0, i1, tnum, dark, max.gap, n_total) {
+  n_int <- 0L; lost <- 0; time_gap <- FALSE; depth_gap <- FALSE
+  if (i1 > i0) {
+    dt <- diff(tnum[i0:i1])
+    w <- which(dt > max.gap)
+    if (length(w)) { n_int <- n_int + length(w); lost <- lost + sum(dt[w], na.rm = TRUE); time_gap <- TRUE }
+    ri <- unique(dark$rid[i0:i1]); ri <- ri[ri > 0]
+    if (length(ri)) {
+      depth_gap <- TRUE; n_int <- n_int + length(ri)
+      for (m in ri) lost <- lost + dark$span[match(m, dark$rid)]
+    }
+  }
+  # the interruption that made each end of this dive, if any
+  for (side in c("before", "after")) {
+    j <- if (side == "before") i0 - 1L else i1 + 1L
+    if (j < 1L || j > n_total) next
+    step <- if (side == "before") tnum[i0] - tnum[j] else tnum[j] - tnum[i1]
+    hit_t <- is.finite(step) && step > max.gap
+    hit_d <- dark$span[j] > 0
+    if (!hit_t && !hit_d) next
+    n_int <- n_int + 1L
+    if (hit_t) time_gap <- TRUE
+    if (hit_d) depth_gap <- TRUE
+    # one interruption, charged once: when the record both jumped and went dark at the same edge the
+    # two spans describe the SAME lost stretch, so take the longer rather than their sum
+    lost <- lost + max(if (hit_t) step else 0, if (hit_d) dark$span[j] else 0)
+  }
+  bound <- i0 <= 1L || i1 >= n_total
+  code <- c("boundary", "time_gap", "depth_gap")[c(bound, time_gap, depth_gap)]
+  list(n_gaps = n_int, gap_s = if (is.finite(lost)) lost else 0,
+       censoring = if (!length(code)) "none" else if (length(code) > 1L) "mixed" else code)
 }
 
 #' Reduce ONE annotated deployment to one row per dive.
@@ -529,8 +612,26 @@
   p <- if (length(pr)) pr[[length(pr)]] else list()
   smo <- Filter(function(r) identical(r$step, "processTagData"), .getMeta(x)$processing)
   smooth_s <- if (length(smo)) suppressWarnings(as.numeric(smo[[length(smo)]]$depth_smoothing %||% NA)) else NA_real_
+  # A window is only an attenuation if it reached the STORED depth channel. Current records say plainly
+  # that it did not (processTagData conditions only the velocity derivative), and charging them anyway
+  # reported a bias no dive in them ever suffered - a 12 s dive on the shipped 10 s default came back at
+  # 0.583. Records written before that change carry no such field, and for those the window did reach
+  # depth, so the absent field must mean "smoothed": the legacy case is the one the number exists for.
+  if (length(smo) && isFALSE(smo[[length(smo)]]$depth_channel_smoothed %||% TRUE)) smooth_s <- NA_real_
+
+  # the gap rule must be the one detectDives SPLIT on, not a fresh guess, or the metrics can report a
+  # dive as uninterrupted that the detector had already cut in two
+  max_gap <- suppressWarnings(as.numeric(p$max_gap_s %||% NA))
+  if (!is.finite(max_gap)) {
+    med_dt <- suppressWarnings(stats::median(diff(tnum), na.rm = TRUE))
+    max_gap <- max(60, 10 * (if (is.finite(med_dt) && med_dt > 0) med_dt else 1))
+  }
+  dark <- .diveCensorMap(tnum, d, max_gap)
 
   ids <- sort(unique(did[did > 0]))
+  pos <- which(did > 0)                       # one pass, rather than a which() per dive per question
+  i0v <- as.integer(tapply(pos, did[pos], min))[order(sort(unique(did[pos])))]
+  i1v <- as.integer(tapply(pos, did[pos], max))[order(sort(unique(did[pos])))]
   rows <- lapply(ids, function(k) {
     idx <- which(did == k)
     i0 <- min(idx); i1 <- max(idx)
@@ -562,14 +663,17 @@
     if (!is.finite(wig)) wig <- 0.5
     n_rev <- .diveReversals(dd, wig)
 
-    gap_v <- suppressWarnings(max(c(0, diff(tt)), na.rm = TRUE))
-    med_dt <- suppressWarnings(stats::median(diff(tt), na.rm = TRUE))
-    max_gap <- suppressWarnings(as.numeric(p$max_gap_s %||% NA))
-    if (!is.finite(max_gap)) max_gap <- max(60, 10 * (if (is.finite(med_dt)) med_dt else 1))
-    n_gaps <- sum(diff(tt) > max_gap, na.rm = TRUE)
+    cen <- .diveCensoring(i0, i1, tnum, dark, max_gap, n_total)
 
-    att <- if (is.finite(smooth_s) && smooth_s > 0 && is.finite(dur) && dur > 0)
-             max(0, min(1, 1 - smooth_s / (2 * dur))) else 1
+    # Retention of a triangular excursion under a centred boxcar of length L, BOTH regimes. Above the
+    # window (T >= L) it is 1 - L/(2T); below it the triangle sits entirely inside the window and the
+    # retention is T/(2L), which the first expression does not describe - continued past T = L it goes
+    # negative, and clamping that to 0 said a short dive was flattened out of the record entirely. A
+    # moving average never does that: at L = 2T the true retention is 0.25, not 0. The two branches meet
+    # at T = L (both give 0.5), so the column is continuous.
+    att <- if (is.finite(smooth_s) && smooth_s > 0 && is.finite(dur) && dur > 0) {
+             max(0, min(1, if (dur >= smooth_s) 1 - smooth_s / (2 * dur) else dur / (2 * smooth_s)))
+           } else 1
 
     row <- data.frame(
       ID = id, dive_id = as.integer(k),
@@ -597,9 +701,9 @@
       vertical_distance_m = sum(abs(diff(dd)), na.rm = TRUE),
       n_reversals = if (shape_ok) n_rev else NA_integer_,
       inter_dive_s = NA_real_, inter_dive_censored = NA,
-      complete = i0 > 1L && i1 < n_total && n_gaps == 0L,
-      truncated_start = i0 == 1L, truncated_end = i1 == n_total,
-      n_gaps = as.integer(n_gaps), gap_s = if (n_gaps > 0) gap_v else 0,
+      complete = identical(cen$censoring, "none"),
+      truncated_start = i0 <= 1L, truncated_end = i1 >= n_total,
+      n_gaps = as.integer(cen$n_gaps), gap_s = cen$gap_s, censoring = cen$censoring,
       depth_attenuation = att,
       # fraction of this dive's samples that actually carry a depth. A long dive with low coverage is a
       # dropout, not a foray - this is the number that tells the two apart.
@@ -636,11 +740,27 @@
     row
   })
   out <- do.call(rbind, rows)
-  # inter-dive interval: end of this dive to start of the next, censored when a gap or boundary intrudes
+  # Inter-dive interval: end of this dive to the start of the next. It is censored when the record
+  # failed DURING the interval, which is not the same question as whether either bounding dive was
+  # censored - an 8.7 h blackout between two clean dives yields an 8.7 h "surface interval" that
+  # describes the sensor, not the animal. Deriving this from truncated_* alone (as it first did) let
+  # exactly that row through as uncensored, and a user filtering on !inter_dive_censored to study
+  # inter-dive behaviour would have kept the worst rows in the table.
   if (nrow(out) > 1L) {
     nxt <- c(as.numeric(out$start[-1]), NA_real_)
     out$inter_dive_s <- nxt - as.numeric(out$end)
-    out$inter_dive_censored <- c(out$truncated_end[-nrow(out)] | out$truncated_start[-1], NA)
+    big <- which(diff(tnum) > max_gap)        # index i: the jump sits between sample i and i + 1
+    darkcum <- cumsum(dark$rid > 0)
+    between <- vapply(seq_len(nrow(out) - 1L), function(k) {
+      a <- i1v[k]; b <- i0v[k + 1L]
+      if (!is.finite(a) || !is.finite(b) || b <= a) return(FALSE)
+      any(big >= a & big < b) || (b > a + 1L && darkcum[b - 1L] - darkcum[a] > 0)
+    }, logical(1))
+    # Boundary truncation deliberately plays no part here. An interval is bounded by a dive on each
+    # side, so neither of its neighbours can be the dive the record cut short - `truncated_end` holds
+    # only for the last dive, which has no successor, and `truncated_start` only for the first, which is
+    # never a successor. ORing them in (as this first did) was unreachable code dressed as a safeguard.
+    out$inter_dive_censored <- c(between, NA)
   }
   out
 }

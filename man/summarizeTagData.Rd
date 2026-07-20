@@ -55,6 +55,11 @@ recorded data span - the true on-animal window once the data have been deploymen
 \item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).
 \item \strong{n_positions}: total number of position fixes within the record span, when available.
 \item \strong{status}: \code{"included"}/\code{"excluded"} - only when \code{deployments} is supplied (see that argument).
+\item \strong{n_dives}; \strong{dive_duration_median_min}, \strong{dive_duration_max_min} (min);
+\strong{dive_depth_median_m}, \strong{dive_depth_max_m} (m, per-dive maximum depths);
+\strong{dives_incomplete}, \strong{dives_truncated}, \strong{dives_gapped}: the dive block -
+present only for deployments annotated by \link{detectDives}, and computed with the same reducer
+\link{diveMetrics} uses (see Details).
 }
 }
 \description{
@@ -71,6 +76,19 @@ than one deployment, appends a population \verb{mean ± error} row for display o
 formatted table (for a report or paper), call \code{format()} on the result and write it out, e.g.
 \code{write.csv(format(summary), "summary.csv", row.names = FALSE)}.
 }
+\details{
+\strong{The dive block.} When the data carry a \code{dive_id} column, the summary gains a per-deployment
+dive block. Its numbers are not recomputed here: the deployment is reduced by the very engine behind
+\link{diveMetrics}, so a dive count or median duration quoted from the summary is by construction the
+one the per-dive table gives - at the canonical \code{datetime} / \code{depth} columns, which is what the
+pipeline produces and what this block requires to be present. Note that the printed cohort line
+reports a median of per-deployment medians, not a pooled median over all dives; the per-deployment
+columns are exact, and a pooled figure is one \code{\link{diveMetrics}} call away. \code{dives_incomplete} counts the dives whose extent was set by the record
+rather than by the animal, split into \code{dives_truncated} (the tag started or stopped mid-dive) and
+\code{dives_gapped} (an interruption in time, or a depth channel that went dark, bounds the dive); a dive
+can be both. Deployments that have not been through \link{detectDives} simply have no dive columns,
+and in a mixed cohort they come back \code{NA}, as for any absent metric.
+}
 \examples{
 \dontrun{
 # One row per deployment from processed (and tail-beat-annotated) tags.
@@ -84,5 +102,5 @@ summarizeTagData(list.files("./tailbeats", full.names = TRUE),
 }
 }
 \seealso{
-\link{processTagData}, \link{filterDeploymentData}.
+\link{processTagData}, \link{filterDeploymentData}, \link{detectDives}, \link{diveMetrics}.
 }
