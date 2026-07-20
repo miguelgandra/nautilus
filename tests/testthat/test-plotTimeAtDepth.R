@@ -172,3 +172,52 @@ test_that("axis labelling: every bin keeps its label, and the x label names the 
   expect_equal(nautilus:::.tadXlab("temp"), "Time at temperature (% per deployment)")
   expect_false(any(grepl("shark", c(nautilus:::.tadXlab("depth"), nautilus:::.tadXlab("temp")))))
 })
+
+test_that("input problems fail by name instead of surfacing as raw R errors", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  one <- function(id = "A", cols = "depth", n = 200) {
+    d <- data.table::data.table(ID = id, datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(n) * 60)
+    if ("depth" %in% cols) d$depth <- abs(stats::rnorm(n, 10, 4))
+    if ("temp"  %in% cols) d$temp  <- 20 + stats::rnorm(n)
+    d
+  }
+
+  # a requested variable that NO deployment carries used to reach the renderer and die on
+  # "invalid 'times' argument" -- after the whole load loop had run
+  expect_warning(
+    s <- suppressMessages(plotTimeAtDepth(list(A = one("A"), B = one("B")), variable = c("depth", "temp"),
+                                          plot = FALSE, plot.file = pf, verbose = FALSE)),
+    "Absent from every deployment")
+  expect_equal(unique(s$variable), "depth")                    # the usable variable is still plotted
+  # when NO variable is usable anywhere the pre-existing load guard fires first, naming the columns
+  expect_error(suppressMessages(plotTimeAtDepth(list(A = one("A")), variable = "temp",
+                                                plot = FALSE, plot.file = pf, verbose = FALSE)),
+               "No deployment has usable")
+
+  # degenerate `breaks` used to surface as "arguments imply differing number of rows" from a data.frame
+  for (b in list(c(10, 10), 10, c(1, NA), c(0, Inf))) {
+    expect_error(suppressMessages(plotTimeAtDepth(list(A = one("A")), breaks = b,
+                                                  plot = FALSE, plot.file = pf, verbose = FALSE)),
+                 "breaks")
+  }
+  expect_error(suppressMessages(plotTimeAtDepth(list(A = one("A")), breaks = c("a", "b"),
+                                                plot = FALSE, plot.file = pf, verbose = FALSE)),
+               "must be numeric")
+
+  # duplicate ids used to overwrite each other silently: 3 inputs returned 2 deployments
+  d1 <- one("DUP"); d2 <- one("DUP"); d3 <- one("Z")
+  expect_warning(
+    s2 <- suppressMessages(plotTimeAtDepth(list(d1, d2, d3), plot = FALSE, plot.file = pf, verbose = FALSE)),
+    "appeared more than once")
+  expect_setequal(unique(s2$id), c("DUP", "DUP_2", "Z"))       # none dropped
+
+  # order.by = "median" used to abort with an opaque vapply length error when a deployment lacked the
+  # ordering variable; such a deployment now simply sorts last
+  co <- list(A = one("A", c("depth", "temp")), B = one("B", "temp"))
+  expect_no_error(suppressWarnings(suppressMessages(
+    plotTimeAtDepth(co, variable = c("depth", "temp"), order.by = "median",
+                    group = c(A = "g1", B = "g2"), plot = FALSE, plot.file = pf, verbose = FALSE))))
+  expect_no_error(suppressWarnings(suppressMessages(
+    plotTimeAtDepth(co, variable = c("depth", "temp"), order.by = "median", style = "heatmap",
+                    plot = FALSE, plot.file = pf, verbose = FALSE))))
+})

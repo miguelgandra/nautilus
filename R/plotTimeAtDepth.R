@@ -18,9 +18,10 @@
 #' }
 #'
 #' Time is weighted by each sample's TRUE duration (not row counts), with long gaps capped, so irregular
-#' or gappy records are not distorted. Depth bins default to a surface-fine, deep-coarse scheme (most
-#' animals spend most time near the surface); every bin is drawn as an equal-height band so all strata
-#' stay legible regardless of width. The look is set by a shared \link{plotTheme} object.
+#' or gappy records are not distorted (a gap is credited only the record's median sampling interval).
+#' Depth bins default to a surface-fine, deep-coarse scheme (most animals spend most time near the
+#' surface); every bin is drawn as an equal-height band so all strata stay legible regardless of width.
+#' The look is set by a shared \link{plotTheme} object.
 #'
 #' @param data Processed data: `.rds` paths, a single `nautilus_tag` / data.frame, or a list of them.
 #' @param variable Character. `"depth"` (default), `"temp"`, or `c("depth","temp")` for both.
@@ -34,8 +35,8 @@
 #' @param bin.width,breaks,n.bins Bin definition. `breaks` gives explicit (possibly non-uniform) edges;
 #'   else `bin.width` (uniform) or `n.bins` pretty bins; else a smart per-variable default (surface-fine
 #'   for depth, uniform for temperature).
-#' @param gap.factor Numeric >= 1. A sample-to-next interval beyond `gap.factor` x the modal interval is
-#'   treated as a gap and credited only the modal interval. Default 3.
+#' @param gap.factor Numeric >= 1. A sample-to-next interval beyond `gap.factor` x the median interval
+#'   is treated as a gap and credited only that median interval. Default 3.
 #' @param order.by Ordering of groups / heatmap columns: `"id"`, `"input"`, or `"median"`.
 #' @param same.scale Logical. Give every panel of a variable the same x range, so bar lengths are
 #'   comparable across group facets (the comparison the faceting exists to support). Default `TRUE`.
@@ -97,6 +98,18 @@ plotTimeAtDepth <- function(data,
   .assert_number(gap.factor, "gap.factor", min = 1)
   if (!is.null(bin.width)) .assert_number(bin.width, "bin.width", min = 0)
   if (!is.null(n.bins)) .assert_count(n.bins, "n.bins", min = 2)
+  if (!is.null(breaks)) {
+    # a degenerate `breaks` used to collapse nb to 0 and surface as "arguments imply differing
+    # number of rows" from the summary data.frame, far from the cause
+    if (!is.numeric(breaks)) .abort("{.arg breaks} must be numeric bin edges.")
+    if (anyNA(breaks) || !all(is.finite(breaks)))
+      .abort("{.arg breaks} must be finite (no {.val NA} or {.val Inf}).")
+    if (length(unique(breaks)) < 2L) {
+      n_edge <- length(unique(breaks))
+      .abort(c("{.arg breaks} must give at least two distinct edges (it defines the bins).",
+               "i" = "Received {length(breaks)} value{?s} spanning {n_edge} distinct edge{?s}."))
+    }
+  }
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
@@ -116,7 +129,7 @@ plotTimeAtDepth <- function(data,
                                 grp_desc, if (diel) " \u00b7 diel split" else ""))
 
   ## ---- load each deployment: per-variable series, time, group, diel phase ----
-  loaded <- list(); n_missing <- 0L
+  loaded <- list(); n_missing <- 0L; dup_ids <- character(0)
   pb <- .log_progress_start(lvl, src$n, "Loading")                  # live bar at detailed verbosity (lvl >= 2)
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
@@ -127,12 +140,33 @@ plotTimeAtDepth <- function(data,
     names(series) <- variable
     if (all(vapply(series, is.null, logical(1)))) { n_missing <- n_missing + 1L; next }
     phase <- if (diel) .tadDielPhase(x, coordinates, id, datetime.col, lvl) else NULL
+    # `loaded` is keyed by id, so a repeated id would overwrite an earlier record and drop it from the
+    # figure without a word. Ids are made unique instead, and the collision is reported.
+    if (!is.null(loaded[[id]])) { dup_ids <- c(dup_ids, id); id <- .tadUniqueId(id, names(loaded)) }
     loaded[[id]] <- list(id = id, group = .deploymentGroup(x, id, group), t = as.numeric(x[[datetime.col]]),
                          series = series, phase = phase)
   }
   .log_progress_done(pb)
   if (!length(loaded)) .abort(c("No deployment has usable {.field {variable}} + {.field {datetime.col}} data.",
                                 "i" = "Check the {.arg variable} / {.arg datetime.col} column names."))
+  if (length(dup_ids)) {
+    dups <- unique(dup_ids)
+    n_dup <- length(dups); suffixed <- paste0(dups[1], "_2")
+    cli::cli_warn(c("{n_dup} deployment id{?s} appeared more than once.",
+                    "i" = "Repeated: {.val {dups}}. Each extra record was kept under a suffixed id ({.val {suffixed}}), so none is lost."))
+  }
+
+  # A requested variable that NO deployment carries used to survive to the renderer and fail there with a
+  # bare 'invalid times argument'. It is dropped here, by name, and only an empty set aborts.
+  # (the all-absent case cannot arrive here: a deployment carrying none of the variables is skipped above,
+  # so `loaded` would be empty and the guard on the previous line has already aborted.)
+  has_data <- vapply(variable, function(v) any(vapply(loaded, function(d) !is.null(d$series[[v]]), logical(1))), logical(1))
+  if (!all(has_data)) {
+    absent <- variable[!has_data]; kept <- variable[has_data]
+    cli::cli_warn(c("Absent from every deployment: {.val {absent}}.",
+                    "i" = "Plotting {.val {kept}} only."))
+    variable <- kept
+  }
 
   ## ---- shared bins per variable, then bin every deployment (duration-weighted, per phase) ----
   phases <- if (diel) c("night", "day") else "all"
@@ -210,7 +244,7 @@ plotTimeAtDepth <- function(data,
 # Binning (duration-weighted) #################################################
 ################################################################################
 
-#' Duration-weighted time and percent per bin for one deployment (gaps capped to the modal interval).
+#' Duration-weighted time and percent per bin for one deployment (gaps capped to the median interval).
 #' @keywords internal
 #' @noRd
 .timeAtDepthBins <- function(v, tnum, breaks, gap.factor) {
@@ -269,11 +303,15 @@ plotTimeAtDepth <- function(data,
   g <- vapply(loaded, function(d) d$group %||% NA_character_, character(1)); g <- g[!is.na(g)]
   lv <- unique(g)
   if (order.by == "median") {
+    # a deployment that lacks the ordering variable contributes nothing here; unlist() on all-NULL used
+    # to yield numeric(0), which vapply rejects with an opaque length error. Such a group sorts last.
     med <- vapply(lv, function(gg) {
       ids <- names(g)[g == gg]
-      stats::median(unlist(lapply(loaded[ids], function(d) d$series[[variable[1]]])), na.rm = TRUE)
+      z <- unlist(lapply(loaded[ids], function(d) d$series[[variable[1]]]))
+      z <- z[is.finite(z)]
+      if (!length(z)) NA_real_ else stats::median(z)
     }, numeric(1))
-    lv <- lv[order(med)]
+    lv <- lv[order(med, na.last = TRUE)]
   } else if (order.by == "id") lv <- sort(lv)
   lv
 }
@@ -321,6 +359,15 @@ plotTimeAtDepth <- function(data,
 .tadTitle <- function(v) switch(v, depth = "time-at-depth", temp = "time-at-temperature", sprintf("time-at-%s", v))
 
 #' Spelled-out variable name for prose (console summary): "temp" is a column name, not a word.
+#' First free `id_2`, `id_3`, ... for a deployment id that collides with one already loaded.
+#' @keywords internal
+#' @noRd
+.tadUniqueId <- function(id, taken) {
+  k <- 2L
+  while (paste0(id, "_", k) %in% taken) k <- k + 1L
+  paste0(id, "_", k)
+}
+
 #' Capitalise the first character (panel/banner titles are sentence case package-wide).
 #' @keywords internal
 #' @noRd
@@ -568,7 +615,10 @@ plotTimeAtDepth <- function(data,
   pal <- grDevices::colorRampPalette(theme$sequential)(100)
   ids0 <- names(loaded)
   ord <- switch(order.by,
-                median = ids0[order(vapply(loaded, function(d) stats::median(d$series[[variable[1]]], na.rm = TRUE), numeric(1)))],
+                median = ids0[order(vapply(loaded, function(d) {
+                  z <- d$series[[variable[1]]]; z <- z[is.finite(z)]
+                  if (!length(z)) NA_real_ else stats::median(z)
+                }, numeric(1)), na.last = TRUE)],
                 id = sort(ids0), ids0)
   mats <- lapply(variable, function(v) do.call(cbind, binned[[v]][["all"]][ord]))
   zmax <- max(vapply(mats, function(M) max(M, na.rm = TRUE), numeric(1)), 1)

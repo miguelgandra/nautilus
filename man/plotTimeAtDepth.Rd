@@ -44,8 +44,8 @@ individuals).}
 else \code{bin.width} (uniform) or \code{n.bins} pretty bins; else a smart per-variable default (surface-fine
 for depth, uniform for temperature).}
 
-\item{gap.factor}{Numeric >= 1. A sample-to-next interval beyond \code{gap.factor} x the modal interval is
-treated as a gap and credited only the modal interval. Default 3.}
+\item{gap.factor}{Numeric >= 1. A sample-to-next interval beyond \code{gap.factor} x the median interval
+is treated as a gap and credited only that median interval. Default 3.}
 
 \item{order.by}{Ordering of groups / heatmap columns: \code{"id"}, \code{"input"}, or \code{"median"}.}
 
@@ -89,9 +89,10 @@ a faceted panel of the group mean +/- SE across its individuals. \code{NULL} poo
 }
 
 Time is weighted by each sample's TRUE duration (not row counts), with long gaps capped, so irregular
-or gappy records are not distorted. Depth bins default to a surface-fine, deep-coarse scheme (most
-animals spend most time near the surface); every bin is drawn as an equal-height band so all strata
-stay legible regardless of width. The look is set by a shared \link{plotTheme} object.
+or gappy records are not distorted (a gap is credited only the record's median sampling interval).
+Depth bins default to a surface-fine, deep-coarse scheme (most animals spend most time near the
+surface); every bin is drawn as an equal-height band so all strata stay legible regardless of width.
+The look is set by a shared \link{plotTheme} object.
 }
 \examples{
 \dontrun{
