@@ -669,6 +669,7 @@ importTagData <- function(data.folders,
 
   # iterate over each animal. Per-run issue trackers (counts + affected IDs) feed the final summary.
   n_done <- 0L                                        # issue collectors are initialised at the top
+  tot_rows <- 0; tot_secs <- 0                        # cohort volume, for the summary line
   for (i in seq_along(data_files)) {
 
     # get animal ID
@@ -946,6 +947,8 @@ importTagData <- function(data.folders,
     # per-individual summary line. At the detailed level the block above already shows rows / model /
     # span, so the closing line is terse (just the save outcome); at the normal level it carries the
     # full one-line summary (id, rows, model, save).
+    tot_rows <- tot_rows + nrow(sensor_data)
+    tot_secs <- tot_secs + .tagSpanSeconds(sensor_data[["datetime"]])
     n_done <- n_done + 1L
     if (lvl >= 2L) {
       .log_ok(lvl, if (!is.null(saved_to)) paste0("saved ", basename(saved_to)) else "imported")
@@ -979,6 +982,10 @@ importTagData <- function(data.folders,
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_done, " of ", n_animals, " folder", if (n_animals != 1) "s", " imported")
+    # scale of what was ingested: raw samples at native rate, and summed tracked time across tags
+    if (n_done > 0)
+      .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_rows),
+                 " \u00b7 duration: ", .fmt_duration(tot_secs))
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     .log_runtime(lvl, start.time)
 

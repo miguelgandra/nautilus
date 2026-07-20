@@ -347,6 +347,10 @@ processTagData <- function(data,
               arrow = paste0("Method: ", orientation.algorithm, " orientation",
                              if (!is.null(downsample.to)) paste0(", downsample to ", downsample.to, " Hz")))
   n_done <- 0L
+  # cohort volume totals for the summary line: input rows, stored rows, and summed tracked time.
+  # Kept as running sums rather than derived at the end, because `data_list` holds only what the
+  # caller asked for (return.data = FALSE stores paths, not tables).
+  tot_in <- 0; tot_out <- 0; tot_secs <- 0
 
 
   # set data.table threads if specified
@@ -1482,6 +1486,9 @@ processTagData <- function(data,
       .log_ok(lvl, id, " ", b, " ", n_chan, " channel", if (n_chan != 1) "s", " ", b, " ",
               .formatLargeNumber(nrow(processed_data)), " rows ", b, " ", sampling_rate, " Hz")
     }
+    tot_in <- tot_in + n_input
+    tot_out <- tot_out + nrow(processed_data)
+    tot_secs <- tot_secs + .tagSpanSeconds(processed_data$datetime)
     n_done <- n_done + 1L
     .log_gap(lvl)                          # blank line separates this individual's block from the next
 
@@ -1548,6 +1555,12 @@ processTagData <- function(data,
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")
+    # scale of the batch. Stored rows are quoted against the INPUT rows because downsample.to (1 Hz by
+    # default) makes the two differ by one to two orders of magnitude - without the comparison the drop
+    # reads as data loss rather than the intended reduction.
+    if (n_done > 0)
+      .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_out),
+                 " (from ", .formatLargeNumber(tot_in), " input) \u00b7 duration: ", .fmt_duration(tot_secs))
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     .log_runtime(lvl, start.time)
   }

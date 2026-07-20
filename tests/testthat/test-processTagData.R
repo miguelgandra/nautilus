@@ -552,3 +552,43 @@ test_that("stored precision keeps each channel's quantum below its own noise flo
   expect_gt(length(unique(v)), 100L)
   expect_lt(mean(v == 0), 0.05)
 })
+
+test_that("the summary reports cohort volume, quoting stored rows against input rows", {
+  # downsample.to (1 Hz by default) makes stored rows one to two orders of magnitude smaller than the
+  # input, so the stored figure alone reads as data loss. The line carries both, plus summed tracked time.
+  set.seed(7)
+  mk <- function(id, secs, fs = 20) {
+    n <- secs * fs
+    t0 <- as.POSIXct("2023-01-01", tz = "UTC")
+    d <- data.table::data.table(
+      ID = id, datetime = t0 + (seq_len(n) - 1) / fs,
+      ax = stats::rnorm(n, 0, .1), ay = stats::rnorm(n, 0, .1), az = 1 + stats::rnorm(n, 0, .1),
+      depth = 20 + 10 * sin(seq_len(n) / 300), temp = 20)
+    m <- nautilus:::.newNautilusMeta(); m$id <- id
+    m$deployment$datetime <- t0; m$deployment$lon <- -25; m$deployment$lat <- 11
+    m$axis_mapping$applied <- TRUE
+    data.table::setattr(d, "nautilus", m)
+    data.table::setattr(d, "nautilus.version", "test")
+    class(d) <- c("nautilus_tag", class(d)); d
+  }
+  tags <- list(A01 = mk("A01", 3600), A02 = mk("A02", 1800))     # 1 h + 0.5 h at 20 Hz
+
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    processTagData(tags, downsample.to = 1, verbose = 1))), collapse = "\n")
+
+  expect_match(txt, "total rows: .* \\(from .* input\\) \u00b7 duration: ")
+  expect_match(txt, "duration: 1\\.5 h")                          # SUM of tracked time, not calendar span
+  # stored (1 Hz) must be quoted against the larger 20 Hz input
+  expect_match(txt, "from 108 K input")
+})
+
+test_that(".tagSpanSeconds sums tracked time and never poisons a running total", {
+  t <- as.POSIXct("2023-01-01", tz = "UTC") + seq(0, 3600 * 10, by = 60)
+  expect_equal(nautilus:::.tagSpanSeconds(t), 3600 * 10)
+  # Date counts DAYS - via the shared coercion contract, not a bare as.numeric()
+  expect_equal(nautilus:::.tagSpanSeconds(as.Date("2023-01-01") + 0:5), 5 * 86400)
+  # an unusable or degenerate column contributes 0 rather than NA, so one bad tag cannot void the total
+  expect_equal(nautilus:::.tagSpanSeconds(as.character(t)), 0)
+  expect_equal(nautilus:::.tagSpanSeconds(t[1]), 0)
+  expect_equal(nautilus:::.tagSpanSeconds(numeric(0)), 0)
+})

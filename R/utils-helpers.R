@@ -1028,3 +1028,20 @@ NULL
 ##################################################################################################
 ##################################################################################################
 ##################################################################################################
+
+#' Tracked seconds spanned by one deployment's time column.
+#'
+#' The cohort figure reported by importTagData/processTagData is the SUM of these, i.e. total
+#' animal-time, not the calendar window the cohort covers - deployments overlap in time, so a span
+#' across the whole batch would be a different (and much larger) quantity.
+#'
+#' Returns 0 rather than NA for an unusable column, so a running total is never poisoned by one tag.
+#' @keywords internal
+#' @noRd
+.tagSpanSeconds <- function(z) {
+  t <- .asPlotTime(z)                                  # shared coercion contract (Date is in DAYS)
+  if (is.null(t)) return(0)
+  t <- t[is.finite(t)]
+  if (length(t) < 2L) return(0)
+  as.numeric(max(t) - min(t))
+}
