@@ -236,3 +236,56 @@ test_that("the audit trail records status and largest_gap_s", {
 test_that("an unknown review.thresholds field errors clearly", {
   expect_error(.rts(list(A = .mk_reg("A")), review.thresholds = list(bogus = 1)), "Unknown")
 })
+
+# ---- channel cadence: a slower channel is not a gap ------------------------------------------------
+
+test_that(".channelCadence measures a channel's own sampling spacing, conservatively", {
+  expect_equal(nautilus:::.channelCadence(as.numeric(1:100)), 1)          # sampled every row
+  x <- as.numeric(1:100); x[40:45] <- NA
+  expect_equal(nautilus:::.channelCadence(x), 1)                          # real dropouts do not move the median
+  s <- rep(NA_real_, 200); s[seq(1, 200, by = 20)] <- 1
+  expect_equal(nautilus:::.channelCadence(s), 20)                         # 1 Hz against a 20 Hz grid
+  expect_equal(nautilus:::.channelCadence(c(1, NA, NA)), 1)               # too few observations -> conservative
+  expect_equal(nautilus:::.channelCadence(rep(NA_real_, 10)), 1)
+})
+
+test_that("a sub-grid-rate channel is left at its own cadence, not densified into the grid", {
+  # A tag that logs paddle speed at 1 Hz against a 20 Hz inertial grid leaves 19 of every 20 rows empty for
+  # that channel. Interpolating them fabricates ~20x the samples the tag ever recorded, and every pooled
+  # statistic downstream then counts the copies as independent observations.
+  n <- 4000; fs <- 20
+  dt <- data.table::data.table(
+    ID = "A01", datetime = as.POSIXct("2020-01-01", tz = "UTC") + (seq_len(n) - 1) / fs,
+    ax = stats::rnorm(n), ay = stats::rnorm(n), az = 1 + stats::rnorm(n),
+    depth = 20 + 10 * sin(seq_len(n) / 200), paddle_speed = NA_real_)
+  dt$paddle_speed[seq(1, n, by = 20)] <- 0.5
+  data.table::setattr(dt, "nautilus.version", "test")
+
+  out <- NULL
+  invisible(capture.output(suppressWarnings(
+    out <- regularizeTimeSeries(list(A01 = dt), gap.threshold = 2, verbose = FALSE)[[1]])))
+
+  expect_equal(sum(is.finite(out$paddle_speed)), n / 20)     # exactly what the tag recorded - nothing added
+  expect_true(all(is.finite(out$depth)))                     # the grid-rate channels are untouched
+
+  # and the coverage tally must not read the slow channel's empty rows as lost data
+  step <- Filter(function(p) identical(p$step, "regularizeTimeSeries"),
+                 nautilus:::.getMeta(out)$processing)[[1]]
+  expect_equal(step$pct_interpolated, 0)
+  expect_identical(step$status, "ok")
+})
+
+test_that("genuine dropouts in a grid-rate channel are still interpolated (no regression)", {
+  n <- 4000; fs <- 20
+  dt <- data.table::data.table(
+    ID = "A01", datetime = as.POSIXct("2020-01-01", tz = "UTC") + (seq_len(n) - 1) / fs,
+    ax = stats::rnorm(n), ay = stats::rnorm(n), az = 1 + stats::rnorm(n),
+    depth = 20 + 10 * sin(seq_len(n) / 200))
+  dt$depth[500:509] <- NA                                    # 10 rows = 0.5 s, inside gap.threshold
+  data.table::setattr(dt, "nautilus.version", "test")
+
+  out <- NULL
+  invisible(capture.output(suppressWarnings(
+    out <- regularizeTimeSeries(list(A01 = dt), gap.threshold = 2, verbose = FALSE)[[1]])))
+  expect_false(anyNA(out$depth))                             # the true gap is filled, as before
+})

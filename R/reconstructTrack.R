@@ -279,7 +279,15 @@ reconstructTrack <- function(data,
   # recovered as speed_dr * cos(pitch) at the integration step, uniformly across methods.
   speed_fit <- NULL
   if (control$speed.method == "paddle") {
-    dt[, speed_dr := paddle_speed]
+    # A paddle channel often runs slower than the inertial grid (CEiiA logs it at 1 Hz against 20 Hz), and
+    # regularizeTimeSeries deliberately leaves those rows empty rather than inventing samples that a pooled
+    # statistic would then double-count. Dead reckoning DOES need a speed at every integration step, so the
+    # continuous signal is reconstructed here, at the consumer that needs it: interpolate within the
+    # channel's own gaps. Without this the generic fallback below would silently replace ~95% of a 1 Hz
+    # paddle record with the constant speed, quietly gutting the reconstruction.
+    sp <- dt$paddle_speed
+    if (anyNA(sp) && sum(is.finite(sp)) >= 2L) sp <- zoo::na.approx(sp, na.rm = FALSE)
+    dt[, speed_dr := sp]
   } else if (control$speed.method == "depth_rate") {
     # vertical -> along-body speed via the dive geometry (vertical_velocity = speed * sin(pitch)), so the
     # horizontal component recovered downstream is vertical_velocity / tan(pitch). Trustworthy only on steep

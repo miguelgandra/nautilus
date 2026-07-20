@@ -393,21 +393,32 @@ regularizeTimeSeries <- function(data,
     # interpolate only recognized sensor channels that are actually present (so partial sensor sets work)
     sensor_cols <- intersect(.sensorChannels(), names(complete_data))
 
+    # Split the channels by their OWN sampling cadence. Some tags log a channel slower than the IMU (CEiiA
+    # writes Velocity / Ticks-per-second at 1 Hz against a 20 Hz inertial grid), so 19 of every 20 rows are
+    # structurally empty for that channel. Those are NOT gaps, and treating them as such corrupts both steps
+    # below: it densifies the channel ~20x with interpolated values indistinguishable from observations
+    # (which downstream pooled statistics then count as independent samples), and it makes almost every grid
+    # row look "missing" in the coverage tally, raising a false "critical" status.
+    sub_rate  <- vapply(sensor_cols, function(col) .channelCadence(complete_data[[col]]) > 1.5, logical(1))
+    grid_cols <- sensor_cols[!sub_rate]                       # sampled at (or near) the grid rate
+    slow_cols <- sensor_cols[sub_rate]                        # genuinely slower: left at their own cadence
+
     # snapshot the coverage state of the regular grid BEFORE interpolation: a grid row is
-    # "missing" if any present sensor channel is NA (an out-of-threshold slot or a true gap)
-    na_after_join <- if (length(sensor_cols) > 0) {
-      Reduce(`|`, lapply(sensor_cols, function(col) is.na(complete_data[[col]])))
+    # "missing" if any GRID-RATE sensor channel is NA (an out-of-threshold slot or a true gap). Slower
+    # channels are excluded - their empty rows are by design, not missing data.
+    na_after_join <- if (length(grid_cols) > 0) {
+      Reduce(`|`, lapply(grid_cols, function(col) is.na(complete_data[[col]])))
     } else rep(FALSE, nrow(complete_data))
 
-    if (gap.threshold > 0 && length(sensor_cols) > 0) {
+    if (gap.threshold > 0 && length(grid_cols) > 0) {
 
-      # check if any sensor column has NA values
-      has_gaps <- any(vapply(sensor_cols, function(col) anyNA(complete_data[[col]]), logical(1)))
+      # check if any grid-rate sensor column has NA values
+      has_gaps <- any(vapply(grid_cols, function(col) anyNA(complete_data[[col]]), logical(1)))
 
       if (has_gaps) {
 
-        # identify rows where any of the present sensor columns have NA
-        na_pattern <- Reduce(`|`, lapply(sensor_cols, function(col) is.na(complete_data[[col]])))
+        # identify rows where any of the present GRID-RATE sensor columns have NA
+        na_pattern <- Reduce(`|`, lapply(grid_cols, function(col) is.na(complete_data[[col]])))
 
         # use rle to find consecutive NA runs
         na_runs <- rle(na_pattern)
@@ -427,8 +438,10 @@ regularizeTimeSeries <- function(data,
         total_small_duration <- sum(gap_durations[small_gaps])
         total_large_duration <- sum(gap_durations[large_gaps])
 
-        # interpolate small gaps in the present sensor channels (numeric only)
-        numeric_cols <- sensor_cols[vapply(sensor_cols, function(col) is.numeric(complete_data[[col]]), logical(1))]
+        # interpolate small gaps in the GRID-RATE sensor channels (numeric only). Slower channels are
+        # deliberately excluded: nothing is invented between their own samples, so they reach downstream at
+        # their true cadence and a pooled statistic counts each observation once.
+        numeric_cols <- grid_cols[vapply(grid_cols, function(col) is.numeric(complete_data[[col]]), logical(1))]
 
         for (col in numeric_cols) {
           if (interpolation.method == "linear") {
@@ -468,9 +481,11 @@ regularizeTimeSeries <- function(data,
     # Coverage accounting (always computed; powers the log, metadata and panel)
     ############################################################################
 
-    # final NA state, then classify each regular-grid row as observed / interpolated / gap
-    na_final <- if (length(sensor_cols) > 0) {
-      Reduce(`|`, lapply(sensor_cols, function(col) is.na(complete_data[[col]])))
+    # final NA state, then classify each regular-grid row as observed / interpolated / gap. Judged on the
+    # GRID-RATE channels only, matching `na_after_join`: a slower channel's empty rows are its cadence, not
+    # a gap, and counting them here would report a near-total loss of coverage on a perfectly good record.
+    na_final <- if (length(grid_cols) > 0) {
+      Reduce(`|`, lapply(grid_cols, function(col) is.na(complete_data[[col]])))
     } else rep(FALSE, nrow(complete_data))
     n_regular     <- nrow(complete_data)
     n_interp      <- sum(na_after_join & !na_final)
@@ -615,6 +630,29 @@ regularizeTimeSeries <- function(data,
 # `large_gap_seconds` trigger is off by default). User overrides are merged on top.
 #' @keywords internal
 #' @noRd
+#' Estimate a channel's own sampling cadence, in grid rows per observation
+#'
+#' A tag may log a channel more slowly than the inertial grid it is being placed on - CEiiA writes
+#' `Velocity (m/s)` and `Ticks/s` once a second against a 20 Hz grid, leaving 19 of every 20 rows empty for
+#' those columns. Those empty rows are the channel's DESIGN, not missing data, so they must not be counted
+#' as gaps or filled by interpolation.
+#'
+#' The cadence is the median spacing between consecutive observations, which is robust to real dropouts
+#' (a handful of long gaps cannot move the median) and returns 1 for any channel sampled on every row.
+#' @param x A numeric channel, possibly containing NAs.
+#' @return Median rows per observation; 1 when the channel is sampled at (or near) the grid rate, or when
+#'   there are too few observations to judge - the conservative answer, since it preserves existing
+#'   behaviour rather than silently disabling interpolation.
+#' @keywords internal
+#' @noRd
+.channelCadence <- function(x) {
+  idx <- which(!is.na(x))
+  if (length(idx) < 3L) return(1)
+  s <- stats::median(diff(idx))
+  if (!is.finite(s) || s < 1) 1 else s
+}
+
+
 .regularizationThresholds <- function(user = NULL) {
   d <- list(gap_pct_review = 1, gap_pct_critical = 5,
             interp_pct_review = 5, interp_pct_critical = 20,
