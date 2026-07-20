@@ -49,6 +49,9 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
 
   .assert_number(th$bar.alpha, "bar.alpha", min = 0, max = 1)
   .assert_number(th$cex, "cex", min = 0)
+  # min = 0 is inclusive, and cex = 0 reaches base graphics as an opaque
+  # 'invalid value specified for graphical parameter "cex.axis"'
+  if (th$cex <= 0) .abort("{.arg cex} in {.fn plotTheme} must be greater than zero.")
   .assert_string(th$font.family, "font.family")
   for (nm in c("panel", "grid", "ink", "axis", "subtitle", "day", "night", "day.border", "bar.border"))
     if (!.isColour(th[[nm]])) .abort("{.arg {nm}} in {.fn plotTheme} must be a single valid colour.")

@@ -96,7 +96,10 @@ plotTimeAtDepth <- function(data,
   .assert_flag(diel, "diel"); .assert_flag(plot, "plot"); .assert_flag(same.scale, "same.scale")
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   .assert_number(gap.factor, "gap.factor", min = 1)
+  # min = 0 was inclusive, so bin.width = 0 passed and was then silently ignored by .tadBreaks,
+  # falling through to a completely different (pretty-n) bin scheme
   if (!is.null(bin.width)) .assert_number(bin.width, "bin.width", min = 0)
+  if (!is.null(bin.width) && bin.width <= 0) .abort("{.arg bin.width} must be greater than zero.")
   if (!is.null(n.bins)) .assert_count(n.bins, "n.bins", min = 2)
   if (!is.null(breaks)) {
     # a degenerate `breaks` used to collapse nb to 0 and surface as "arguments imply differing
@@ -110,10 +113,13 @@ plotTimeAtDepth <- function(data,
                "i" = "Received {length(breaks)} value{?s} spanning {n_edge} distinct edge{?s}."))
     }
   }
+  if (!is.null(coordinates)) .tadCheckCoordinates(coordinates)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
   if (style == "heatmap" && diel) { if (lvl >= 1L) cli::cli_alert_info("diel split is ignored for {.val heatmap} style."); diel <- FALSE }
+  if (style == "heatmap" && !is.null(group) && lvl >= 1L)
+    cli::cli_alert_info("{.arg group} is ignored for {.val heatmap} style (every deployment gets its own column).")
 
   src <- .resolveInput(data, id.col)
 
@@ -162,6 +168,15 @@ plotTimeAtDepth <- function(data,
 
   # A requested variable that NO deployment carries used to survive to the renderer and fail there with a
   # bare 'invalid times argument'. It is dropped here, by name, and only an empty set aborts.
+  # `diel` needs coordinates. When NONE resolve, every phase subset is empty, so `binned` stays empty and
+  # the run used to die in the SUMMARY block on `do.call(cbind, NULL)` - or, quietly, return NULL and
+  # write a blank figure. Fall back to the pooled profile, which is what the data actually supports.
+  if (diel && !any(vapply(loaded, function(d) !is.null(d$phase) && any(!is.na(d$phase)), logical(1)))) {
+    cli::cli_warn(c("{.arg diel = TRUE} needs coordinates, and none could be resolved for any deployment.",
+                    "i" = "Plotting the pooled profile instead. Supply {.arg coordinates}, or lon/lat columns/metadata."))
+    diel <- FALSE
+  }
+
   # (the all-absent case cannot arrive here: a deployment carrying none of the variables is skipped above,
   # so `loaded` would be empty and the guard on the previous line has already aborted.)
   has_data <- vapply(variable, function(v) any(vapply(loaded, function(d) !is.null(d$series[[v]]), logical(1))), logical(1))
@@ -221,8 +236,13 @@ plotTimeAtDepth <- function(data,
 
   ## ---- group levels + colours ----
   grp_of <- vapply(loaded, function(d) d$group %||% NA_character_, character(1))
+  grp_of[!is.na(grp_of) & !nzchar(trimws(grp_of))] <- NA_character_     # "" / "   " are not group labels
   grouped <- !is.null(group) && any(!is.na(grp_of))
   glevels <- if (grouped) .tadGroupLevels(loaded, order.by, variable) else "All"
+  if (!is.null(group) && !grouped)
+    # the header has already announced "grouped by X"; without this the run just silently pools
+    cli::cli_warn(c("No deployment has a usable {.arg group} value; plotting a single pooled profile.",
+                    "i" = "Check that the grouping column or lookup covers the deployment ids."))
   if (grouped && any(is.na(grp_of))) {
     # such deployments appear in the returned table but on no facet - they used to vanish from the
     # figure while still being counted as "plotted"
@@ -240,11 +260,22 @@ plotTimeAtDepth <- function(data,
     .tadBannerWidth(.tadBannerText(variable, grouped, diel), diel, theme$cex)
   dims <- .tadFigSize(length(variable), length(glevels), style, theme$cex,
                       nb_max = nb_max, n_dep = length(loaded), banner_in = banner_in)
+  lay <- .tadPanelGrid(length(variable), length(glevels))
   draw <- function(to.file = FALSE, unicode = TRUE) {
     old <- graphics::par(family = theme$font.family); on.exit(graphics::par(old), add = TRUE)
-    if (style == "heatmap") .tadRenderHeatmaps(binned, breaks_by_var, variable, loaded, order.by, theme, grouped)
-    else .tadRenderProfiles(binned, breaks_by_var, variable, glevels, gcols, grp_of, phases, diel, grouped, theme,
-                            same.scale = same.scale)
+    # `plot = TRUE` draws into whatever device is already open, at ITS size - the computed page size only
+    # reaches the PDF. A tall facet grid therefore fails on a small screen device with base R's bare
+    # "figure margins too large", which says nothing about the cause or the remedy.
+    tryCatch({
+      if (style == "heatmap") .tadRenderHeatmaps(binned, breaks_by_var, variable, loaded, order.by, theme, grouped)
+      else .tadRenderProfiles(binned, breaks_by_var, variable, glevels, gcols, grp_of, phases, diel, grouped, theme,
+                              same.scale = same.scale)
+    }, error = function(e) {
+      if (!grepl("margins too large|region too large", conditionMessage(e))) stop(e)
+      .abort(c("This figure needs a larger device than the one it is being drawn to.",
+               "i" = "{lay$nr} x {lay$nc} panels need about {round(dims$width, 1)} x {round(dims$height, 1)} in.",
+               "i" = "Pass {.arg plot.file} (the page is then sized automatically), or plot fewer groups/variables."))
+    })
   }
   .renderToDevices(draw, plot = plot, plot.file = plot.file, width = dims$width, height = dims$height)
 
@@ -252,8 +283,10 @@ plotTimeAtDepth <- function(data,
   if (lvl >= 1L) {
     .log_summary(lvl)
     for (v in variable) {
-      cols <- do.call(cbind, unlist(binned[[v]], recursive = FALSE))    # pool ALL deployments x phases
-      if (is.null(cols)) next
+      pooled <- unlist(binned[[v]], recursive = FALSE)                  # pool ALL deployments x phases
+      if (!length(pooled)) next                                         # nothing binned for this variable
+      cols <- do.call(cbind, pooled)
+      if (is.null(cols) || !length(cols)) next
       pool <- rowMeans(cols, na.rm = TRUE)
       # report the modal BIN (both edges + unit), not the bin's left edge alone: "most time near 0" read as
       # a point estimate when what is drawn is a band. The share is of TIME - bins are duration-weighted
@@ -284,7 +317,13 @@ plotTimeAtDepth <- function(data,
   if (length(v) < 2L) return(list(time = rep(0, nb), pct = rep(0, nb)))
   o <- order(tnum); v <- v[o]; tnum <- tnum[o]
   gaps <- diff(tnum); modal <- stats::median(gaps[gaps > 0]); if (!is.finite(modal) || modal <= 0) modal <- 1
-  w <- c(gaps, modal); w[!is.finite(w) | w <= 0 | w > gap.factor * modal] <- modal
+  # Repeated timestamps (e.g. a 20 Hz record whose stamps were rounded to whole seconds) represent NO
+  # elapsed time. Crediting each the modal interval, as the blanket replacement below used to, inflated
+  # the total by the duplication factor - a 1-hour record reported as 20 hours. Only OVERLONG gaps are
+  # capped at the modal interval; non-positive ones are worth nothing.
+  w <- c(gaps, modal)
+  w[!is.finite(w) | w > gap.factor * modal] <- modal
+  w[w <= 0] <- 0
   idx <- findInterval(v, breaks, rightmost.closed = TRUE, all.inside = TRUE)
   tsum <- as.numeric(tapply(w, factor(idx, levels = seq_len(nb)), sum)); tsum[is.na(tsum)] <- 0
   list(time = tsum, pct = if (sum(w) > 0) 100 * tsum / sum(w) else rep(0, nb))
@@ -331,7 +370,8 @@ plotTimeAtDepth <- function(data,
 #' @keywords internal
 #' @noRd
 .tadGroupLevels <- function(loaded, order.by, variable) {
-  g <- vapply(loaded, function(d) d$group %||% NA_character_, character(1)); g <- g[!is.na(g)]
+  g <- vapply(loaded, function(d) d$group %||% NA_character_, character(1))
+  g <- g[!is.na(g) & nzchar(trimws(g))]        # a blank cell is not a group; gcols[[""]] was a hard error
   lv <- unique(g)
   if (order.by == "median") {
     # a deployment that lacks the ordering variable contributes nothing here; unlist() on all-NULL used
@@ -354,6 +394,48 @@ plotTimeAtDepth <- function(data,
   co <- .tadCoords(x, coordinates, id)
   if (is.null(co)) { if (lvl >= 1L) cli::cli_alert_warning("{.val {id}}: no coordinates for diel split; skipped."); return(NULL) }
   as.character(getDielPhase(x[[datetime.col]], matrix(co, ncol = 2), phases = 2))
+}
+
+#' Validate the shape of `coordinates` up front.
+#'
+#' Every malformed shape used to fail silently: `.tadCoords()` simply fell through to NULL, so the diel
+#' split was skipped for every deployment and the run ended in a blank figure (or, for a two-column
+#' data.frame, a bare "undefined columns selected" from deep inside the resolver).
+#' @keywords internal
+#' @noRd
+.tadCheckCoordinates <- function(coordinates) {
+  bad <- function(...) .abort(c(..., "i" = "Give {.arg coordinates} as {.code c(lon, lat)}, a named {.code id -> c(lon, lat)} list, or {.code data.frame(id, lon, lat)}."))
+  if (is.data.frame(coordinates)) {
+    if (ncol(coordinates) < 3L) bad("{.arg coordinates} data.frame needs three columns (id, lon, lat), not {ncol(coordinates)}.")
+    .tadCheckLonLat(coordinates[[2]], coordinates[[3]])
+    return(invisible(TRUE))
+  }
+  if (is.list(coordinates)) {
+    if (is.null(names(coordinates))) bad("{.arg coordinates} list must be named by deployment id.")
+    for (nm in names(coordinates)) {
+      z <- suppressWarnings(as.numeric(coordinates[[nm]]))
+      if (length(z) != 2L || anyNA(z)) bad("{.arg coordinates[[{nm}]]} must be two finite numbers {.code c(lon, lat)}.")
+      .tadCheckLonLat(z[1], z[2])
+    }
+    return(invisible(TRUE))
+  }
+  if (!is.numeric(coordinates) || length(coordinates) != 2L || anyNA(coordinates))
+    bad("{.arg coordinates} must be two finite numbers {.code c(lon, lat)}.")
+  .tadCheckLonLat(coordinates[1], coordinates[2])
+  invisible(TRUE)
+}
+
+#' Longitude/latitude range check (a swapped pair is the usual cause of an out-of-range latitude).
+#' @keywords internal
+#' @noRd
+.tadCheckLonLat <- function(lon, lat) {
+  lon <- suppressWarnings(as.numeric(lon)); lat <- suppressWarnings(as.numeric(lat))
+  ok <- is.finite(lon) & is.finite(lat)
+  if (any(!ok)) .abort("{.arg coordinates} contains non-finite longitude/latitude values.")
+  if (any(abs(lat) > 90)) .abort(c("{.arg coordinates} latitude out of range: {.val {lat[abs(lat) > 90][1]}} (must be -90 to 90).",
+                                   "i" = "Longitude and latitude may be the wrong way round."))
+  if (any(abs(lon) > 180)) .abort("{.arg coordinates} longitude out of range: {.val {lon[abs(lon) > 180][1]}} (must be -180 to 180).")
+  invisible(TRUE)
 }
 
 #' Resolve a single representative c(lon, lat) for a deployment (data cols -> arg -> metadata).

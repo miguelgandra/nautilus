@@ -288,3 +288,69 @@ test_that("the caller's own tables are not modified in place", {
   expect_no_error(suppressWarnings(suppressMessages(
     plotTimeAtDepth(tags, plot = FALSE, plot.file = pf, verbose = FALSE))))
 })
+
+test_that("malformed arguments abort by name rather than deep inside base graphics", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  one <- function(id = "A") data.frame(ID = id,
+                                       datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(300) * 60,
+                                       depth = abs(stats::rnorm(300, 50, 20)), stringsAsFactors = FALSE)
+  quiet <- function(e) suppressWarnings(suppressMessages(e))
+  co <- function(x) quiet(plotTimeAtDepth(list(A = one()), diel = TRUE, coordinates = x,
+                                          plot = FALSE, plot.file = pf, verbose = FALSE))
+
+  # every malformed `coordinates` shape used to fall through .tadCoords() to NULL, silently skipping the
+  # diel split for every deployment; a 2-column data.frame died on "undefined columns selected"
+  expect_error(co(-25.5), "two finite numbers")
+  expect_error(co(c(-25.5, 37.7, 1)), "two finite numbers")
+  expect_error(co(c(NA, NA)), "two finite numbers")
+  expect_error(co("abc"), "two finite numbers")
+  expect_error(co(data.frame(id = "A", lon = 1)), "needs three columns")
+  expect_error(co(c(400, 200)), "latitude out of range")          # lon/lat the wrong way round
+  expect_silent(co(c(-25.5, 37.7)))                               # a valid pair still works
+
+  # cex = 0 and bin.width = 0 both passed an inclusive `min = 0` and then failed opaquely (or silently
+  # switched to a different bin scheme)
+  expect_error(quiet(plotTimeAtDepth(list(A = one()), theme = list(cex = 0),
+                                     plot = FALSE, plot.file = pf, verbose = FALSE)), "greater than zero")
+  expect_error(quiet(plotTimeAtDepth(list(A = one()), bin.width = 0,
+                                     plot = FALSE, plot.file = pf, verbose = FALSE)), "greater than zero")
+
+  # a blank grouping cell is not a group level: gcols[[""]] was "subscript out of bounds"
+  g <- list(A = one("A"), B = one("B"), C = one("C"))
+  expect_no_error(quiet(plotTimeAtDepth(g, group = c(A = "", B = "", C = "b"),
+                                        plot = FALSE, plot.file = pf, verbose = FALSE)))
+  # a grouping column nobody matches used to pool silently, after the header announced "grouped by ..."
+  expect_warning(suppressMessages(plotTimeAtDepth(g, group = "nosuchcol", plot = FALSE, plot.file = pf,
+                                                  verbose = FALSE)),
+                 "No deployment has a usable")
+})
+
+test_that("diel without resolvable coordinates falls back instead of returning NULL", {
+  # every phase subset was empty, so `binned` stayed empty: the summary block died on
+  # do.call(cbind, NULL) ("second argument must be a list"), or - when quiet - the function returned
+  # NULL and wrote a blank page, against the documented data-frame return
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  nocoord <- lapply(c("A", "B"), function(id)
+    data.frame(ID = id, datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(300) * 60,
+               depth = abs(stats::rnorm(300, 50, 20)), stringsAsFactors = FALSE))
+  names(nocoord) <- c("A", "B")
+  expect_warning(s <- suppressMessages(plotTimeAtDepth(nocoord, diel = TRUE, plot = FALSE,
+                                                       plot.file = pf, verbose = FALSE)),
+                 "needs coordinates")
+  expect_s3_class(s, "data.frame")
+  expect_gt(nrow(s), 0)
+  expect_equal(unique(s$phase), "all")                            # fell back to the pooled profile
+})
+
+test_that("repeated timestamps are not each credited a full sampling interval", {
+  # a 20 Hz record whose stamps were rounded to whole seconds reported 20 h for 1 h of data: every
+  # zero-length gap was replaced by the modal interval, so time was counted 20 times over
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  n <- 20 * 3600
+  tt <- as.POSIXct("2023-01-01", tz = "UTC") + rep(seq_len(3600), each = 20)
+  d <- data.frame(ID = "A", datetime = tt, depth = abs(stats::rnorm(n, 50, 20)), stringsAsFactors = FALSE)
+  s <- suppressWarnings(suppressMessages(plotTimeAtDepth(list(A = d), plot = FALSE, plot.file = pf,
+                                                         verbose = FALSE)))
+  expect_equal(sum(s$hours), 1, tolerance = 0.01)
+  expect_equal(sum(s$pct), 100, tolerance = 1e-6)
+})
