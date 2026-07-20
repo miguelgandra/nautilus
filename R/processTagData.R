@@ -1452,11 +1452,6 @@ processTagData <- function(data,
                                 orientation_smoothing   = orientation.smoothing %||% NA_real_,
                                 speed_smoothing         = speed.smoothing %||% NA_real_,
                                 depth_smoothing         = depth.smoothing %||% NA_real_,
-                                # what that window was actually applied TO. It conditions the series the
-                                # vertical velocity is differentiated from and never reaches the stored
-                                # depth channel, so a consumer must not charge its attenuation against a
-                                # dive measured off this record - see diveMetrics()'s depth_attenuation.
-                                depth_channel_smoothed  = FALSE,
                                 pitch_offset_deg        = pitch_offset_deg %||% NA_real_,
                                 pitch_offset_r2         = pitch_offset_r2 %||% NA_real_,
                                 roll_offset_deg         = roll_offset_deg %||% NA_real_,

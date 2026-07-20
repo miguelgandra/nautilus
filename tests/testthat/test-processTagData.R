@@ -154,19 +154,24 @@ test_that("downsampling to 1 Hz reduces rows and keeps pitch-offset provenance (
   expect_false(is.na(.proc_rec(out)$pitch_offset_deg))
 })
 
-test_that("the recorded depth_smoothing window is flagged as NOT applied to the stored depth channel", {
-  # The window conditions only the series vertical velocity is differentiated from; stored `depth` is
-  # left unsmoothed. diveMetrics() reads this flag to decide whether to charge depth_attenuation, so
-  # without it every dive on a current record is charged a bias it never suffered - a 12 s dive on the
-  # shipped 10 s default came back at 0.583. Deleting the flag leaves the dive tests green (they build
-  # their provenance by hand), which is why the PRODUCING side needs pinning here.
+test_that("downsampling records BOTH sampling rates, which is what identifies the boxcar on depth", {
+  # downsample.to mean-aggregates every numeric channel, depth included, so the bin IS a boxcar on the
+  # stored depth channel. detectDives()/diveMetrics() derive the duration floor and depth_attenuation
+  # from these two rates: a processed rate BELOW the original is the only evidence aggregation ran
+  # (processTagData skips downsampling when the target meets or exceeds the native rate).
   out <- .run(list(A01 = .mk_diving(secs = 120, rate = 10)),
+              orientation.algorithm = "tilt_compass", downsample.to = 1)$A01
+  sen <- nautilus:::.getMeta(out)$sensors
+  expect_equal(sen$sampling_hz_original, 10)
+  expect_equal(sen$sampling_hz_processed, 1)
+  expect_equal(nautilus:::.diveDepthBin(nautilus:::.getMeta(out)), 1)
+
+  # and with no downsampling there is no bin to charge
+  raw <- .run(list(A01 = .mk_diving(secs = 60, rate = 10)),
               orientation.algorithm = "tilt_compass", downsample.to = NULL)$A01
-  rec <- .proc_rec(out)
-  expect_false(is.null(rec$depth_channel_smoothed))
-  expect_identical(rec$depth_channel_smoothed, FALSE)
-  expect_false(is.na(rec$depth_smoothing))          # the window IS still recorded, just not as applied
+  expect_true(is.na(nautilus:::.diveDepthBin(nautilus:::.getMeta(raw))))
 })
+
 
 test_that("pitch-offset guard: applies a strong Kawatsu fit, skips a weak one (PT12)", {
   on <- .run(list(A01 = .mk_diving(mount = 15)), orientation.algorithm = "tilt_compass", downsample.to = NULL)$A01

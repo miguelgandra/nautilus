@@ -107,28 +107,30 @@ is printed at all, but printed only at \code{verbose = 2} / \code{"detailed"} (t
 \code{verbose = TRUE} / \code{1} the check runs silently. On tables that small, or at that verbosity, read
 \code{duration_s}, \code{depth_coverage} and \code{censoring} yourself.
 
-\strong{\code{depth_attenuation} bounds what a smoother could have taken off this dive.} A centred smoother
-of length L records a triangular excursion of duration T at a fraction of its true amplitude that
-depends on which is longer: \verb{1 - L / (2T)} once the dive outlasts the window, and \code{T / (2L)} while it
-does not. The two meet at \code{T = L}, where both give 0.5. Both branches matter, and only using the first
-hides the regime that hurts: continued below \code{T = L} it goes negative, so a short dive was reported as
-0 - flattened out of the record entirely - when a moving average never does that (at \verb{L = 2T} the true
-retention is 0.25). Worked at the shipped 10 s window: a 3 m / 8 s dive is recorded as 1.2 m and a
-3 m / 20 s dive as 2.25 m. This column is that retention, evaluated with the dive's own \code{duration_s}
-and the \code{depth_smoothing} window \code{\link{processTagData}} recorded for the record. Which rows it
-actually charges depends on when the record was processed. Current
-nautilus leaves the stored \code{depth} channel unsmoothed - the window there conditions only the series
-vertical velocity is differentiated from - and records that it did so, so every dive measured off a
-current record reads exactly 1: nothing attenuated the depth these metrics were taken from. LEGACY
-records, written before nautilus stopped smoothing the stored depth channel, carry no such flag; there
-the window did reach \code{depth}, and those rows are charged the real retention, which sits just below 1
-for all but the shortest dives (at the shipped 10 s window a 46 s dive retains 0.89). It is likewise 1
-whenever no smoothing window was recorded at all, which means "nothing known to attenuate" rather than
-"measured as unattenuated". Reading it: 1 means the dive is long enough that the window costs it
-nothing; 0.6 means up to 40\% of \code{amplitude_m}, \code{prominence_m} and \code{max_depth_m} may be missing; 0.2
-means the window is five times the dive and four fifths of its amplitude may be gone. Act on a low value by excluding those rows from any amplitude comparison, or by
-re-processing with \code{smoothingControl(depth = )} lowered and detecting again; nothing is corrected here,
-because the retention formula holds for a triangle and a real dive is not one.
+\strong{\code{depth_attenuation} bounds what binning could have taken off this dive.} The only filter that
+reaches the stored \code{depth} channel is \code{\link{processTagData}}'s \code{downsample.to}, which
+mean-aggregates every numeric channel into bins - and bin-averaging is a boxcar. (\code{smoothingControl(depth = )}
+does NOT reach it: that window conditions only the series vertical velocity is differentiated from.)
+The bin width is read from the two recorded sampling rates, and only a PROCESSED rate below the
+ORIGINAL counts as evidence that aggregation ran, because downsampling is skipped when the requested
+rate meets or exceeds the native one. No downsampling, or no sampling provenance, reads exactly 1.
+
+Bin-averaging is phase-dependent in a way a centred filter is not: a dive whose apex falls mid-bin
+survives better than one whose apex lands on a boundary, and the gap between them is real. This column
+reports the BOUND, not the lucky case. For a triangular excursion of duration T under bins of width L
+the worst-case peak retention is \code{1 - L/T} once \code{T >= 2L}, and \code{T/(4L)} below that, where the bin holds
+only half the triangle; the two meet at \code{T = 2L}, both giving 0.5. Worked at a 1 Hz processed rate:
+a 4 s dive keeps at least 0.75 of its amplitude, an 8 s dive 0.875, a 42 s dive 0.988. At a 20 Hz
+processed rate the same dives keep 0.9875, 0.994 and 0.9988 - which is the point of the column: it
+scales with the choice you made, so it says whether YOUR downsampling mattered rather than asserting
+that downsampling in general does.
+
+Reading it: 1 means nothing binned this dive; 0.6 means up to 40\% of \code{amplitude_m}, \code{prominence_m} and
+\code{max_depth_m} may be missing. Act on a low value by excluding those rows from any amplitude comparison,
+or by re-processing at a finer \code{downsample.to} and detecting again. Nothing is corrected here, because
+the retention holds for a triangle and a real dive is not one - a flat-bottomed dive loses less, so
+treat this as a bound on the loss and not an estimate of it. The same bin width sets the derived
+\code{min.duration} floor in \code{\link{detectDives}}, so the two agree by construction.
 
 \strong{Rates are reported as \verb{_q90}, not \verb{_max}.} The maximum of a smoothed series is an artefact of
 the smoothing window, and its magnitude depends on dive duration, so maxima are not comparable

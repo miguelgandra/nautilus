@@ -244,15 +244,34 @@
   # zero-offset provenance: the honest answer to "how far from zero is this record's zero"
   pr <- Filter(function(r) identical(r$step, "depth_drift"), .getMeta(x)$processing)
   zoc <- if (length(pr)) pr[[length(pr)]] else NULL
-  pt <- Filter(function(r) identical(r$step, "processTagData"), .getMeta(x)$processing)
-  smooth_s <- if (length(pt)) suppressWarnings(as.numeric(pt[[length(pt)]]$depth_smoothing %||% NA)) else NA_real_
+  bin_s <- .diveDepthBin(.getMeta(x))
 
   utils::modifyList(out, list(
     usable = TRUE, tnum = NULL, dt = dt, noise = noise,
     depth_range = range(fin), depth_q = stats::quantile(fin, c(.5, .75, .9, .95), names = FALSE),
     zoc_status = as.character(zoc$status %||% NA_character_),
     zoc_residual = suppressWarnings(as.numeric(zoc$outcome$residual_m %||% NA_real_)),
-    depth_smoothing = if (is.finite(smooth_s)) smooth_s else NA_real_))
+    depth_bin = bin_s))
+}
+
+#' The boxcar that actually reached the STORED depth channel, in seconds (NA when none did).
+#'
+#' `smoothingControl(depth = )` does NOT: since nautilus stopped overwriting depth with the smoothed
+#' series it conditions only the series vertical velocity is differentiated from. What DOES reach depth
+#' is `processTagData(downsample.to = )`, which mean-aggregates every numeric channel into bins - and
+#' bin-averaging IS a boxcar. Deriving either the duration floor or the attenuation from the smoothing
+#' window therefore charged a filter that was never applied, at ten to two hundred times its real width.
+#'
+#' Read from the two sampling rates rather than from `downsample.to`, because downsampling is SKIPPED
+#' when the target meets or exceeds the native rate - the requested value is not evidence that any
+#' aggregation happened, whereas a processed rate below the original is.
+#' @keywords internal
+#' @noRd
+.diveDepthBin <- function(meta) {
+  s <- meta$sensors
+  hz_in  <- suppressWarnings(as.numeric(s$sampling_hz_original  %||% NA))
+  hz_out <- suppressWarnings(as.numeric(s$sampling_hz_processed %||% NA))
+  if (is.finite(hz_in) && is.finite(hz_out) && hz_out > 0 && hz_out < hz_in) 1 / hz_out else NA_real_
 }
 
 #' Derive the settings the user did not supply, ONCE across the cohort, and teach the derivation.
@@ -262,7 +281,7 @@
   resid <- vapply(scans, function(z) z$zoc_residual %||% NA_real_, numeric(1))
   noise <- vapply(scans, function(z) z$noise %||% NA_real_, numeric(1))
   dts   <- vapply(scans, function(z) z$dt %||% NA_real_, numeric(1))
-  smo   <- vapply(scans, function(z) z$depth_smoothing %||% NA_real_, numeric(1))
+  bins  <- vapply(scans, function(z) z$depth_bin %||% NA_real_, numeric(1))
   zst   <- vapply(scans, function(z) z$zoc_status %||% NA_character_, character(1))
 
   r_max <- suppressWarnings(max(resid, na.rm = TRUE)); if (!is.finite(r_max)) r_max <- NA_real_
@@ -280,9 +299,9 @@
   if (band >= thr) band <- thr / 2                       # keep hysteresis meaningful after derivation
   prom <- control$min.prominence %||% (thr - band)
 
-  smo_max <- suppressWarnings(max(smo, na.rm = TRUE)); if (!is.finite(smo_max)) smo_max <- 0
+  bin_max <- suppressWarnings(max(bins, na.rm = TRUE)); if (!is.finite(bin_max)) bin_max <- 0
   dur_src <- if (is.null(control$min.duration)) "derived" else "user"
-  dur <- control$min.duration %||% max(4 * smo_max, 4 * dt_med, 10)
+  dur <- control$min.duration %||% max(4 * bin_max, 4 * dt_med, 10)
 
   gap <- control$max.gap %||% max(60, 10 * dt_med)
   wig <- control$wiggle.amplitude %||% max(0.5, 3 * (if (is.na(n_med)) 0.1 else n_med))
@@ -323,9 +342,9 @@
     .log_subdetail(lvl, "the ANIMAL treats as a dive. Set diveControl(depth.threshold = ) from your study")
     .log_subdetail(lvl, "system, and choose it BEFORE looking at your response variable.")
   }
-  if (lvl >= 1L && smo_max > 0) {
-    .log_detail(lvl, sprintf("depth_smoothing %.0f s -> min duration floor %.0f s; excursions shorter than that are attenuated",
-                             smo_max, dur))
+  if (lvl >= 1L && bin_max > 0) {
+    .log_detail(lvl, sprintf("depth binned at %s by downsampling -> min duration floor %.0f s; shorter excursions are attenuated",
+                             if (bin_max < 1) sprintf("%.3g s", bin_max) else .formatDurationShort(bin_max), dur))
   }
 
   list(reference = ref, reference_note = ref_note,
@@ -610,14 +629,7 @@
   # provenance: the settings that produced these dives travel with every row
   pr <- Filter(function(r) identical(r$step, "detectDives"), .getMeta(x)$processing)
   p <- if (length(pr)) pr[[length(pr)]] else list()
-  smo <- Filter(function(r) identical(r$step, "processTagData"), .getMeta(x)$processing)
-  smooth_s <- if (length(smo)) suppressWarnings(as.numeric(smo[[length(smo)]]$depth_smoothing %||% NA)) else NA_real_
-  # A window is only an attenuation if it reached the STORED depth channel. Current records say plainly
-  # that it did not (processTagData conditions only the velocity derivative), and charging them anyway
-  # reported a bias no dive in them ever suffered - a 12 s dive on the shipped 10 s default came back at
-  # 0.583. Records written before that change carry no such field, and for those the window did reach
-  # depth, so the absent field must mean "smoothed": the legacy case is the one the number exists for.
-  if (length(smo) && isFALSE(smo[[length(smo)]]$depth_channel_smoothed %||% TRUE)) smooth_s <- NA_real_
+  bin_s <- .diveDepthBin(.getMeta(x))
 
   # the gap rule must be the one detectDives SPLIT on, not a fresh guess, or the metrics can report a
   # dive as uninterrupted that the detector had already cut in two
@@ -665,14 +677,14 @@
 
     cen <- .diveCensoring(i0, i1, tnum, dark, max_gap, n_total)
 
-    # Retention of a triangular excursion under a centred boxcar of length L, BOTH regimes. Above the
-    # window (T >= L) it is 1 - L/(2T); below it the triangle sits entirely inside the window and the
-    # retention is T/(2L), which the first expression does not describe - continued past T = L it goes
-    # negative, and clamping that to 0 said a short dive was flattened out of the record entirely. A
-    # moving average never does that: at L = 2T the true retention is 0.25, not 0. The two branches meet
-    # at T = L (both give 0.5), so the column is continuous.
-    att <- if (is.finite(smooth_s) && smooth_s > 0 && is.finite(dur) && dur > 0) {
-             max(0, min(1, if (dur >= smooth_s) 1 - smooth_s / (2 * dur) else dur / (2 * smooth_s)))
+    # Worst-case peak retention of a triangular excursion of duration T under bin-averaging at width L.
+    # Bin-averaging is phase-dependent in a way a centred filter is not: the apex may fall mid-bin (best)
+    # or on a boundary (worst), and the spread between them is real, so the BOUND is reported rather than
+    # the lucky case. With the apex on a boundary the bin is filled by the flank once T >= 2L, giving
+    # 1 - L/T; below that the bin holds only half the triangle (area T/4), giving T/(4L). They meet at
+    # T = 2L, both 0.5. Verified against a direct numerical convolution swept over bin phase.
+    att <- if (is.finite(bin_s) && bin_s > 0 && is.finite(dur) && dur > 0) {
+             max(0, min(1, if (dur >= 2 * bin_s) 1 - bin_s / dur else dur / (4 * bin_s)))
            } else 1
 
     row <- data.frame(

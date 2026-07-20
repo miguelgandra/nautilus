@@ -77,31 +77,16 @@ series' noise - and prints its derivation. That is a property of the instrument 
 not of the animal. Set it from your study system, and choose it before looking at your response
 variable.
 
-\strong{Smoothing limits what is measurable.} A centred smoother attenuates any excursion shorter
-than its window: at a 10 s window a 3 m / 8 s dive is recorded as 1.2 m. \code{min.duration} therefore
-defaults to a floor derived from the \code{depth_smoothing} used by \code{\link{processTagData}}, and the
-function says so. Records processed before nautilus stopped smoothing the stored depth channel carry
-this bias; re-process with \code{smoothingControl(depth = ...)} lowered to reach shorter dives.
-
-\strong{An interruption in the record ends a dive; it is never interpolated across.} Two events count
-as an interruption, and \code{max.gap} (seconds) is the longest of either a dive may span: a jump in time
-between consecutive samples, and a run of samples whose depth is non-finite. They are the same event -
-the record stopped saying where the animal was - but only the first is visible in the timestamps.
-Deployment PIN_03's depth channel went dark for 8.72 h while rows kept arriving at 20 Hz, so the
-sampling interval stayed perfectly regular (median dt == max dt == 0.050 s) and there was no time gap
-to find; the dive stayed open across the whole dark stretch and was reported as one 8.9 h excursion to
-37 m, of which 97.6\% of samples carried no depth at all. Counting the dark run as an interruption
-brings that deployment's longest dive down to 1.14 h. The dive is split there and both parts marked
-censored, because both alternatives are worse: interpolating invents an excursion shape that was never
-measured, and dropping the interrupted dive biases the duration distribution against exactly the long
-dives that interruptions tend to fall inside. \code{\link{diveMetrics}} reports what each dive lost.
-
-\strong{Long dives are flagged, never split.} No maximum duration is imposed. For an air-breather a
-multi-hour dive would be impossible, but this package also serves fish, sharks and rays, for which a
-multi-hour excursion may be entirely real - a duration cap would quietly turn one true observation
-into two false ones, and it would do so most often in the taxa the cap was never designed for.
-\code{\link{diveMetrics}} instead reports dives longer than the median + 5 x MAD (and at least 2 h)
-with their \code{depth_coverage} alongside, which is what separates a genuine foray from a sensor dropout.
+\strong{Downsampling limits what is measurable.} \code{smoothingControl(depth = )} does not touch the
+stored depth channel - it conditions only the series vertical velocity is differentiated from - but
+\code{processTagData(downsample.to = )} does, because mean-aggregating into bins IS a boxcar, and a boxcar
+attenuates any excursion short relative to its width. \code{min.duration} therefore defaults to a floor
+derived from that bin, not from the smoothing window, and the function prints which. Deriving it from
+the smoothing window instead (as it first did) set the floor at four times a filter that never ran:
+on a real 100 Hz record downsampled to 20 Hz the floor came out at 40 s rather than 10 s, and every
+excursion between the two was discarded for an attenuation it had not suffered. \code{\link{diveMetrics}}
+reports the surviving bound per dive as \code{depth_attenuation}. To reach shorter dives, re-process at a
+finer \code{downsample.to}.
 
 \strong{Zero dives is a result, not a failure.} It is reported with the threshold that produced it,
 the observed depth range and the reference used. The threshold is never relaxed until dives appear.

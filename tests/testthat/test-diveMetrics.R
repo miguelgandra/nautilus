@@ -3,9 +3,10 @@
 # from landing on the opposite side of the compass.
 
 # `proc` is an optional named list appended as a processTagData provenance record, which is where
-# depth_attenuation reads its smoothing window and the flag saying what that window was applied to.
-# Left NULL the tag carries no processTagData step at all, which is its own case.
-.dmTag <- function(id, depth, tnum = NULL, extra = NULL, proc = NULL) {
+# depth_attenuation reads the two sampling rates: the boxcar that reaches stored depth is the
+# downsampling bin, and aggregation happened only when the processed rate is below the original.
+# `hz` = c(original, processed); left NULL the tag carries no rates, which is its own case.
+.dmTag <- function(id, depth, tnum = NULL, extra = NULL, proc = NULL, hz = NULL) {
   n <- length(depth)
   if (is.null(tnum)) tnum <- seq_len(n) - 1                       # 1 Hz unless told otherwise
   d <- data.table::data.table(ID = id,
@@ -13,6 +14,7 @@
                               depth = as.numeric(depth))
   if (!is.null(extra)) for (nm in names(extra)) d[[nm]] <- extra[[nm]]
   m <- nautilus:::.newNautilusMeta(); m$id <- id
+  if (!is.null(hz)) { m$sensors$sampling_hz_original <- hz[1]; m$sensors$sampling_hz_processed <- hz[2] }
   m <- nautilus:::.appendProcessing(m, "depth_drift", status = "applied",
                                     outcome = list(residual_m = 0.1))
   if (!is.null(proc))
@@ -445,55 +447,43 @@ test_that("the long-dive flag is gated on 5 dives, so a handful of rows sets no 
 # ---------------------------------------------------------------------------
 # depth_attenuation: what a smoothing window could have taken off this dive
 # ---------------------------------------------------------------------------
-test_that("depth_attenuation is charged only when the window reached the STORED depth channel", {
-  # A 12 s dive against a recorded 10 s window is where the difference is largest: the retention
-  # formula would charge 1 - 10 / (2 * 12) = 0.583, i.e. it would report that up to 42% of this dive's
-  # amplitude may be missing. Whether that is true depends entirely on what the window was applied to,
-  # so the two records below differ in the provenance flag and in nothing else.
-  brief <- c(rep(0, 60), rep(20, 13), rep(0, 60))
+test_that("depth_attenuation is charged from the downsampling bin, the only boxcar that reaches depth", {
+  # a 12-sample excursion at 1 Hz, so duration_s == 11; .dmSquare is the 599 s one defined above
+  brief <- c(rep(0, 300), rep(20, 12), rep(0, 300))
+  # (a) no downsampling (processed rate == original): nothing binned depth, so nothing attenuated it
+  none <- .dmMetrics(.dmDetect(.dmTag("NODOWN", brief, hz = c(20, 20)))[[1]])
+  expect_equal(none$duration_s, 11)
+  expect_equal(none$depth_attenuation, 1)
 
-  # (a) a CURRENT record states that the window never reached `depth` - it conditioned only the series
-  # the vertical velocity was differentiated from - so nothing attenuated the depth measured here
-  cur <- .dmMetrics(.dmDetect(.dmTag("CURRENT", brief,
-                                     proc = list(depth_smoothing = 10,
-                                                 depth_channel_smoothed = FALSE)))[[1]])
-  expect_equal(nrow(cur), 1L)
-  expect_equal(cur$duration_s, 12)                    # short enough that a charge would be visible
-  expect_equal(cur$depth_attenuation, 1)
+  # (b) 20 Hz -> 1 Hz: depth was mean-aggregated into 1 s bins, so an 11 s dive IS attenuated.
+  # Worst-case bound with the apex on a bin boundary, T >= 2L: 1 - L/T = 1 - 1/11.
+  bin1 <- .dmMetrics(.dmDetect(.dmTag("DOWN1HZ", brief, hz = c(20, 1)))[[1]])
+  expect_equal(bin1$depth_attenuation, 1 - 1 / 11, tolerance = 1e-12)
+  expect_lt(bin1$depth_attenuation, none$depth_attenuation)
 
-  # (b) a LEGACY record carries the window but no such flag, because it predates the change. There the
-  # window did reach `depth`, and the row is charged the real retention.
-  leg <- .dmMetrics(.dmDetect(.dmTag("LEGACY", brief, proc = list(depth_smoothing = 10)))[[1]])
-  expect_equal(leg$duration_s, 12)
-  expect_equal(leg$depth_attenuation, 1 - 10 / (2 * 12), tolerance = 1e-12)
-  expect_lt(leg$depth_attenuation, cur$depth_attenuation)
-
-  # the same legacy window on a 599 s dive costs almost nothing - the charge scales with duration, so
-  # it is the formula that is pinned here and not a constant
-  lng <- .dmMetrics(.dmDetect(.dmTag("LEGACYLONG", .dmSquare,
-                                     proc = list(depth_smoothing = 10)))[[1]])
+  # the SAME bin costs a long dive almost nothing - it is the formula that is pinned, not a constant
+  lng <- .dmMetrics(.dmDetect(.dmTag("DOWNLONG", .dmSquare, hz = c(20, 1)))[[1]])
   expect_equal(lng$duration_s, 599)
-  expect_equal(lng$depth_attenuation, 1 - 10 / (2 * 599), tolerance = 1e-12)
+  expect_equal(lng$depth_attenuation, 1 - 1 / 599, tolerance = 1e-12)
 
-  # BELOW the window the retention is T / (2L), not the negative 1 - L/(2T) would give (1 - 40/24) and
-  # not the 0 that clamping it produced. A 12 s dive under a 40 s window keeps 12/80 = 0.15 of its
-  # amplitude - reduced, but nowhere near erased, which is what the clamp used to claim.
-  wide <- .dmMetrics(.dmDetect(.dmTag("LEGACYWIDE", brief, proc = list(depth_smoothing = 40)))[[1]])
-  expect_equal(wide$duration_s, 12)
-  expect_equal(wide$depth_attenuation, 12 / (2 * 40), tolerance = 1e-12)
+  # (c) below T = 2L the bound switches branch to T/(4L): a bin wider than half the dive holds only
+  # half the triangle. At 11 s under a 20 s bin that is 11/80, NOT the negative 1 - L/T would give.
+  wide <- .dmMetrics(.dmDetect(.dmTag("DOWNWIDE", brief, hz = c(20, 0.05)))[[1]])
+  expect_equal(wide$depth_attenuation, 11 / (4 * 20), tolerance = 1e-12)
   expect_gt(wide$depth_attenuation, 0)
 
-  # the two branches meet at T == L: both give exactly 0.5, so the column is continuous there
-  meet <- .dmMetrics(.dmDetect(.dmTag("LEGACYMEET", brief, proc = list(depth_smoothing = 12)))[[1]])
-  expect_equal(meet$depth_attenuation, 0.5, tolerance = 1e-12)
+  # the two branches meet at T == 2L, both 0.5, so the column is continuous across the switch
+  meet <- .dmMetrics(.dmDetect(.dmTag("DOWNMEET", brief, hz = c(20, 2 / 11)))[[1]])
+  expect_equal(meet$depth_attenuation, 0.5, tolerance = 1e-9)
 
-  # (c) no processTagData record at all: "nothing known to attenuate", which reads as 1
+  # (d) an upsample target is SKIPPED by processTagData, so a processed rate at or above the original
+  # is not evidence of aggregation and must not be charged
+  up <- .dmMetrics(.dmDetect(.dmTag("NOAGG", brief, hz = c(1, 20)))[[1]])
+  expect_equal(up$depth_attenuation, 1)
+
+  # (e) no sampling provenance at all: "nothing known to attenuate", which reads as 1
   non <- .dmMetrics(.dmDetect(.dmTag("NOPROV", brief))[[1]])
   expect_equal(non$depth_attenuation, 1)
-  # ...and so does a record whose processTagData step logged no window
-  nowin <- .dmMetrics(.dmDetect(.dmTag("NOWINDOW", brief,
-                                       proc = list(static_window = 5)))[[1]])
-  expect_equal(nowin$depth_attenuation, 1)
 })
 
 
