@@ -102,3 +102,53 @@ test_that("splitting an aggregated table on a factor id does not invent empty de
   agg2 <- agg; agg2$ID <- factor(as.character(agg2$ID))
   expect_equal(nautilus:::.resolveInput(agg2, "ID")$n, 2L)
 })
+
+test_that("plotDistributions rejects a metric nobody carries and a colour that is not a colour", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  n <- 200
+  a <- data.frame(ID = "A", datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(n) * 3600,
+                  vedba = abs(stats::rnorm(n, .5, .1)), odba = abs(stats::rnorm(n, .3, .1)),
+                  stringsAsFactors = FALSE)
+
+  # a mistyped metric used to be drawn as a fully-formed EMPTY panel - title, axes, grid, deployment
+  # labels, a 0-1 fallback x range - and reported as successfully plotted
+  expect_error(suppressMessages(plotDistributions(list(A = a), metrics = "vedbaa", plot = FALSE,
+                                                  plot.file = pf, verbose = FALSE)),
+               "No requested metric is present")
+  expect_warning(
+    s <- suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odbaa"), plot = FALSE,
+                                            plot.file = pf, verbose = FALSE)),
+    "No data for")
+  expect_equal(unique(s$metric), "vedba")            # the usable metric is still plotted, alone
+
+  # dropping a metric must not leave order.metric pointing at it
+  expect_warning(
+    s2 <- suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odbaa"),
+                                             order.metric = "odbaa", order.by = "median",
+                                             plot = FALSE, plot.file = pf, verbose = FALSE)),
+    "No data for")
+  expect_equal(unique(s2$metric), "vedba")
+
+  # `colors` was type-checked but never value-checked, so a typo reached grDevices mid-render as a bare
+  # "invalid color name" naming neither the argument nor the offending entry
+  expect_error(suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odba"),
+                                                  colors = c("steelblue", "notacolour"),
+                                                  plot = FALSE, plot.file = pf, verbose = FALSE)),
+               "not a colour")
+  expect_no_error(suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odba"),
+                                                     colors = c("steelblue", "#4C72B0"),
+                                                     plot = FALSE, plot.file = pf, verbose = FALSE)))
+})
+
+test_that("plotTracks colours by a factor channel without erroring", {
+  # .asPlotNumeric now covers the colour channel too; this was the one case left uncertain after the
+  # coercion sweep, so it is pinned rather than assumed
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  n <- 200
+  d <- data.frame(ID = "A", datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(n) * 3600,
+                  pseudo_lon = -25 + seq_len(n) * 0.003, pseudo_lat = 17 + seq_len(n) * 0.001,
+                  pseudo_depth = factor(round(abs(stats::rnorm(n, 50, 20)))),
+                  speed_dr = abs(stats::rnorm(n, 1, .3)), stringsAsFactors = FALSE)
+  expect_no_error(suppressWarnings(suppressMessages(
+    plotTracks(list(A = d), color.by = "depth", plot = FALSE, plot.file = pf, verbose = FALSE))))
+})

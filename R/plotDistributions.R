@@ -100,6 +100,14 @@ plotDistributions <- function(data,
     .abort("{.arg labels} must be a NAMED character vector (metric -> label).")
   if (!is.null(colors) && (!is.character(colors) || !length(colors)))
     .abort("{.arg colors} must be a non-empty character vector of colours, or {.code NULL}.")
+  if (!is.null(colors)) {
+    # the type check above passed any character vector, so a typo reached grDevices mid-render and
+    # surfaced as a bare "invalid color name", naming neither the argument nor which entry was bad
+    bad_cols <- colors[!vapply(colors, .isColour, logical(1))]
+    if (length(bad_cols))
+      .abort(c("{.arg colors} contains {length(bad_cols)} value{?s} that {?is/are} not a colour: {.val {bad_cols}}.",
+               "i" = "Use a colour name from {.fn grDevices::colors} or a hex string such as {.val #4C72B0}."))
+  }
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
 
@@ -152,6 +160,23 @@ plotDistributions <- function(data,
   }
   .log_progress_done(pb)
   summary <- do.call(rbind, summary_rows); rownames(summary) <- NULL
+
+  # A metric no deployment carries - a typo, most often - used to be drawn as a fully-formed empty panel
+  # (title, axes, grid, both deployment labels) over the 0-1 fallback x range, and reported as plotted.
+  # Nothing distinguished that from a metric that is genuinely flat, so drop it by name.
+  has_any <- vapply(metrics, function(m) any(vapply(values[[m]], length, integer(1)) > 0L), logical(1))
+  if (!all(has_any)) {
+    empty_metrics <- metrics[!has_any]
+    if (!any(has_any))
+      .abort(c("No requested metric is present in any deployment: {.val {empty_metrics}}.",
+               "i" = "Check {.arg metrics} against the column names in the data."))
+    cli::cli_warn(c("No data for {.val {empty_metrics}} in any deployment; {?it was/they were} dropped.",
+                    "i" = "Plotting {.val {metrics[has_any]}}."))
+    if (!is.null(order.metric) && !order.metric %in% metrics[has_any]) order.metric <- NULL
+    metric_labels <- metric_labels[has_any]; metric_cols <- metric_cols[has_any]
+    metrics <- metrics[has_any]
+    summary <- summary[summary$metric %in% metrics, , drop = FALSE]
+  }
 
   ##############################################################################
   # Deployment order (shared across panels), geometry, densities ###############
