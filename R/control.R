@@ -763,3 +763,160 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
   }
   .abort("{.arg {arg}} must be created with {.fn {deparse(substitute(constructor))}} (or a named list of its fields).")
 }
+
+
+#' Tuning for dive detection in detectDives()
+#'
+#' @description
+#' Bundles the settings for \code{\link{detectDives}}. A dive is a vertical excursion of the depth
+#' trace away from a reference level, detected by two-threshold hysteresis with a prominence
+#' criterion and bounded by a return to within a band of that reference.
+#'
+#' Three axes make one definition serve every taxon, and they are the only concessions to taxonomy:
+#' \itemize{
+#'   \item \code{reference} - where "not diving" sits. \code{"surface"} (b(t) = 0) suits air-breathers
+#'     whose zero is anchored by surfacing; \code{"baseline"} tracks a running level and suits fish
+#'     that never surface, or benthic animals that rest at depth. \code{"auto"} chooses from the
+#'     depth-drift provenance and reports which it picked.
+#'   \item \code{direction} - \code{"down"} for animals that excurse downward from a shallow level,
+#'     \code{"up"} for benthic resters that leave the bottom, \code{"both"} for either.
+#'   \item the hysteresis pair \code{depth.threshold} / \code{surface.band} - the scale of an excursion.
+#' }
+#'
+#' Hysteresis is not optional. With a single threshold, sensor noise at the crossing splits one dive
+#' into many and the dive count becomes a property of the pressure transducer rather than the animal.
+#'
+#' @param reference Where "not diving" sits: \code{"auto"} (default), \code{"surface"} or
+#'   \code{"baseline"}. See Details for how \code{"auto"} decides.
+#' @param direction Excursion direction: \code{"down"} (default), \code{"up"} or \code{"both"}.
+#' @param depth.threshold Numeric (m). Depth past the reference at which an excursion becomes a dive.
+#'   \code{NULL} (default) derives a FLOOR from the record and reports it - the smallest excursion the
+#'   data can support, which is NOT an estimate of what the animal treats as a dive. Set it from your
+#'   study system.
+#' @param surface.band Numeric (m). A dive ends only when depth returns to within this band of the
+#'   reference. Must be less than \code{depth.threshold}. \code{NULL} derives
+#'   \code{max(2 x ZOC residual, depth.threshold / 10, 0.5)} - it scales with the DIVE, because the band
+#'   answers "has the animal returned?", not merely "how uncertain is the zero?". A band derived from the
+#'   residual alone can be too tight to ever close: on a real record a 0.75 m band merged one deep dive
+#'   and 1,700 s of shallow oscillation into a single 2,016 s "dive".
+#' @param min.prominence Numeric (m). Minimum peak prominence relative to the reference.
+#'   \code{NULL} uses \code{depth.threshold - surface.band}.
+#' @param min.duration Numeric (s). Shortest measurable dive. \code{NULL} derives a floor from the
+#'   depth smoothing window and the sampling interval, because a centred smoother attenuates any
+#'   excursion shorter than its window.
+#' @param baseline.window Numeric (h). Window for the running baseline. Default 3.
+#' @param baseline.stat Baseline estimator: \code{"median"} (default) or \code{"quantile"}. These have
+#'   complementary failure modes - see Details.
+#' @param baseline.quantile Numeric in (0, 1) for \code{baseline.stat = "quantile"}. \code{NULL}
+#'   picks 0.10 / 0.90 / 0.50 by \code{direction}.
+#' @param phase.method How descent/bottom/ascent are split: \code{"vertical.rate"} (default) or
+#'   \code{"prop.depth"}.
+#' @param rate.crit,rate.quantile Numeric. The vertical-rate phase rule: a phase ends when the rate
+#'   falls below \code{rate.crit} times the dive's \code{rate.quantile} quantile of vertical rate.
+#'   Defaults 0.25 and 0.90. A quantile, not the maximum, because the maximum of a smoothed series is
+#'   an artefact of the smoothing window.
+#' @param bottom.prop Numeric in (0, 1). For \code{phase.method = "prop.depth"}: the bottom phase is
+#'   the span deeper than this proportion of the dive's amplitude. Default 0.80.
+#' @param max.gap Numeric (s). A sampling gap longer than this splits a dive and marks it censored.
+#'   \code{NULL} uses \code{max(60, 10 x} median interval\code{)}.
+#' @param wiggle.amplitude Numeric (m). Minimum amplitude for a within-dive reversal to count.
+#'   \code{NULL} uses \code{max(0.5, 3 x} the stored series' noise\code{)}.
+#' @param min.surface.occupancy Numeric in (0, 1). For \code{reference = "auto"}: the minimum fraction
+#'   of samples within the surface band required before \code{"surface"} is chosen. Default 0.005.
+#' @param require.zoc \code{"warn"} (default), \code{"error"} or \code{"ignore"} - what to do when
+#'   \code{reference = "surface"} is requested but the zero-offset correction abstained.
+#'
+#' @details
+#' \strong{How \code{reference = "auto"} decides.} It picks \code{"surface"} only when the
+#' \code{depth_drift} provenance record exists with a status of \code{applied},
+#' \code{applied_with_gaps} or \code{constant_offset}, AND the record spends at least
+#' \code{min.surface.occupancy} of its samples within the surface band. Otherwise \code{"baseline"}.
+#' The decision and its reason are reported.
+#'
+#' \strong{Choosing \code{baseline.stat}.} The two estimators fail in opposite regimes, and neither is
+#' universally correct. A running \strong{median} tracks a baseline that drifts during the deployment
+#' (an animal moving from shelf to slope) but migrates INTO the excursions once they occupy more than
+#' about half the record. A low \strong{quantile} is immune to that duty cycle but, on a trending
+#' baseline, tracks the window's trailing edge rather than the local level. \code{detectDives()}
+#' measures both conditions and warns when the chosen estimator is in its failing regime.
+#'
+#' @return A validated \code{nautilus_dive} object for the \code{control} argument of
+#'   \code{\link{detectDives}}.
+#' @seealso \code{\link{detectDives}}, \code{\link{diveMetrics}}, \code{\link{smoothingControl}}
+#' @examples
+#' diveControl(depth.threshold = 5)                              # a 5 m dive, surface-referenced
+#' diveControl(reference = "baseline", depth.threshold = 20)     # a fish that never surfaces
+#' diveControl(reference = "baseline", direction = "up")         # a benthic rester leaving the bottom
+#' @export
+
+diveControl <- function(reference             = c("auto", "surface", "baseline"),
+                        direction             = c("down", "up", "both"),
+                        depth.threshold       = NULL,
+                        surface.band          = NULL,
+                        min.prominence        = NULL,
+                        min.duration          = NULL,
+                        baseline.window       = 3,
+                        baseline.stat         = c("median", "quantile"),
+                        baseline.quantile     = NULL,
+                        phase.method          = c("vertical.rate", "prop.depth"),
+                        rate.crit             = 0.25,
+                        rate.quantile         = 0.90,
+                        bottom.prop           = 0.80,
+                        max.gap               = NULL,
+                        wiggle.amplitude      = NULL,
+                        min.surface.occupancy = 0.005,
+                        require.zoc           = c("warn", "error", "ignore")) {
+
+  reference     <- match.arg(reference)
+  direction     <- match.arg(direction)
+  baseline.stat <- match.arg(baseline.stat)
+  phase.method  <- match.arg(phase.method)
+  require.zoc   <- match.arg(require.zoc)
+
+  # every tunable is named, defaulted and validated; NULL means "derive and report", never "ignore"
+  if (!is.null(depth.threshold))  .assert_number(depth.threshold,  "dive$depth.threshold",  min = 0)
+  if (!is.null(surface.band))     .assert_number(surface.band,     "dive$surface.band",     min = 0)
+  if (!is.null(min.prominence))   .assert_number(min.prominence,   "dive$min.prominence",   min = 0)
+  if (!is.null(min.duration))     .assert_number(min.duration,     "dive$min.duration",     min = 0)
+  if (!is.null(max.gap))          .assert_number(max.gap,          "dive$max.gap",          min = 0)
+  if (!is.null(wiggle.amplitude)) .assert_number(wiggle.amplitude, "dive$wiggle.amplitude", min = 0)
+  .assert_number(baseline.window,       "dive$baseline.window",       min = 0)
+  .assert_number(rate.crit,             "dive$rate.crit",             min = 0)
+  .assert_number(rate.quantile,         "dive$rate.quantile",         min = 0)
+  .assert_number(bottom.prop,           "dive$bottom.prop",           min = 0)
+  .assert_number(min.surface.occupancy, "dive$min.surface.occupancy", min = 0)
+
+  if (baseline.window <= 0) .abort("{.arg dive$baseline.window} must be greater than zero.")
+  if (rate.crit <= 0 || rate.crit >= 1)
+    .abort("{.arg dive$rate.crit} must be in (0, 1); got {.val {rate.crit}}.")
+  if (rate.quantile <= 0 || rate.quantile > 1)
+    .abort("{.arg dive$rate.quantile} must be in (0, 1]; got {.val {rate.quantile}}.")
+  if (bottom.prop <= 0 || bottom.prop >= 1)
+    .abort("{.arg dive$bottom.prop} must be in (0, 1); got {.val {bottom.prop}}.")
+  if (min.surface.occupancy < 0 || min.surface.occupancy >= 1)
+    .abort("{.arg dive$min.surface.occupancy} must be in [0, 1); got {.val {min.surface.occupancy}}.")
+  if (!is.null(baseline.quantile)) {
+    .assert_number(baseline.quantile, "dive$baseline.quantile", min = 0)
+    if (baseline.quantile <= 0 || baseline.quantile >= 1)
+      .abort("{.arg dive$baseline.quantile} must be in (0, 1); got {.val {baseline.quantile}}.")
+  }
+  if (!is.null(depth.threshold) && depth.threshold <= 0)
+    .abort("{.arg dive$depth.threshold} must be greater than zero.")
+
+  # cross-field: hysteresis is the whole point, so a band at or above the threshold is meaningless
+  if (!is.null(depth.threshold) && !is.null(surface.band) && surface.band >= depth.threshold)
+    .abort(c("{.arg dive$surface.band} ({.val {surface.band}}) must be BELOW {.arg dive$depth.threshold} ({.val {depth.threshold}}).",
+             "i" = "The band is where a dive ENDS; at or above the threshold a dive could never end."))
+  if (!is.null(depth.threshold) && !is.null(min.prominence) && min.prominence > depth.threshold)
+    .abort("{.arg dive$min.prominence} ({.val {min.prominence}}) cannot exceed {.arg dive$depth.threshold} ({.val {depth.threshold}}).")
+
+  structure(list(reference = reference, direction = direction,
+                 depth.threshold = depth.threshold, surface.band = surface.band,
+                 min.prominence = min.prominence, min.duration = min.duration,
+                 baseline.window = baseline.window, baseline.stat = baseline.stat,
+                 baseline.quantile = baseline.quantile,
+                 phase.method = phase.method, rate.crit = rate.crit, rate.quantile = rate.quantile,
+                 bottom.prop = bottom.prop, max.gap = max.gap, wiggle.amplitude = wiggle.amplitude,
+                 min.surface.occupancy = min.surface.occupancy, require.zoc = require.zoc),
+            class = "nautilus_dive")
+}
