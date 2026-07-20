@@ -202,7 +202,10 @@ Heading is corrected based on the deployment coordinates using global geomagneti
 \item Sway (g): The side-to-side linear movement along the lateral axis of the animal, also derived from the accelerometer data.
 \item Heave (g): The vertical linear movement of the animal along the vertical axis, estimated from accelerometer data.
 \item Vertical Velocity (m/s): The rate of change in the animal's depth over time, including direction (positive for descent, negative for ascent).
-Vertical velocity is calculated using a central difference method on the smoothed depth time series (with smoothing controlled by \code{depth.smoothing}).
+Vertical velocity is calculated using a central difference method on a smoothed copy of the depth
+series (window set by \code{smoothing$depth}); differentiating a raw pressure trace would amplify
+its quantisation noise. The stored \code{depth} column itself is drift-corrected but NOT smoothed,
+so short vertical excursions keep their true amplitude.
 An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 }
 }

@@ -20,7 +20,10 @@ pitch/roll -- so this is not a cosmetic post-smoother: it defines what counts as
 -3 dB cutoff is the equivalent of this window (~\code{0.44 / dba} Hz; the default 2 s gives ~0.22 Hz).
 \code{NULL} disables the smoothing. Default 2.}
 
-\item{depth}{Window (s) for depth (also drives vertical-speed). Default 10.}
+\item{depth}{Window (s) used to condition the depth series that vertical velocity is
+differentiated from. Default 10. This does NOT smooth the stored \code{depth} channel, which is
+kept drift-corrected but unsmoothed - a centred boxcar attenuates any excursion shorter than
+its window, which would shrink short dives (a 3 m / 8 s dive reads 1.2 m at the 10 s default).}
 
 \item{speed}{Window (s) for derived speed/velocity. Default 1.}
 }
