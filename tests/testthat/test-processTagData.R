@@ -508,3 +508,47 @@ test_that("a CONSTANT imported paddle channel is dropped to NA and warned about 
   expect_match(paddle_w, "DEAD_01")
   expect_false(grepl("GOOD_01", paddle_w))                         # only the offender is named
 })
+
+test_that("stored precision keeps each channel's quantum below its own noise floor", {
+  # The storage-rounding table trades serialised size for precision. The quantum has to stay BELOW the
+  # per-sample noise of the series actually stored, so the noise dithers the quantiser and later
+  # averaging still recovers sub-quantum detail; a quantum at or above the noise makes the error
+  # systematic and unrecoverable. Two entries used to violate that:
+  #   - vertical_velocity at 2 dp (0.01 m/s) sat 4-5x above its measured 0.0018-0.0024 m/s noise floor,
+  #     snapping sustained slow drift (gliding / buoyancy regulation) to exactly zero for minutes at a time;
+  #   - odba/vedba at 3 dp were stored 38-66x coarser than the 4 dp surge/sway/heave they are summed from.
+  set.seed(42)
+  n <- 6000; fs <- 20
+  dt <- data.table::data.table(
+    ID = "PREC_01", datetime = as.POSIXct("2023-01-01", tz = "UTC") + (seq_len(n) - 1) / fs,
+    ax = stats::rnorm(n, 0, .1), ay = stats::rnorm(n, 0, .1), az = 1 + stats::rnorm(n, 0, .1),
+    # a slow, smooth vertical excursion: velocities live well inside the old 0.01 m/s quantum
+    depth = 20 + 3 * sin(seq_len(n) / 900))
+  m <- nautilus:::.newNautilusMeta(); m$id <- "PREC_01"
+  m$deployment$datetime <- as.POSIXct("2023-01-01", tz = "UTC")
+  m$axis_mapping$applied <- TRUE
+  data.table::setattr(dt, "nautilus", m); class(dt) <- c("nautilus_tag", class(dt))
+  data.table::setattr(dt, "nautilus.version", utils::packageVersion("nautilus"))
+
+  out <- processTagData(list(PREC_01 = dt), downsample.to = NULL, verbose = FALSE)[["PREC_01"]]
+
+  on_grid <- function(x, q) {
+    x <- x[is.finite(x)]
+    length(x) > 0L && max(abs(x / q - round(x / q))) < 1e-6
+  }
+  # Both halves matter. "On the q grid" alone is satisfied by ANY coarser rounding too (2 dp values sit
+  # on a 1e-3 grid), so it cannot detect a regression on its own - the second clause is what pins the
+  # quantum down, by requiring the series to actually USE levels the coarser grid does not have.
+  expect_true(on_grid(out$vertical_velocity, 1e-3))    # 3 dp ...
+  expect_false(on_grid(out$vertical_velocity, 1e-2))   # ... and genuinely finer than 2 dp
+  for (nm in c("accel", "odba", "vedba")) {
+    if (!nm %in% names(out)) next
+    expect_true(on_grid(out[[nm]], 1e-4))              # 4 dp, matching surge/sway/heave ...
+    expect_false(on_grid(out[[nm]], 1e-3))             # ... and genuinely finer than 3 dp
+  }
+
+  # the point of the change: a slow excursion is no longer flattened onto a handful of levels
+  v <- out$vertical_velocity[is.finite(out$vertical_velocity)]
+  expect_gt(length(unique(v)), 100L)
+  expect_lt(mean(v == 0), 0.05)
+})

@@ -1350,22 +1350,38 @@ processTagData <- function(data,
     # Store processed data #####################################################
     ############################################################################
 
-    # define sensor-specific rounding rules (units in brackets)
+    # Define sensor-specific rounding rules (units in brackets).
+    #
+    # Rounding does NOT reduce in-memory size - a rounded double is still 8 bytes. It reduces the
+    # SERIALISED size (repeated values compress well: ~3x smaller .rds), which is why it is applied
+    # here, at the storage step, after every metric has been computed at full precision.
+    #
+    # Choosing the digits: the quantum must sit BELOW the channel's own per-sample noise, so that the
+    # noise dithers the quantiser and later averaging still recovers sub-quantum detail. A quantum at
+    # or above the noise makes the error systematic (samples snap the same way) and no downstream
+    # smoothing can undo it. Note this is measured against the noise of the series we actually store,
+    # not the raw sensor LSB: `depth` is a 10 s rolling mean (see .verticalVelocity), which averages
+    # ~200 dithered ADC counts and legitimately resolves far finer than the 6.2 cm CATS pressure LSB.
     rounding_specs <- list(
       # raw sensor data
-      accelerometer = list(vars = c("ax", "ay", "az"), digits = 4),
-      gyroscope = list(vars = c("gx", "gy", "gz"), digits = 2),
-      magnetometer = list(vars = c("mx", "my", "mz"), digits = 2),
+      accelerometer = list(vars = c("ax", "ay", "az"), digits = 4),   # [g]
+      gyroscope = list(vars = c("gx", "gy", "gz"), digits = 2),       # [rad/s] - NOT deg/s
+      magnetometer = list(vars = c("mx", "my", "mz"), digits = 2),    # [uT]
       # processed metrics
-      temperature = list(vars = "temp", digits = 2),
-      depth = list(vars = "depth", digits = 2),
-      dynamics = list(vars = c("accel", "odba", "vedba"), digits = 3),
-      orientation = list(vars = c("roll", "pitch", "heading"), digits = 2),
-      movement = list(vars = c("surge", "sway", "heave"), digits = 4),
-      velocity = list(vars = "vertical_velocity", digits = 2)
+      temperature = list(vars = "temp", digits = 2),                  # [degrees C]
+      depth = list(vars = "depth", digits = 2),                       # [m]
+      # odba/vedba are sums of the 4 dp surge/sway/heave below; storing them coarser than their own
+      # inputs was the dominant error in the dynamics chain and produced quantile-threshold ties.
+      dynamics = list(vars = c("accel", "odba", "vedba"), digits = 4),# [g]
+      orientation = list(vars = c("roll", "pitch", "heading"), digits = 2), # [degrees]
+      movement = list(vars = c("surge", "sway", "heave"), digits = 4),# [g]
+      # 3 dp: measured noise floor of the stored series is 0.0018-0.0024 m/s, so 0.01 m/s was above it
+      # and silenced sustained slow drift (<0.005 m/s, i.e. gliding / buoyancy regulation). 4 dp would
+      # sit below the noise floor and store nothing but noise.
+      velocity = list(vars = "vertical_velocity", digits = 3)         # [m/s]
     )
 
-    # apply rounding to save memory (only to columns that are present)
+    # apply rounding (only to columns that are present)
     for (group in rounding_specs) {
       vars <- intersect(group$vars, names(processed_data))
       if (length(vars) > 0) {
