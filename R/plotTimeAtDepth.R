@@ -37,6 +37,11 @@
 #' @param gap.factor Numeric >= 1. A sample-to-next interval beyond `gap.factor` x the modal interval is
 #'   treated as a gap and credited only the modal interval. Default 3.
 #' @param order.by Ordering of groups / heatmap columns: `"id"`, `"input"`, or `"median"`.
+#' @param same.scale Logical. Give every panel of a variable the same x range, so bar lengths are
+#'   comparable across group facets (the comparison the faceting exists to support). Default `TRUE`.
+#'   `FALSE` lets each panel autoscale, which resolves detail in a group whose time budget is much
+#'   flatter than the others - at the cost of equal-length bars meaning different values. Depth and
+#'   temperature always keep separate scales.
 #' @param coordinates For `diel`: a `c(lon, lat)`, a named `id -> c(lon,lat)` list, or a
 #'   `data.frame(id, lon, lat)`. If `NULL`, longitude/latitude are read from the data or tag metadata.
 #' @param theme A \link{plotTheme} object (or a list of overrides) controlling the visual style.
@@ -70,6 +75,7 @@ plotTimeAtDepth <- function(data,
                             n.bins       = NULL,
                             gap.factor   = 3,
                             order.by     = c("id", "input", "median"),
+                            same.scale   = TRUE,
                             coordinates  = NULL,
                             theme        = plotTheme(),
                             plot         = TRUE,
@@ -86,7 +92,7 @@ plotTimeAtDepth <- function(data,
   variable <- unique(as.character(variable))
   if (!length(variable) || length(variable) > 2) .abort("{.arg variable} must be one or two column names.")
   theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
-  .assert_flag(diel, "diel"); .assert_flag(plot, "plot")
+  .assert_flag(diel, "diel"); .assert_flag(plot, "plot"); .assert_flag(same.scale, "same.scale")
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   .assert_number(gap.factor, "gap.factor", min = 1)
   if (!is.null(bin.width)) .assert_number(bin.width, "bin.width", min = 0)
@@ -97,6 +103,17 @@ plotTimeAtDepth <- function(data,
   if (style == "heatmap" && diel) { if (lvl >= 1L) cli::cli_alert_info("diel split is ignored for {.val heatmap} style."); diel <- FALSE }
 
   src <- .resolveInput(data, id.col)
+
+  # header BEFORE the loading bar, so the bar has context while it runs (matching the other plot* functions).
+  # Only what is knowable pre-load is reported: the group LEVELS are not resolved until the tags are read,
+  # so the bullet names the grouping column rather than counting facets.
+  grp_desc <- if (is.null(group)) "pooled"
+              else if (is.character(group) && length(group) == 1L) sprintf("grouped by %s", group)
+              else "grouped"
+  .log_header(lvl, "plotTimeAtDepth",
+              sprintf("Binning %s over time", paste(vapply(variable, .tadTitle, ""), collapse = " + ")),
+              bullets = sprintf("Input: %d deployment%s \u00b7 %s%s", src$n, if (src$n != 1) "s" else "",
+                                grp_desc, if (diel) " \u00b7 diel split" else ""))
 
   ## ---- load each deployment: per-variable series, time, group, diel phase ----
   loaded <- list(); n_missing <- 0L
@@ -150,17 +167,19 @@ plotTimeAtDepth <- function(data,
   glevels <- if (grouped) .tadGroupLevels(loaded, order.by, variable) else "All"
   gcols <- stats::setNames(.themePalette(theme$palette, length(glevels)), glevels)
 
-  .log_header(lvl, "plotTimeAtDepth", sprintf("Binning %s over time", paste(vapply(variable, .tadTitle, ""), collapse = " + ")),
-              bullets = sprintf("Input: %d deployment%s \u00b7 %s%s", length(loaded), if (length(loaded) != 1) "s" else "",
-                                if (grouped) sprintf("%d group%s", length(glevels), if (length(glevels) != 1) "s" else "") else "pooled",
-                                if (diel) " \u00b7 diel split" else ""))
-
   ## ---- render ----
-  dims <- .tadFigSize(length(variable), length(glevels), style, theme$cex)
+  # the canvas is sized from what will actually be drawn: the widest bin ladder (so bands stay legible and
+  # every bin can keep its label) and the banner text (so the subtitle is not truncated mid-word).
+  nb_max <- max(vapply(breaks_by_var, function(b) length(b) - 1L, integer(1)), 1L)
+  banner_in <- if (style == "heatmap") 0 else
+    .tadBannerWidth(.tadBannerText(variable, grouped, diel), diel, theme$cex)
+  dims <- .tadFigSize(length(variable), length(glevels), style, theme$cex,
+                      nb_max = nb_max, n_dep = length(loaded), banner_in = banner_in)
   draw <- function(to.file = FALSE, unicode = TRUE) {
     old <- graphics::par(family = theme$font.family); on.exit(graphics::par(old), add = TRUE)
     if (style == "heatmap") .tadRenderHeatmaps(binned, breaks_by_var, variable, loaded, order.by, theme, grouped)
-    else .tadRenderProfiles(binned, breaks_by_var, variable, glevels, gcols, grp_of, phases, diel, grouped, theme)
+    else .tadRenderProfiles(binned, breaks_by_var, variable, glevels, gcols, grp_of, phases, diel, grouped, theme,
+                            same.scale = same.scale)
   }
   .renderToDevices(draw, plot = plot, plot.file = plot.file, width = dims$width, height = dims$height)
 
@@ -171,8 +190,12 @@ plotTimeAtDepth <- function(data,
       cols <- do.call(cbind, unlist(binned[[v]], recursive = FALSE))    # pool ALL deployments x phases
       if (is.null(cols)) next
       pool <- rowMeans(cols, na.rm = TRUE)
-      peak <- breaks_by_var[[v]][which.max(pool)]
-      .log_detail(lvl, sprintf("%s: most time near %g (%.0f%%)", v, round(peak, 2), max(pool, na.rm = TRUE)))
+      # report the modal BIN (both edges + unit), not the bin's left edge alone: "most time near 0" read as
+      # a point estimate when what is drawn is a band. The share is of TIME - bins are duration-weighted
+      # (see .timeAtDepthBins), so calling it a share of observations would misdescribe it.
+      i <- which.max(pool)
+      .log_detail(lvl, sprintf("%s: modal bin %s (%.0f%% of time)",
+                               .tadVarName(v), .tadBinRange(breaks_by_var[[v]], i, v), max(pool, na.rm = TRUE)))
     }
     if (n_missing > 0) .log_detail(lvl, sprintf("skipped (no data): %d deployment%s", n_missing, if (n_missing != 1) "s" else ""))
     .log_done(lvl, length(loaded), " deployment", if (length(loaded) != 1) "s", " plotted (", style, ")")
@@ -296,10 +319,35 @@ plotTimeAtDepth <- function(data,
 #' @keywords internal
 #' @noRd
 .tadTitle <- function(v) switch(v, depth = "time-at-depth", temp = "time-at-temperature", sprintf("time-at-%s", v))
+
+#' Spelled-out variable name for prose (console summary): "temp" is a column name, not a word.
+#' Capitalise the first character (panel/banner titles are sentence case package-wide).
 #' @keywords internal
 #' @noRd
-.tadXlab <- function(v, diel) sprintf("Time at %s (%%%s)", switch(v, depth = "depth", temp = "temperature", v),
-                                      if (diel) " per shark" else "")
+.tadCap1 <- function(s) { substr(s, 1, 1) <- toupper(substr(s, 1, 1)); s }
+
+#' @keywords internal
+#' @noRd
+.tadVarName <- function(v) switch(v, depth = "depth", temp = "temperature", v)
+
+#' Measurement unit suffix for a variable, "" when unknown.
+#' @keywords internal
+#' @noRd
+.tadUnit <- function(v) switch(v, depth = " m", temp = " \u00b0C", "")
+
+#' One bin's range as prose, e.g. "0-2 m" / "22-24 degrees C" (en dash), for the console summary.
+#' The top bin is open-ended in the plot's own labels, so match that here rather than implying a
+#' ceiling the data may exceed.
+#' @keywords internal
+#' @noRd
+.tadBinRange <- function(breaks, i, v) {
+  u <- .tadUnit(v)
+  if (i >= length(breaks) - 1L) return(sprintf("> %g%s", breaks[i], u))
+  sprintf("%g\u2013%g%s", breaks[i], breaks[i + 1L], u)
+}
+#' @keywords internal
+#' @noRd
+.tadXlab <- function(v) sprintf("Time at %s (%% per deployment)", .tadVarName(v))
 
 #' Bin-range labels ("0-10"); the last bin becomes ">X" (open-ended top).
 #' @keywords internal
@@ -315,13 +363,54 @@ plotTimeAtDepth <- function(data,
 ################################################################################
 
 #' Figure size (inches).
+#'
+#' Height follows the BIN COUNT rather than a flat per-row constant: a panel showing 20 depth strata needs
+#' more height than one showing 6 temperature strata, and the old fixed 2.7 in/row squeezed the default
+#' depth ladder into ~7 pt bands - which is why the bin labels used to be thinned to every second one.
+#' Growth is capped so a grouped x 2-variable figure cannot run to a page metres long.
+#'
+#' Width is floored by the BANNER, not just the panel grid: the title strip spans the whole figure, so a
+#' narrow single-variable canvas used to truncate its own subtitle mid-word.
 #' @keywords internal
 #' @noRd
-.tadFigSize <- function(n_var, n_grp, style, cex) {
+.tadFigSize <- function(n_var, n_grp, style, cex, nb_max = 12L, n_dep = 1L, banner_in = 0) {
   s <- max(1, cex * 0.92)
-  if (style == "heatmap") return(list(width = (1.5 + 3.6 * n_var) * s, height = 5.4 * s))
+  if (style == "heatmap") {
+    return(list(width  = max(1.5 + 3.6 * n_var, 1.5 + 0.30 * n_dep) * s,
+                height = max(5.4, 1.5 + 0.20 * nb_max) * s))
+  }
   lay <- .tadPanelGrid(n_var, n_grp)
-  list(width = (0.6 + 2.9 * lay$nc) * s, height = (0.9 + 2.7 * lay$nr) * s)
+  # data region grows with bins; chrome (axes + panel titles) is roughly constant per row
+  data_in <- min(max(2.30, 0.135 * nb_max), 4.5)
+  row_in  <- data_in + 1.30
+  list(width  = max(1.1 + 3.4 * lay$nc, banner_in) * s,
+       height = (0.9 + row_in * lay$nr) * s)
+}
+
+#' Banner strings, needed both to draw the strip and to size the canvas that must hold it.
+#' @keywords internal
+#' @noRd
+.tadBannerText <- function(variable, grouped, diel) {
+  cap1 <- function(s) { substr(s, 1, 1) <- toupper(substr(s, 1, 1)); s }
+  ttl <- paste0(cap1(paste(vapply(variable, .tadTitle, ""), collapse = " and ")), if (grouped) " by group" else "")
+  sub <- if (grouped) "Group means \u00b1 SE across individuals" else "Pooled across individuals (mean per deployment \u00b1 SE)"
+  if (diel) sub <- paste0(sub, " \u00b7 night vs day")
+  list(title = ttl, subtitle = sub)
+}
+
+#' Inches of canvas the banner needs (title at 1.5 cex, subtitle at 1.0, plus the diel key).
+#' strwidth needs a device, so measure on a throwaway one rather than guessing character widths.
+#' @keywords internal
+#' @noRd
+.tadBannerWidth <- function(banner, diel, cex) {
+  w <- tryCatch({
+    grDevices::pdf(NULL, width = 7, height = 7); on.exit(grDevices::dev.off(), add = TRUE)
+    graphics::par(mar = c(0, 0, 0, 0)); graphics::plot.new()
+    max(graphics::strwidth(banner$title, units = "inches", cex = 1.5 * cex),
+        graphics::strwidth(banner$subtitle, units = "inches", cex = 1.0 * cex))
+  }, error = function(e) NA_real_)
+  if (!is.finite(w)) return(0)
+  w + 0.30 + if (diel) 1.45 else 0                     # left inset + room for the night/day key
 }
 
 #' Panel grid dimensions (nr x nc) for the profile layout.
@@ -336,37 +425,63 @@ plotTimeAtDepth <- function(data,
 #' Render the profile grid: one panel per (group x variable), title strip + optional diel legend.
 #' @keywords internal
 #' @noRd
-.tadRenderProfiles <- function(binned, breaks_by_var, variable, glevels, gcols, grp_of, phases, diel, grouped, theme) {
+.tadRenderProfiles <- function(binned, breaks_by_var, variable, glevels, gcols, grp_of, phases, diel, grouped, theme,
+                               same.scale = TRUE) {
   n_var <- length(variable); n_grp <- length(glevels); lay <- .tadPanelGrid(n_var, n_grp)
   panels <- if (n_grp == 1) lapply(variable, function(v) list(g = glevels[1], v = v))
             else if (n_var == 1) lapply(glevels, function(g) list(g = g, v = variable[1]))
             else unlist(lapply(glevels, function(g) lapply(variable, function(v) list(g = g, v = v))), recursive = FALSE)
 
+  # Aggregate EVERY panel up front: the group facets only support comparison if they share an x scale, and
+  # that maximum is not knowable until all panels are aggregated. Per variable, not globally, so depth and
+  # temperature keep their own (unrelated) ranges.
+  aggs <- lapply(panels, function(p) {
+    ids <- names(grp_of)[if (grouped) grp_of == p$g else TRUE]; ids <- ids[!is.na(ids)]
+    list(ids = ids, agg = .tadAggregate(binned[[p$v]], ids, phases, length(breaks_by_var[[p$v]]) - 1L))
+  })
+  xmax_by_var <- NULL
+  if (isTRUE(same.scale)) {
+    xmax_by_var <- stats::setNames(vapply(variable, function(v) {
+      w <- which(vapply(panels, function(p) identical(p$v, v), logical(1)))
+      max(vapply(w, function(i) {
+        a <- aggs[[i]]$agg
+        max(unlist(lapply(a, function(z) z$mean + z$se)), 0, na.rm = TRUE)
+      }, numeric(1)), 0.001, na.rm = TRUE) * 1.04
+    }, numeric(1)), variable)
+  }
+
   # region 1 = a full-width title strip; regions 2.. = the panel grid (row-major, matching the loop)
   m <- matrix(1L + seq_len(lay$nr * lay$nc), lay$nr, lay$nc, byrow = TRUE)
   graphics::layout(rbind(matrix(1L, 1, lay$nc), m),
-                   heights = c(graphics::lcm(1.8 * max(1, theme$cex)), rep(1, lay$nr)))
+                   heights = c(graphics::lcm(1.9 * max(1, theme$cex)), rep(1, lay$nr)))
   graphics::par(mar = c(0, 0, 0, 0)); graphics::plot.new()
-  cap1 <- function(s) { substr(s, 1, 1) <- toupper(substr(s, 1, 1)); s }
-  ttl <- paste0(cap1(paste(vapply(variable, .tadTitle, ""), collapse = " and ")), if (grouped) " by group" else "")
-  graphics::text(0.012, 0.66, ttl, adj = 0, font = 2, cex = 1.5 * theme$cex, col = theme$ink)
-  sub <- if (grouped) "Group means \u00b1 SE across individuals" else "Pooled across individuals (mean per deployment \u00b1 SE)"
-  if (diel) sub <- paste0(sub, " \u00b7 night vs day")
-  graphics::text(0.012, 0.24, sub, adj = 0, cex = 1.0 * theme$cex, col = theme$subtitle)
-  if (diel) graphics::legend(0.80, 0.9, c("Night", "Day"), fill = c(theme$night, theme$day), border = theme$day.border,
-                             horiz = TRUE, bty = "n", cex = 1.02 * theme$cex, text.col = theme$axis)
+  banner <- .tadBannerText(variable, grouped, diel)
+  graphics::text(0.012, 0.66, banner$title, adj = 0, font = 2, cex = 1.5 * theme$cex, col = theme$ink)
+  graphics::text(0.012, 0.24, banner$subtitle, adj = 0, cex = 1.0 * theme$cex, col = theme$subtitle)
+  if (diel) {
+    # right-anchored off its own measured width: a hardcoded x clipped the key on narrow canvases. Each
+    # swatch carries the border the PANEL draws it with, so the key matches the encoding it explains.
+    key <- graphics::legend(0, 0, c("Night", "Day"), fill = c(theme$night, theme$day), horiz = TRUE,
+                            bty = "n", cex = 1.02 * theme$cex, plot = FALSE)
+    graphics::legend(max(0.5, 0.985 - key$rect$w), 0.94, c("Night", "Day"), fill = c(theme$night, theme$day),
+                     border = c(theme$bar.border, theme$day.border), horiz = TRUE, bty = "n",
+                     cex = 1.02 * theme$cex, text.col = theme$axis)
+  }
 
   for (k in seq_along(panels)) {
     p <- panels[[k]]; v <- p$v; br <- breaks_by_var[[v]]; row <- ((k - 1L) %/% lay$nc) + 1L; col <- ((k - 1L) %% lay$nc) + 1L
-    ids <- names(grp_of)[if (grouped) grp_of == p$g else TRUE]; ids <- ids[!is.na(ids)]
-    agg <- .tadAggregate(binned[[v]], ids, phases, length(br) - 1L)
+    ids <- aggs[[k]]$ids; agg <- aggs[[k]]$agg
     y.axis <- col == 1L || !identical(p$v, panels[[k - 1L]]$v)   # draw the bin axis when the variable changes
     x.axis <- row == lay$nr || (k + lay$nc) > length(panels)     # bottom of its column
-    ttl_p <- if (grouped) p$g else .tadTitle(v)
+    # pooled single-variable figures would repeat the banner verbatim, so the panel title is dropped there;
+    # with two variables it identifies the column and is kept (sentence case, matching the banner).
+    ttl_p <- if (grouped) p$g else if (n_var == 1L) NULL else .tadCap1(.tadVarName(v))
     ttl_col <- if (grouped) gcols[[p$g]] else theme$ink
     sub_p <- if (grouped) sprintf("n = %d", length(ids)) else NULL
-    fill <- if (grouped) gcols[[p$g]] else theme$night
-    .tadProfilePanel(br, agg, diel, theme, fill, .tadLabel(v), .tadXlab(v, diel), ttl_p, ttl_col, sub_p, y.axis, x.axis)
+    # theme$night MEANS night once diel is on; a pooled bar is not night, so it takes the palette instead
+    fill <- if (grouped) gcols[[p$g]] else .themePalette(theme$palette, 1L)[1]
+    .tadProfilePanel(br, agg, diel, theme, fill, .tadLabel(v), .tadXlab(v), ttl_p, ttl_col, sub_p, y.axis, x.axis,
+                     xmax = if (is.null(xmax_by_var)) NULL else xmax_by_var[[v]])
   }
 }
 
@@ -388,35 +503,55 @@ plotTimeAtDepth <- function(data,
 #' One profile panel: equal-height bin bands, single or diel-mirrored, mean +/- SE.
 #' @keywords internal
 #' @noRd
-.tadProfilePanel <- function(breaks, agg, diel, theme, fill, ylab, xlab, title, title.col, subtitle, y.axis, x.axis) {
+.tadProfilePanel <- function(breaks, agg, diel, theme, fill, ylab, xlab, title, title.col, subtitle, y.axis, x.axis,
+                             xmax = NULL) {
   nb <- length(breaks) - 1L; cex <- theme$cex
   if (diel) { L <- agg[["night"]]; R <- agg[["day"]] } else { L <- NULL; R <- agg[["all"]] }
-  xmax <- max(c(R$mean + R$se, if (!is.null(L)) L$mean + L$se), 0.001, na.rm = TRUE) * 1.04
+  if (is.null(xmax)) xmax <- max(c(R$mean + R$se, if (!is.null(L)) L$mean + L$se), 0.001, na.rm = TRUE) * 1.04
   xlim <- if (diel) c(-xmax, xmax) else c(0, xmax)
-  graphics::par(mar = c(if (x.axis) 3.6 else 1.6, if (y.axis) 5.2 else 0.7, 2.7, 0.9), mgp = c(2.4, 0.55, 0), tcl = -0.22)
+  # mar is CONSTANT across every panel of a figure - varying it by which axes get drawn made the plot
+  # regions different sizes, so the same bin was a different physical height in adjacent panels and the
+  # frames did not line up. Only the drawing calls below are gated on y.axis / x.axis.
+  graphics::par(mar = c(3.8, 5.4, 2.7, 1.8), mgp = c(3, 0.55, 0), tcl = -0.22)      # mgp[1] unused: titles are mtext-placed
   graphics::plot(NA, xlim = xlim, ylim = c(nb + 0.5, 0.5), axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i")
-  gx <- pretty(c(0, xmax), 4)
+  gx <- pretty(c(0, xmax), 4); gx <- gx[gx <= xmax]                                  # pretty() overshoots xlim
+  at <- if (diel) sort(unique(c(-gx, gx))) else gx                                   # sorted, no duplicated 0
   graphics::rect(xlim[1], 0.5, xlim[2], nb + 0.5, col = theme$panel, border = NA)
-  graphics::abline(v = if (diel) c(-gx, gx) else gx, col = theme$grid, lwd = 0.6)   # subtle grid
+  graphics::abline(v = at[at != 0], col = theme$grid, lwd = 0.6)                     # subtle grid
   bar <- function(x0, x1, b, col, bord) graphics::rect(x0, b - 0.5, x1, b + 0.5, col = grDevices::adjustcolor(col, theme$bar.alpha), border = bord, lwd = 0.6)
   for (b in seq_len(nb)) {
     if (diel) { bar(-L$mean[b], 0, b, theme$night, theme$bar.border); bar(0, R$mean[b], b, theme$day, theme$day.border) }
     else bar(0, R$mean[b], b, fill, theme$bar.border)
   }
-  # SE whiskers
-   err <- function(m, se, sgn) graphics::segments(sgn * pmax(0, m - se), seq_len(nb), sgn * (m + se), seq_len(nb), col = theme$ink, lwd = 1.3)
+  # SE whiskers, drawn as conventional T-bars (stem + a cap at each end). Bins with no spread are SKIPPED
+  # rather than drawn as a bare cap on the bar's edge, which would read as a measured zero-width interval
+  # when it actually means a single deployment contributed (.tadAggregate sets se = 0 when ncol == 1).
+  err <- function(m, se, sgn) {
+    ok <- is.finite(m) & is.finite(se) & se > 0
+    if (!any(ok)) return(invisible(NULL))
+    y  <- seq_len(nb)[ok]
+    lo <- sgn * pmax(0, (m - se)[ok]); hi <- sgn * (m + se)[ok]
+    cap <- 0.16                                              # half-height of the caps, in bin units
+    graphics::segments(lo, y, hi, y, col = theme$ink, lwd = 1.1)
+    graphics::segments(lo, y - cap, lo, y + cap, col = theme$ink, lwd = 1.1)
+    graphics::segments(hi, y - cap, hi, y + cap, col = theme$ink, lwd = 1.1)
+  }
   if (diel) { err(L$mean, L$se, -1); err(R$mean, R$se, 1) } else err(R$mean, R$se, 1)
   if (diel) graphics::abline(v = 0, col = theme$axis, lwd = 1.2)
-  # axes
-  graphics::axis(1, at = if (diel) c(-gx, gx) else gx, labels = paste0(abs(if (diel) c(-gx, gx) else gx), "%"),
-                 col = NA, col.ticks = theme$axis, col.axis = theme$axis, cex.axis = 0.72 * cex)
+  # axes (type sizes lifted onto the package band - these were the smallest in the plot* family)
+  graphics::axis(1, at = at, labels = if (x.axis) paste0(abs(at), "%") else FALSE,
+                 col = NA, col.ticks = theme$axis, col.axis = theme$axis, cex.axis = 0.85 * cex)
   if (y.axis) {
-    lab <- .binLabels(breaks); keep <- if (nb > 16) seq(1, nb, 2) else seq_len(nb)
-    graphics::axis(2, at = keep, labels = lab[keep], las = 1, col = NA, col.ticks = theme$axis, col.axis = theme$axis, cex.axis = 0.68 * cex)
-    graphics::mtext(ylab, 2, line = 4.0, col = theme$ink, cex = 0.92 * cex, font = 2)
+    # every bin keeps its label: the figure height now scales with nb (see .tadFigSize), so the old
+    # every-other-bin thinning is unnecessary - and it used to delete the open-top ">X" label whenever
+    # nb was even, leaving the deepest stratum anonymous.
+    graphics::axis(2, at = seq_len(nb), labels = .binLabels(breaks), las = 1, col = NA,
+                   col.ticks = theme$axis, col.axis = theme$axis, cex.axis = 0.72 * cex)
+    graphics::mtext(ylab, 2, line = 4.2, col = theme$ink, cex = 0.95 * cex, font = 2)
   }
-  if (x.axis) graphics::mtext(xlab, 1, line = 2.3, col = theme$axis, cex = 0.82 * cex)
-  graphics::mtext(title, 3, line = if (is.null(subtitle)) 0.5 else 0.95, adj = 0, font = 2, col = title.col, cex = 1.0 * cex)
+  if (x.axis) graphics::mtext(xlab, 1, line = 2.4, col = theme$axis, cex = 0.95 * cex)
+  if (!is.null(title))
+    graphics::mtext(title, 3, line = if (is.null(subtitle)) 0.5 else 0.95, adj = 0, font = 2, col = title.col, cex = 1.0 * cex)
   if (!is.null(subtitle)) graphics::mtext(subtitle, 3, line = 0.1, adj = 0, col = theme$subtitle, cex = 0.72 * cex)
   graphics::box(col = theme$axis)                                # full border, matching the themed axes
 }
@@ -441,17 +576,21 @@ plotTimeAtDepth <- function(data,
   graphics::layout(matrix(seq_len(n_var + 1L), 1), widths = c(rep(1, n_var), graphics::lcm(3.0)))
   for (vi in seq_len(n_var)) {
     v <- variable[vi]; br <- breaks_by_var[[v]]; nb <- length(br) - 1L; M <- mats[[vi]]
-    graphics::par(mar = c(6.2, if (vi == 1) 5.0 else 0.7, 2.6, 0.7), mgp = c(3, 0.6, 0))
+    graphics::par(mar = c(6.2, 5.0, 2.6, 0.7), mgp = c(3, 0.6, 0))   # left margin on every panel: each has its own axis
     graphics::plot(NA, xlim = c(0.5, ncol(M) + 0.5), ylim = c(nb + 0.5, 0.5), axes = FALSE, xaxs = "i", yaxs = "i", xlab = "", ylab = "")
     for (j in seq_len(ncol(M))) for (b in seq_len(nb)) {
       idx <- max(1L, min(100L, round(.rescale(M[b, j], from = c(0, zmax), to = c(1, 100)))))
       graphics::rect(j - 0.5, b - 0.5, j + 0.5, b + 0.5, col = pal[idx], border = NA)
     }
-    if (vi == 1) { graphics::axis(2, at = seq_len(nb), labels = .binLabels(br), las = 1, col = NA, col.ticks = theme$axis, col.axis = theme$axis, cex.axis = 0.62 * theme$cex)
-      graphics::mtext(.tadLabel(v), 2, line = 3.9, font = 2, col = theme$ink, cex = 0.92 * theme$cex) }
+    # EVERY variable gets its own bin axis. Sharing one axis was wrong, not merely terse: the panels hold
+    # different bin counts (e.g. 19 depth strata vs 12 temperature strata) drawn as equal-height rows, so a
+    # temperature row was read against a depth label - a band at 22 degrees C sat against ">300 m".
+    graphics::axis(2, at = seq_len(nb), labels = .binLabels(br), las = 1, col = NA, col.ticks = theme$axis,
+                   col.axis = theme$axis, cex.axis = 0.68 * theme$cex)
+    graphics::mtext(.tadLabel(v), 2, line = 3.9, font = 2, col = theme$ink, cex = 0.92 * theme$cex)
     graphics::text(seq_len(ncol(M)), graphics::grconvertY(0, "npc", "user"), labels = ord, srt = 45, adj = c(1, 1.3),
                    xpd = NA, cex = theme$cex * min(0.8, 22 / ncol(M)), col = theme$axis)
-    graphics::mtext(.tadTitle(v), 3, line = 0.6, adj = 0, font = 2, col = theme$ink, cex = 0.95 * theme$cex)
+    graphics::mtext(.tadCap1(.tadVarName(v)), 3, line = 0.6, adj = 0, font = 2, col = theme$ink, cex = 0.95 * theme$cex)
     graphics::box(col = theme$axis)                              # frame the heatmap grid
   }
   graphics::par(mar = c(6.2, 0.6, 2.6, 3.0))

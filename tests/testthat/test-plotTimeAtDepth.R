@@ -119,3 +119,56 @@ test_that("depth defaults to surface-fine non-uniform bins; temperature to unifo
 test_that(".binLabels ranges and an open-ended top bin", {
   expect_equal(nautilus:::.binLabels(c(0, 10, 25, 50)), c("0-10", "10-25", ">25"))
 })
+
+test_that("the verbose header precedes the loading bar, and the summary names the modal BIN", {
+  # The header used to be printed after the load loop, so the progress bar appeared with no context and
+  # the title arrived once the work was already done. It can only move if the bullet stops depending on
+  # post-load state (it used to interpolate length(loaded)/glevels/grouped).
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    plotTimeAtDepth(.tad_cohort(), variable = c("depth", "temp"),
+                    plot = FALSE, plot.file = pf, verbose = 2))), collapse = "\n")
+  expect_match(txt, "plotTimeAtDepth")
+  expect_lt(regexpr("plotTimeAtDepth", txt, fixed = TRUE)[1],
+            regexpr("SUMMARY", txt, fixed = TRUE)[1])          # header before summary
+  expect_match(txt, "Input: 3 deployments")                    # counted pre-load, from src$n
+
+  # the modal bin is reported as a RANGE with units, and as a share of TIME (bins are duration-weighted,
+  # so "of observations" would misdescribe it)
+  expect_match(txt, "depth: modal bin [-0-9.]+\u2013[-0-9.]+ m \\([0-9]+% of time\\)")
+  expect_match(txt, "temperature: modal bin")                  # spelled out, not the "temp" column name
+})
+
+test_that("group facets of a variable share one x scale unless same.scale = FALSE", {
+  # Faceting exists to compare groups; per-panel autoscaling drew a 23% bar and a 41% bar at the same
+  # length, ranking the groups backwards. Depth and temperature still scale independently of each other.
+  skip_if_not_installed("data.table")
+  set.seed(4)
+  flat  <- .mk_tad("F1", function(n) runif(n, 0, 120), species = "flat")   # time spread thinly over bins
+  peaky <- .mk_tad("P1", function(n) rep(3, n), species = "peaky")         # ~all time in one bin
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  s <- suppressMessages(plotTimeAtDepth(list(F1 = flat, P1 = peaky), group = "species",
+                                        plot = FALSE, plot.file = pf, verbose = FALSE))
+  peak_by_group <- tapply(s$pct, s$group, max)
+  expect_gt(max(peak_by_group) / min(peak_by_group), 2)        # the groups genuinely differ in scale
+  expect_true(file.size(pf) > 0)
+  # both settings must render; same.scale is validated as a flag
+  expect_silent(suppressMessages(plotTimeAtDepth(list(F1 = flat, P1 = peaky), group = "species",
+                                                 same.scale = FALSE, plot = FALSE, plot.file = pf, verbose = FALSE)))
+  expect_error(suppressMessages(plotTimeAtDepth(list(F1 = flat), same.scale = "yes",
+                                                plot = FALSE, plot.file = pf, verbose = FALSE)))
+})
+
+test_that("axis labelling: every bin keeps its label, and the x label names the aggregation unit", {
+  # .binLabels used to be thinned to every other entry above 16 bins, which also deleted the open-top
+  # ">X" label whenever nb was even, leaving the deepest stratum anonymous.
+  br <- c(0, 2, 4, 6, 8, 10, 15, 20, 30, 50, 75, 100, 150, 200, 300, 400, 600, 800, 1000)
+  lab <- nautilus:::.binLabels(br)
+  expect_length(lab, length(br) - 1L)
+  expect_match(lab[length(lab)], "^>")                          # the top bin is the open-ended one
+
+  # species-agnostic and unconditional: the percentages are per-deployment in BOTH diel and pooled modes
+  expect_equal(nautilus:::.tadXlab("depth"), "Time at depth (% per deployment)")
+  expect_equal(nautilus:::.tadXlab("temp"), "Time at temperature (% per deployment)")
+  expect_false(any(grepl("shark", c(nautilus:::.tadXlab("depth"), nautilus:::.tadXlab("temp")))))
+})

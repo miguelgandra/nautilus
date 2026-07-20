@@ -15,6 +15,7 @@ plotTimeAtDepth(
   n.bins = NULL,
   gap.factor = 3,
   order.by = c("id", "input", "median"),
+  same.scale = TRUE,
   coordinates = NULL,
   theme = plotTheme(),
   plot = TRUE,
@@ -47,6 +48,12 @@ for depth, uniform for temperature).}
 treated as a gap and credited only the modal interval. Default 3.}
 
 \item{order.by}{Ordering of groups / heatmap columns: \code{"id"}, \code{"input"}, or \code{"median"}.}
+
+\item{same.scale}{Logical. Give every panel of a variable the same x range, so bar lengths are
+comparable across group facets (the comparison the faceting exists to support). Default \code{TRUE}.
+\code{FALSE} lets each panel autoscale, which resolves detail in a group whose time budget is much
+flatter than the others - at the cost of equal-length bars meaning different values. Depth and
+temperature always keep separate scales.}
 
 \item{coordinates}{For \code{diel}: a \code{c(lon, lat)}, a named \code{id -> c(lon,lat)} list, or a
 \code{data.frame(id, lon, lat)}. If \code{NULL}, longitude/latitude are read from the data or tag metadata.}
