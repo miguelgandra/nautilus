@@ -132,32 +132,61 @@
 #' @noRd
 .diveEmptyRuns <- function() data.frame(start_i = integer(0), end_i = integer(0), sign = numeric(0))
 
-#' Split a candidate run wherever the sampling gap exceeds `max.gap`.
+#' Split a candidate run wherever the record stops informing us: a gap in TIME, or a run of missing
+#' DEPTH longer than `max.gap`.
+#'
+#' Both are the same event - the record stopped telling us where the animal was - and both must end a
+#' dive. Only the time case was handled at first, and a real deployment showed why that is not enough:
+#' PIN_03's depth channel went dark for 8.72 h at full 20 Hz, so the timestamps stayed perfectly regular
+#' (median dt == max dt == 0.05 s) and no time gap existed to find. The dive stayed open across all of
+#' it and was reported as a single 8.9 h excursion to 37 m - of which 97.6% of samples had no depth at
+#' all. Neither a maximum-duration rule nor a behavioural reference switch would have been right there;
+#' both would have dressed a data-availability artefact as an ecological finding.
+#'
+#' Interpolating across the dark stretch would invent an excursion shape that was never measured;
+#' dropping the dive outright would bias against exactly the long dives that dropouts tend to interrupt.
+#' So the dive is split, each part keeps its own timing, and both are marked censored.
 #' @keywords internal
 #' @noRd
-.diveSplitOnGaps <- function(runs, tnum, max.gap) {
+.diveSplitOnGaps <- function(runs, tnum, depth, max.gap) {
   if (!nrow(runs)) return(cbind(runs, n_gaps = integer(0), gap_s = numeric(0)))
   out <- list()
   for (k in seq_len(nrow(runs))) {
     i0 <- runs$start_i[k]; i1 <- runs$end_i[k]
-    if (i1 <= i0) { out[[length(out) + 1L]] <- data.frame(start_i = i0, end_i = i1, sign = runs$sign[k],
-                                                          n_gaps = 0L, gap_s = 0); next }
-    dtv <- diff(tnum[i0:i1])
-    brk <- which(dtv > max.gap)
-    if (!length(brk)) {
+    if (i1 <= i0) {
       out[[length(out) + 1L]] <- data.frame(start_i = i0, end_i = i1, sign = runs$sign[k],
                                             n_gaps = 0L, gap_s = 0)
-    } else {
-      seg_start <- i0
-      for (b in brk) {
-        out[[length(out) + 1L]] <- data.frame(start_i = seg_start, end_i = i0 + b - 1L,
-                                              sign = runs$sign[k], n_gaps = 1L, gap_s = dtv[b])
-        seg_start <- i0 + b
+      next
+    }
+    idx <- i0:i1
+    tv <- tnum[idx]
+    # (a) samples sitting inside a LONG run of absent depth are not evidence of anything
+    bad <- !is.finite(depth[idx])
+    drop <- rep(FALSE, length(idx))
+    if (any(bad)) {
+      r <- rle(bad); e <- cumsum(r$lengths); st <- e - r$lengths + 1L
+      for (m in which(r$values)) {
+        span <- tv[e[m]] - tv[st[m]]
+        if (is.finite(span) && span > max.gap) drop[st[m]:e[m]] <- TRUE
       }
-      out[[length(out) + 1L]] <- data.frame(start_i = seg_start, end_i = i1, sign = runs$sign[k],
-                                            n_gaps = 1L, gap_s = dtv[brk[length(brk)]])
+    }
+    # (b) a jump in time is the same event
+    brk_t <- which(diff(tv) > max.gap)
+    cut_after <- rep(FALSE, length(idx)); cut_after[brk_t] <- TRUE
+    seg <- cumsum(c(0L, as.integer(cut_after[-length(idx)] | drop[-1] != drop[-length(idx)])))
+    keep <- !drop
+    if (!any(keep)) next
+    for (g in unique(seg[keep])) {
+      w <- which(seg == g & keep)
+      if (!length(w)) next
+      gs <- max(0, suppressWarnings(max(diff(tv[w]), na.rm = TRUE)))
+      out[[length(out) + 1L]] <- data.frame(
+        start_i = idx[min(w)], end_i = idx[max(w)], sign = runs$sign[k],
+        n_gaps = as.integer(any(drop) || length(brk_t) > 0),
+        gap_s = if (any(drop)) sum(diff(tv)[drop[-1]], na.rm = TRUE) else if (length(brk_t)) sum(diff(tv)[brk_t]) else 0)
     }
   }
+  if (!length(out)) return(cbind(runs[0, , drop = FALSE], n_gaps = integer(0), gap_s = numeric(0)))
   do.call(rbind, out)
 }
 
@@ -340,7 +369,7 @@
   if (is.null(runs) || !nrow(runs)) {
     e <- empty; e$baseline <- b; e$status <- "applied_no_dives"; return(e)
   }
-  runs <- .diveSplitOnGaps(runs, tnum, settings$max.gap)
+  runs <- .diveSplitOnGaps(runs, tnum, d, settings$max.gap)
   runs <- .diveScreenRuns(runs, resid, tnum, settings$min.prominence, settings$min.duration, n)
   if (!nrow(runs)) { e <- empty; e$baseline <- b; e$status <- "applied_no_dives"; return(e) }
   runs <- runs[order(runs$start_i), , drop = FALSE]
@@ -466,7 +495,7 @@
     inter_dive_s = numeric(0), inter_dive_censored = logical(0),
     complete = logical(0), truncated_start = logical(0), truncated_end = logical(0),
     n_gaps = integer(0), gap_s = numeric(0), depth_attenuation = numeric(0),
-    shape_supported = logical(0), stringsAsFactors = FALSE)
+    depth_coverage = numeric(0), shape_supported = logical(0), stringsAsFactors = FALSE)
   for (v in variables) {
     circ <- v %in% circular.variables
     nms <- if (circ) c(paste0(v, "_mean_angle"), paste0(v, "_mrl"))
@@ -571,7 +600,11 @@
       complete = i0 > 1L && i1 < n_total && n_gaps == 0L,
       truncated_start = i0 == 1L, truncated_end = i1 == n_total,
       n_gaps = as.integer(n_gaps), gap_s = if (n_gaps > 0) gap_v else 0,
-      depth_attenuation = att, shape_supported = shape_ok,
+      depth_attenuation = att,
+      # fraction of this dive's samples that actually carry a depth. A long dive with low coverage is a
+      # dropout, not a foray - this is the number that tells the two apart.
+      depth_coverage = mean(is.finite(dd)),
+      shape_supported = shape_ok,
       stringsAsFactors = FALSE)
 
     for (v in variables) {
@@ -660,7 +693,7 @@
         band <- min(settings$surface.band, th / 2)
         r <- .diveRuns(resid, tnum, th, band, sign = if (identical(control$direction, "up")) -1 else 1)
         if (!nrow(r)) return(0)
-        r <- .diveScreenRuns(.diveSplitOnGaps(r, tnum, settings$max.gap), resid, tnum,
+        r <- .diveScreenRuns(.diveSplitOnGaps(r, tnum, depth, settings$max.gap), resid, tnum,
                              th - band, settings$min.duration, n)
         nrow(r)
       }, numeric(1))

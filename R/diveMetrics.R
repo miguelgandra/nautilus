@@ -127,6 +127,22 @@ diveMetrics <- function(data,
       .log_detail(lvl, sprintf("mixed reference across the cohort: %s",
                                paste(sprintf("%s x%d", names(table(out$reference)),
                                              as.integer(table(out$reference))), collapse = " \u00b7 ")))
+    # Flag unusually long dives rather than splitting them: for a fish or shark a multi-hour excursion
+    # may be entirely real, and truncating it would be worse than reporting an outlier. Coverage is
+    # printed alongside so a genuine foray is distinguishable at a glance from a sensor dropout.
+    if (nrow(out) >= 5L) {
+      lim <- stats::median(out$duration_s, na.rm = TRUE) +
+             5 * stats::mad(out$duration_s, na.rm = TRUE)
+      long <- which(is.finite(out$duration_s) & out$duration_s > max(lim, 2 * 3600))
+      if (length(long)) {
+        cov_txt <- sprintf("%.0f%%", 100 * stats::median(out$depth_coverage[long], na.rm = TRUE))
+        .log_detail(lvl, sprintf("%d unusually long dive%s (max %.1f h, median depth coverage %s) - not split",
+                                 length(long), if (length(long) != 1) "s" else "",
+                                 max(out$duration_s[long], na.rm = TRUE) / 3600, cov_txt))
+        if (any(out$depth_coverage[long] < 0.5, na.rm = TRUE))
+          .log_subdetail(lvl, "low coverage: check these are forays and not sensor dropouts")
+      }
+    }
     n_trunc <- sum(out$truncated_start | out$truncated_end, na.rm = TRUE)
     n_gapped <- sum(out$n_gaps > 0, na.rm = TRUE)
     if (n_trunc + n_gapped > 0)
