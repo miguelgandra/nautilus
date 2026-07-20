@@ -364,6 +364,7 @@ processTagData <- function(data,
   # iterate over each animal
   unoriented_ids <- character(0)                 # ordering guard: tags not run through applyAxisMapping()
   uncalibrated_ids <- character(0)               # requested magnetometer that received ZERO correction (raw heading)
+  dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   for (i in seq_along(data)) {
 
     ############################################################################
@@ -1220,6 +1221,34 @@ processTagData <- function(data,
           diag["speed"] <- sprintf("speed: %.2f \u2013 %.2f m/s (paddle wheel \u00b7 slope %.4f)", sp_r[1], sp_r[2], tag_calibration$slope)
         }
       }
+
+      #############################################################
+      # act on the meaningfulness verdict #########################
+
+      # A pre-calculated paddle column that failed the test above is not data: it is CONSTANT - a dead or
+      # absent paddle wheel writing one fixed value for the whole deployment. Until now that verdict was
+      # computed and then ignored whenever the internal estimate could not run to replace it, so the
+      # degenerate column survived into the output, where a constant-zero speed reads downstream as millions
+      # of genuine zero-speed samples and quietly becomes the mode of any pooled distribution. Drop it to NA
+      # instead: "this deployment has no paddle speed" is the honest record, and the value it held is
+      # reported below rather than silently discarded.
+      if (!perform_internal_calculation) {
+        dropped <- character(0); held <- numeric(0)
+        if (has_precalculated_speed && !is_speed_meaningful && !all(is.na(individual_data$paddle_speed))) {
+          held <- stats::na.omit(individual_data$paddle_speed)[1]
+          individual_data[, paddle_speed := NA_real_]; dropped <- c(dropped, "speed")
+        }
+        if (has_precalculated_freq && !is_freq_meaningful && !all(is.na(individual_data$paddle_freq))) {
+          individual_data[, paddle_freq := NA_real_]; dropped <- c(dropped, "freq")
+        }
+        if (length(dropped)) {
+          dead_paddle_ids <- c(dead_paddle_ids, id)
+          prev <- if ("speed" %in% names(diag)) diag[["speed"]] else "speed: not estimated"
+          diag["speed"] <- sprintf("%s \u00b7 dropped constant paddle %s%s", prev,
+                                   paste(dropped, collapse = " + "),
+                                   if (length(held)) sprintf(" (held %g throughout)", held) else "")
+        }
+      }
     }
 
 
@@ -1475,6 +1504,16 @@ processTagData <- function(data,
       "{length(uncalibrated_ids)} deployment{?s} got NO magnetometer calibration (raw field): {.val {utils::head(uncalibrated_ids, 8)}}.",
       "!" = "Heading carries the uncorrected hard-iron offset; dead-reckoned tracks will drift.",
       "i" = "Provide a dedicated calibration via {.code calibrateMagnetometer(calibration.data=)}, or collect more rotation coverage. Status recorded as {.val uncalibrated_raw} in {.code meta$mag_calibration$status}."))
+  }
+
+  # one consolidated notice for every deployment whose imported paddle channel turned out to be constant.
+  # Warned rather than logged because dropping an imported channel changes the data, and consolidated
+  # rather than per-deployment so a large batch does not drown in identical messages.
+  if (length(dead_paddle_ids)) {
+    cli::cli_warn(c(
+      "{length(dead_paddle_ids)} deployment{?s} had a CONSTANT imported paddle channel, now set to {.val NA}: {.val {utils::head(dead_paddle_ids, 8)}}.",
+      "!" = "A channel holding one fixed value is a dead or absent paddle wheel, not a measurement; left in place it would count as that many genuine speed samples in any pooled statistic.",
+      "i" = "These deployments simply have no paddle speed. Supply a {.arg paddle.calibration} row so it can be estimated from the magnetometer, or exclude them from speed analyses."))
   }
 
   # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering

@@ -469,3 +469,42 @@ test_that("manual mode applies a fixed de-noise window to a paddle deployment", 
   m <- if (data.table::is.data.table(man)) man else man[[1]]
   expect_equal(nautilus:::.getMeta(m)$sensors$heading_denoise_window, 1.5)
 })
+
+# ---- a constant imported paddle channel is dropped, not kept ---------------------------------------
+
+test_that("a CONSTANT imported paddle channel is dropped to NA and warned about once", {
+  # processTagData already judged such a column "not meaningful" but then ignored its own verdict whenever
+  # the internal estimate could not run to replace it, leaving a dead sensor's fixed value in the output -
+  # where a constant-zero speed reads downstream as that many genuine zero-speed samples.
+  set.seed(1)
+  n <- 4000; fs <- 20
+  mk <- function(id, sp) {
+    dt <- data.table::data.table(
+      ID = id, datetime = as.POSIXct("2023-01-01", tz = "UTC") + (seq_len(n) - 1) / fs,
+      ax = stats::rnorm(n, 0, .1), ay = stats::rnorm(n, 0, .1), az = 1 + stats::rnorm(n, 0, .1),
+      depth = 20 + 10 * sin(seq_len(n) / 300), paddle_speed = sp)
+    m <- nautilus:::.newNautilusMeta(); m$id <- id
+    m$tag$paddle_wheel <- TRUE; m$tag$package_id <- 99
+    m$deployment$datetime <- as.POSIXct("2023-01-01", tz = "UTC")
+    m$axis_mapping$applied <- TRUE
+    data.table::setattr(dt, "nautilus", m); class(dt) <- c("nautilus_tag", class(dt)); dt
+  }
+  tags <- list(DEAD_01 = mk("DEAD_01", rep(0, n)),                 # dead paddle: one fixed value
+               GOOD_01 = mk("GOOD_01", stats::runif(n, 0.2, 1.5))) # a real, varying record
+
+  out <- NULL
+  # the calibration year does not match, so the internal estimate cannot run to replace the column -
+  # exactly the path where the verdict used to be discarded
+  w <- testthat::capture_warnings(
+    invisible(capture.output(
+      out <- processTagData(tags, paddle.calibration = data.frame(year = 2024, package_id = 99, slope = 0.35),
+                            verbose = FALSE))))
+
+  expect_equal(sum(is.finite(out[["DEAD_01"]]$paddle_speed)), 0)   # dropped
+  expect_gt(sum(is.finite(out[["GOOD_01"]]$paddle_speed)), 0)      # a real channel is untouched
+
+  paddle_w <- w[grepl("CONSTANT imported paddle", w)]
+  expect_length(paddle_w, 1L)                                      # consolidated, not one per deployment
+  expect_match(paddle_w, "DEAD_01")
+  expect_false(grepl("GOOD_01", paddle_w))                         # only the offender is named
+})
