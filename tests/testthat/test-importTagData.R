@@ -475,10 +475,13 @@ test_that("importTagData reads the WC 'Dry' archive into ancillary$dry", {
                      stringsAsFactors = FALSE)
   data.table::fwrite(arch, file.path(wc, "out-Archive.csv"))
   res <- NULL
-  invisible(capture.output(
+  # this fixture's WC archive cannot support clock alignment (a 39 s overlap, or no depth channel), so
+  # the aligner abstains and - since that abstention now reaches the consolidated issues - a deferred
+  # warning is raised at verbose = 0. Expected here; the abstention itself is tested on its own below.
+  invisible(capture.output(suppressWarnings(
     res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
                          columns = metadataColumns(deploy_datetime = "deploy_date"),
-                         wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE)))
+                         wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE))))
   anc <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$dry
   expect_false(is.null(anc))
   expect_equal(anc$encoding, "transitions")
@@ -495,10 +498,13 @@ test_that("importTagData reads the complete WC Locations record into ancillary$p
                     Latitude = c(38.1, 38.2, 38.9), Longitude = c(-25.1, -25.2, -25.9), stringsAsFactors = FALSE)
   data.table::fwrite(loc, file.path(wc, "ID_01-Locations.csv"))
   res <- NULL
-  invisible(capture.output(
+  # this fixture's WC archive cannot support clock alignment (a 39 s overlap, or no depth channel), so
+  # the aligner abstains and - since that abstention now reaches the consolidated issues - a deferred
+  # warning is raised at verbose = 0. Expected here; the abstention itself is tested on its own below.
+  invisible(capture.output(suppressWarnings(
     res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
                          columns = metadataColumns(deploy_datetime = "deploy_date"),
-                         wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE)))
+                         wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE))))
   pos <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$positions
   expect_false(is.null(pos))
   expect_equal(nrow(pos$data), 3L)                                         # complete record, incl. the out-of-window 02:00 fix
@@ -533,4 +539,40 @@ test_that("importTagData fails loudly on empty input, not a silent empty import"
                                    columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    return.data = TRUE, verbose = FALSE)),
     "No readable", ignore.case = TRUE)
+})
+
+
+test_that("clock-alignment abstentions reach the final SUMMARY, not only the inline block", {
+  # The inline amber line is emitted at verbose = 2 only, and scrolls away in a long run. "Which tags
+  # failed to align?" is exactly the question asked at the end, so the abstention is collected at every
+  # verbosity and surfaced in the consolidated issues (as deferred warnings at verbose = 0).
+  root <- .make_fixture("ID_01"); on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  wc <- file.path(root, "ID_01", "WC"); dir.create(wc, recursive = TRUE, showWarnings = FALSE)
+  t <- seq(as.POSIXct("2020-01-01 00:00:00", tz = "UTC"), by = 1, length.out = 40)
+  # a FLAT reference depth: nothing for the cross-correlation to lock onto, so the aligner abstains
+  arch <- data.frame(Time  = c("00:00:00 01-Jan-2020", format(t, "%H:%M:%S %d-%b-%Y")),
+                     Depth = c(NA, rep(10, 40)),
+                     Dry   = c("", rep("0", 40)),
+                     Events = c("Conductivity Threshold: 80", rep("", 40)),
+                     stringsAsFactors = FALSE)
+  data.table::fwrite(arch, file.path(wc, "out-Archive.csv"))
+
+  w <- character(0)
+  invisible(capture.output(withCallingHandlers(
+    importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
+                  columns = metadataColumns(deploy_datetime = "deploy_date"),
+                  wc.subdirectory = "WC", return.data = TRUE, verbose = 0),
+    warning = function(cnd) { w <<- c(w, conditionMessage(cnd)); invokeRestart("muffleWarning") })))
+
+  hit <- grep("Clock alignment", w, value = TRUE)
+  expect_length(hit, 1L)
+  expect_match(hit, "not applied")
+  expect_match(hit, "ID_01", fixed = TRUE)          # names the affected deployment, not just a count
+})
+
+test_that("the calibration sidecar line carries no redundant parenthetical", {
+  # cosmetic: "(stored in metadata)" was implicit and only lengthened the line
+  src <- deparse(nautilus:::.reportCalibration)
+  expect_false(any(grepl("stored in metadata", src, fixed = TRUE)))
+  expect_true(any(grepl("calibration sidecar", src, fixed = TRUE)))
 })

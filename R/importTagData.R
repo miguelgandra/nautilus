@@ -270,6 +270,7 @@ importTagData <- function(data.folders,
   preflight_issues <- character(0)                                  # pre-flight (folder / metadata QC)
   failed_ids <- character(0); tz_issue_ids <- character(0)
   temp_discard_ids <- character(0); temp_override_ids <- character(0)
+  align_skip_ids <- character(0); align_skip_reasons <- character(0)   # clock alignment abstentions
   ids_str <- function(ids) { ids <- unique(ids); if (length(ids)) paste0(" (", paste(ids, collapse = ", "), ")") else "" }
   # consolidate every collector into one ordered set of issue lines (read at call time, so the closure
   # always sees the final counts). Used for both the cli tally and the deferred warnings.
@@ -280,6 +281,14 @@ importTagData <- function(data.folders,
     if (length(tz_issue_ids))      out <- c(out, sprintf("Time zone: %d UTC-offset mismatch%s", length(tz_issue_ids), ids_str(tz_issue_ids)))
     if (length(temp_discard_ids))  out <- c(out, sprintf("Temperature: %d discarded, electronics sensor only%s", length(temp_discard_ids), ids_str(temp_discard_ids)))
     if (length(temp_override_ids)) out <- c(out, sprintf("Temperature: %d using an overridden electronics sensor%s", length(temp_override_ids), ids_str(temp_override_ids)))
+    # grouped BY REASON, so the summary says why the clock was not aligned rather than only how often.
+    # A run where three tags abstained for three different causes needs three lines, not one count.
+    if (length(align_skip_ids)) {
+      by_reason <- split(align_skip_ids, align_skip_reasons)
+      for (rs in names(by_reason))
+        out <- c(out, sprintf("Clock alignment: %d not applied - %s%s",
+                              length(by_reason[[rs]]), rs, ids_str(by_reason[[rs]])))
+    }
     out
   }
   if (lvl == 0L) on.exit(for (it in .collectIssues()) warning(it, call. = FALSE), add = TRUE)
@@ -871,6 +880,14 @@ importTagData <- function(data.folders,
     att <- attachAncillary(sensor_data, wc_anc, align = alignment)
     # report only when there was actually a stream to shift: the aligner also records an abstention for
     # tags with no co-deployed device, and that is provenance, not something to narrate.
+    # Collect the abstentions for the SUMMARY, at EVERY verbosity - the inline amber line is only
+    # emitted at verbose = 2 and scrolls away in a long run, yet "which tags failed to align?" is
+    # exactly the question asked at the end. Collection is independent of whether it was narrated.
+    if (length(wc_anc) && !is.null(att$info) &&
+        !identical(att$info$status, "disabled") && !identical(att$info$status, "aligned")) {
+      align_skip_ids <- c(align_skip_ids, id)
+      align_skip_reasons <- c(align_skip_reasons, as.character(att$info$reason %||% "unspecified"))
+    }
     if (lvl >= 2L && length(wc_anc)) .reportAlignment(att$info, lvl)
 
 
@@ -1429,7 +1446,7 @@ importTagData <- function(data.folders,
   # but never applies them - printing them each import is noise no analysis step acts on. The one
   # functional field, the recording UTC offset, is cross-checked against `timezone` and surfaces
   # separately as a warning when it disagrees; that path is intentionally left loud.
-  .log_detail(lvl, "calibration sidecar: ", basename(cal$source), " (stored in metadata)")
+  .log_detail(lvl, "calibration sidecar: ", basename(cal$source))
   invisible(NULL)
 }
 
