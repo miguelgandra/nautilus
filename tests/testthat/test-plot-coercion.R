@@ -129,15 +129,21 @@ test_that("plotDistributions rejects a metric nobody carries and a colour that i
     "No data for")
   expect_equal(unique(s2$metric), "vedba")
 
-  # `colors` was type-checked but never value-checked, so a typo reached grDevices mid-render as a bare
-  # "invalid color name" naming neither the argument nor the offending entry
+  # Fill colours used to come from a plotter-level `colors` argument that was type-checked but never
+  # value-checked, so a typo reached grDevices mid-render as a bare "invalid color name" naming neither
+  # the argument nor the offending entry. They now come from `theme$palette`, and the check moved with
+  # them - plotTheme() was validating every colour slot EXCEPT palette, so the migration would have
+  # quietly handed the defect back.
+  expect_error(plotTheme(palette = c("steelblue", "notacolour")), "not a colour")
   expect_error(suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odba"),
-                                                  colors = c("steelblue", "notacolour"),
+                                                  theme = list(palette = c("steelblue", "notacolour")),
                                                   plot = FALSE, plot.file = pf, verbose = FALSE)),
                "not a colour")
   expect_no_error(suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odba"),
-                                                     colors = c("steelblue", "#4C72B0"),
+                                                     theme = plotTheme(palette = c("steelblue", "#4C72B0")),
                                                      plot = FALSE, plot.file = pf, verbose = FALSE)))
+  # a single string is still allowed: .themePalette() reads it as an hcl.colors() palette name
+  expect_no_error(plotTheme(palette = "Zissou 1"))
 })
 
 test_that("plotTracks colours by a factor channel without erroring", {

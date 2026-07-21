@@ -106,3 +106,47 @@ test_that(".distSummaryRow and .distXlim handle empty input", {
   xl <- nautilus:::.distXlim(c(1:100, 1000), 0.95)             # upper trim clips the outlier
   expect_lt(xl[2], 1000)
 })
+
+
+#######################################################################################################
+# Theme migration #####################################################################################
+#
+# plotDistributions used to carry its own `colors` and `cex = 1.15`, while the newer plotters take a
+# shared `theme`. The family was briefly bilingual; this is the migration.
+
+test_that("theme replaces the old colors/cex arguments entirely", {
+  expect_false(any(c("colors", "cex") %in% names(formals(plotDistributions))))
+  expect_true("theme" %in% names(formals(plotDistributions)))
+})
+
+test_that("a bad theme is rejected by name rather than failing deep inside the drawing code", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  expect_error(plotDistributions(.cohort(), metrics = "tbf_hz", theme = plotTheme(cex = 0),
+                                 plot = FALSE, plot.file = pf, verbose = FALSE), "cex")
+  expect_error(plotDistributions(.cohort(), metrics = "tbf_hz", theme = list(panel = "not-a-colour"),
+                                 plot = FALSE, plot.file = pf, verbose = FALSE), "panel")
+})
+
+test_that("a list of overrides is coerced like every other control object", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  expect_silent(suppressMessages(
+    plotDistributions(.cohort(), metrics = "tbf_hz", theme = list(cex = 1.4),
+                      plot = FALSE, plot.file = pf, verbose = FALSE)))
+  expect_true(file.size(pf) > 1000)
+})
+
+test_that("the tuned layout survives the migration: theme$cex = 1 keeps the legacy 1.15 base", {
+  # The figure was tuned at cex = 1.15 before the theme existed. Swapping straight to theme$cex = 1
+  # would have shrunk every label by 13% under the banner of "consistency", so the base is folded in.
+  # Pinning it here because it is invisible in the signature and easy to "tidy" away later.
+  src <- readLines("../../R/plotDistributions.R")
+  expect_true(any(grepl("cex <- theme\\$cex \\* 1.15", src, fixed = FALSE)))
+})
+
+test_that("panel chrome comes from the theme, not from hardcoded greys", {
+  src <- readLines("../../R/plotDistributions.R")
+  expect_false(any(grepl('col = "grey97"', src, fixed = TRUE)))
+  expect_false(any(grepl('col = "grey88"', src, fixed = TRUE)))
+  expect_true(any(grepl("col = theme\\$panel", src)))
+  expect_true(any(grepl("col = theme\\$grid", src)))
+})

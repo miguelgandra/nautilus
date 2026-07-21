@@ -38,12 +38,10 @@
 #'   right tails do not compress the bulk. Default `0.995`; set `1` for the full range.
 #' @param min.n Integer. Minimum finite samples a deployment needs for a violin to be drawn; below it the
 #'   row is left blank (but still summarised). Default `30`.
-#' @param colors Character vector of per-metric fill colours (recycled). `NULL` (default) uses a built-in
-#'   qualitative palette.
+#' @param theme A \link{plotTheme} object, or a list of overrides, controlling the visual style.
 #' @param plot Logical. If `TRUE` (default), draw to the active graphics device.
 #' @param plot.file Character. Path to a PDF to draw into (independent of `plot`; set either or both).
 #'   The function manages the device itself. Default `NULL`.
-#' @param cex Numeric. Master text-scaling factor. Default 1.15.
 #' @param id.col Character. Name of the deployment id column. Default `"ID"`.
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
 #'   `2`/"detailed" (default): additionally reports per-metric drawn/sample counts and shows a live
@@ -73,10 +71,10 @@ plotDistributions <- function(data,
                               show.marginal = TRUE,
                               trim          = 0.995,
                               min.n         = 30,
-                              colors        = NULL,
+
                               plot          = TRUE,
                               plot.file     = NULL,
-                              cex           = 1.15,
+                              theme         = plotTheme(),
                               id.col        = "ID",
                               verbose       = "detailed") {
 
@@ -92,25 +90,20 @@ plotDistributions <- function(data,
   .assert_flag(show.marginal, "show.marginal"); .assert_flag(plot, "plot")
   .assert_number(trim, "trim", min = 0); if (trim > 1) .abort("{.arg trim} must be in (0, 1].")
   .assert_count(min.n, "min.n", min = 1)
-  .assert_number(cex, "cex", min = 0)
+  theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
   .assert_string(id.col, "id.col"); .assert_string(order.metric, "order.metric", null_ok = TRUE)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")     # fail-fast: parent dir must exist
   if (!is.null(metrics) && (!is.character(metrics) || !length(metrics)))
     .abort("{.arg metrics} must be a non-empty character vector of column names, or {.code NULL}.")
   if (!is.null(labels) && (!is.character(labels) || is.null(names(labels))))
     .abort("{.arg labels} must be a NAMED character vector (metric -> label).")
-  if (!is.null(colors) && (!is.character(colors) || !length(colors)))
-    .abort("{.arg colors} must be a non-empty character vector of colours, or {.code NULL}.")
-  if (!is.null(colors)) {
-    # the type check above passed any character vector, so a typo reached grDevices mid-render and
-    # surfaced as a bare "invalid color name", naming neither the argument nor which entry was bad
-    bad_cols <- colors[!vapply(colors, .isColour, logical(1))]
-    if (length(bad_cols))
-      .abort(c("{.arg colors} contains {length(bad_cols)} value{?s} that {?is/are} not a colour: {.val {bad_cols}}.",
-               "i" = "Use a colour name from {.fn grDevices::colors} or a hex string such as {.val #4C72B0}."))
-  }
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
+
+  # This figure was tuned at cex = 1.15 before the theme existed. Folding that base in here means
+  # theme$cex = 1 reproduces the tuned layout exactly and scales from there, rather than silently
+  # shrinking every label by 13% the moment the function joined the family.
+  cex <- theme$cex * 1.15
 
   src <- .resolveInput(data, id.col)
 
@@ -129,7 +122,7 @@ plotDistributions <- function(data,
     .abort("{.arg order.metric} ({.val {order.metric}}) must be one of {.arg metrics}: {.val {metrics}}.")
 
   metric_labels <- vapply(metrics, function(m) .distLabel(m, labels), character(1))
-  metric_cols   <- if (is.null(colors)) .qualitativePalette(length(metrics)) else rep(colors, length.out = length(metrics))
+  metric_cols   <- .themePalette(theme$palette, length(metrics))
 
   .log_header(lvl, "plotDistributions", "Plotting metric distributions",
               bullets = sprintf("Input: %d deployment%s \u00b7 %d metric%s (%s)",
@@ -217,14 +210,16 @@ plotDistributions <- function(data,
     if (show.marginal) for (j in seq_len(M)) {
       m <- metrics[j]
       .drawMarginalPanel(geom[[m]], metric_labels[j], metric_cols[j],
-                         mar = c(0.4, if (j == 1) left1 else 0.8, 2.7, 1.2), cex = cex, first = (j == 1))
+                         mar = c(0.4, if (j == 1) left1 else 0.8, 2.7, 1.2), cex = cex, first = (j == 1),
+                         theme = theme)
     }
     # bottom row: per-deployment violins
     for (j in seq_len(M)) {
       m <- metrics[j]
       .drawViolinPanel(values[[m]], ord_ids, geom[[m]], metric_cols[j], min.n,
                        mar = c(4, if (j == 1) left1 else 0.8, 0.4, 1.2), cex = cex,
-                       first = (j == 1), title = if (show.marginal) NULL else metric_labels[j])
+                       first = (j == 1), title = if (show.marginal) NULL else metric_labels[j],
+                       theme = theme)
     }
   }
 
@@ -375,27 +370,27 @@ plotDistributions <- function(data,
     graphics::abline(v = refs[[k]], col = sty[[k]]$col, lty = sty[[k]]$lty, lwd = 1.6)
 }
 
-#' Subtle panel chrome shared by both rows: a very light fill (grey97) with thin, unobtrusive vertical
-#' grid lines at the metric ticks (grey88, one shade darker than the fill), drawn BEFORE the data so the
+#' Subtle panel chrome shared by both rows: the theme's panel fill with thin, unobtrusive vertical
+#' grid lines at the metric ticks in the theme's grid colour, drawn BEFORE the data so the
 #' distributions stay the focus. Vertical only - horizontal lines would clutter the stacked-violin rows.
 #' @keywords internal
 #' @noRd
-.distPanelBackground <- function(xlim) {
+.distPanelBackground <- function(xlim, theme) {
   usr <- graphics::par("usr")
-  graphics::rect(usr[1], usr[3], usr[2], usr[4], col = "grey97", border = NA)
+  graphics::rect(usr[1], usr[3], usr[2], usr[4], col = theme$panel, border = NA)
   gx <- pretty(xlim, n = 5); gx <- gx[gx > xlim[1] & gx < xlim[2]]      # interior ticks only (not on the border)
-  if (length(gx)) graphics::abline(v = gx, col = "grey88", lwd = 0.5)
+  if (length(gx)) graphics::abline(v = gx, col = theme$grid, lwd = 0.5)
 }
 
 #' Top-row panel: the pooled population density strip for one metric.
 #' @keywords internal
 #' @noRd
-.drawMarginalPanel <- function(g, label, fill, mar, cex, first) {
+.drawMarginalPanel <- function(g, label, fill, mar, cex, first, theme) {
   graphics::par(mar = mar)
   d <- g$marginal
   ymax <- if (is.null(d)) 1 else max(d$y) * 1.08
   plot(NA, xlim = g$xlim, ylim = c(0, ymax), axes = FALSE, xaxs = "i", yaxs = "i", xlab = "", ylab = "")
-  .distPanelBackground(g$xlim)                                    # subtle fill + grid, behind the data
+  .distPanelBackground(g$xlim, theme)                                    # subtle fill + grid, behind the data
   if (!is.null(d)) {
     xx <- c(d$x[1], d$x, d$x[length(d$x)]); yy <- c(0, d$y, 0)
     graphics::polygon(xx, yy, col = grDevices::adjustcolor(fill, 0.55), border = .distDarken(fill), lwd = 1.4)
@@ -412,12 +407,12 @@ plotDistributions <- function(data,
 #' Bottom-row panel: stacked per-deployment horizontal violins for one metric.
 #' @keywords internal
 #' @noRd
-.drawViolinPanel <- function(vals, ord_ids, g, fill, min.n, mar, cex, first, title) {
+.drawViolinPanel <- function(vals, ord_ids, g, fill, min.n, mar, cex, first, title, theme) {
   ny <- length(ord_ids)
   graphics::par(mar = mar)
   # first id at the TOP: row r (from top) sits at y = ny - r + 1
   plot(NA, xlim = g$xlim, ylim = c(0.4, ny + 0.6), axes = FALSE, xaxs = "i", yaxs = "i", xlab = "", ylab = "")
-  .distPanelBackground(g$xlim)                                    # subtle fill + grid, behind the violins
+  .distPanelBackground(g$xlim, theme)                                    # subtle fill + grid, behind the violins
   fill_t <- grDevices::adjustcolor(fill, 0.7)
   for (r in seq_len(ny)) {
     y0 <- ny - r + 1
@@ -427,7 +422,7 @@ plotDistributions <- function(data,
     d <- .clampDensity(d, g$xlim)                                 # this deployment's own range (clipped to xlim)
     hw <- 0.44 * d$y / max(d$y)                                   # per-row normalised half-width
     graphics::polygon(c(d$x, rev(d$x)), c(y0 + hw, rev(y0 - hw)), col = fill_t, border = .distDarken(fill), lwd = 0.7)
-    graphics::segments(stats::median(x), y0 - 0.34, stats::median(x), y0 + 0.34, col = "grey20", lwd = 0.9)  # median tick
+    graphics::segments(stats::median(x), y0 - 0.34, stats::median(x), y0 + 0.34, col = theme$ink, lwd = 0.9)  # median tick
   }
   .distRefLines(g$refs, cex)
   graphics::axis(1, at = pretty(g$xlim, n = 5), cex.axis = cex * 0.85, tcl = -0.3)

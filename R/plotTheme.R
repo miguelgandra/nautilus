@@ -57,6 +57,18 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
     if (!.isColour(th[[nm]])) .abort("{.arg {nm}} in {.fn plotTheme} must be a single valid colour.")
   if (length(th$sequential) < 2 || !all(vapply(th$sequential, .isColour, logical(1))))
     .abort("{.arg sequential} in {.fn plotTheme} must be >= 2 valid colours.")
+  # `palette` was the one colour slot never value-checked. A single string is allowed because
+  # .themePalette() accepts an hcl.colors() palette NAME there; anything longer must be real colours,
+  # or a typo reaches grDevices mid-render as a bare "invalid color name" that names neither the
+  # argument nor the offending entry - the exact failure the plotter-level check used to prevent.
+  if (!length(th$palette)) .abort("{.arg palette} in {.fn plotTheme} must not be empty.")
+  if (length(th$palette) > 1L) {
+    bad <- th$palette[!vapply(th$palette, .isColour, logical(1))]
+    if (length(bad))
+      .abort(c("{.arg palette} in {.fn plotTheme} contains {length(bad)} value{?s} that {?is/are} not a colour: {.val {bad}}.",
+               "i" = "Use a colour name from {.fn grDevices::colors}, a hex string such as {.val #4C72B0},",
+               "i" = "or a single {.fn grDevices::hcl.colors} palette name."))
+  }
   th$preset <- preset
   structure(th, class = c("nautilus_theme", "list"))
 }

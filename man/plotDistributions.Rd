@@ -14,10 +14,9 @@ plotDistributions(
   show.marginal = TRUE,
   trim = 0.995,
   min.n = 30,
-  colors = NULL,
   plot = TRUE,
   plot.file = NULL,
-  cex = 1.15,
+  theme = plotTheme(),
   id.col = "ID",
   verbose = "detailed"
 )
@@ -51,15 +50,12 @@ right tails do not compress the bulk. Default \code{0.995}; set \code{1} for the
 \item{min.n}{Integer. Minimum finite samples a deployment needs for a violin to be drawn; below it the
 row is left blank (but still summarised). Default \code{30}.}
 
-\item{colors}{Character vector of per-metric fill colours (recycled). \code{NULL} (default) uses a built-in
-qualitative palette.}
-
 \item{plot}{Logical. If \code{TRUE} (default), draw to the active graphics device.}
 
 \item{plot.file}{Character. Path to a PDF to draw into (independent of \code{plot}; set either or both).
 The function manages the device itself. Default \code{NULL}.}
 
-\item{cex}{Numeric. Master text-scaling factor. Default 1.15.}
+\item{theme}{A \link{plotTheme} object, or a list of overrides, controlling the visual style.}
 
 \item{id.col}{Character. Name of the deployment id column. Default \code{"ID"}.}
 
