@@ -651,9 +651,22 @@ filterLocationsControl <- function(min.time.mins = 0,
 #'
 #' @param speed.method How to set swimming speed for the reckoning: one of `"constant"` (default),
 #'   `"vedba"`, `"paddle"`, or `"depth_rate"`. See *Choosing a speed method*.
-#' @param constant.speed Numeric. Speed (m/s) for `speed.method = "constant"`, and the fallback whenever
-#'   another method yields NA (shallow-pitch `depth_rate` samples, or a failed VeDBA calibration). Default
-#'   0.5.
+#' @param constant.speed Numeric. Speed (m/s) for `speed.method = "constant"`, and the fallback used when
+#'   direct speed estimates are unavailable. A substantial proportion of the reconstructed track may
+#'   therefore rely on assumed rather than directly estimated speed. It is reached two different ways, and
+#'   the distinction matters when you judge a track:
+#'   \itemize{
+#'     \item \emph{Gap back-fill.} Any sample still lacking a finite speed is set to `constant.speed`. In
+#'       practice this bites hardest under `"depth_rate"`, where every sample pitched shallower than
+#'       `depth.rate.min.pitch` is dropped - often the majority of a record. Paddle gaps mostly do NOT
+#'       land here: interior gaps in `paddle_speed` are interpolated first, so only leading/trailing gaps
+#'       (or an essentially absent channel) fall through.
+#'     \item \emph{Whole-track fallback.} If the `"vedba"` calibration cannot be fitted, or a `"paddle"`
+#'       record carries no usable speed channel, the \emph{entire} track is set to `constant.speed` and
+#'       the reason is logged. The result is then a wholly assumed track, not a partially assumed one.
+#'   }
+#'   Check `speed_dr` for how much of the track is a single repeated value before interpreting fine-scale
+#'   track structure. Default 0.5.
 #' @param max.speed Numeric. Biological speed cap (m/s); any estimated speed above it is clipped. Default
 #'   2.5.
 #' @param vedba.model Speed-from-VeDBA calibration for `speed.method = "vedba"`. Either `NULL` (default;

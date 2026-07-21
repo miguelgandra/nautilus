@@ -19,17 +19,19 @@
 #' @param deploy_lon,deploy_lat Columns holding the deployment longitude / latitude. Required
 #'   (defaults `"deploy_lon"` / `"deploy_lat"`).
 #' @param recovery_datetime Column holding the recovery (or detachment) datetime, POSIXct, or `NULL`.
-#'   Mapping it enables the recovery-before-deployment and deployment-duration checks in
-#'   \code{\link{qcDeploymentMetadata}}. Default `NULL`.
+#'   Mapping it enables the recovery-before-deployment check in \code{\link{qcDeploymentMetadata}}, and
+#'   is also required by the package-overlap check. Default `NULL`.
 #' @param popup_datetime,popup_lon,popup_lat Columns holding the pop-up (detachment) datetime /
 #'   longitude / latitude. Supply all three to enable pop-up location integration. Default `NULL`.
 #' @param package_id Column holding the physical tag-package ID (the housing whose axis orientation is
 #'   constant), or `NULL`. Enables paddle-wheel speed calibration, per-package axis-orientation
 #'   consensus (\code{\link{consensusAxisMapping}}), and the package-overlap check in
-#'   \code{\link{qcDeploymentMetadata}}. Default `NULL`.
+#'   \code{\link{qcDeploymentMetadata}} - which additionally requires `recovery_datetime`, since it needs
+#'   a deployment window to intersect. Default `NULL`.
 #' @param logger_id Column holding the logger / data-recorder ID (the unit that owns the raw recording
-#'   file, which may be reused across packages), or `NULL`. Enables logger-reuse / board-swap detection
-#'   and continuous-recording-session detection in \code{\link{qcDeploymentMetadata}}. Default `NULL`.
+#'   file, which may be reused across packages), or `NULL`. Enables the logger-reuse note in
+#'   \code{\link{qcDeploymentMetadata}}, which flags a logger appearing on more than one deployment.
+#'   Default `NULL`.
 #' @param exclude_sensors Column listing sensor channels known to be unusable on a deployment (a
 #'   data-quality fact kept separate from axis orientation, e.g. a firmware bug), or `NULL`. Each value
 #'   is a comma-separated list of families (`"accel"`, `"gyro"`, `"mag"`) and/or channels (e.g.
@@ -68,18 +70,19 @@
 #' Each field maps one column of your metadata table to a *role* that nautilus understands. Mapping a
 #' role does more than rename a column: it tells the package what the column *means*, and so unlocks the
 #' checks and features that depend on it. Roles you do not map are simply skipped, and the checks that
-#' need them are silently disabled (and reported as skipped in the QC summary).
+#' need them are silently disabled. Nothing is reported for a role you did not map, so check the
+#' `Roles mapped:` line in the QC output to confirm the checks you wanted are actually running.
 #'
 #' \tabular{lll}{
 #'   \strong{Role} \tab \strong{Required?} \tab \strong{Enables}\cr
-#'   `id` \tab required \tab the deployment key; duplicate-ID and ordering checks\cr
+#'   `id` \tab required \tab the deployment key; missing-ID and duplicate-ID checks\cr
 #'   `deploy_datetime` \tab required \tab deployment window; temporal-validity and future-date checks\cr
 #'   `deploy_lon`/`deploy_lat` \tab required \tab declination correction; location-plausibility check\cr
 #'   `tag_model` \tab required \tab posture scorer; axis-mapping keying\cr
 #'   `tag_type` \tab optional (inferred) \tab Camera/MS-specific handling\cr
-#'   `package_id` \tab optional \tab per-package axis consensus; package-overlap check; paddle calibration\cr
-#'   `logger_id` \tab optional \tab logger-reuse / board-swap and recording-session detection\cr
-#'   `recovery_datetime` \tab optional \tab recovery-before-deploy and deployment-duration checks\cr
+#'   `package_id` \tab optional \tab per-package axis consensus; package-overlap check (needs `recovery_datetime` too); paddle calibration\cr
+#'   `logger_id` \tab optional \tab logger-reuse note\cr
+#'   `recovery_datetime` \tab optional \tab recovery-before-deploy check; required by package-overlap\cr
 #'   `exclude_sensors` \tab optional \tab drops known-unusable sensor channels (validity, e.g. a firmware bug)\cr
 #'   `axis_config` \tab optional \tab names the IMU orientation config (looked up in a `configs` dictionary)\cr
 #'   `popup_datetime`/`popup_lon`/`popup_lat` \tab optional \tab pop-up location integration\cr

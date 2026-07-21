@@ -135,11 +135,11 @@
 #'
 #' Computed using sensor fusion algorithms:
 #' \itemize{
-#'   \item {Tilt-compensated compass} (default): A lightweight 6-axis fusion (accelerometer + magnetometer)
+#'   \item \strong{Tilt-compensated compass} (default): A lightweight 6-axis fusion (accelerometer + magnetometer)
 #'   to compute roll, pitch, and heading. The method first calculates tilt angles from accelerometer data,
 #'   then compensates the magnetometer readings using these angles to compute a more accurate heading
 #'   (as described in Gunner et al., 2021). This approach avoids gyroscope drift but may be affected by magnetic disturbances.
-#'   \item {Madgwick filter}: A 9-axis fusion algorithm (accelerometer + gyroscope + magnetometer)
+#'   \item \strong{Madgwick filter}: A 9-axis fusion algorithm (accelerometer + gyroscope + magnetometer)
 #'   implementing Sebastian Madgwick's quaternion-based gradient descent
 #'   approach. This provides absolute orientation reference by incorporating
 #'   Earth's magnetic field and is more robust to transient disturbances,
@@ -149,10 +149,26 @@
 #' \itemize{
 #'   \item Roll (degrees): Rotational movement of the animal around its longitudinal (x) axis.
 #'   \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
-#'   \item Heading (degrees): Directional orientation of the animal, representing the compass heading.
-#'         Heading is corrected based on the deployment coordinates using global geomagnetic declination models.
+#'   \item Heading (degrees): The compass heading, corrected for magnetic declination from the deployment
+#'         coordinates using global geomagnetic models (this correction requires a location: if neither the
+#'         deployment metadata nor the data supply usable coordinates, processing stops with an error).
+#'         Heading represents the orientation of the tag rather than a direct measurement of animal heading.
+#'         Its accuracy therefore depends on how well the tag is aligned with the animal, and note that
+#'         \strong{no mounting correction reaches heading}: heading is computed from the raw pitch and roll,
+#'         and the pitch/roll mounting offsets described below are subtracted afterwards, without heading
+#'         being recomputed. \code{\link{applyAxisMapping}} resolves the sensor-axis orientation it can
+#'         determine, but where the axis mapping was derived from the accelerometer alone the magnetometer
+#'         is left in its raw chip frame; and residual mounting rotation around the vertical axis is never
+#'         estimated. Treat heading as the least well constrained of the orientation outputs.
 #'   \item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between -180 and 180 degrees.
 #' }
+#' The mounting corrections assume the tag is approximately aligned with the animal, and the two have
+#' opposite data requirements: the roll offset is the median roll over the most level part of the record,
+#' so it needs level swimming, while the pitch offset is read from the relationship between pitch and
+#' vertical speed, so it needs \emph{diving} and is declined outright on a record with too little vertical
+#' movement (reported as "insufficient diving signal"). Large mounting deviations may introduce errors in
+#' derived orientation and movement estimates. See \code{vignette("orientation-methods", package =
+#' "nautilus")} for how each correction is estimated and what it can and cannot recover.
 #'
 #' \strong{Linear Motion:}
 #' \itemize{

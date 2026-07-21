@@ -6,7 +6,7 @@
 \usage{
 checkSensorIntegrity(
   data,
-  checks = c("duplication", "dead"),
+  checks = c("duplication", "dead", "accel.scale", "saturation"),
   control = integrityControl(),
   apply = FALSE,
   id.col = "ID",
@@ -29,12 +29,15 @@ expected.}
 \item{checks}{Character vector of integrity checks to run. Defaults to the two high-confidence,
 error-severity checks - \code{"duplication"} (a channel that is a near-exact copy of the accelerometer,
 the firmware accel-duplication signature) and \code{"dead"} (a channel constant over the whole
-deployment). The remaining checks are opt-in and advisory (\code{"warning"}/\code{"info"}, never dropped by
-\code{apply}): \code{"saturation"} (a channel clipped at its range limit), \code{"mag.plausibility"} (an unstable
-magnetometer field magnitude), \code{"accel.scale"} (a static acceleration magnitude far from 1 g),
-\code{"gyro.bias"} (a persistent gyroscope offset), \code{"paddle.contamination"} (a narrow-band
-magnetometer peak suggesting an undocumented paddle wheel) and \code{"dropout"} (a channel missing for
-most of the deployment).}
+deployment) - plus two advisory checks that earn their place by catching real hardware faults at no
+measurable cost: \code{"accel.scale"} (a static acceleration magnitude far from 1 g, which catches unit
+and scaling mistakes) and \code{"saturation"} (a channel pinned at a range limit, which catches a railed
+axis, a clipping gyroscope and sentinel values). Both are warning-severity, so \code{apply} never drops
+anything because of them. The remaining checks are opt-in and advisory (\code{"warning"}/\code{"info"}, never
+dropped by \code{apply}): \code{"mag.plausibility"} (an unstable magnetometer field magnitude), \code{"gyro.bias"}
+(a persistent gyroscope offset), \code{"paddle.contamination"} (a narrow-band magnetometer peak
+suggesting an undocumented paddle wheel) and \code{"dropout"} (a channel missing for most of the
+deployment).}
 
 \item{control}{An \code{\link{integrityControl}} object (or a named list of its fields) bundling the
 per-check detection thresholds. Defaults to \code{integrityControl()} (values calibrated on real
@@ -99,7 +102,9 @@ analysis sees them.
 }
 \details{
 The checks form two tiers. Two \strong{error}-severity checks are trustworthy enough to drop a channel (with
-\code{apply = TRUE}); the rest are opt-in and \strong{advisory} (\code{warning}/\code{info}) - reported but never dropped.
+\code{apply = TRUE}); the rest are \strong{advisory} (\code{warning}/\code{info}) - reported but never dropped. Four checks
+run by default (\code{duplication}, \code{dead}, and the advisory \code{accel.scale} and \code{saturation}); the remaining
+advisory checks are opt-in via \code{checks}.
 Every threshold below lives in \code{\link{integrityControl}}, and the reported \code{metric} is noted in
 parentheses.
 
@@ -115,7 +120,10 @@ a signal. Depth is exempt (a never-submerged tag legitimately reads a constant).
 \strong{saturation} (warning). A channel pinned at its exact minimum or maximum for a sustained fraction
 of samples (\code{> saturation.frac}): the signal is clipping against the sensor's dynamic-range rail,
 so the true values beyond it are lost. Typically a mis-set measurement range or an over-driven (e.g.
-mis-scaled) channel. (metric: the clipped fraction.)
+mis-scaled) channel. Like every check here it covers the accelerometer, gyroscope and magnetometer
+only - depth and temperature are screened for physical-range faults by \code{\link{checkSensorQuality}}
+instead, which is the right place for them (a depth channel resting at the surface is not clipping).
+(metric: the clipped fraction.)
 
 \strong{mag.plausibility} (warning). The geomagnetic field magnitude \code{|B|} is orientation-invariant,
 so after provisional hard-iron centring it should stay near-constant. A high robust coefficient of
@@ -124,15 +132,24 @@ channel (a magnetometer duplicated from the accelerometer tracks motion and fail
 abstains when the animal did not rotate through enough orientations to trust the centring. (metric: the
 robust CV.)
 
-\strong{accel.scale} (warning). The static (gravity) component of acceleration should have magnitude
-~1 g; a median far from it (\code{|median - 1| > accel.scale.tol}) indicates a scaling or unit error
-(e.g. m/s^2 never converted to g). (metric: the median static magnitude, g.)
+\strong{accel.scale} (warning). Checks whether the overall accelerometer magnitude is consistent with
+gravity. The static (gravity) component is taken as a low-pass of the three axes, and its magnitude
+should sit near 1 g across the record; the check flags \code{|median - 1| > accel.scale.tol}. It needs
+no quiescent periods - the low-pass averages the animal's own motion away - so it applies equally to a
+continuously active animal. It detects uniform scaling errors, for example acceleration left in m/s^2
+and never converted to g, but may not detect errors affecting only individual axes: on a near-level
+animal a gain error on a single axis barely moves the vector magnitude while still distorting roll.
+Users working with unusual sensor configurations or unexpected results should inspect individual sensor
+axes in addition to this summary metric. (metric: the median static magnitude, g.)
 
 \strong{gyro.bias} (info). Over a long record the animal's rotations average out, so each gyroscope axis
 should have a near-zero median. A persistent offset that is both a large fraction of the rotational
-scale (\code{> gyro.bias.frac}) and absolutely meaningful (\code{> gyro.bias.min}) is a sensor bias. It
-is usually harmless - the orientation filter in \code{\link{processTagData}} estimates and removes gyro
-bias - and is reported for information only. (metric: the largest \code{|median|}, rad/s.)
+scale (\code{> gyro.bias.frac}) and absolutely meaningful (\code{> gyro.bias.min}) is a sensor bias.
+Gyroscope bias is not explicitly corrected. The default orientation algorithm in
+\code{\link{processTagData}} (\code{"tilt_compass"}) does not use the gyroscope, so gyroscope bias does
+not affect it. The \code{"madgwick"} algorithm does use the gyroscope; small biases are largely absorbed
+by the accelerometer and magnetometer, but larger biases may affect orientation estimates and should be
+inspected before relying on derived movement metrics. (metric: the largest \code{|median|}, rad/s.)
 
 \strong{paddle.contamination} (warning). A magnetic paddle wheel spins with the animal's speed and
 induces a narrow-band peak in the magnetometer at its rotation frequency. The check scans the
@@ -156,10 +173,14 @@ the overview but do not get their own page.
 \dontrun{
 regularized <- regularizeTimeSeries(filtered)
 # Report structural faults first; re-run with apply = TRUE to drop the error-flagged channels:
-integrity <- checkSensorIntegrity(regularized,
-                                  checks = c("duplication", "dead", "saturation"),
-                                  apply  = FALSE)
+integrity <- checkSensorIntegrity(regularized, apply = FALSE)
 integrity$issues                       # one row per flagged channel
+
+# Add the opt-in advisory checks (never dropped by apply, worth eyeballing once per fleet):
+checkSensorIntegrity(regularized,
+                     checks = c("duplication", "dead", "accel.scale", "saturation",
+                                "mag.plausibility", "gyro.bias"),
+                     apply  = FALSE)
 }
 }
 \seealso{

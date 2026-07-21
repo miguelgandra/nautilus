@@ -618,7 +618,9 @@ checkTagMapping <- function(data,
     rownames(results_sorted) <- NULL
     if (all(!is.finite(results_full$score))) {
       .abort(c("No valid mapping could be found with a finite score.",
-               "i" = "This may be due to insufficient static periods or persistent sensor issues; consider adjusting {.arg static.threshold} or {.arg dba.window}."))
+               "i" = "Most often this is a gap: a run of missing values in any single accelerometer channel makes every candidate non-finite. A gap only has to span one {.arg dba.window} to do it, so widening {.arg dba.window} is the usual fix.",
+               "i" = "Other causes are insufficient static periods, sensor calibration problems, or acceleration in the wrong units (see {.arg g.value}).",
+               "i" = "Check sensor integrity with {.fn checkSensorIntegrity} before relaxing {.arg static.threshold}, as lowering thresholds may hide the underlying sensor problem rather than fix it."))
     }
 
     # Resolve the VERTICAL axis from gravity loading, independently of the posture score: body +Z is

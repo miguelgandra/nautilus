@@ -65,6 +65,58 @@ test_that("accepts a character vector of .rds file paths", {
   expect_true("A" %in% res$issues$id)
 })
 
+test_that("accel.scale runs by default and catches a unit error, without ever dropping a channel", {
+  # unit/scale mistakes are the single most likely user error when building a tag by hand, so
+  # accel.scale must fire without being asked for. (The full default set is asserted below.)
+  # acceleration left in m/s^2 and never converted to g
+  x <- .mkint("A")
+  x[, `:=`(ax = ax * 9.80665, ay = ay * 9.80665, az = az * 9.80665)]
+  res <- .run(list(A = x), apply = TRUE)                    # DEFAULT checks - no `checks =` argument
+  hit <- res$issues[res$issues$check == "accel.scale", ]
+  expect_equal(nrow(hit), 1L)
+  expect_equal(hit$severity, "warning")                     # advisory, never an error
+  expect_gt(hit$metric, 9)                                  # ~9.8 g, not ~1 g
+
+  # warning severity means `apply` leaves the data completely intact
+  expect_true(all(c("ax", "ay", "az") %in% names(res$curated_data$A)))
+  expect_equal(nrow(res$curated_data$A), nrow(x))
+})
+
+test_that("saturation runs by default, covers the IMU only, and never drops a channel", {
+  expect_setequal(eval(formals(checkSensorIntegrity)$checks),
+                  c("duplication", "dead", "accel.scale", "saturation"))
+
+  # a gyro axis railed at its range limit
+  x <- .mkint("A")
+  x[, gz := pmin(gz, stats::quantile(gz, 0.90))]
+  res <- .run(list(A = x), apply = TRUE)
+  hit <- res$issues[res$issues$check == "saturation", ]
+  expect_true("gz" %in% hit$channel)
+  expect_equal(unique(hit$severity), "warning")
+  expect_true("gz" %in% names(res$curated_data$A))       # advisory: nothing is dropped
+})
+
+test_that("saturation ignores depth, whose surface floor is a resting state and not clipping", {
+  # a depth channel sitting at exactly 0 for most of the record is a surfacing animal. It must not be
+  # flagged: the check is scoped to .imuFamilies(), and depth/temp range faults belong to
+  # checkSensorQuality(). Without that scoping this fixture would flag at 70% - as would most of a
+  # real fleet.
+  x <- .mkint("A")
+  x[1:350, depth := 0]
+  expect_gt(mean(x$depth == 0), 0.5)
+  res <- .run(list(A = x))
+  expect_equal(nrow(res$issues[res$issues$check == "saturation", ]), 0L)
+})
+
+test_that("a per-axis gain error slips past accel.scale (documented blind spot)", {
+  # locks the limitation stated in ?checkSensorIntegrity and vignette("orientation-methods"):
+  # a scalar magnitude test cannot see an error confined to one axis of a near-level animal.
+  x <- .mkint("A")
+  x[, ay := ay * 1.20]
+  res <- .run(list(A = x))
+  expect_equal(nrow(res$issues[res$issues$check == "accel.scale", ]), 0L)
+})
+
 test_that("argument validation aborts clearly", {
   expect_error(checkSensorIntegrity(list(A = .mkint("A")), checks = "bogus", verbose = FALSE), "arg", ignore.case = TRUE)
   expect_error(checkSensorIntegrity(list(A = .mkint("A")), control = list(bogus = 1), verbose = FALSE), "control", ignore.case = TRUE)

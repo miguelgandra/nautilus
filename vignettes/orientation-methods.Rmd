@@ -1,0 +1,327 @@
+---
+title: "Orientation methods: what nautilus corrects, and what it cannot"
+output:
+  rmarkdown::html_vignette:
+    toc: true
+    toc_depth: 2
+vignette: >
+  %\VignetteIndexEntry{Orientation methods: what nautilus corrects, and what it cannot}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment  = "#>",
+  eval     = FALSE
+)
+```
+
+The function documentation for `processTagData()` and `checkSensorIntegrity()` states the
+practical limits of nautilus orientation estimates in a sentence or two. This vignette is the
+long version: it sets out the frames of reference involved, derives how far each uncorrected
+error propagates into pitch, roll, heading and dead-reckoned speed, and explains why some of
+those errors are invisible to the package's automated checks.
+
+It is aimed at readers deciding how much to trust a derived orientation series, or diagnosing a
+deployment whose kinematics look wrong. Every number below is reproduced by the code shown; the
+chunks are not evaluated when the vignette is built, so you can copy them into a session and
+check the results yourself.
+
+## 1. Three frames of reference
+
+A tag records in its **sensor frame**: whatever the accelerometer, gyroscope and magnetometer
+chips are physically aligned with inside the housing. Biology happens in the **animal frame**:
+`x` forward along the body axis, `y` out to one side, `z` up through the back. Between them sits
+the **package frame**, the orientation of the housing on the animal, which is fixed for a given
+deployment but differs between deployments and between attachment methods.
+
+nautilus resolves the difference in two separate steps, and the distinction matters because they
+have very different reliability.
+
+**Step 1, the discrete part.** `checkTagMapping()` and `applyAxisMapping()` resolve which sensor
+axis corresponds to which body axis, and in which direction. This is a search over the 24 proper
+rotations that map one right-handed axis triple onto another - six axis permutations times four
+sign combinations that preserve handedness. It is a *discrete* choice, so it is either right or wrong, with no partial credit.
+It is not, however, guaranteed to resolve: the vertical axis is resolved from gravity and is
+reported "gravity-ambiguous" when mount tilt obscures it, while surge versus sway is resolved from
+*diving* signal (the pitch-versus-depth-rate relationship) and is reported "ambiguous" when the
+animal did not dive enough. That is precisely why `consensusAxisMapping()` (pool the decision over a
+package) and `reviewTagMapping()` (confirm it by eye) exist - use them rather than assuming a
+mapping was resolved.
+
+**Step 2, the continuous part.** Once the axes are named correctly, the housing is still not
+perfectly aligned with the animal: it sits at some small pitch and roll relative to the body axis,
+and it may be rotated about the animal's vertical axis. These are continuous offsets, they must be
+*estimated* rather than selected, and this is where the limits are.
+
+## 2. Pitch and roll mounting offsets
+
+`processTagData()` estimates a constant pitch and roll offset for the deployment and subtracts it
+(controlled by `correct.pitch` and `correct.roll` in `orientationControl()`). The two offsets use
+different estimators, and knowing which is which explains what they can and cannot see.
+
+**Pitch** uses the Kawatsu method: regress pitch (in radians) on the smoothed vertical velocity
+and take the **intercept** - that is, the pitch the tag reports when the animal is not going up or
+down. A correctly-mounted tag reads zero there; a nose-down mounting reads its own offset. The
+correction is applied only when the regression is strong enough (`pitch.offset.min.r2`) and the
+resulting offset is physically plausible (`warning.threshold`), because a weak fit
+means the "offset" is really just the animal's mean pitch, and subtracting that would strip
+genuine posture signal.
+
+**Roll** uses the median roll over the most level half of the record (the samples whose *absolute*
+smoothed vertical velocity is below its own median). A bilaterally symmetric animal cruises upright on
+average, so any persistent roll during level swimming is attributed to the mounting.
+
+Both assume the animal spends a substantial part of the record close to level, and both estimate a
+single constant shift. A rigid shift can remove a constant bias but cannot remove an error that
+*scales with the animal's own attitude*. The next section is about exactly such an error - and
+about the fact that both estimators are blind to it by construction.
+
+## 3. Mounting yaw: the rotation that is not estimated
+
+If the tag is rotated by an angle `psi` about the animal's vertical axis - nose of the tag not
+pointing along the nose of the animal - nautilus does not estimate or remove it. This is stated
+in the `processTagData()` documentation; here is what it costs.
+
+Write the gravity vector in the animal frame for a given pitch and roll, then re-express it in a
+tag frame yawed by `psi`, and compute pitch and roll from it the way a tilt-compensated compass
+does:
+
+```{r frames}
+d2r <- pi / 180; r2d <- 180 / pi
+
+grav_animal <- function(pitch, roll) {
+  p <- pitch * d2r; r <- roll * d2r
+  c(-sin(p), sin(r) * cos(p), cos(r) * cos(p))
+}
+yawR <- function(psi) {
+  s <- sin(psi * d2r); c_ <- cos(psi * d2r)
+  matrix(c(c_, s, 0, -s, c_, 0, 0, 0, 1), 3, 3, byrow = TRUE)
+}
+pr_from_g <- function(g) {
+  c(pitch = -asin(max(-1, min(1, g[1]))) * r2d,
+    roll  = atan2(g[2], g[3]) * r2d)
+}
+```
+
+### 3.1 Pitch is compressed, with no offset
+
+The exact relation is `sin(observed_pitch) = cos(psi) * sin(true_pitch)`: a yawed tag reads a
+*compressed* version of the animal's true pitch, by a factor that approaches `cos(psi)` at small
+angles. Regressing observed on true pitch over a realistic range:
+
+```{r pitch-scale}
+psi <- 30
+true_p <- seq(-60, 60, by = 0.5)
+obs <- t(sapply(true_p, function(p) pr_from_g(as.vector(yawR(psi) %*% grav_animal(p, 0)))))
+signif(coef(lm(obs[, "pitch"] ~ true_p)), 6)
+#>  (Intercept)       true_p
+#> -4.25144e-16  8.35277e-01
+```
+
+The slope is 0.8353 (against `cos(30 deg) = 0.8660`; the relation is not exactly linear over
++/-60 degrees, so the least-squares slope sits slightly below the small-angle limit). **The
+intercept is zero** - the printed -4.25e-16 is floating-point noise. Mounting yaw is a pure *scale* error on pitch, with no offset
+whatsoever - and the Kawatsu estimator of section 2 uses only the intercept. It is therefore blind
+to yaw by construction, and no amount of extra data will reveal it.
+
+### 3.2 A phantom roll appears on a level animal
+
+The same rotation projects part of the animal's pitch onto the tag's roll axis, so an animal that
+is not rolled at all appears to be banking whenever it pitches:
+
+```{r phantom-roll}
+for (p in c(30, 45)) print(pr_from_g(as.vector(yawR(30) %*% grav_animal(p, 0))))
+#>  pitch   roll
+#>   25.7   16.1
+#>  pitch   roll
+#>   37.8   26.6
+```
+
+At a 30 degree descent the tag reports 25.7 degrees of pitch and **16.1 degrees of roll on an
+animal with zero roll**. At 45 degrees it reports 26.6 degrees of phantom roll. If you are
+scoring rolling behaviour, banking turns or prey-capture manoeuvres from roll, a mounting yaw
+manufactures those events out of ordinary diving.
+
+### 3.3 Dead-reckoned speed inherits the error
+
+`reconstructTrack(speed.method = "depth_rate")` uses the orthogonally-corrected depth rate,
+`speed = |vertical velocity| / sin(|pitch|)`. Because pitch is compressed, the denominator is too
+small and speed is over-estimated:
+
+```{r ocdr}
+p_true <- 45
+p_obs  <- pr_from_g(as.vector(yawR(30) %*% grav_animal(p_true, 0)))["pitch"]
+100 * (sin(p_true * d2r) / sin(abs(p_obs) * d2r) - 1)
+#> 15.5
+```
+
+A 30 degree mounting yaw inflates depth-rate speed by 15.5%. Note that this bias is the *same at
+every dive angle*: from `sin(observed) = cos(psi) * sin(true)` the ratio is exactly `1/cos(psi)`,
+independent of pitch. It is a clean multiplicative bias on speed, so it propagates undiluted into
+total distance travelled and into every downstream track metric.
+
+### 3.4 Both mounting-offset estimators pass it clean
+
+The two previous sections are geometry. This one runs nautilus's *actual* estimators over a
+simulated record - 200 v-shaped dives to +/-40 degrees, true roll approximately zero, 1 m/s - and
+asks what they report.
+
+```{r estimators}
+set.seed(7)
+n <- 120000                                   # 200 v-shaped dives
+true_pitch <- 40 * sin(seq(0, 200 * 2 * pi, length.out = n)) + rnorm(n, 0, 3)
+true_roll  <- rnorm(n, 0, 4)                  # the animal's REAL roll: noise about zero, SD 4 deg
+vv         <- 1 * sin(true_pitch * d2r)       # vertical velocity at 1 m/s
+
+estimators <- function(psi, pitch_offset = 0) {
+  p <- true_pitch + pitch_offset
+  G <- t(mapply(function(a, b) as.vector(yawR(psi) %*% grav_animal(a, b)), p, true_roll))
+  o <- t(apply(G, 1, pr_from_g))
+  vvs <- as.numeric(stats::filter(vv, rep(1 / 201, 201), sides = 2))   # smoothed vertical velocity
+  ok  <- is.finite(vvs)
+  kaw <- coef(lm(I(o[ok, "pitch"] * d2r) ~ vvs[ok]))[1] * r2d          # Kawatsu: the intercept
+  lev <- ok & abs(vvs) <= median(abs(vvs), na.rm = TRUE)               # the "level half"
+  c(pitch_intercept = unname(kaw),
+    roll_median     = median(o[lev, "roll"], na.rm = TRUE),
+    roll_sd_dives   = sd(o[!lev, "roll"], na.rm = TRUE))
+}
+round(rbind(`no yaw`             = estimators(0),
+            `30 deg yaw`         = estimators(30),
+            `30 deg yaw + 8 deg` = estimators(30, 8)), 3)
+#>                    pitch_intercept roll_median roll_sd_dives
+#> no yaw                      -0.001      -0.013         4.009
+#> 30 deg yaw                   0.003       0.054        20.502
+#> 30 deg yaw + 8 deg           6.665       4.141        20.878
+```
+
+Read the middle row carefully. Both estimators report essentially zero - **there is nothing for
+them to correct, and they are right by their own criteria** - while the apparent rolling of the
+animal has been inflated fivefold, from 4.0 to 20.5 degrees of standard deviation, entirely by the
+mounting. The deployment passes every mounting-offset diagnostic nautilus has and still yields a
+roll series that is mostly artefact.
+
+The third row adds a further consequence. When a genuine +8 degree mounting pitch *is* present
+alongside the yaw, Kawatsu recovers only 6.67 degrees of it - short by close to the `cos(psi)` factor
+(6.665/8 = 0.833; the exact geometric prediction is `asin(cos(30 deg) * sin(8 deg)) = 6.92 deg`, a
+ratio of 0.865, with the remainder down to the least-squares fit discussed in 3.1). Mounting yaw
+does not merely go undetected: it also biases the corrections that are applied, and it manufactures a 4.14 degree roll offset that the roll corrector then dutifully
+subtracts from a record whose real roll offset is zero.
+
+### 3.5 What to do about it
+
+There is no automated remedy in nautilus 0.1.0. The practical mitigations are:
+
+- **Attach carefully.** Yaw is the one mounting error that instrumentation discipline can remove
+  outright; a few degrees costs almost nothing (the compression goes as `cos(psi)`, so 5 degrees
+  costs 0.4%), while 30 degrees costs 15%.
+- **Record the attachment geometry.** A photograph at deployment is usually enough to bound `psi`.
+- **Cross-check with camera footage** where available (`renderOverlayVideo()`), which will show a
+  persistent roll offset during straight-line swimming.
+- **Treat roll cautiously** on any deployment where roll correlates with pitch. That correlation
+  is the signature of mounting yaw and should not be interpreted as banking behaviour.
+
+## 4. Per-axis gain errors and the limits of `accel.scale`
+
+`checkSensorIntegrity(checks = "accel.scale")` tests whether the static acceleration magnitude is
+near 1 g. It is a scalar test on a vector quantity, so it is powerful against errors that affect
+all three axes and weak against errors that affect one.
+
+Simulate a 20% gain error on `ay` alone, for an animal swimming close to level:
+
+```{r per-axis}
+set.seed(42)
+n <- 2e5
+p_t <- rnorm(n, 0, 12); r_t <- rnorm(n, 0, 18)
+G  <- t(mapply(function(p, r) grav_animal(p, r), p_t, r_t))
+Gb <- G; Gb[, 2] <- Gb[, 2] * 1.20
+
+median(sqrt(rowSums(Gb^2)))                       # what accel.scale measures
+#> 1.0093
+
+sd(atan2(G[, 2],  G[, 3]) * r2d)                  # true roll SD
+#> 17.98
+sd(atan2(Gb[, 2], Gb[, 3]) * r2d)                 # roll SD with the faulty axis
+#> 20.81
+```
+
+The static magnitude reads 1.0093 g. The default tolerance is `accel.scale.tol = 0.2`, so this
+fault is **not flagged** - and it would not be flagged at 0.1, or 0.05, or 0.02 either. Yet the
+roll series is visibly wrong: its standard deviation is inflated from 18.0 to 20.8 degrees, with
+a mean absolute error of 2.4 degrees and a maximum of 5.2 degrees.
+
+The reason is geometric. On a near-level animal, `ay` is small, so scaling it barely moves the
+vector magnitude; but roll is `atan2(ay, az)`, which depends on `ay` directly. The quantity the
+check measures is precisely the quantity the fault does not perturb.
+
+This is why the `checkSensorIntegrity()` documentation says the check "may not detect errors
+affecting only individual axes", and why it advises inspecting individual sensor axes as well as
+the summary metric. Note that `plot = TRUE` will not help here: the report draws a page only for
+deployments that raised an error or warning, with one panel per *firing check* - and the whole point
+of this fault is that nothing fires. Inspecting it means plotting the axes yourself, or comparing
+roll against a known-good deployment.
+
+### 4.1 Why the tolerance is 0.2
+
+The default was set from 54 real deployments spanning two tag makes (CATS and Little Leonardo):
+
+| cohort | n | median static \|a\| | max \|median - 1\| |
+|---|---|---|---|
+| CATS, whale shark | 51 healthy | 0.895 - 1.030 | 0.105 |
+| CATS, reef manta | 1 | 0.962 | 0.038 |
+| Little Leonardo, hammerhead | 1 | 0.982 | 0.018 |
+| CATS, one faulty deployment | 1 | 4.095 | 3.095 |
+
+The worst healthy deployment deviates by 0.105, so a tolerance of 0.2 leaves roughly a factor of
+two of headroom and produced zero false positives across the cohort. The faults it is meant to
+catch are far outside it: acceleration left in m/s^2 reads about 9.4 (deviation 8.4), a doubled
+gain reads 2.0, a halved gain 0.5. Tightening to 0.10 would have flagged two apparently healthy
+deployments; tightening to 0.05 would have flagged ten.
+
+The single flagged deployment was genuine: one accelerometer axis was pinned at the +4 g range
+limit for 98.7% of an 11.4-million-sample record.
+
+## 5. Gyroscope bias
+
+`checkSensorIntegrity(checks = "gyro.bias")` reports a persistent per-axis gyroscope offset.
+Gyroscope bias is **not** explicitly corrected anywhere in nautilus, and what that costs depends
+entirely on which orientation algorithm you use:
+
+- **`orientation.algorithm = "tilt_compass"` (the default)** is a 6-axis method using only the
+  accelerometer and magnetometer. It never reads the gyroscope, so gyroscope bias cannot affect
+  it at all. For the large majority of users this check is purely informational.
+- **`orientation.algorithm = "madgwick"`** integrates the gyroscope, so bias does enter. The
+  filter's accelerometer and magnetometer correction term continuously pulls the estimate back
+  toward the gravity and magnetic references, which absorbs small biases; the implementation does
+  not, however, include an explicit bias-estimation state, so it relies on that feedback alone.
+  Larger biases will degrade the orientation estimate and should be inspected before you rely on
+  derived movement metrics.
+
+If a deployment reports a substantial gyroscope bias and you need `madgwick` (for example because
+the magnetometer is contaminated by a paddle wheel), compare the two algorithms on the same record
+before deciding which to trust.
+
+## 6. Summary
+
+| error | estimated by nautilus? | detectable by the automated checks? | main consequence |
+|---|---|---|---|
+| axis permutation / sign | yes, `applyAxisMapping()` | yes, but it may report "ambiguous" rather than resolve | catastrophic if wrong, so it is checked hard |
+| pitch / roll mounting offset | yes, when the animal is often level | partly, via the fit gates | constant attitude bias |
+| mounting yaw | **no** | **no** - both estimators return zero | compressed pitch, phantom roll, inflated OCDR speed, and biased recovery of the offsets that *are* corrected |
+| uniform accelerometer scale error | no | yes, `accel.scale` | wrong units propagate everywhere |
+| single-axis gain error | no | **no** - invisible to a scalar magnitude test | inflated roll, subtly wrong kinematics |
+| gyroscope bias | no | yes, `gyro.bias` (informational) | none under `tilt_compass`; drift under `madgwick` |
+
+The recurring theme is that nautilus is good at the errors that change a vector's *length* and
+blind to several that change only its *direction*. Where an automated check cannot see a problem,
+the documentation says so rather than implying a guarantee it cannot make.
+
+## See also
+
+- `processTagData()` - orientation estimation and the mounting-offset controls
+- `orientationControl()` - `correct.pitch`, `correct.roll`, `madgwick.beta`
+- `checkSensorIntegrity()` - `accel.scale`, `gyro.bias` and the other channel checks
+- `checkTagMapping()`, `reviewTagMapping()`, `applyAxisMapping()` - the discrete axis resolution
+- `vignette("movement-tracks", package = "nautilus")` - how speed and heading enter the track
