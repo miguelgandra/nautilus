@@ -68,10 +68,15 @@ to tag a processing run or avoid clashes. Only used when \code{output.dir} is se
 \value{
 A list with:
 \itemize{
-\item \code{curated_data}: a named list of \code{data.table}s (one per deployment) when \code{return.data = TRUE}
-- repaired when \code{apply = TRUE}, unchanged otherwise; a character vector of the written file paths when
-\code{return.data = FALSE} (with \code{apply = TRUE}); or \code{NULL} for a report-only run. Each returned object
-carries a \code{checkSensorQuality} entry in its metadata audit trail.
+\item \code{curated_data}: with \code{return.data = TRUE} (the default), a named list of \code{data.table}s,
+one per deployment. \strong{It is repaired ONLY when \code{apply = TRUE}.} With \code{apply = FALSE} - which is
+the default - you get the input back UNCHANGED, under a name that says curated. Nothing is
+repaired, and the anomalies live in \code{issues} instead. That combination is easy to misread as
+screened data, so the verbose summary says so explicitly; read it, or test
+\code{attr(x, "processing")}'s \code{applied} flag. With \code{return.data = FALSE} it is a character vector of
+written paths (which needs \code{apply = TRUE}), and \code{NULL} for a report-only run that wrote nothing.
+Each returned object carries a \code{checkSensorQuality} entry in its metadata audit trail recording
+whether the repairs were \code{applied}.
 \item \code{issues}: a data.frame of per-channel findings (zero rows when everything is clean), with
 columns \code{id}, \code{channel}, \code{severity} (\code{"warning"} for a block/stall, \code{"info"} for
 spikes only), \code{n_corrected}, \code{spikes}, \code{blocks}, \code{pct_affected} and \code{message}.
@@ -116,6 +121,20 @@ block - each anomalous channel's trace with the removed spikes (red), interpolat
 shaded block spans, plus an interpretation note. Tags with only isolated spikes appear in the overview
 but do not get their own page.
 }
+\section{Known limitation - the rate gate is sampling-rate dependent}{
+
+The spike test gates on \code{abs(diff) > sensor.resolution / dt}, which compares a value against a rate.
+The effective floor is therefore \code{sensor.resolution / dt}, so sensitivity SCALES WITH THE SAMPLING
+INTERVAL: at 100 Hz with \code{sensor.resolution = 0.5} a step must exceed 50 units to be considered at
+all, where at 1 Hz it need only exceed 0.5. This does NOT affect gross sensor failure - validated on
+six real deployments carrying impossible depth (to 3059 m) and temperature (to 52,657 degrees)
+excursions, every one detected and fully repaired - but a SUBTLE in-range transient is harder to
+catch on a fast record than on a slow one. The dimensionally-obvious correction is worse and
+mass-flags noise; a proper fix needs a noise-floor estimator and is deliberately deferred. Treat the
+rate test as a tripwire for gross failure rather than a fine screen, and set \code{sensor.resolution}
+from the channel's true quantum.
+}
+
 \examples{
 \dontrun{
 checked <- checkSensorIntegrity(regularized, apply = TRUE)$curated_data

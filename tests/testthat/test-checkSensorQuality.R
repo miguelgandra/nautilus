@@ -179,3 +179,44 @@ test_that("saving (output.dir) requires apply = TRUE (a report-only save would o
                        output.dir = dir, verbose = FALSE)))))
   expect_gte(length(list.files(dir, pattern = "\\.rds$")), 1L)
 })
+
+
+test_that("a report-only run that FOUND anomalies says the data is unchanged", {
+  # `curated_data` comes back under a name that promises curation while holding the untouched input.
+  # This was hit for real during validation: the function was run on a record with 84,419 impossible
+  # depth samples, they were all still there afterwards, and the detector was briefly believed broken.
+  # It was not - `apply` was FALSE, which is the default.
+  d <- data.frame(ID = "A", datetime = as.POSIXct("2024-01-01", tz = "UTC") + seq_len(2000) - 1,
+                  depth = c(rep(10, 1000), rep(3000, 1000)), stringsAsFactors = FALSE)
+  ctl <- list(depth = anomalyControl(rate.threshold = 7, sensor.resolution = 0.5))
+
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    checkSensorQuality(list(A = d), sensors = ctl, plot = FALSE, verbose = 2))), collapse = " ")
+  expect_match(txt, "REPORT ONLY")
+  expect_match(txt, "apply = TRUE", fixed = TRUE)
+
+  # and the claim it makes is true: anomalies found, data byte-identical to the input
+  out <- suppressWarnings(suppressMessages(
+    checkSensorQuality(list(A = d), sensors = ctl, plot = FALSE, verbose = FALSE)))
+  expect_gt(nrow(out$issues), 0L)
+  expect_equal(out$curated_data[[1]]$depth, d$depth)
+
+  # ...whereas apply = TRUE really does repair, and then says nothing about report-only
+  txt2 <- paste(cli::cli_fmt(suppressWarnings(
+    checkSensorQuality(list(A = d), sensors = ctl, apply = TRUE, plot = FALSE, verbose = 2))),
+    collapse = " ")
+  expect_false(grepl("REPORT ONLY", txt2))
+  rep <- suppressWarnings(suppressMessages(
+    checkSensorQuality(list(A = d), sensors = ctl, apply = TRUE, plot = FALSE, verbose = FALSE)))
+  expect_true(any(is.na(rep$curated_data[[1]]$depth)))
+})
+
+test_that("a clean report-only run does not emit the report-only warning", {
+  # the warning must fire on FOUND-but-unrepaired, not on every non-apply call, or it becomes noise
+  d <- data.frame(ID = "A", datetime = as.POSIXct("2024-01-01", tz = "UTC") + seq_len(600) - 1,
+                  depth = 10 + sin(seq_len(600) / 50), stringsAsFactors = FALSE)
+  txt <- paste(cli::cli_fmt(suppressWarnings(checkSensorQuality(
+    list(A = d), sensors = list(depth = anomalyControl(rate.threshold = 7, sensor.resolution = 0.5)),
+    plot = FALSE, verbose = 2))), collapse = " ")
+  expect_false(grepl("REPORT ONLY", txt))
+})

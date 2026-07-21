@@ -78,14 +78,31 @@
 #'
 #' @return A list with:
 #' \itemize{
-#'   \item \code{curated_data}: a named list of `data.table`s (one per deployment) when `return.data = TRUE`
-#'     - repaired when `apply = TRUE`, unchanged otherwise; a character vector of the written file paths when
-#'     `return.data = FALSE` (with `apply = TRUE`); or `NULL` for a report-only run. Each returned object
-#'     carries a `checkSensorQuality` entry in its metadata audit trail.
+#'   \item \code{curated_data}: with `return.data = TRUE` (the default), a named list of `data.table`s,
+#'     one per deployment. **It is repaired ONLY when `apply = TRUE`.** With `apply = FALSE` - which is
+#'     the default - you get the input back UNCHANGED, under a name that says curated. Nothing is
+#'     repaired, and the anomalies live in `issues` instead. That combination is easy to misread as
+#'     screened data, so the verbose summary says so explicitly; read it, or test
+#'     `attr(x, "processing")`'s `applied` flag. With `return.data = FALSE` it is a character vector of
+#'     written paths (which needs `apply = TRUE`), and `NULL` for a report-only run that wrote nothing.
+#'     Each returned object carries a `checkSensorQuality` entry in its metadata audit trail recording
+#'     whether the repairs were `applied`.
 #'   \item \code{issues}: a data.frame of per-channel findings (zero rows when everything is clean), with
 #'     columns \code{id}, \code{channel}, \code{severity} (`"warning"` for a block/stall, `"info"` for
 #'     spikes only), \code{n_corrected}, \code{spikes}, \code{blocks}, \code{pct_affected} and \code{message}.
 #' }
+#'
+#' @section Known limitation - the rate gate is sampling-rate dependent:
+#' The spike test gates on `abs(diff) > sensor.resolution / dt`, which compares a value against a rate.
+#' The effective floor is therefore `sensor.resolution / dt`, so sensitivity SCALES WITH THE SAMPLING
+#' INTERVAL: at 100 Hz with `sensor.resolution = 0.5` a step must exceed 50 units to be considered at
+#' all, where at 1 Hz it need only exceed 0.5. This does NOT affect gross sensor failure - validated on
+#' six real deployments carrying impossible depth (to 3059 m) and temperature (to 52,657 degrees)
+#' excursions, every one detected and fully repaired - but a SUBTLE in-range transient is harder to
+#' catch on a fast record than on a slow one. The dimensionally-obvious correction is worse and
+#' mass-flags noise; a proper fix needs a noise-floor estimator and is deliberately deferred. Treat the
+#' rate test as a tripwire for gross failure rather than a fine screen, and set `sensor.resolution`
+#' from the channel's true quantum.
 #'
 #' @seealso \link{checkSensorIntegrity}, \link{anomalyControl}, \link{importTagData}.
 #' @examples
@@ -247,6 +264,15 @@ checkSensorQuality <- function(data,
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_flagged, " of ", r$n, " tag", if (r$n != 1) "s", if (apply) " repaired" else " flagged")
+    # A report-only run that FOUND something is the dangerous case: `curated_data` comes back under a
+    # name that promises curation, holding the input untouched. Say it plainly and say what to do next.
+    # (Written after falling into it during this package's own validation: the function was run on
+    # records with 84,419 impossible depth samples, the samples were still there afterwards, and the
+    # detector was briefly believed to have failed. It had not - `apply` was FALSE.)
+    if (!apply && n_flagged > 0) {
+      .log_arrow(lvl, "REPORT ONLY: nothing was repaired and the data is unchanged")
+      .log_detail(lvl, "the anomalies are in $issues; re-run with apply = TRUE to write the repairs")
+    }
     if (apply && !is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
