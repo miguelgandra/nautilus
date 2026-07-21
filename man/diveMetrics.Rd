@@ -154,5 +154,6 @@ plotDistributions(dt, metrics = c("max_depth_m", "duration_s"))
 }
 }
 \seealso{
-\link{detectDives}, \link{diveControl}, \link{summarizeTagData}, \link{plotDistributions}
+\link{detectDives}, \link{diveControl}, \link{plotDives}, \link{summarizeTagData},
+\link{plotDistributions}
 }

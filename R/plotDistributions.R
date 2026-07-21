@@ -53,7 +53,8 @@
 #'   `metric`, `n`, `mean`, `median`, `sd`, `q05`, `q25`, `q75`, `q95`, `min`, `max` (called mainly for
 #'   the side-effect plot). Deployments lacking a metric appear with `n = 0` and `NA` statistics.
 #'
-#' @seealso \link{summarizeTagData}, \link{calculateTailBeats}, \link{processTagData}
+#' @seealso \link{plotDives}, \link{plotTimeAtDepth}, \link{summarizeTagData},
+#'   \link{calculateTailBeats}, \link{processTagData}
 #' @examples
 #' \dontrun{
 #' # Compare tail-beat frequency and swimming speed across the cohort, into a PDF

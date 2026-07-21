@@ -57,7 +57,8 @@
 #'   `id`, `group`, `variable`, `phase`, `bin_min`, `bin_max`, `bin_mid`, `hours`, `pct` (percent of that
 #'   deployment/phase's time; sums to 100 per `id`/`variable`/`phase`).
 #'
-#' @seealso \link{plotTheme}, \link{summarizeTagData}, \link{plotDepthProfiles}, \link{plotDistributions}
+#' @seealso \link{plotTheme}, \link{summarizeTagData}, \link{plotDepthProfiles},
+#'   \link{plotDistributions}, \link{plotDives}
 #' @examples
 #' \dontrun{
 #' files <- list.files("./processed", full.names = TRUE)

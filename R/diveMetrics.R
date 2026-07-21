@@ -125,7 +125,8 @@
 #'   `censoring`, `depth_attenuation`, `depth_coverage` and `shape_supported` - the last being `TRUE`
 #'   when at least two of descent / bottom / ascent were resolved, which is the precondition for every
 #'   phase and kinematics column being anything but NA. All are defined in Details.
-#' @seealso \link{detectDives}, \link{diveControl}, \link{summarizeTagData}, \link{plotDistributions}
+#' @seealso \link{detectDives}, \link{diveControl}, \link{plotDives}, \link{summarizeTagData},
+#'   \link{plotDistributions}
 #' @examples
 #' \dontrun{
 #' tag <- detectDives(processed, control = diveControl(depth.threshold = 5))

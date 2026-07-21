@@ -50,6 +50,30 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 * `calculateTailBeats()` estimates tail-beat frequency (peak-picking or wavelet), `extractFeatures()`
   computes windowed sensor features, and `getDielPhase()` classifies day / night / twilight.
 
+## Dive analysis
+
+* `detectDives()` annotates every sample with the dive it belongs to (`dive_id`, `dive_phase`,
+  `depth_baseline`), detecting excursions by two-threshold hysteresis with a prominence criterion. One
+  definition serves air-breathers, fish that never surface and benthic resters because `diveControl()`
+  makes the reference level (`"surface"`, `"baseline"` or `"auto"`) and the excursion direction explicit
+  choices rather than hidden assumptions.
+* `diveMetrics()` reduces the annotated record to one row per dive -- timing, depth, phase structure and
+  kinematics -- with a quality block saying what each row can support: `censoring` names why a dive is
+  incomplete, and `inter_dive_censored` asks about the interval itself, so two otherwise complete dives
+  separated by a sensor blackout are not read as one long surface interval. Any per-sample channel can be
+  summarised per dive (optionally per phase) through `variables`, with circular handling for headings
+  and roll.
+* `plotDives()` compares deployments on those metrics: every dive is a point in its deployment's column,
+  with a median and interquartile marker over it, one panel per metric. It deliberately does not draw a
+  bar of per-individual maxima -- a bar reads magnitude from a zero that does not exist when dives are
+  measured from a running baseline, and a maximum grows with the number of dives recorded. For the same
+  reason the default metric is `amplitude_m` (measured from each dive's own baseline) rather than the
+  absolute `max_depth_m`.
+* Dives excluded from a panel's statistics are still drawn, in outline, and reported in two separate
+  counts: `n_censored` (the record failed) and `n_unsupported` (the dive's phase structure did not
+  support that metric). Points beyond the `trim` quantile are pinned to the axis edge as open triangles
+  and noted on the panel, never silently dropped.
+
 ## Movement reconstruction
 
 * `reconstructTrack()` dead-reckons a 3-D pseudo-track from heading, speed and depth, anchored to known
@@ -62,8 +86,8 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 ## Summaries and plots
 
 * `summarizeTagData()`, `processingSummary()` and `qcIssues()` provide per-deployment overviews.
-* `plotDepthProfiles()`, `plotTimeAtDepth()`, `plotDistributions()`, `plotTracks()` and the shared
-  `plotTheme()` render the main diagnostic and result figures.
+* `plotDepthProfiles()`, `plotTimeAtDepth()`, `plotDistributions()`, `plotDives()`, `plotTracks()` and
+  the shared `plotTheme()` render the main diagnostic and result figures.
 
 ## Onboard camera video
 

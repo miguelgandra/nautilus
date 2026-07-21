@@ -73,6 +73,7 @@ deployment.
 
 **Then branch by goal**
 - **Summaries & figures:** `summarizeTagData()`, `plotDepthProfiles()`, `plotTimeAtDepth()`, `plotDistributions()`.
+- **Dive analysis:** detect vertical excursions by two-threshold hysteresis against a chosen reference &mdash; the surface for air-breathers, a running baseline for fish that never surface, inverted for benthic resters &mdash; then reduce to one row per dive and compare deployments: `diveControl()`, `detectDives()`, `diveMetrics()`, `plotDives()`.
 - **Behaviour & kinematics:** `calculateTailBeats()`, `extractFeatures()` (sliding-window features for machine learning), `getDielPhase()`.
 - **Movement tracks:** dead-reckon a pseudo-track and validate it against held-out fixes &mdash; `reconstructTrack()`, `crossValidateTrack()`, `trackMetrics()`, `plotTracks()`, `exportForSSM()`.
 - **Onboard video:** recover recording timestamps (with an OCR fallback), align sensor data to filmed intervals, annotate behaviours and render sensor overlays &mdash; `getVideoMetadata()`, `filterVideoPeriod()`, `annotateData()`, `renderOverlayVideo()`.

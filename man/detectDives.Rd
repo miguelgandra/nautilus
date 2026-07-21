@@ -64,12 +64,19 @@ Three columns are added and always all three: \code{dive_id} (\code{0L} outside 
 (with an explicit \code{inter_dive} level) and \code{depth_baseline}. Never NA, never conditional - see Details.
 }
 \details{
-\strong{Why \code{dive_id} is \code{0L} and not \code{NA} between dives.} \code{\link{extractFeatures}} runs
-\code{na.omit()} over its whole frame, so an NA-between-dives column would silently delete every
-inter-dive sample from the feature table with no message. \code{0L} and an explicit \code{inter_dive} factor
-level defuse that. Note the remaining half of that interaction is NOT yet defused: passing
-\code{downsample.to} to \code{extractFeatures()} mean-aggregates every column and would produce fractional
-\code{dive_id}s. Until that is fixed, extract features first and join dive labels by timestamp second.
+\strong{Why \code{dive_id} is \code{0L} and not \code{NA} between dives.} An NA would propagate: it silently
+survives arithmetic, it makes \code{dive_id > 0} return NA rather than FALSE, and it is exactly what any
+\code{na.omit()} in a user's own pipeline deletes - so the inter-dive samples, which are half the
+behaviour of interest, would vanish without a message. \code{0L} keeps the column integer and makes
+"in a dive" a total test, while the explicit \code{inter_dive} factor level keeps \code{table(dive_phase)}
+complete and \code{split()} well defined.
+
+\strong{The labels do not travel into a feature table.} \code{\link{extractFeatures}} returns only
+the deployment id, the timestamp and the features it derived; \code{dive_id} and \code{dive_phase} are not
+among them, with or without \code{downsample.to}. To model something per dive or per phase, extract
+features first and join the labels on the timestamp afterwards. Do that join with the intervals in
+mind: once features are binned, a bin can straddle a dive boundary, and which label it should carry
+is a question about your analysis rather than one this package should answer silently.
 
 \strong{The threshold is a floor, not an estimate.} When \code{depth.threshold} is \code{NULL} the function
 derives the smallest excursion the RECORD can support - from the zero-offset residual and the stored
@@ -108,5 +115,6 @@ Wilson, R.P., Puetz, K., Charrassin, J.-B. & Lage, J. (1995) Artefacts arising f
 in dive depth studies of marine endotherms. \emph{Polar Biology} 15:575-581.
 }
 \seealso{
-\link{diveControl}, \link{diveMetrics}, \link{processTagData}, \link{plotDepthProfiles}
+\link{diveControl}, \link{diveMetrics}, \link{plotDives}, \link{processTagData},
+\link{plotDepthProfiles}
 }

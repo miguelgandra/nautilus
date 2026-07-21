@@ -102,5 +102,6 @@ plotTimeAtDepth(files, group = "species", plot.file = "./plots/tad.pdf")    # fa
 }
 }
 \seealso{
-\link{plotTheme}, \link{summarizeTagData}, \link{plotDepthProfiles}, \link{plotDistributions}
+\link{plotTheme}, \link{summarizeTagData}, \link{plotDepthProfiles},
+\link{plotDistributions}, \link{plotDives}
 }

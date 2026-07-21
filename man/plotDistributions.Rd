@@ -96,5 +96,6 @@ plotDistributions(list.files("./processed", full.names = TRUE),
 }
 }
 \seealso{
-\link{summarizeTagData}, \link{calculateTailBeats}, \link{processTagData}
+\link{plotDives}, \link{plotTimeAtDepth}, \link{summarizeTagData},
+\link{calculateTailBeats}, \link{processTagData}
 }

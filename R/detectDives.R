@@ -35,12 +35,19 @@
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
 #'
 #' @details
-#' \strong{Why `dive_id` is `0L` and not `NA` between dives.} \code{\link{extractFeatures}} runs
-#' `na.omit()` over its whole frame, so an NA-between-dives column would silently delete every
-#' inter-dive sample from the feature table with no message. `0L` and an explicit `inter_dive` factor
-#' level defuse that. Note the remaining half of that interaction is NOT yet defused: passing
-#' `downsample.to` to `extractFeatures()` mean-aggregates every column and would produce fractional
-#' `dive_id`s. Until that is fixed, extract features first and join dive labels by timestamp second.
+#' \strong{Why `dive_id` is `0L` and not `NA` between dives.} An NA would propagate: it silently
+#' survives arithmetic, it makes `dive_id > 0` return NA rather than FALSE, and it is exactly what any
+#' `na.omit()` in a user's own pipeline deletes - so the inter-dive samples, which are half the
+#' behaviour of interest, would vanish without a message. `0L` keeps the column integer and makes
+#' "in a dive" a total test, while the explicit `inter_dive` factor level keeps `table(dive_phase)`
+#' complete and `split()` well defined.
+#'
+#' \strong{The labels do not travel into a feature table.} \code{\link{extractFeatures}} returns only
+#' the deployment id, the timestamp and the features it derived; `dive_id` and `dive_phase` are not
+#' among them, with or without `downsample.to`. To model something per dive or per phase, extract
+#' features first and join the labels on the timestamp afterwards. Do that join with the intervals in
+#' mind: once features are binned, a bin can straddle a dive boundary, and which label it should carry
+#' is a question about your analysis rather than one this package should answer silently.
 #'
 #' \strong{The threshold is a floor, not an estimate.} When `depth.threshold` is `NULL` the function
 #' derives the smallest excursion the RECORD can support - from the zero-offset residual and the stored
@@ -65,7 +72,8 @@
 #' @return The input with `dive_id`, `dive_phase` and `depth_baseline` added, or (when
 #'   `return.data = FALSE`) the written file paths, invisibly.
 #'
-#' @seealso \link{diveControl}, \link{diveMetrics}, \link{processTagData}, \link{plotDepthProfiles}
+#' @seealso \link{diveControl}, \link{diveMetrics}, \link{plotDives}, \link{processTagData},
+#'   \link{plotDepthProfiles}
 #' @references
 #' Halsey, L.G., Bost, C.-A. & Handrich, Y. (2007) A thorough and quantified method for classifying
 #'   seabird diving behaviour. \emph{Polar Biology} 30:991-1004.

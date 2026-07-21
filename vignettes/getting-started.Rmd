@@ -231,7 +231,7 @@ The result is your analysis-ready `nautilus_tag`. From here you branch.
 
 ## Choosing your workflow {#choosing-your-workflow}
 
-The four branches are independent -- run only what your question needs.
+The five branches are independent -- run only what your question needs.
 
 **Summaries and figures.** Per-deployment overviews and the core diagnostic plots.
 
@@ -241,6 +241,24 @@ plotDepthProfiles(tags)
 plotTimeAtDepth(tags)
 plotDistributions(tags)
 ```
+
+**Dive analysis.** Detect vertical excursions, reduce them to one row per dive, and compare
+deployments. The `reference` is the one choice that makes this taxon-general: `"surface"` for an
+air-breather, whose zero its own surfacing anchors; `"baseline"` for a fish that never surfaces, where
+a fixed surface threshold would find a single dive spanning the whole record; and `direction = "up"`
+for a benthic rester, whose excursions leave the bottom. `"auto"` reads the zero-offset provenance and
+reports what it chose -- on a real cohort it resolves to a mixture, which is worth knowing before
+comparing absolute depths between animals.
+
+```{r branch-dives}
+tags <- detectDives(tags, control = diveControl(depth.threshold = 5))
+dives <- diveMetrics(tags)
+plotDives(dives, metrics = c("amplitude_m", "duration_s"))
+```
+
+`plotDives()` draws every dive as a point rather than a bar of per-individual maxima, and defaults to
+`amplitude_m` (measured from each dive's own baseline) rather than `max_depth_m` -- under a baseline
+reference an absolute depth carries a seabed offset that is not diving.
 
 **Behaviour and kinematics.** Tail-beat frequency, sliding-window features for machine
 learning, and diel-phase classification.
