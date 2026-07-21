@@ -799,7 +799,25 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 #'   answers "has the animal returned?", not merely "how uncertain is the zero?". A band derived from the
 #'   residual alone can be too tight to ever close: on a real record a 0.75 m band merged one deep dive
 #'   and 1,700 s of shallow oscillation into a single 2,016 s "dive".
-#' @param min.prominence Numeric (m). Minimum peak prominence relative to the reference.
+#' @param min.amplitude Numeric (m). How far a candidate must depart from the reference to count as a
+#'   dive at all. A run opened by hysteresis already clears `depth.threshold`, so this bites on the
+#'   FRAGMENTS a split leaves behind: cut a 20 m dive with a depth dropout and the piece that resumes at
+#'   4 m is still one run, but it is not a 20 m dive. `NULL` derives `depth.threshold - surface.band`.
+#'   This is what `min.prominence` used to do, under a name that described something else.
+#' @param min.prominence Numeric (m). How far a secondary peak must rise above the saddle separating it
+#'   from its neighbour before it is treated as a dive in its own right. This is topographic prominence:
+#'   an excursion to 50 m that returns only to 15 m and descends again to 48 m never re-enters the
+#'   surface band, so hysteresis alone reports one dive; the second peak stands 33 m above the saddle,
+#'   and whether that is one dive or two is precisely what this argument decides. `NULL` derives
+#'   \code{NULL} (the default) NEVER splits: the excursion is reported whole, however many sub-peaks it
+#'   contains. That is deliberate. Splitting is an interpretive act, and a deep excursion with a partial
+#'   ascent in the middle may be exactly what the animal did - the same reasoning that stops this package
+#'   imposing a maximum dive duration. Deriving a default was tried and rejected on evidence: at
+#'   `depth.threshold - surface.band` it turned 6,512 dives into 11,658 (+79%) across 52 real
+#'   deployments, because the DERIVED threshold is a record-resolution floor and a 0.5 m re-ascent inside
+#'   a 50 m dive is not a second dive. Set a number from your study system to opt in. Either way the
+#'   prominence itself is always reported per dive as `prominence_m` by \code{\link{diveMetrics}}, so you
+#'   can see what splitting WOULD do before choosing to do it.
 #'   \code{NULL} uses \code{depth.threshold - surface.band}.
 #' @param min.duration Numeric (s). Shortest measurable dive. \code{NULL} derives a floor from the
 #'   depth smoothing window and the sampling interval, because a centred smoother attenuates any
@@ -857,6 +875,7 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
                         direction             = c("down", "up", "both"),
                         depth.threshold       = NULL,
                         surface.band          = NULL,
+                        min.amplitude         = NULL,
                         min.prominence        = NULL,
                         min.duration          = NULL,
                         baseline.window       = 3,
@@ -880,6 +899,7 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
   # every tunable is named, defaulted and validated; NULL means "derive and report", never "ignore"
   if (!is.null(depth.threshold))  .assert_number(depth.threshold,  "dive$depth.threshold",  min = 0)
   if (!is.null(surface.band))     .assert_number(surface.band,     "dive$surface.band",     min = 0)
+  if (!is.null(min.amplitude))    .assert_number(min.amplitude,    "dive$min.amplitude",    min = 0)
   if (!is.null(min.prominence))   .assert_number(min.prominence,   "dive$min.prominence",   min = 0)
   if (!is.null(min.duration))     .assert_number(min.duration,     "dive$min.duration",     min = 0)
   if (!is.null(max.gap))          .assert_number(max.gap,          "dive$max.gap",          min = 0)
@@ -911,12 +931,16 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
   if (!is.null(depth.threshold) && !is.null(surface.band) && surface.band >= depth.threshold)
     .abort(c("{.arg dive$surface.band} ({.val {surface.band}}) must be BELOW {.arg dive$depth.threshold} ({.val {depth.threshold}}).",
              "i" = "The band is where a dive ENDS; at or above the threshold a dive could never end."))
-  if (!is.null(depth.threshold) && !is.null(min.prominence) && min.prominence > depth.threshold)
-    .abort("{.arg dive$min.prominence} ({.val {min.prominence}}) cannot exceed {.arg dive$depth.threshold} ({.val {depth.threshold}}).")
+  # NOTE: min.prominence deliberately MAY exceed depth.threshold. It used to be forbidden, which -
+  # combined with the fact that a run only exists because the residual passed depth.threshold - made
+  # the prominence test true by construction and unable to reject anything. It is now the rule that
+  # SPLITS a run at an interior saddle, and a value above the threshold is the meaningful way to say
+  # "never split": no saddle can confer more prominence than the excursion's own depth.
 
   structure(list(reference = reference, direction = direction,
                  depth.threshold = depth.threshold, surface.band = surface.band,
-                 min.prominence = min.prominence, min.duration = min.duration,
+                 min.amplitude = min.amplitude, min.prominence = min.prominence,
+                 min.duration = min.duration,
                  baseline.window = baseline.window, baseline.stat = baseline.stat,
                  baseline.quantile = baseline.quantile,
                  phase.method = phase.method, rate.crit = rate.crit, rate.quantile = rate.quantile,

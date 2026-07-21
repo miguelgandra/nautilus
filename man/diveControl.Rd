@@ -9,6 +9,7 @@ diveControl(
   direction = c("down", "up", "both"),
   depth.threshold = NULL,
   surface.band = NULL,
+  min.amplitude = NULL,
   min.prominence = NULL,
   min.duration = NULL,
   baseline.window = 3,
@@ -42,7 +43,26 @@ answers "has the animal returned?", not merely "how uncertain is the zero?". A b
 residual alone can be too tight to ever close: on a real record a 0.75 m band merged one deep dive
 and 1,700 s of shallow oscillation into a single 2,016 s "dive".}
 
-\item{min.prominence}{Numeric (m). Minimum peak prominence relative to the reference.
+\item{min.amplitude}{Numeric (m). How far a candidate must depart from the reference to count as a
+dive at all. A run opened by hysteresis already clears \code{depth.threshold}, so this bites on the
+FRAGMENTS a split leaves behind: cut a 20 m dive with a depth dropout and the piece that resumes at
+4 m is still one run, but it is not a 20 m dive. \code{NULL} derives \code{depth.threshold - surface.band}.
+This is what \code{min.prominence} used to do, under a name that described something else.}
+
+\item{min.prominence}{Numeric (m). How far a secondary peak must rise above the saddle separating it
+from its neighbour before it is treated as a dive in its own right. This is topographic prominence:
+an excursion to 50 m that returns only to 15 m and descends again to 48 m never re-enters the
+surface band, so hysteresis alone reports one dive; the second peak stands 33 m above the saddle,
+and whether that is one dive or two is precisely what this argument decides. \code{NULL} derives
+\code{NULL} (the default) NEVER splits: the excursion is reported whole, however many sub-peaks it
+contains. That is deliberate. Splitting is an interpretive act, and a deep excursion with a partial
+ascent in the middle may be exactly what the animal did - the same reasoning that stops this package
+imposing a maximum dive duration. Deriving a default was tried and rejected on evidence: at
+\code{depth.threshold - surface.band} it turned 6,512 dives into 11,658 (+79\%) across 52 real
+deployments, because the DERIVED threshold is a record-resolution floor and a 0.5 m re-ascent inside
+a 50 m dive is not a second dive. Set a number from your study system to opt in. Either way the
+prominence itself is always reported per dive as \code{prominence_m} by \code{\link{diveMetrics}}, so you
+can see what splitting WOULD do before choosing to do it.
 \code{NULL} uses \code{depth.threshold - surface.band}.}
 
 \item{min.duration}{Numeric (s). Shortest measurable dive. \code{NULL} derives a floor from the

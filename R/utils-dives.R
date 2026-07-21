@@ -101,7 +101,8 @@
 #' Returns a data.frame of candidate excursions with the index span and the sign. Contains NO ecology
 #' and NO judgement: it is a run-finder over a residual series. Everything that decides whether a run
 #' is a dive happens downstream - `.diveSplitOnGaps()` cuts it where the record stopped informing us,
-#' `.diveScreenRuns()` applies prominence and duration and flags boundary truncation.
+#' `.diveSplitOnProminence()` separates sub-peaks that stand on their own, and
+#' `.diveScreenRuns()` applies the duration criterion and flags boundary truncation.
 #'
 #' NA carries the current state forward here, which is right for the one-sample dropouts this loop
 #' exists to tolerate and WRONG for a long one - carried far enough it holds a dive open across hours
@@ -197,10 +198,91 @@
   do.call(rbind, out)
 }
 
+#' Topographic prominence: how far a peak rises above the saddle that separates it from a higher one.
+#'
+#' The dive analogue of the mountaineering definition. Within one hysteresis run the animal may make a
+#' partial return that does not reach the band - down to 15 m between two 50 m excursions - and the run
+#' therefore never closes. Hysteresis alone reports that as ONE dive; whether it is one or two is a
+#' question about the size of the intervening return, which is exactly what prominence measures.
+#'
+#' `.diveKeyCol()` scores every interior minimum by the prominence that splitting there would confer:
+#' `min(max(left), max(right)) - z[m]`. The run is cut at the highest-scoring saddle whose score clears
+#' `min.prominence`, then each half is reconsidered, so a run with several sub-peaks separates in order
+#' of significance rather than left to right.
+#'
+#' The default `min.prominence` is `depth.threshold - surface.band`, which is not arbitrary: that is
+#' precisely the rise hysteresis demands to REOPEN a dive at the reference. Applying the same bar at a
+#' saddle asks the consistent question - would this ascent and re-descent have started a new dive if it
+#' had happened at the surface? Set it higher to merge W-dives into one, lower to separate more.
+#' @keywords internal
+#' @noRd
+.diveKeyCol <- function(z, min.prominence) {
+  n <- length(z)
+  if (n < 3L || !is.finite(min.prominence)) return(NA_integer_)
+  # Work on the FINITE subsequence and map back. A dropout inside a dive is common (see
+  # .diveSplitOnGaps for the short ones this tolerates), and cummax() propagates NA, so scoring the
+  # raw series would silently return no saddle at all for any run containing a single missing sample.
+  keep <- which(is.finite(z))
+  if (length(keep) < 3L) return(NA_integer_)
+  y <- z[keep]
+  m_n <- length(y)
+  cmax_l <- cummax(y)
+  cmax_r <- rev(cummax(rev(y)))
+  best <- NA_integer_; best_score <- -Inf
+  for (m in 2:(m_n - 1L)) {
+    if (!(y[m] <= y[m - 1L] && y[m] <= y[m + 1L])) next          # not a local minimum
+    score <- min(cmax_l[m], cmax_r[m]) - y[m]
+    if (is.finite(score) && score > best_score) { best_score <- score; best <- m }
+  }
+  if (!is.finite(best_score) || best_score < min.prominence) NA_integer_ else keep[best]
+}
+
+#' Split runs wherever an interior saddle is deep enough to make two dives out of one.
+#' @keywords internal
+#' @noRd
+.diveSplitOnProminence <- function(runs, resid, min.prominence, max.splits = 64L) {
+  if (!nrow(runs) || !is.finite(min.prominence) || min.prominence <= 0) return(runs)
+  out <- list()
+  for (k in seq_len(nrow(runs))) {
+    row <- runs[k, , drop = FALSE]
+    pending <- list(c(row$start_i, row$end_i)); done <- list(); guard <- 0L
+    while (length(pending) && guard < max.splits) {
+      seg <- pending[[1]]; pending <- pending[-1]
+      z <- row$sign * resid[seg[1]:seg[2]]
+      m <- .diveKeyCol(z, min.prominence)
+      if (is.na(m)) { done[[length(done) + 1L]] <- seg; next }
+      cut <- seg[1] + m - 1L                                     # the saddle sample itself
+      guard <- guard + 1L
+      pending <- c(pending, list(c(seg[1], cut), c(cut + 1L, seg[2])))
+    }
+    done <- c(done, pending)                                     # anything left when the guard tripped
+    ord <- order(vapply(done, `[`, numeric(1), 1))
+    for (seg in done[ord]) {
+      r2 <- row; r2$start_i <- seg[1]; r2$end_i <- seg[2]
+      out[[length(out) + 1L]] <- r2
+    }
+  }
+  do.call(rbind, out)
+}
+
+#' Prominence of ONE dive: its peak above the higher of the two cols that bound it.
+#'
+#' For an isolated dive the bounding cols sit at the hysteresis band, so prominence is close to
+#' amplitude minus the band - genuinely different from amplitude, which is measured from the reference.
+#' For a dive carved out of a W by `.diveSplitOnProminence()` one col is the saddle, and the difference
+#' is the whole point: amplitude says how deep it went, prominence says how much of that was its own.
+#' @keywords internal
+#' @noRd
+.diveProminenceOf <- function(z) {
+  z <- z[is.finite(z)]
+  if (!length(z)) return(NA_real_)
+  max(z) - max(z[1], z[length(z)])
+}
+
 #' Apply the prominence and duration criteria, and flag boundary truncation.
 #' @keywords internal
 #' @noRd
-.diveScreenRuns <- function(runs, resid, tnum, min.prominence, min.duration, n_total) {
+.diveScreenRuns <- function(runs, resid, tnum, min.amplitude, min.duration, n_total) {
   if (!nrow(runs)) return(cbind(runs, amplitude = numeric(0), duration_s = numeric(0),
                                 truncated_start = logical(0), truncated_end = logical(0)))
   amp <- vapply(seq_len(nrow(runs)), function(k) {
@@ -213,7 +295,12 @@
   runs$duration_s <- dur
   runs$truncated_start <- runs$start_i == 1L
   runs$truncated_end   <- runs$end_i == n_total
-  keep <- is.finite(amp) & amp >= min.prominence & is.finite(dur) & dur >= min.duration
+  # The amplitude screen is NOT redundant, though it looks it: a run straight from .diveRuns() always
+  # clears depth.threshold, but the FRAGMENTS that .diveSplitOnGaps() and .diveSplitOnProminence()
+  # leave behind need not. A 20 m dive cut by a dropout and resuming at 4 m is still one run and still
+  # above the band; it is not a 20 m dive. Removing this screen on the grounds that it "could never
+  # fire" broke exactly that case, and the suite caught it.
+  keep <- is.finite(amp) & amp >= min.amplitude & is.finite(dur) & dur >= min.duration
   runs[keep, , drop = FALSE]
 }
 
@@ -297,7 +384,14 @@
   thr <- control$depth.threshold %||% max(3 * (if (is.na(r_max)) 0.34 else r_max), 1.0)
   band <- control$surface.band %||% max(2 * (if (is.na(r_max)) 0.25 else r_max), thr / 10, 0.5)
   if (band >= thr) band <- thr / 2                       # keep hysteresis meaningful after derivation
-  prom <- control$min.prominence %||% (thr - band)
+  # NOT derived. Splitting a W-shaped excursion into two dives is an interpretive act, and the same
+  # argument that governs long dives governs this one: a single deep excursion with a partial ascent in
+  # the middle may be exactly what the animal did, and cutting it in two is worse than reporting it
+  # whole. Measured on 52 real deployments, deriving this as `thr - band` split 6,512 dives into 11,658
+  # (+79%) - because the DERIVED threshold is a record-resolution floor, so `thr - band` can be ~0.5 m,
+  # and a 0.5 m re-ascent inside a 50 m dive is not a second dive. So: opt in, with a number you chose.
+  amp_min <- control$min.amplitude %||% (thr - band)
+  prom <- control$min.prominence %||% Inf
 
   bin_max <- suppressWarnings(max(bins, na.rm = TRUE)); if (!is.finite(bin_max)) bin_max <- 0
   dur_src <- if (is.null(control$min.duration)) "derived" else "user"
@@ -349,7 +443,7 @@
 
   list(reference = ref, reference_note = ref_note,
        depth.threshold = thr, surface.band = band, min.prominence = prom, min.duration = dur,
-       max.gap = gap, wiggle.amplitude = wig, threshold_source = thr_src, duration_source = dur_src,
+       min.amplitude = amp_min, max.gap = gap, wiggle.amplitude = wig, threshold_source = thr_src, duration_source = dur_src,
        noise = n_med)
 }
 
@@ -396,7 +490,8 @@
     e <- empty; e$baseline <- b; e$status <- "applied_no_dives"; return(e)
   }
   runs <- .diveSplitOnGaps(runs, tnum, d, settings$max.gap)
-  runs <- .diveScreenRuns(runs, resid, tnum, settings$min.prominence, settings$min.duration, n)
+  runs <- .diveSplitOnProminence(runs, resid, settings$min.prominence)
+  runs <- .diveScreenRuns(runs, resid, tnum, settings$min.amplitude, settings$min.duration, n)
   if (!nrow(runs)) { e <- empty; e$baseline <- b; e$status <- "applied_no_dives"; return(e) }
   runs <- runs[order(runs$start_i), , drop = FALSE]
 
@@ -698,7 +793,12 @@
       duration_s = dur, n_samples = length(idx),
       max_depth_m = suppressWarnings(max(dd, na.rm = TRUE)),
       max_depth_time = tpos[i_ext],
-      baseline_depth_m = b[i0], amplitude_m = amp, prominence_m = amp,
+      baseline_depth_m = b[i0],
+      # amplitude is measured from the REFERENCE, prominence from the higher of the two cols bounding
+      # this dive. For an isolated dive that col sits at the hysteresis band, so prominence is a little
+      # under amplitude; for a dive carved out of a W one col is the saddle, and the gap between the two
+      # numbers is exactly how much of the depth was this dive's own rather than its neighbour's.
+      amplitude_m = amp, prominence_m = .diveProminenceOf(abs(dd - b[idx])),
       mean_depth_m = mean(dd, na.rm = TRUE), sd_depth_m = stats::sd(dd, na.rm = TRUE),
       descent_duration_s = if (shape_ok) pdur[["descent"]] else NA_real_,
       bottom_duration_s  = if (shape_ok) pdur[["bottom"]]  else NA_real_,
@@ -825,8 +925,10 @@
         band <- min(settings$surface.band, th / 2)
         r <- .diveRuns(resid, tnum, th, band, sign = if (identical(control$direction, "up")) -1 else 1)
         if (!nrow(r)) return(0)
-        r <- .diveScreenRuns(.diveSplitOnGaps(r, tnum, depth, settings$max.gap), resid, tnum,
-                             th - band, settings$min.duration, n)
+        r <- .diveScreenRuns(
+               .diveSplitOnProminence(.diveSplitOnGaps(r, tnum, depth, settings$max.gap), resid,
+                                      settings$min.prominence),
+               resid, tnum, settings$min.amplitude, settings$min.duration, length(depth))
         nrow(r)
       }, numeric(1))
       sweep <- data.frame(threshold = cand, n_dives = cnt)

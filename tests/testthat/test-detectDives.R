@@ -22,7 +22,7 @@
 # than about the derivation of the floor
 .diveCtl <- function(...) {
   a <- list(reference = "surface", depth.threshold = 5, surface.band = 2,
-            min.prominence = 5, min.duration = 10, max.gap = 60)
+            min.amplitude = 5, min.duration = 10, max.gap = 60)
   o <- list(...); a[names(o)] <- o
   do.call(diveControl, a)
 }
@@ -124,14 +124,14 @@ test_that("min.duration rejects an excursion that is too short to be measurable"
   expect_equal(.nDives(.diveTag("D", deep), .diveCtl(min.duration = 60)), 0L)
 })
 
-test_that("min.prominence rejects a shallow fragment left behind by a gap", {
-  # A run can only OPEN above depth.threshold, and diveControl() forbids min.prominence above the
-  # threshold - so prominence bites on the pieces a split leaves behind. Here a 20 m dive is cut by a
-  # 99 s depth dropout and resumes at 4 m: above the 2 m band (so still one run) but shallow.
+test_that("min.amplitude rejects a shallow fragment left behind by a gap", {
+  # A run can only OPEN above depth.threshold, so the amplitude screen bites only on the pieces a
+  # split leaves behind. Here a 20 m dive is cut by a 99 s depth dropout and resumes at 4 m: above the
+  # 2 m band (so still one run) but not a 20 m dive.
   frag <- c(rep(0, 60), rep(20, 300), rep(NA_real_, 100), rep(4, 300), rep(0, 60))
   tg <- .diveTag("P", frag)
-  expect_equal(.nDives(tg, .diveCtl(min.prominence = 2)), 2L)   # both pieces survive
-  x <- .detect(tg, .diveCtl(min.prominence = 5))[[1]]           # the 4 m piece does not
+  expect_equal(.nDives(tg, .diveCtl(min.amplitude = 2)), 2L)    # both pieces survive
+  x <- .detect(tg, .diveCtl(min.amplitude = 5))[[1]]            # the 4 m piece does not
   expect_equal(max(x$dive_id), 1L)
   expect_equal(range(which(x$dive_id == 1L)), c(61L, 360L))     # the deep piece is the one kept
 })
@@ -148,7 +148,7 @@ test_that("reference = 'baseline' finds excursions in a record that never return
   for (k in 0:5) dep[tsec >= k * 3600 + 1500 & tsec < k * 3600 + 2100] <- 130
   tg <- .diveTag("FISH", dep, tnum = tsec, zoc = FALSE)         # no anchored zero for such an animal
 
-  ctl <- list(depth.threshold = 20, surface.band = 5, min.prominence = 20,
+  ctl <- list(depth.threshold = 20, surface.band = 5, min.amplitude = 20,
               min.duration = 60, max.gap = 120, baseline.window = 1)
   xb <- .detect(tg, do.call(.diveCtl, c(ctl, list(reference = "baseline"))))[[1]]
   expect_equal(max(xb$dive_id), 6L)
@@ -196,7 +196,8 @@ test_that("zero dives is a clean result and the settings are still recorded", {
   # the threshold that produced the zero travels with the deployment
   expect_equal(p$depth_threshold_m, 5)
   expect_equal(p$surface_band_m, 2)
-  expect_equal(p$min_prominence_m, 5)
+  expect_equal(p$min_amplitude_m, 5)
+  expect_true(is.infinite(p$min_prominence_m))   # splitting is opt-in, so the default never splits
   expect_equal(p$min_duration_s, 10)
   expect_equal(p$reference, "surface")
   expect_equal(p$direction, "down")
@@ -291,4 +292,97 @@ test_that("a dropout SHORTER than max.gap leaves the dive intact", {
   # the threshold is max.gap and nothing else: lower it below 29 s and the same trace splits
   x2 <- .detect(.diveTag("SHORT", dep), .diveCtl(max.gap = 10))[[1]]
   expect_equal(max(x2$dive_id), 2L)
+})
+
+
+#######################################################################################################
+# Topographic prominence ##############################################################################
+#
+# `min.prominence` used to be INERT by construction: a run only exists because the residual passed
+# depth.threshold, and diveControl forbade min.prominence from exceeding depth.threshold, so the test
+# `amp >= min.prominence` was true for every candidate. prominence_m was a second copy of amplitude_m.
+
+# a W: down to 50, back to 15 (never reaching the 2 m band, so hysteresis cannot close), down to 48
+.dpW <- function(peak2 = 48, saddle = 15) {
+  c(0, 0, seq(0, 50, length.out = 20), seq(50, saddle, length.out = 15),
+    seq(saddle, peak2, length.out = 15), seq(peak2, 0, length.out = 20), 0, 0)
+}
+
+test_that("hysteresis alone cannot separate a W; prominence can", {
+  z <- .dpW()
+  r <- .diveRuns(z, seq_along(z), threshold = 10, band = 2, sign = 1)
+  expect_equal(nrow(r), 1L)                                    # one run: it never re-enters the band
+  # the saddle is at 15 and the second peak reaches 48, so it stands 33 m proud
+  expect_equal(nrow(.diveSplitOnProminence(r, z, min.prominence = 30)), 2L)
+  expect_equal(nrow(.diveSplitOnProminence(r, z, min.prominence = 40)), 1L)  # too tall a bar: one dive
+  expect_equal(nrow(.diveSplitOnProminence(r, z, min.prominence = Inf)), 1L) # never split
+})
+
+test_that("the split happens AT the saddle, not somewhere convenient", {
+  z <- .dpW()
+  r <- .diveRuns(z, seq_along(z), threshold = 10, band = 2, sign = 1)
+  sp <- .diveSplitOnProminence(r, z, min.prominence = 10)
+  expect_equal(nrow(sp), 2L)
+  cut <- sp$end_i[1]
+  expect_equal(cut + 1L, sp$start_i[2])                        # contiguous, nothing dropped
+  # the cut sample is the minimum of the interior valley, within one sample of the true saddle
+  interior <- (sp$start_i[1] + 5):(sp$end_i[2] - 5)
+  expect_lte(abs(cut - interior[which.min(z[interior])]), 1L)
+})
+
+test_that("a shallower saddle splits and a deeper one does not, at the same threshold", {
+  # the discriminating pair: only the saddle DEPTH differs, so nothing else can explain the outcome
+  run <- function(saddle) {
+    z <- .dpW(saddle = saddle)
+    r <- .diveRuns(z, seq_along(z), threshold = 10, band = 2, sign = 1)
+    nrow(.diveSplitOnProminence(r, z, min.prominence = 20))
+  }
+  expect_equal(run(15), 2L)      # second peak stands 48 - 15 = 33 m proud -> splits
+  expect_equal(run(40), 1L)      # second peak stands only  48 - 40 =  8 m proud -> one dive
+})
+
+test_that("a dropout inside the excursion does not defeat the saddle search", {
+  # cummax() propagates NA, so scoring the raw series would find no saddle at all for any run holding
+  # a single missing sample - and short dropouts inside a dive are routine
+  z <- .dpW(); zn <- z; zn[c(30, 55)] <- NA
+  r <- .diveRuns(z, seq_along(z), threshold = 10, band = 2, sign = 1)
+  expect_equal(nrow(.diveSplitOnProminence(r, zn, min.prominence = 10)), 2L)
+})
+
+test_that("splitting is OPT-IN: the derived default leaves excursions whole", {
+  # deriving this as (threshold - band) turned 6,512 real dives into 11,658. Splitting a W is an
+  # interpretive act and must be asked for, exactly as no maximum dive duration is imposed.
+  n <- 900
+  dep <- rep(0, n)
+  dep[101:160] <- 40; dep[161:180] <- 12; dep[181:240] <- 38    # one W-shaped excursion
+  tg <- data.frame(ID = "W", datetime = as.POSIXct("2024-01-01", tz = "UTC") + seq_len(n) - 1,
+                   depth = dep, stringsAsFactors = FALSE)
+  ctl <- function(...) diveControl(depth.threshold = 5, surface.band = 2, min.duration = 10, ...)
+  n_of <- function(...) {
+    a <- suppressWarnings(detectDives(tg, control = ctl(...), verbose = FALSE))[[1]]
+    length(setdiff(unique(a$dive_id), 0L))
+  }
+  expect_equal(n_of(), 1L)                          # default: whole
+  expect_equal(n_of(min.prominence = 10), 2L)       # opt in: separated
+  expect_equal(n_of(min.prominence = 1e6), 1L)      # an unreachable bar is the explicit "never"
+})
+
+test_that("min.prominence may now exceed depth.threshold, which used to abort", {
+  # that rule was what made the criterion inert; above the threshold is the meaningful way to say never
+  expect_s3_class(diveControl(depth.threshold = 10, min.prominence = 50), "nautilus_dive")
+  expect_error(diveControl(depth.threshold = 10, min.prominence = -1), "min.prominence")
+})
+
+test_that("prominence_m is no longer a second copy of amplitude_m", {
+  n <- 600
+  dep <- rep(0, n); dep[101:250] <- 30
+  tg <- data.frame(ID = "A", datetime = as.POSIXct("2024-01-01", tz = "UTC") + seq_len(n) - 1,
+                   depth = dep, stringsAsFactors = FALSE)
+  a <- suppressWarnings(detectDives(tg, control = diveControl(depth.threshold = 5, surface.band = 2,
+                                                              min.duration = 10), verbose = FALSE))
+  m <- suppressWarnings(diveMetrics(a, verbose = FALSE))
+  expect_equal(nrow(m), 1L)
+  expect_false(isTRUE(all.equal(m$amplitude_m, m$prominence_m)))
+  expect_lt(m$prominence_m, m$amplitude_m)          # amplitude is from the reference, prominence from
+                                                    # the col, which sits at the band
 })
