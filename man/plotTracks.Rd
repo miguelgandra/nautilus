@@ -17,7 +17,6 @@ plotTracks(
   nrows = NULL,
   plot = TRUE,
   plot.file = NULL,
-  cex = 1,
   id.col = "ID",
   datetime.col = "datetime",
   verbose = "detailed"
@@ -40,12 +39,16 @@ network download, performed once for the whole run). Default \code{FALSE}.}
 \item{bathy.resolution}{Numeric. Resolution (arc-minutes) of the NOAA bathymetry grid when
 \code{show.bathymetry = TRUE}. Larger is coarser and faster. Default 1.}
 
-\item{theme}{A \code{\link{plotTheme}} object controlling text/axis colours and the sequential ramp
-used for \code{color.by}. Default \code{plotTheme()}.}
+\item{theme}{A \code{\link{plotTheme}} object (or a named list of its fields) controlling the shared
+look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
+scale (\code{cex}) and the sequential ramp used for \code{color.by}. Default \code{plotTheme()}.}
 
-\item{colors}{Optional named character vector overriding the semantic map palette. Recognised names:
-\code{fastgps}, \code{argos}, \code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}. Unspecified entries keep their
-defaults. Default \code{NULL}.}
+\item{colors}{Optional named character vector overriding individual entries of the semantic MAP
+palette - the colour of each map \emph{element}, which is a different concept from \code{theme$palette} (a
+qualitative series palette for telling \code{n} categories apart). Recognised names: \code{fastgps}, \code{argos},
+\code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{land}, \code{land.border}, \code{bathymetry}, \code{uncertainty}.
+Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
+their defaults. Default \code{NULL}.}
 
 \item{max.points}{Integer. Per-track cap on the number of pseudo-track points actually drawn (the track
 is strided down to this many, always keeping the true first and last point) to keep screen rendering
@@ -58,8 +61,6 @@ chosen automatically (up to 2 columns x 5 rows per page) and the run paginates a
 
 \item{plot.file}{Character. Path to a single multi-page PDF for the maps. The parent directory must
 already exist; must end in \code{.pdf}. \code{NULL} (default) writes no file. Independent of \code{plot}.}
-
-\item{cex}{Numeric master text-scaling factor for the panels. Default 1.}
 
 \item{id.col, datetime.col}{Character. Names of the ID and POSIXct datetime columns. Defaults \code{"ID"} /
 \code{"datetime"}.}
@@ -107,6 +108,8 @@ fix is skipped (and reported).
 tracks <- reconstructTrack(list.files("./data interim/oriented", full.names = TRUE))
 # Per-animal maps: fixes + the depth-coloured dead-reckoned track and its 1-sigma corridor
 plotTracks(tracks, color.by = "depth", plot.file = "./plots/tracks.pdf")
+# Larger text in a serif font, and a different track colour
+plotTracks(tracks, theme = plotTheme(cex = 1.2, font.family = "serif"), colors = c(track = "navy"))
 }
 }
 \seealso{

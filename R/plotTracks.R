@@ -46,11 +46,15 @@
 #'   network download, performed once for the whole run). Default `FALSE`.
 #' @param bathy.resolution Numeric. Resolution (arc-minutes) of the NOAA bathymetry grid when
 #'   `show.bathymetry = TRUE`. Larger is coarser and faster. Default 1.
-#' @param theme A \code{\link{plotTheme}} object controlling text/axis colours and the sequential ramp
-#'   used for `color.by`. Default `plotTheme()`.
-#' @param colors Optional named character vector overriding the semantic map palette. Recognised names:
-#'   `fastgps`, `argos`, `user`, `track`, `deploy`, `popup`, `sea`. Unspecified entries keep their
-#'   defaults. Default `NULL`.
+#' @param theme A \code{\link{plotTheme}} object (or a named list of its fields) controlling the shared
+#'   look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
+#'   scale (`cex`) and the sequential ramp used for `color.by`. Default `plotTheme()`.
+#' @param colors Optional named character vector overriding individual entries of the semantic MAP
+#'   palette - the colour of each map *element*, which is a different concept from `theme$palette` (a
+#'   qualitative series palette for telling `n` categories apart). Recognised names: `fastgps`, `argos`,
+#'   `user`, `track`, `deploy`, `popup`, `sea`, `land`, `land.border`, `bathymetry`, `uncertainty`.
+#'   Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
+#'   their defaults. Default `NULL`.
 #' @param max.points Integer. Per-track cap on the number of pseudo-track points actually drawn (the track
 #'   is strided down to this many, always keeping the true first and last point) to keep screen rendering
 #'   fast and vector PDFs small. Default 5000.
@@ -59,7 +63,6 @@
 #' @param plot Logical. Draw to the active graphics device. Default `TRUE`.
 #' @param plot.file Character. Path to a single multi-page PDF for the maps. The parent directory must
 #'   already exist; must end in `.pdf`. `NULL` (default) writes no file. Independent of `plot`.
-#' @param cex Numeric master text-scaling factor for the panels. Default 1.
 #' @param id.col,datetime.col Character. Names of the ID and POSIXct datetime columns. Defaults `"ID"` /
 #'   `"datetime"`.
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default; adds a
@@ -74,6 +77,8 @@
 #' tracks <- reconstructTrack(list.files("./data interim/oriented", full.names = TRUE))
 #' # Per-animal maps: fixes + the depth-coloured dead-reckoned track and its 1-sigma corridor
 #' plotTracks(tracks, color.by = "depth", plot.file = "./plots/tracks.pdf")
+#' # Larger text in a serif font, and a different track colour
+#' plotTracks(tracks, theme = plotTheme(cex = 1.2, font.family = "serif"), colors = c(track = "navy"))
 #' }
 #' @export
 
@@ -90,7 +95,6 @@ plotTracks <- function(data,
                        nrows            = NULL,
                        plot             = TRUE,
                        plot.file        = NULL,
-                       cex              = 1,
                        id.col           = "ID",
                        datetime.col     = "datetime",
                        verbose          = "detailed") {
@@ -106,13 +110,10 @@ plotTracks <- function(data,
   .assert_flag(show.uncertainty, "show.uncertainty")
   .assert_flag(show.bathymetry, "show.bathymetry")
   .assert_number(bathy.resolution, "bathy.resolution", min = 0)
-  if (!inherits(theme, "nautilus_theme")) .abort("{.arg theme} must be a {.fn plotTheme} object.")
-  if (!is.null(colors) && (is.null(names(colors)) || !is.character(colors)))
-    .abort("{.arg colors} must be a NAMED character vector (e.g. {.code c(track = \"red\")}).")
+  theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
   .assert_count(max.points, "max.points", min = 2L)
   if (!is.null(ncols)) .assert_count(ncols, "ncols", min = 1L)
   if (!is.null(nrows)) .assert_count(nrows, "nrows", min = 1L)
-  .assert_number(cex, "cex", min = 0)
   .assert_flag(plot, "plot")
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")   # fail-fast: parent dir must exist
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
@@ -122,10 +123,32 @@ plotTracks <- function(data,
     .abort(c("{.arg show.bathymetry = TRUE} needs the {.pkg marmap} package.",
              "i" = "Install it with {.code install.packages(\"marmap\")}, or set {.arg show.bathymetry = FALSE}."))
 
-  # semantic map palette (override individual entries via `colors`)
+  # Semantic MAP palette: one colour per map ELEMENT, deliberately not folded into `theme$palette` (which
+  # is a qualitative SERIES palette for telling n categories apart - a track is not "category 3"). What a
+  # theme slot genuinely describes is taken from the theme instead and never appears here: titles (ink),
+  # axes (axis), panel/gridline chrome (panel, grid), marker outlines (bar.border), text scale and font.
   pal <- c(fastgps = "#2AA7A0", argos = "#5B7FBD", user = "#7E57C2", track = "#C0392B",
-           deploy = "#1D9E75", popup = "#E8A33D", sea = "#EAF1F6")
-  if (!is.null(colors)) pal[names(colors)] <- colors
+           deploy = "#1D9E75", popup = "#E8A33D", sea = "#EAF1F6", land = "#D9D2C5",
+           land.border = "#B8AE9C", bathymetry = "#9DB4C0", uncertainty = "#6C7A89",
+           # start/end are a CONTRAST PAIR, not chrome: the map reads them as light-disk versus
+           # dark-disk. Kept here so no theme preset can collapse one into the other.
+           start = "#FFFFFF", end = "#111111")
+  if (!is.null(colors)) {
+    if (!is.character(colors) || is.null(names(colors)) || !all(nzchar(names(colors))))
+      .abort("{.arg colors} must be a NAMED character vector (e.g. {.code c(track = \"red\")}).")
+    unknown <- setdiff(names(colors), names(pal))
+    if (length(unknown))
+      .abort(c("{.arg colors} has {length(unknown)} unrecognised name{?s}: {.val {unknown}}.",
+               "i" = "Recognised names: {.val {names(pal)}}."))
+    # Validate the VALUES, not just the names: an unchecked typo travels all the way into grDevices
+    # mid-render and surfaces as a bare 'invalid color name', naming neither the argument nor the entry.
+    bad <- colors[!vapply(colors, .isColour, logical(1))]
+    if (length(bad))
+      .abort(c("{.arg colors} has {length(bad)} entr{?y/ies} that {?is/are} not a valid colour: {.val {bad}}.",
+               "i" = "Offending name{?s}: {.val {names(bad)}}.",
+               "i" = "Use a colour name from {.fn grDevices::colors} or a hex string such as {.val #C0392B}."))
+    pal[names(colors)] <- colors
+  }
 
   ##############################################################################
   # Gather each deployment's track + fixes #####################################
@@ -205,12 +228,15 @@ plotTracks <- function(data,
                             if (length(lay$pages) > 1) sprintf(" %s %d pages", cli::symbol$bullet, length(lay$pages)) else ""))
 
   draw <- function(to.file = FALSE, unicode = TRUE) {
-    graphics::par(oma = c(0.5, 0.5, 0.5, 0.5))
+    # the theme's typeface has to be set on the DEVICE (base graphics has no per-call family for titles
+    # and legends alike); restored on exit so the caller's par() is never left mutated
+    old <- graphics::par(family = theme$font.family, oma = c(0.5, 0.5, 0.5, 0.5))
+    on.exit(graphics::par(old), add = TRUE)
     for (pg in lay$pages) {
       graphics::par(mfrow = c(lay$nrows, lay$ncols))
       for (k in pg) .plotTrackPanel(payloads[[k]], pal = pal, theme = theme, color.by = color.by,
                                     color_range = color_range, ramp = ramp, bathy = bathy,
-                                    show.uncertainty = show.uncertainty, cex = cex)
+                                    show.uncertainty = show.uncertainty)
       for (b in seq_len(lay$per_page - length(pg))) graphics::plot.new()   # blank trailing cells
     }
   }
@@ -279,11 +305,12 @@ plotTracks <- function(data,
 #' @keywords internal
 #' @noRd
 .plotTrackPanel <- function(payload, pal, theme, color.by, color_range, ramp, bathy,
-                            show.uncertainty, cex) {
+                            show.uncertainty) {
 
   fixes <- payload$fixes; track <- payload$track
   deploy <- payload$deploy; popup <- payload$popup
-  ink <- theme$ink; axcol <- theme$axis
+  ink <- theme$ink; axcol <- theme$axis; cex <- theme$cex
+  outline <- theme$bar.border          # the theme's "border against a fill" colour: here, marker outlines
 
   # extent from every drawn element (equal aspect, shared helper)
   xs <- c(fixes$lon, track$lon, deploy$lon, popup$lon)
@@ -291,25 +318,37 @@ plotTracks <- function(data,
   ext <- .equalAspectExtent(xs, ys, f = 0.2)
   if (is.null(ext)) { graphics::plot.new(); return(invisible(NULL)) }
 
-  graphics::par(mar = c(3.6, 4.0, 3.0, 1.2), mgp = c(2.2, 0.6, 0))
+  # Margins and label offsets are measured in TEXT LINES, but the labels are drawn with a per-call cex
+  # (which does not change the line height): at theme$cex = 1.6 the axis titles would be overprinted by
+  # the tick labels. Scaling both by cex keeps cex = 1 pixel-identical and keeps the panel legible above
+  # it. The right margin carries no text, so it stays put.
+  # ...but mar is measured in LINES against a fixed figure region, so on a dense grid (2 x 5 panels)
+  # scaling it by a large cex overruns the region entirely and base R aborts with "figure margins too
+  # large". Cap the scale by what this panel can actually give up, keeping at least 65% of each
+  # dimension for the map itself. At cex = 1 the cap never binds, so the default figure is unchanged.
+  mar_base <- c(3.6, 4.0, 3.0, 1.2)
+  fin <- graphics::par("fin"); csi <- graphics::par("csi")
+  room <- function(lines, inches) if (lines <= 0 || !is.finite(inches)) cex else (0.65 * inches) / csi / lines
+  sc <- max(1, min(cex, room(sum(mar_base[c(1, 3)]), fin[2]), room(sum(mar_base[c(2, 4)]), fin[1])))
+  graphics::par(mar = mar_base * c(sc, sc, sc, 1), mgp = c(2.2, 0.6, 0) * sc)
   graphics::plot(NA, xlim = ext$xlim, ylim = ext$ylim, asp = ext$asp, axes = FALSE,
                  xlab = "", ylab = "", xaxs = "i", yaxs = "i")
   graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3], graphics::par("usr")[2], graphics::par("usr")[4],
                  col = pal[["sea"]], border = NA)
 
-  if (!is.null(bathy)) .drawBathy(bathy, ext$xlim, ext$ylim)
-  .drawCoastline(ext$xlim, ext$ylim)
-  graphics::box(col = "#BBBBBB")
-  graphics::axis(1, at = pretty(ext$xlim, 5), labels = sprintf("%.2f", pretty(ext$xlim, 5)), col.axis = axcol, cex.axis = cex * 0.8)
-  graphics::axis(2, at = pretty(ext$ylim, 5), labels = sprintf("%.2f", pretty(ext$ylim, 5)), las = 1, col.axis = axcol, cex.axis = cex * 0.8)
-  graphics::title(xlab = "Longitude", line = 2.1, cex.lab = cex * 0.9, col.lab = ink)
-  graphics::title(ylab = "Latitude", line = 2.6, cex.lab = cex * 0.9, col.lab = ink)
-  graphics::title(main = payload$id, line = 1.5, cex.main = cex * 1.1, col.main = ink)
-  graphics::title(main = .trackSubtitle(fixes, track), line = 0.5, font.main = 1, cex.main = cex * 0.8, col.main = theme$subtitle)
+  if (!is.null(bathy)) .drawBathy(bathy, ext$xlim, ext$ylim, col = pal[["bathymetry"]], cex = cex)
+  .drawCoastline(ext$xlim, ext$ylim, land = pal[["land"]], border = pal[["land.border"]])
+  graphics::box(col = axcol)
+  graphics::axis(1, at = pretty(ext$xlim, 5), labels = sprintf("%.2f", pretty(ext$xlim, 5)), col = axcol, col.axis = axcol, cex.axis = cex * 0.8)
+  graphics::axis(2, at = pretty(ext$ylim, 5), labels = sprintf("%.2f", pretty(ext$ylim, 5)), las = 1, col = axcol, col.axis = axcol, cex.axis = cex * 0.8)
+  graphics::title(xlab = "Longitude", line = 2.1 * sc, cex.lab = cex * 0.9, col.lab = ink)
+  graphics::title(ylab = "Latitude", line = 2.6 * sc, cex.lab = cex * 0.9, col.lab = ink)
+  graphics::title(main = payload$id, line = 1.5 * cex, cex.main = cex * 1.1, col.main = ink)
+  graphics::title(main = .trackSubtitle(fixes, track), line = 0.5 * cex, font.main = 1, cex.main = cex * 0.8, col.main = theme$subtitle)
 
   # --- uncertainty corridor (translucent disks whose radius = pseudo_error), drawn UNDER the track ----
   if (show.uncertainty && !is.null(track) && "error" %in% names(track) && nrow(track) >= 1)
-    .drawErrorCorridor(track$lon, track$lat, track$error, mean(ext$ylim))
+    .drawErrorCorridor(track$lon, track$lat, track$error, mean(ext$ylim), fill = pal[["uncertainty"]])
 
   # --- pseudo-track ----------------------------------------------------------------------------------
   if (!is.null(track) && nrow(track) >= 2) {
@@ -323,24 +362,28 @@ plotTracks <- function(data,
       graphics::lines(track$lon, track$lat, col = pal[["track"]], lwd = 1.6)
     }
     # start / end markers (legended)
-    graphics::points(track$lon[1], track$lat[1], pch = 21, bg = "white",  col = ink, lwd = 0.6, cex = cex * 1.2)
-    graphics::points(track$lon[n], track$lat[n], pch = 21, bg = ink,      col = "white", lwd = 0.6, cex = cex * 1.2)
+    # Start and end are told apart by their FILL - light disk versus dark disk - not by their border.
+    # Routing that fill through a chrome slot collapsed the distinction: under the `classic` preset
+    # bar.border is #4D4D4D and ink is #000000, so both markers became dark disks with dark rings.
+    # These are map semantics, so they live in `pal` and are overridable through `colors`.
+    graphics::points(track$lon[1], track$lat[1], pch = 21, bg = pal[["start"]], col = ink, lwd = 0.6, cex = cex * 1.2)
+    graphics::points(track$lon[n], track$lat[n], pch = 21, bg = pal[["end"]], col = pal[["start"]], lwd = 0.6, cex = cex * 1.2)
   }
 
   # --- genuine fixes, by type ------------------------------------------------------------------------
   .pts <- function(sel, ...) if (any(sel)) graphics::points(fixes$lon[sel], fixes$lat[sel], ...)
-  .pts(fixes$type == "FastGPS", pch = 21, bg = pal[["fastgps"]], col = "white", lwd = 0.4, cex = cex)
-  .pts(fixes$type == "Argos",   pch = 22, bg = pal[["argos"]],   col = "white", lwd = 0.4, cex = cex)
-  .pts(fixes$type == "User",    pch = 24, bg = pal[["user"]],    col = "white", lwd = 0.4, cex = cex * 1.1)
+  .pts(fixes$type == "FastGPS", pch = 21, bg = pal[["fastgps"]], col = outline, lwd = 0.4, cex = cex)
+  .pts(fixes$type == "Argos",   pch = 22, bg = pal[["argos"]],   col = outline, lwd = 0.4, cex = cex)
+  .pts(fixes$type == "User",    pch = 24, bg = pal[["user"]],    col = outline, lwd = 0.4, cex = cex * 1.1)
 
   # --- deploy / pop-up anchors -----------------------------------------------------------------------
-  if (!is.null(deploy)) graphics::points(deploy$lon, deploy$lat, pch = 23, bg = pal[["deploy"]], col = "white", lwd = 0.5, cex = cex * 1.5)
-  if (!is.null(popup))  graphics::points(popup$lon,  popup$lat,  pch = 23, bg = pal[["popup"]],  col = "white", lwd = 0.5, cex = cex * 1.5)
+  if (!is.null(deploy)) graphics::points(deploy$lon, deploy$lat, pch = 23, bg = pal[["deploy"]], col = outline, lwd = 0.5, cex = cex * 1.5)
+  if (!is.null(popup))  graphics::points(popup$lon,  popup$lat,  pch = 23, bg = pal[["popup"]],  col = outline, lwd = 0.5, cex = cex * 1.5)
 
   # --- legend + colour bar ---------------------------------------------------------------------------
-  .trackLegend(fixes, track, deploy, popup, pal, ink, cex)
+  .trackLegend(fixes, track, deploy, popup, pal, theme)
   if (!is.null(color.by) && !is.null(color_range) && !is.null(track) && "value" %in% names(track))
-    .trackColorbar(ramp, color_range, .defaultColorLabel(color.by), ink, axcol, cex)
+    .trackColorbar(ramp, color_range, .defaultColorLabel(color.by), theme)
 
   .mapScalebar(label.cex = cex * 0.7)
   invisible(NULL)
@@ -365,7 +408,7 @@ plotTracks <- function(data,
 # in metres; converted to degrees with a cos(lat) longitude correction.
 #' @keywords internal
 #' @noRd
-.drawErrorCorridor <- function(lon, lat, err, mid_lat, max.disks = 60L) {
+.drawErrorCorridor <- function(lon, lat, err, mid_lat, fill = "#6C7A89", max.disks = 60L) {
   ok <- is.finite(lon) & is.finite(lat) & is.finite(err) & err > 0
   if (!any(ok)) return(invisible(NULL))
   lon <- lon[ok]; lat <- lat[ok]; err <- err[ok]
@@ -373,7 +416,7 @@ plotTracks <- function(data,
   idx <- if (n > max.disks) unique(round(seq(1L, n, length.out = max.disks))) else seq_len(n)
   ang <- seq(0, 2 * pi, length.out = 24)
   coslat <- cos(mid_lat * pi / 180); if (!is.finite(coslat) || coslat <= 0) coslat <- 1
-  fill <- grDevices::adjustcolor("#6C7A89", alpha.f = 0.14)
+  fill <- grDevices::adjustcolor(fill, alpha.f = 0.14)
   for (k in idx) {
     dlat <- (err[k] / 111320)
     dlon <- dlat / coslat
@@ -385,23 +428,25 @@ plotTracks <- function(data,
 # Compact in-panel legend (top-left) listing only the elements actually drawn.
 #' @keywords internal
 #' @noRd
-.trackLegend <- function(fixes, track, deploy, popup, pal, ink, cex) {
+.trackLegend <- function(fixes, track, deploy, popup, pal, theme) {
+  ink <- theme$ink; cex <- theme$cex; outline <- theme$bar.border
   lab <- character(0); pch <- integer(0); pcol <- character(0); pbg <- character(0); lty <- integer(0); lwd <- numeric(0)
   add <- function(l, pc, co, bg = NA, lt = NA, lw = NA) {
     lab[[length(lab) + 1L]] <<- l; pch[[length(pch) + 1L]] <<- pc; pcol[[length(pcol) + 1L]] <<- co
     pbg[[length(pbg) + 1L]] <<- bg; lty[[length(lty) + 1L]] <<- lt; lwd[[length(lwd) + 1L]] <<- lw }
-  if (any(fixes$type == "FastGPS")) add(sprintf("FastGPS (%d)", sum(fixes$type == "FastGPS")), 21, "white", pal[["fastgps"]])
-  if (any(fixes$type == "Argos"))   add(sprintf("Argos (%d)",   sum(fixes$type == "Argos")),   22, "white", pal[["argos"]])
-  if (any(fixes$type == "User"))    add(sprintf("User (%d)",    sum(fixes$type == "User")),    24, "white", pal[["user"]])
+  if (any(fixes$type == "FastGPS")) add(sprintf("FastGPS (%d)", sum(fixes$type == "FastGPS")), 21, outline, pal[["fastgps"]])
+  if (any(fixes$type == "Argos"))   add(sprintf("Argos (%d)",   sum(fixes$type == "Argos")),   22, outline, pal[["argos"]])
+  if (any(fixes$type == "User"))    add(sprintf("User (%d)",    sum(fixes$type == "User")),    24, outline, pal[["user"]])
   if (!is.null(track) && nrow(track) >= 2) {
     add("track", NA_integer_, pal[["track"]], NA, 1L, 1.6)
-    add("start", 21, ink, "white"); add("end", 21, "white", ink)
+    add("start", 21, ink, pal[["start"]]); add("end", 21, pal[["start"]], pal[["end"]])
   }
-  if (!is.null(deploy)) add("deployment", 23, "white", pal[["deploy"]])
-  if (!is.null(popup))  add("pop-up", 23, "white", pal[["popup"]])
+  if (!is.null(deploy)) add("deployment", 23, outline, pal[["deploy"]])
+  if (!is.null(popup))  add("pop-up", 23, outline, pal[["popup"]])
   if (!length(lab)) return(invisible(NULL))
   graphics::legend("topleft", legend = lab, pch = pch, col = pcol, pt.bg = pbg, lty = lty, lwd = lwd,
-                   bty = "o", bg = "#FFFFFFCC", box.col = "#CCCCCC", pt.lwd = 0.5, pt.cex = cex * 1.1,
+                   bty = "o", bg = grDevices::adjustcolor(theme$panel, alpha.f = 0.8), box.col = theme$grid,
+                   text.col = ink, pt.lwd = 0.5, pt.cex = cex * 1.1,
                    cex = cex * 0.62, y.intersp = 1.1, inset = 0.015, seg.len = 1.4)
   invisible(NULL)
 }
@@ -409,14 +454,15 @@ plotTracks <- function(data,
 # Compact horizontal colour bar (bottom-right corner) for the color.by scale.
 #' @keywords internal
 #' @noRd
-.trackColorbar <- function(ramp, color_range, label, ink, axcol, cex) {
+.trackColorbar <- function(ramp, color_range, label, theme) {
   if (!all(is.finite(color_range)) || diff(color_range) <= 0) return(invisible(NULL))
+  ink <- theme$ink; axcol <- theme$axis; cex <- theme$cex
   usr <- graphics::par("usr")
   w <- 0.30 * (usr[2] - usr[1]); h <- 0.022 * (usr[4] - usr[3])
   x0 <- usr[2] - w - 0.04 * (usr[2] - usr[1]); y0 <- usr[3] + 0.06 * (usr[4] - usr[3])
   xs <- seq(x0, x0 + w, length.out = length(ramp) + 1L)
   graphics::rect(xs[-length(xs)], y0, xs[-1], y0 + h, col = ramp, border = NA)
-  graphics::rect(x0, y0, x0 + w, y0 + h, border = "#888888", lwd = 0.6)
+  graphics::rect(x0, y0, x0 + w, y0 + h, border = axcol, lwd = 0.6)
   labs <- pretty(color_range, 3); labs <- labs[labs >= color_range[1] & labs <= color_range[2]]
   at <- x0 + w * (labs - color_range[1]) / diff(color_range)
   graphics::segments(at, y0, at, y0 - h * 0.4, col = axcol)
@@ -448,13 +494,13 @@ plotTracks <- function(data,
 # Draw bathymetry contours in lon/lat over the current panel (so they co-register with the data).
 #' @keywords internal
 #' @noRd
-.drawBathy <- function(bathy, xlim, ylim) {
+.drawBathy <- function(bathy, xlim, ylim, col = "#9DB4C0", cex = 1) {
   lon <- as.numeric(rownames(bathy)); lat <- as.numeric(colnames(bathy))
   z <- unclass(bathy); z[z > 0] <- NA                                    # sea only
   lv <- pretty(range(z, na.rm = TRUE), 6); lv <- lv[lv < 0]
   if (length(lv))
     graphics::contour(lon, lat, z, levels = lv, add = TRUE, drawlabels = TRUE,
-                      col = "#9DB4C0", lwd = 0.4, labcex = 0.5, method = "edge")
+                      col = col, lwd = 0.4, labcex = cex * 0.5, method = "edge")
   invisible(NULL)
 }
 

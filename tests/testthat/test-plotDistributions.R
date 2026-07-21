@@ -135,18 +135,43 @@ test_that("a list of overrides is coerced like every other control object", {
   expect_true(file.size(pf) > 1000)
 })
 
-test_that("the tuned layout survives the migration: theme$cex = 1 keeps the legacy 1.15 base", {
-  # The figure was tuned at cex = 1.15 before the theme existed. Swapping straight to theme$cex = 1
-  # would have shrunk every label by 13% under the banner of "consistency", so the base is folded in.
-  # Pinning it here because it is invisible in the signature and easy to "tidy" away later.
-  src <- readLines("../../R/plotDistributions.R")
-  expect_true(any(grepl("cex <- theme\\$cex \\* 1.15", src, fixed = FALSE)))
+test_that("the theme actually reaches the drawing layer, values and all", {
+  # NOT a source grep. A grep survives `cex <- theme$cex * 1.15` followed one line later by
+  # `cex <- 1.15`, and survives every theme slot being replaced by a literal so long as the text
+  # still appears somewhere in the file. Capture what the panel drawer is really handed.
+  seen <- NULL
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  cap <- function(vals, ord_ids, g, fill, min.n, mar, cex, first, title, theme) {
+    seen <<- list(cex = cex, theme = theme, fill = fill); invisible(NULL)
+  }
+  testthat::local_mocked_bindings(.drawViolinPanel = cap, .package = "nautilus")
+  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz", theme = plotTheme(panel = "#123456"),
+                                     plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_false(is.null(seen))
+  # the legacy 1.15 base is folded in, so theme$cex = 1 reproduces the tuned figure
+  expect_equal(seen$cex, 1.15)
+  expect_equal(seen$theme$panel, "#123456")            # chrome is the caller's, not a literal
+  expect_equal(seen$fill, .themePalette(plotTheme()$palette, 1L))   # fills come from the palette
+
+  # ...and theme$cex scales it rather than being ignored
+  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz", theme = plotTheme(cex = 2),
+                                     plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_equal(seen$cex, 2.3)
 })
 
-test_that("panel chrome comes from the theme, not from hardcoded greys", {
-  src <- readLines("../../R/plotDistributions.R")
-  expect_false(any(grepl('col = "grey97"', src, fixed = TRUE)))
-  expect_false(any(grepl('col = "grey88"', src, fixed = TRUE)))
-  expect_true(any(grepl("col = theme\\$panel", src)))
-  expect_true(any(grepl("col = theme\\$grid", src)))
+test_that("the panel chrome the theme specifies is what actually gets painted", {
+  # Capturing what the DRAWER is handed is not enough: mocking the drawer leaves its internals
+  # unexercised, so hardcoding the fill back to grey97 inside it survives. Watch the graphics call.
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  fills <- character(0)
+  testthat::with_mocked_bindings(
+    rect = function(xleft, ybottom, xright, ytop, col = NA, ...) {
+      fills <<- c(fills, as.character(col %||% NA)); invisible(NULL)
+    },
+    .package = "graphics",
+    suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz",
+                                       theme = plotTheme(panel = "#123456"),
+                                       plot = FALSE, plot.file = pf, verbose = FALSE)))
+  expect_true("#123456" %in% fills)          # the panel really is painted the theme's colour
+  expect_false("grey97" %in% fills)          # ...and not the literal it replaced
 })

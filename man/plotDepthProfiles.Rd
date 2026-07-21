@@ -18,7 +18,7 @@ plotDepthProfiles(
   plot.file = NULL,
   ncols = NULL,
   nrows = NULL,
-  cex = 1.15,
+  theme = plotTheme(),
   point.size = 0.4,
   lwd = 1.6,
   id.col = "ID",
@@ -34,10 +34,13 @@ data.frame, or a list of them (see \code{\link{processTagData}}).}
 \item{color.by}{Character. Name of the column mapped to colour. Default \code{"temp"}.}
 
 \item{color.label}{Character. Legend title for \code{color.by}. \code{NULL} (default) derives a sensible label
-(e.g. \code{"Temperature (°C)"} for \code{"temp"}).}
+(e.g. a degree-Celsius temperature label for \code{"temp"}).}
 
-\item{color.pal}{Character vector of colours for the mapped variable. \code{NULL} (default) uses a
-jet-style palette with extra resolution in the upper range.}
+\item{color.pal}{Character vector of colours for the mapped variable, overriding the theme. \code{NULL}
+(default) builds the ramp from the theme's \code{sequential} colours, weighted to give extra resolution
+to the upper range. This is a DATA mapping rather than chrome, so it stays user-settable
+independently of \code{theme}: a figure may well need a domain-specific temperature scale while keeping
+the rest of the family's look.}
 
 \item{same.color.scale}{Logical. If \code{TRUE} (default), all panels share one colour scale and a single
 legend; if \code{FALSE}, each panel is scaled and labelled independently.}
@@ -47,8 +50,10 @@ each panel is scaled to its own maximum depth.}
 
 \item{shade.diel}{Logical. If \code{TRUE} (default), shade the background by diel phase (day / twilight /
 night). Requires deployment coordinates in the metadata; panels without them are left unshaded. The
-shading greys are fixed (they must stay neutral so they do not compete with the colour scale); a
-Day / Twilight / Night key is drawn beside the colour bar when a shared legend is shown.}
+shading greys are fixed rather than taken from the theme's \code{day}/\code{night} colours: this panel carries
+a colour-mapped trace across its whole area, so the background must stay neutral and pale or it
+competes with (and, at night, swallows) the data. A Day / Twilight / Night key is drawn beside the
+colour bar when a shared legend is shown.}
 
 \item{geom}{Character. How each dive trace is drawn: \code{"line"} (default) maps the colour onto a continuous
 line that traces the dive shape (broken across recording gaps); \code{"points"} draws coloured samples only;
@@ -66,7 +71,9 @@ Independent of \code{plot}: set either or both. The function manages the device 
 \item{ncols, nrows}{Integer. Grid columns / rows per page. If \code{NULL} (default) both are chosen
 automatically (up to 2 columns and 5 rows per page).}
 
-\item{cex}{Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.15.}
+\item{theme}{A \link{plotTheme} object, or a list of overrides, controlling the visual style: text
+scaling (\code{cex}), font family, the ink / axis colours of the panel chrome, and the \code{sequential} ramp
+used for \code{color.by} when \code{color.pal} is \code{NULL}.}
 
 \item{point.size}{Numeric. Plotting-character size (\code{cex}) for the depth points, used when \code{geom} draws
 points (\code{"points"} or \code{"both"}). Default 0.4.}

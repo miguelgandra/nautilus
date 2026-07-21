@@ -78,7 +78,7 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
 #' @noRd
 .themePreset <- function(preset) {
   common <- list(palette = c("#2FA4A0", "#E7913B", "#3E86C0", "#8B6BB1", "#C25B56", "#7FA65E", "#5B7FBD", "#C77F9E"),
-                 sequential = c("#F7FBFF", "#3B7BB4", "#08306B"), bar.alpha = 1, font.family = "", cex = 1)
+                 sequential = c("#9ECAE1", "#3B7BB4", "#08306B"), bar.alpha = 1, font.family = "", cex = 1)
   switch(preset,
     light   = c(list(panel = "grey97", grid = "grey88", ink = "#1B1F27", axis = "#586074",
                      subtitle = "#9AA1B0", day = "#DCEAF6", night = "#294763", day.border = "#AFC9E0",
@@ -96,8 +96,11 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
 #' @keywords internal
 #' @noRd
 .isColour <- function(x) {
-  length(x) == 1L && (is.character(x) || is.numeric(x)) &&
-    isTRUE(tryCatch({ grDevices::col2rgb(x); TRUE }, error = function(e) FALSE))
+  # col2rgb(NA) SUCCEEDS - it returns white - so a bare tryCatch would accept NA as a valid colour and
+  # the element would silently draw transparent or white instead of aborting. A missing colour is a
+  # mistake to report, not a colour to honour.
+  if (length(x) != 1L || is.na(x)) return(FALSE)
+  isTRUE(tryCatch({ grDevices::col2rgb(x); TRUE }, error = function(e) FALSE))
 }
 
 #' Resolve a theme's `palette` field to exactly `n` colours (a colour vector, or an hcl.colors name).

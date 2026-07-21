@@ -62,7 +62,7 @@ test_that(".downsampleForPlot honours id.col/datetime.col and never mutates the 
 })
 
 test_that(".defaultColorLabel maps known variables and falls back to the column name", {
-  expect_equal(nautilus:::.defaultColorLabel("temp"), "Temperature (°C)")
+  expect_equal(nautilus:::.defaultColorLabel("temp"), "Temperature (\u00b0C)")
   expect_equal(nautilus:::.defaultColorLabel("speed"), "Speed (m/s)")
   expect_equal(nautilus:::.defaultColorLabel("vedba"), "vedba")
 })
@@ -71,7 +71,7 @@ test_that("plotDepthProfiles validates arguments before doing any work", {
   d <- data.frame(ID = "a", datetime = Sys.time(), depth = 1)
   expect_error(plotDepthProfiles(d, color.by = 1, verbose = FALSE), "color.by", ignore.case = TRUE)
   expect_error(plotDepthProfiles(d, plot.file = "x.png", verbose = FALSE), "plot.file", ignore.case = TRUE)
-  expect_error(plotDepthProfiles(d, cex = -1, verbose = FALSE), "cex", ignore.case = TRUE)
+  expect_error(plotDepthProfiles(d, theme = list(cex = -1), verbose = FALSE), "cex", ignore.case = TRUE)
   expect_error(plotDepthProfiles(d, downsample = -5, verbose = FALSE), "downsample", ignore.case = TRUE)
   expect_error(plotDepthProfiles(d, ncols = 0, verbose = FALSE), "ncols", ignore.case = TRUE)
   # neither an active plot nor a file -> nothing to do
@@ -135,3 +135,131 @@ test_that(".drawColorLine breaks the trace across recording gaps and missing sam
   expect_true(is.na(captured$x0[4]))                           # into the NA-depth sample: broken
   expect_true(is.na(captured$x0[5]))                           # out of the NA-depth sample: broken
 })
+
+
+#######################################################################################################
+# Theme migration #####################################################################################
+#
+# plotDepthProfiles used to carry its own `cex = 1.15` and a private jet-style ramp, while the rest of
+# the family takes a shared `theme`. This is the migration.
+
+# Two deployments, drawn to a throwaway PDF - enough to exercise the real drawing path.
+.dpTags <- function() {
+  mk <- function(id, n = 200) data.frame(
+    ID = id, datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n),
+    depth = abs(sin(seq_len(n) / 20)) * 40, temp = 15 + cos(seq_len(n) / 30) * 3)
+  list(A = mk("A"), B = mk("B"))
+}
+
+# The ramp the function is expected to build for a given theme: the theme's sequential colours,
+# re-weighted 2:3 so the upper 30% of the ramp gets extra resolution (the shape inherited from the
+# pre-theme jet default).
+.dpExpectedRamp <- function(theme = plotTheme()) {
+  base <- grDevices::colorRampPalette(theme$sequential)(100)
+  grDevices::colorRampPalette(c(rep(base[1:70], each = 2), rep(base[71:100], each = 3)))(100)
+}
+
+# Capture the palette that actually reaches the panel drawer. A colour never reaches a return value,
+# so a quiet call is no evidence at all that the argument was honoured - this asserts the resolved one.
+.dpCapturePalette <- function(...) {
+  captured <- NULL
+  testthat::local_mocked_bindings(
+    .drawDepthPanel = function(dep, color.by, depth.col, datetime.col, color.pal, ...) {
+      captured <<- color.pal
+      graphics::plot.new()                                     # keep the layout's cell sequence intact
+    })
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  plotDepthProfiles(.dpTags(), ..., plot = FALSE, plot.file = pf, verbose = FALSE)
+  captured
+}
+
+test_that("theme replaces the old cex argument entirely", {
+  expect_false("cex" %in% names(formals(plotDepthProfiles)))
+  expect_true("theme" %in% names(formals(plotDepthProfiles)))
+  # point.size / lwd are geometry, not text scaling, so they stay
+  expect_true(all(c("point.size", "lwd") %in% names(formals(plotDepthProfiles))))
+})
+
+test_that("a bad theme is rejected by name rather than failing deep inside the drawing code", {
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  expect_error(plotDepthProfiles(.dpTags(), theme = list(panel = "not-a-colour"),
+                                 plot = FALSE, plot.file = pf, verbose = FALSE), "panel")
+  expect_error(plotDepthProfiles(.dpTags(), theme = list(sequential = "#FF0000"),
+                                 plot = FALSE, plot.file = pf, verbose = FALSE), "sequential")
+  expect_error(plotDepthProfiles(.dpTags(), theme = list(nonsense = 1),
+                                 plot = FALSE, plot.file = pf, verbose = FALSE), "nonsense")
+  expect_error(plotDepthProfiles(.dpTags(), theme = "light",
+                                 plot = FALSE, plot.file = pf, verbose = FALSE), "plotTheme")
+})
+
+test_that("the theme reaches the drawing layer with its values intact", {
+  # NOT a source grep. A grep survives `cex <- theme$cex * 1.15` followed one line later by a
+  # `cex <- 1.15` that throws the theme away, and it survives every slot being swapped for a literal
+  # so long as the text still appears somewhere. It also breaks under R CMD check, where tests run
+  # from <pkg>.Rcheck/tests/testthat and ../../R does not exist. Capture the real arguments instead.
+  seen <- NULL
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  cap <- function(dep, color.by, depth.col, datetime.col, color.pal, panel_range, depth_ylim,
+                  cex, theme, ...) { seen <<- list(cex = cex, theme = theme); invisible(NULL) }
+  testthat::local_mocked_bindings(.drawDepthPanel = cap, .package = "nautilus")
+  suppressMessages(plotDepthProfiles(.dpTags(), theme = plotTheme(ink = "#123456"),
+                                     plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_false(is.null(seen))
+  expect_equal(seen$cex, 1.15)                    # the tuned base is folded in at theme$cex = 1
+  expect_equal(seen$theme$ink, "#123456")
+  suppressMessages(plotDepthProfiles(.dpTags(), theme = plotTheme(cex = 2),
+                                     plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_equal(seen$cex, 2.3)                     # ...and theme$cex still scales it
+})
+
+
+test_that("the default colour ramp is built from the theme's sequential colours", {
+  expect_identical(.dpCapturePalette(), .dpExpectedRamp())
+  # a different sequential ramp changes the mapped colours (not merely accepted in silence)
+  th <- plotTheme(sequential = c("#000000", "#FF0000"))
+  got <- .dpCapturePalette(theme = th)
+  expect_identical(got, .dpExpectedRamp(th))
+  expect_false(identical(got, .dpExpectedRamp()))
+  # The weighting is load-bearing, not decoration: with a plain black -> white base the ramp is NOT
+  # linear. Its midpoint sits PAST mid-grey, because the upper 30% of the base is stretched 3:2, which
+  # is what keeps the high end of a temperature scale from saturating into one tone.
+  g   <- .dpCapturePalette(theme = plotTheme(sequential = c("#000000", "#FFFFFF")))
+  lum <- function(x) mean(grDevices::col2rgb(x))
+  expect_gt(lum(g[50]), lum("#808080") + 5)                     # a linear ramp would land on mid-grey
+  expect_identical(c(g[1], g[100]), c("#000000", "#FFFFFF"))    # endpoints of the theme ramp are kept
+})
+
+test_that("color.pal still overrides the theme for this data mapping", {
+  pal <- c("#000000", "#444444", "#888888", "#FFFFFF")
+  expect_identical(.dpCapturePalette(color.pal = pal), pal)
+  # an explicit ramp wins over an explicit theme, too
+  expect_identical(.dpCapturePalette(color.pal = pal, theme = plotTheme(sequential = c("#000000", "#FF0000"))), pal)
+  expect_error(plotDepthProfiles(.dpTags(), color.pal = 42, plot = FALSE,
+                                 plot.file = tempfile(fileext = ".pdf"), verbose = FALSE), "color.pal")
+})
+
+test_that("the diel bands stay neutral grey and the key border comes from the theme", {
+  # The diel greys are a DELIBERATE partial migration: theme$day/#DCEAF6 and theme$night/#294763 are
+  # the same blues the depth ramp uses, so a themed background reads as data and the trace and the
+  # black max-depth rule nearly vanish over the night band. Watch what is painted, not the source.
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
+  fills <- character(0)
+  testthat::with_mocked_bindings(
+    rect = function(xleft, ybottom, xright, ytop, col = NA, border = NA, ...) {
+      fills <<- c(fills, as.character(col)); invisible(NULL)
+    },
+    .package = "graphics",
+    suppressMessages(plotDepthProfiles(.dpTags(), shade.diel = TRUE,
+                                       theme = plotTheme(day = "#AA0000", night = "#00AA00"),
+                                       plot = FALSE, plot.file = pf, verbose = FALSE)))
+  # the theme's diel colours must not reach the canvas at all
+  expect_false("#AA0000" %in% fills)
+  expect_false("#00AA00" %in% fills)
+  # ...and the function that OWNS the decision still returns the neutral triple. Asserting the
+  # resolved values, not the source text: swap the greys for theme slots and this fails.
+  fl <- .dielFills()
+  expect_named(fl, c("day", "crepuscule", "night"))
+  expect_equal(unname(fl), c("grey98", "grey92", "grey85"))
+  expect_false(any(fl %in% c(plotTheme()$day, plotTheme()$night, plotTheme()$day.border)))
+})
+

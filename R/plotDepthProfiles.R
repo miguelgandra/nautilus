@@ -18,17 +18,22 @@
 #'   data.frame, or a list of them (see \code{\link{processTagData}}).
 #' @param color.by Character. Name of the column mapped to colour. Default `"temp"`.
 #' @param color.label Character. Legend title for `color.by`. `NULL` (default) derives a sensible label
-#'   (e.g. `"Temperature (°C)"` for `"temp"`).
-#' @param color.pal Character vector of colours for the mapped variable. `NULL` (default) uses a
-#'   jet-style palette with extra resolution in the upper range.
+#'   (e.g. a degree-Celsius temperature label for `"temp"`).
+#' @param color.pal Character vector of colours for the mapped variable, overriding the theme. `NULL`
+#'   (default) builds the ramp from the theme's `sequential` colours, weighted to give extra resolution
+#'   to the upper range. This is a DATA mapping rather than chrome, so it stays user-settable
+#'   independently of `theme`: a figure may well need a domain-specific temperature scale while keeping
+#'   the rest of the family's look.
 #' @param same.color.scale Logical. If `TRUE` (default), all panels share one colour scale and a single
 #'   legend; if `FALSE`, each panel is scaled and labelled independently.
 #' @param same.depth.scale Logical. If `TRUE`, all panels share one depth axis; if `FALSE` (default),
 #'   each panel is scaled to its own maximum depth.
 #' @param shade.diel Logical. If `TRUE` (default), shade the background by diel phase (day / twilight /
 #'   night). Requires deployment coordinates in the metadata; panels without them are left unshaded. The
-#'   shading greys are fixed (they must stay neutral so they do not compete with the colour scale); a
-#'   Day / Twilight / Night key is drawn beside the colour bar when a shared legend is shown.
+#'   shading greys are fixed rather than taken from the theme's `day`/`night` colours: this panel carries
+#'   a colour-mapped trace across its whole area, so the background must stay neutral and pale or it
+#'   competes with (and, at night, swallows) the data. A Day / Twilight / Night key is drawn beside the
+#'   colour bar when a shared legend is shown.
 #' @param geom Character. How each dive trace is drawn: `"line"` (default) maps the colour onto a continuous
 #'   line that traces the dive shape (broken across recording gaps); `"points"` draws coloured samples only;
 #'   `"both"` overlays points on the line. A line reads most clearly for a smoothly-varying colour variable
@@ -40,7 +45,9 @@
 #'   Independent of `plot`: set either or both. The function manages the device itself. Default `NULL`.
 #' @param ncols,nrows Integer. Grid columns / rows per page. If `NULL` (default) both are chosen
 #'   automatically (up to 2 columns and 5 rows per page).
-#' @param cex Numeric. Master text-scaling factor for the ID labels, axes and legend. Default 1.15.
+#' @param theme A \link{plotTheme} object, or a list of overrides, controlling the visual style: text
+#'   scaling (`cex`), font family, the ink / axis colours of the panel chrome, and the `sequential` ramp
+#'   used for `color.by` when `color.pal` is `NULL`.
 #' @param point.size Numeric. Plotting-character size (`cex`) for the depth points, used when `geom` draws
 #'   points (`"points"` or `"both"`). Default 0.4.
 #' @param lwd Numeric. Line width for the dive trace, used when `geom` draws a line (`"line"` or `"both"`).
@@ -74,7 +81,7 @@ plotDepthProfiles <- function(data,
                               plot.file        = NULL,
                               ncols            = NULL,
                               nrows            = NULL,
-                              cex              = 1.15,
+                              theme            = plotTheme(),
                               point.size       = 0.4,
                               lwd              = 1.6,
                               id.col           = "ID",
@@ -100,7 +107,7 @@ plotDepthProfiles <- function(data,
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")     # fail-fast: parent dir must exist
   if (!is.null(ncols)) .assert_count(ncols, "ncols", min = 1)
   if (!is.null(nrows)) .assert_count(nrows, "nrows", min = 1)
-  .assert_number(cex, "cex", min = 0)
+  theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
   .assert_number(point.size, "point.size", min = 0)
   .assert_number(lwd, "lwd", min = 0)
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col"); .assert_string(depth.col, "depth.col")
@@ -111,6 +118,11 @@ plotDepthProfiles <- function(data,
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
 
   if (is.null(color.label)) color.label <- .defaultColorLabel(color.by)
+
+  # This figure was tuned at cex = 1.15 before the theme existed. Folding that base in here means
+  # theme$cex = 1 reproduces the tuned layout exactly and scales from there, rather than silently
+  # shrinking every label by 13% the moment the function joined the family.
+  cex <- theme$cex * 1.15
 
 
   ##############################################################################
@@ -162,9 +174,13 @@ plotDepthProfiles <- function(data,
   if (same.depth.scale)
     depth_ylim_global <- .depthYlim(max(vapply(deployments, function(d) max(d$data[[depth.col]], na.rm = TRUE), numeric(1)), na.rm = TRUE))
 
-  # default palette: jet-style, with more colour resolution devoted to the upper range
+  # Default palette: the theme's sequential ramp, re-weighted so that more colour resolution is devoted
+  # to the upper range (the last 30% of the ramp is stretched 3:2 against the rest). That weighting is
+  # what keeps the warm/high end of a temperature scale readable instead of saturating into one tone,
+  # so it is preserved verbatim from the pre-theme jet default - only the BASE colours now come from
+  # the theme.
   if (is.null(color.pal)) {
-    base_pal  <- .jet_pal(100)
+    base_pal  <- grDevices::colorRampPalette(theme$sequential)(100)
     color.pal <- grDevices::colorRampPalette(c(rep(base_pal[1:70], each = 2), rep(base_pal[71:100], each = 3)))(100)
   }
 
@@ -183,7 +199,7 @@ plotDepthProfiles <- function(data,
   # the diel key rides in the shared legend cell, but only when shading was actually drawn somewhere
   any_shaded  <- shade.diel && any(vapply(deployments, function(d) all(is.finite(d$coords)), logical(1)))
   draw <- function(to.file = FALSE, unicode = TRUE) {
-    graphics::par(oma = c(2.5, 0, 1.2, 0), mgp = c(3, 0.8, 0))
+    graphics::par(oma = c(2.5, 0, 1.2, 0), mgp = c(3, 0.8, 0), family = theme$font.family)
     for (pg in lay$pages) {
       graphics::layout(lay$matrix, widths = lay$widths, heights = lay$heights)
       for (k in pg) {
@@ -192,11 +208,11 @@ plotDepthProfiles <- function(data,
         panel_range <- if (same.color.scale) color_range else if (dep$has_color) range(dep$data[[color.by]], na.rm = TRUE) else NULL
         .drawDepthPanel(dep, color.by, depth.col, datetime.col, color.pal, panel_range, depth_ylim,
                         shade.diel = shade.diel, geom = geom, point.size = point.size, lwd = lwd, cex = cex,
-                        panel.legend = !shared_slot, color.label = color.label)
+                        panel.legend = !shared_slot, color.label = color.label, theme = theme)
       }
       # fill empty PANEL cells; the reserved last cell then receives the shared colour legend + diel key
       for (b in seq_len(lay$capacity - length(pg))) graphics::plot.new()
-      if (shared_slot) .drawLegendCell(color.pal, color_range, color.label, cex, show.diel = any_shaded)
+      if (shared_slot) .drawLegendCell(color.pal, color_range, color.label, cex, show.diel = any_shaded, theme = theme)
       else for (b in seq_len(lay$per_page - lay$capacity)) graphics::plot.new()   # (0 when no cell was reserved)
     }
   }
@@ -210,7 +226,7 @@ plotDepthProfiles <- function(data,
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    if (n_no_color > 0) .log_detail(lvl, sprintf("no '%s' data (plotted black): %d/%d", color.by, n_no_color, length(deployments)))
+    if (n_no_color > 0) .log_detail(lvl, sprintf("no '%s' data (plotted unmapped): %d/%d", color.by, n_no_color, length(deployments)))
     if (shade.diel && n_no_coord > 0) .log_detail(lvl, sprintf("no coordinates (diel shading skipped): %d/%d", n_no_coord, length(deployments)))
     .log_done(lvl, length(deployments), " depth profile", if (length(deployments) != 1) "s", " plotted")
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
@@ -319,7 +335,7 @@ plotDepthProfiles <- function(data,
 #' @keywords internal
 #' @noRd
 .drawDepthPanel <- function(dep, color.by, depth.col, datetime.col, color.pal, color_range, depth_ylim,
-                            shade.diel, geom, point.size, lwd, cex, panel.legend, color.label) {
+                            shade.diel, geom, point.size, lwd, cex, panel.legend, color.label, theme) {
 
   d     <- dep$data
   depth <- d[[depth.col]]
@@ -327,7 +343,7 @@ plotDepthProfiles <- function(data,
 
   # map colours (guard the palette index to 1..length; NAs stay transparent)
   has_color <- !is.null(color_range) && color.by %in% names(d) && any(!is.na(d[[color.by]]))
-  point_col <- rep("black", length(depth))
+  point_col <- rep(theme$ink, length(depth))                        # no colour variable -> plain ink trace
   if (has_color) {
     idx <- round(.rescale(d[[color.by]], from = color_range, to = c(1, length(color.pal))))
     point_col <- color.pal[idx]
@@ -335,8 +351,15 @@ plotDepthProfiles <- function(data,
 
   graphics::par(mar = c(2.2, 5, 2.2, if (panel.legend) 5 else 1.2))
   plot(x = time, y = depth, type = "n", axes = FALSE, xaxs = "i", xlab = "", ylab = "Depth (m)",
-       ylim = depth_ylim, cex.lab = cex)
+       ylim = depth_ylim, cex.lab = cex, col.lab = theme$ink)
 
+  # Panel fill from the theme, but only when diel shading is switched off for the whole figure: with
+  # shading on the background greys MEAN a phase, so a themed fill on a panel that merely lacks
+  # coordinates would read as one of them.
+  if (!shade.diel) {
+    usr <- graphics::par("usr")
+    graphics::rect(usr[1], usr[3], usr[2], usr[4], col = theme$panel, border = NA)
+  }
   if (shade.diel && all(is.finite(dep$coords))) .shadeDiel(dep$coords)
 
   # geometry: a coloured LINE traces the dive (default), coloured POINTS show the raw samples, or BOTH.
@@ -347,13 +370,16 @@ plotDepthProfiles <- function(data,
   # axes: date or clock time depending on the record length
   tr   <- range(time, na.rm = TRUE)
   span <- as.numeric(difftime(tr[2], tr[1], units = "secs"))
-  graphics::axis.POSIXct(1, at = pretty(tr, n = 5), format = if (span > 86400) "%d/%b" else "%H:%M", cex.axis = cex * 0.95)
-  graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.95)
+  graphics::axis.POSIXct(1, at = pretty(tr, n = 5), format = if (span > 86400) "%d/%b" else "%H:%M",
+                         cex.axis = cex * 0.95, col = theme$axis, col.axis = theme$axis)
+  graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.95,
+                 col = theme$axis, col.axis = theme$axis)
 
-  graphics::abline(h = 0, lty = 2, lwd = 1.2)                                   # surface
-  graphics::abline(h = max(depth, na.rm = TRUE), lty = 2, lwd = 1)             # maximum depth
-  graphics::legend("topleft", inset = c(0, -0.036), legend = dep$id, text.font = 2, bty = "n", cex = cex * 1.2)
-  graphics::box()
+  graphics::abline(h = 0, lty = 2, lwd = 1.2, col = theme$ink)                          # surface
+  graphics::abline(h = max(depth, na.rm = TRUE), lty = 2, lwd = 1, col = theme$ink)     # maximum depth
+  graphics::legend("topleft", inset = c(0, -0.036), legend = dep$id, text.font = 2, bty = "n",
+                   cex = cex * 1.2, text.col = theme$ink)
+  graphics::box(col = theme$axis)
 
   # per-panel legend only when panels are independently scaled - a compact bar (~1/3 panel height, centred)
   # rather than a full-height strip, so it does not dominate the data
@@ -361,7 +387,7 @@ plotDepthProfiles <- function(data,
     labs <- pretty(color_range); labs <- labs[labs >= color_range[1] & labs <= color_range[2]]
     .colorlegend(col = color.pal, zlim = color_range, zval = labs, posx = c(0.925, 0.945),
                  posy = c(0.34, 0.66), main = color.label, main.cex = cex * 0.85,
-                 digit = 1, main.adj = 0, cex = cex * 0.75)
+                 digit = 1, main.adj = 0, cex = cex * 0.75, main.col = theme$ink, lab.col = theme$axis)
   }
 }
 
@@ -391,6 +417,23 @@ plotDepthProfiles <- function(data,
 }
 
 
+#' The three diel-shading fills (day / crepuscule / night), shared by the panels and the legend key
+#'
+#' Deliberately NOT taken from the theme's `day` / `night` slots, and the one piece of chrome in this
+#' figure that stays fixed. Two reasons, both checked by rendering it the other way:
+#'   * this panel is a colour-mapped trace drawn across the WHOLE plotting area, so the background is
+#'     behind the data everywhere. `night = "#294763"` is a dark navy - over a night-heavy record it
+#'     swallows the cool end of the ramp entirely, and `day = "#DCEAF6"` tints the panel the same blue
+#'     the ramp uses, so the shading reads as data.
+#'   * there are THREE phases here (day / twilight / night) against two-and-a-bit theme slots, so the
+#'     middle class would have to be invented by interpolation and would carry no theme meaning anyway.
+#' The greys stay near-white to near-light so they separate from each other without competing with any
+#' colour scale. Only the key's swatch OUTLINE follows the theme, since it is ordinary axis chrome.
+#' @keywords internal
+#' @noRd
+.dielFills <- function() c(day = "grey98", crepuscule = "grey92", night = "grey85")
+
+
 #' Shade the current panel background by diel phase (day / twilight / night)
 #' @keywords internal
 #' @noRd
@@ -400,7 +443,7 @@ plotDepthProfiles <- function(data,
   tseq   <- as.POSIXct(seq(usr[1], usr[2], by = step), origin = "1970-01-01", tz = "UTC")
   phase  <- getDielPhase(tseq, coordinates = data.frame(lon = coords[["lon"]], lat = coords[["lat"]]), phases = 3)
   breaks <- c(1, which(diff(as.integer(factor(phase))) != 0) + 1, length(tseq))
-  cols   <- c(day = "grey98", crepuscule = "grey92", night = "grey85")
+  cols   <- .dielFills()
   tnum   <- as.numeric(tseq)
   for (j in seq_len(length(breaks) - 1))
     graphics::rect(xleft = tnum[breaks[j]], xright = tnum[breaks[j + 1]],
@@ -413,11 +456,11 @@ plotDepthProfiles <- function(data,
 #' Occupies the reserved last grid cell (see .depthProfileLayout(legend = TRUE)). The bar spans the central
 #' ~75% of the cell width and a slim band, so it reads as a legend rather than a fourth panel; the freed
 #' space below carries a small Day / Twilight / Night key when diel shading was drawn - the grey bands are
-#' meaningless without it. The greys are fixed (not user-settable) so the shading never competes with the
-#' colour scale.
+#' meaningless without it. The swatch fills come from \code{.dielFills()} (fixed, see there); only their
+#' outline and the surrounding text follow the theme.
 #' @keywords internal
 #' @noRd
-.drawLegendCell <- function(color.pal, zlim, label, cex, show.diel = FALSE) {
+.drawLegendCell <- function(color.pal, zlim, label, cex, show.diel = FALSE, theme) {
   graphics::par(mar = c(0.6, 3.0, 0.6, 3.0))
   graphics::plot.new()
   pad <- diff(zlim) * (1 / 0.75 - 1) / 2                           # widen the x-window so the bar fills 75% of it
@@ -432,16 +475,17 @@ plotDepthProfiles <- function(data,
 
   n  <- length(color.pal); xs <- seq(zlim[1], zlim[2], length.out = n + 1)
   graphics::rect(xs[-(n + 1)], yb, xs[-1], yt, col = color.pal, border = NA)
-  graphics::rect(zlim[1], yb, zlim[2], yt)
+  graphics::rect(zlim[1], yb, zlim[2], yt, border = theme$axis)
   labs <- pretty(zlim); labs <- labs[labs >= zlim[1] & labs <= zlim[2]]
-  graphics::axis(1, at = labs, pos = yb, cex.axis = cex * 0.95, tcl = -0.3, mgp = c(3, 0.35, 0))
-  graphics::text(mean(zlim), yt + 0.10, label, font = 2, cex = cex * 1.0)    # title above the strip
+  graphics::axis(1, at = labs, pos = yb, cex.axis = cex * 0.95, tcl = -0.3, mgp = c(3, 0.35, 0),
+                 col = theme$axis, col.axis = theme$axis)
+  graphics::text(mean(zlim), yt + 0.10, label, font = 2, cex = cex * 1.0, col = theme$ink)  # title above the strip
 
   # Diel key, drawn by hand rather than via legend(): base legend() ties its swatch size to the text
   # height with no separate control, and these need to be big enough to tell three greys apart. Widths are
   # converted through the device aspect so the swatches come out SQUARE despite the cell's x/y unit scales.
   if (isTRUE(show.diel)) {
-    keys  <- c("Day", "Twilight", "Night"); fills <- c("grey98", "grey92", "grey85")
+    keys  <- c("Day", "Twilight", "Night"); fills <- unname(.dielFills())
     cexd  <- cex * 0.9
     key_y <- mid - 0.255                                           # below the bar's tick labels
     usr <- graphics::par("usr"); pin <- graphics::par("pin")
@@ -453,8 +497,8 @@ plotDepthProfiles <- function(data,
     item_w <- sq_w + gap + lw
     x <- mean(zlim) - (sum(item_w) + sep * (length(keys) - 1)) / 2
     for (i in seq_along(keys)) {
-      graphics::rect(x, key_y - sq_h / 2, x + sq_w, key_y + sq_h / 2, col = fills[i], border = "grey55")
-      graphics::text(x + sq_w + gap, key_y, keys[i], adj = c(0, 0.5), cex = cexd)
+      graphics::rect(x, key_y - sq_h / 2, x + sq_w, key_y + sq_h / 2, col = fills[i], border = theme$axis)
+      graphics::text(x + sq_w + gap, key_y, keys[i], adj = c(0, 0.5), cex = cexd, col = theme$axis)
       x <- x + item_w[i] + sep
     }
   }
