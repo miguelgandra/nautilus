@@ -157,17 +157,33 @@ which feed straight into the next. The Getting Started guide covers both styles.
 
 <br/>
 
-## Citing nautilus
+## Citing `nautilus`
 
-If nautilus contributes to your work, please cite both the software and the PILOT-tag
-reference:
+If you use nautilus in your research, please cite it as:
 
 ```r
 citation("nautilus")
 ```
 
+Until the accompanying methods paper is published, the recommended citation is:
+
+> Gandra, M., Saraiva, B. M., Macena, B. C. L., Afonso, P., &amp; Fontes, J. (2026).
+> nautilus: An R package for biologging data processing and analysis. GitHub.
+> <https://github.com/miguelgandra/nautilus>
+
+No version is quoted above on purpose: `citation("nautilus")` reads it from the package you
+actually have installed, so that call is the single source of truth and cannot drift from this
+file. Please include the version it reports.
+
+<br/>
+
+## Related publications
+
+Work associated with the package, the tagging system it was built around, or the datasets it was
+developed on:
+
 > Fontes, J., Macena, B., Solleliet-Ferreira, S., Buyle, F., Magalh&atilde;es, R.,
-> Bartolomeu, T., Liebsch, N., Meyer, C. & Afonso, P. (2022). The advantages and challenges
+> Bartolomeu, T., Liebsch, N., Meyer, C. &amp; Afonso, P. (2022). The advantages and challenges
 > of non-invasive towed PILOT tags for free-ranging deep-diving megafauna. *Animal
 > Biotelemetry, 10*(1), 39. <https://doi.org/10.1186/s40317-022-00310-1>
 

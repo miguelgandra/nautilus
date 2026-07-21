@@ -1,43 +1,28 @@
-# Keep the software citation's version in sync with DESCRIPTION, and use the
-# current year (the citation reflects the version the user actually has).
+# The software citation's version is read from DESCRIPTION at call time, so citation("nautilus")
+# always reports the version actually installed and can never drift from the package. Nothing here
+# hardcodes a version, and neither should the README - see the "Citing nautilus" section there.
 ver  <- meta$Version
-if (is.null(ver) || !length(ver)) ver <- "0.1.0"
+if (is.null(ver) || !length(ver)) ver <- utils::packageVersion("nautilus")
 year <- format(Sys.Date(), "%Y")
 
-citHeader(
-  "To cite nautilus in publications, please cite both the software and the",
-  "PILOT-tag reference that describes the tagging system it was built around:"
-)
+citHeader("To cite nautilus in publications, please use:")
 
 bibentry(
   bibtype = "Manual",
-  title   = "nautilus: High-Resolution Archival Tag Data Analysis",
-  author  = person("Miguel", "Gandra",
-                   comment = c(ORCID = "0000-0003-1506-5141")),
-  year    = year,
-  note    = paste("R package version", ver),
-  url     = "https://github.com/miguelgandra/nautilus"
-)
-
-bibentry(
-  bibtype = "Article",
-  title   = paste("The advantages and challenges of non-invasive towed PILOT",
-                  "tags for free-ranging deep-diving megafauna"),
+  title   = "nautilus: An R package for biologging data processing and analysis",
   author  = c(
-    person("Jorge", "Fontes"),
-    person("Bruno", "Macena"),
-    person("S.", "Solleliet-Ferreira"),
-    person("Frederic", "Buyle"),
-    person("R.", "Magalh\u00e3es"),
-    person("T.", "Bartolomeu"),
-    person("Nikolai", "Liebsch"),
-    person("Carl", "Meyer"),
-    person("Pedro", "Afonso")
+    person("Miguel", "Gandra", comment = c(ORCID = "0000-0003-1506-5141")),
+    person("Bruno M.", "Saraiva"),
+    person("Bruno C. L.", "Macena"),
+    person("Pedro", "Afonso"),
+    person("Jorge", "Fontes")
   ),
-  journal = "Animal Biotelemetry",
-  year    = "2022",
-  volume  = "10",
-  number  = "1",
-  pages   = "39",
-  doi     = "10.1186/s40317-022-00310-1"
+  year    = year,
+  note    = paste0("R package version ", ver),
+  url     = "https://github.com/miguelgandra/nautilus",
+  textVersion = paste0(
+    "Gandra, M., Saraiva, B. M., Macena, B. C. L., Afonso, P., & Fontes, J. (", year, "). ",
+    "nautilus: An R package for biologging data processing and analysis ",
+    "(Version ", ver, "). GitHub. https://github.com/miguelgandra/nautilus"
+  )
 )

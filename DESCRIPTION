@@ -1,9 +1,13 @@
 Package: nautilus
 Title: High-Resolution Archival Tag Data Analysis
 Version: 0.1.0
-Authors@R: 
+Authors@R: c(
     person("Miguel", "Gandra", , "m3gandra@gmail.com", role = c("aut", "cre"),
-           comment = c(ORCID = "0000-0003-1506-5141"))
+           comment = c(ORCID = "0000-0003-1506-5141")),
+    person("Bruno M.", "Saraiva", role = "aut"),
+    person("Bruno C. L.", "Macena", role = "aut"),
+    person("Pedro", "Afonso", role = "aut"),
+    person("Jorge", "Fontes", role = "aut"))
 Description: Provides tools for processing and analysing high-resolution archival tag datasets. Includes functionality for handling depth, temperature, 3-axis acceleration, 3-axis magnetometer, and 3-axis gyroscope data. Additional features for integrating and analysing video data from onboard cameras.
 License: GPL (>= 3)
 Encoding: UTF-8
