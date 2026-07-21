@@ -227,8 +227,23 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
 #'
 #' @param rate.threshold Numeric. Rate-of-change threshold (units per second) beyond which a value is
 #'   flagged as an outlier. Required.
-#' @param sensor.resolution Numeric. The sensor's resolution (smallest detectable change); used to gate
-#'   the rate of change so ordinary measurement noise is not flagged. Default 0.5.
+#' @param sensor.resolution Numeric. The channel's resolution - the smallest change it can actually
+#'   express - used to gate the rate of change so ordinary quantisation is not flagged as an event.
+#'   Required, and deliberately so. It used to default to `0.5`, which is the World-Ocean archive DEPTH
+#'   quantum in metres, silently applied to every channel: a temperature channel left at the default got
+#'   a 0.5 degree floor, an order of magnitude too coarse (this package's own example passes `0.05`),
+#'   and a CATS depth channel got eight times its 0.0622 m quantum. A resolution belongs to an
+#'   instrument and a channel, and the package has no basis for guessing it - the same reason
+#'   `rate.threshold` is required.
+#'
+#'   Deriving it from the data was tried and rejected: the modal non-zero first difference recovers a
+#'   known quantum exactly when the quantum is coarse relative to the noise (0.5, 0.0622 and 0.05 all
+#'   recovered), but fails when it is finer (a true 0.01 under noise of sd 0.3 estimated as 0.08),
+#'   because a dithered series steps by many quanta at a time. On real processed records it returned
+#'   `0.01` for both depth and temperature - the storage rounding, not the instrument - because the
+#'   zero-offset correction subtracts a continuously varying value and destroys the sensor's grid
+#'   before rounding ever happens. An estimator that is right only when you did not need it is worse
+#'   than an argument you must fill in.
 #' @param sensor.accuracy.fixed,sensor.accuracy.percent Numeric. The sensor's accuracy, as a fixed value
 #'   (same units as the channel) or a percentage of the reading. Provide at most one. Recorded for
 #'   provenance; the rate gate uses `sensor.resolution` only. Defaults `NULL`.
@@ -242,7 +257,7 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
 #' anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, sensor.accuracy.percent = 1)
 #' @export
 anomalyControl <- function(rate.threshold,
-                           sensor.resolution = 0.5,
+                           sensor.resolution,
                            sensor.accuracy.fixed = NULL,
                            sensor.accuracy.percent = NULL,
                            outlier.window = 5,

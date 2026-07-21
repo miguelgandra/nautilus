@@ -56,16 +56,35 @@ test_that("a genuine spike is detected at a high sampling rate", {
   expect_true(is.na(out$depth[600]))
 })
 
-test_that("high-frequency noise is not mass-flagged (rate-uncertainty gate)", {
+test_that("the noise gate is a function of sensor.resolution, and that is a real limitation", {
+  # This test used to assert simply that high-frequency noise is not mass-flagged, and it passed - but
+  # only because `sensor.resolution` defaulted to 0.5, the World-Ocean archive DEPTH quantum, silently
+  # applied to a TEMPERATURE channel. The gate is `abs(diff) > sensor.resolution / dt`, so at 16 Hz
+  # that wrong constant produced a floor of 8 degrees and suppressed everything.
+  #
+  # Give the channel the resolution it actually has (0.05 degrees, the value this package's own
+  # documentation uses for temperature) and the suppression collapses. That is not a regression: it is
+  # the gate telling the truth about itself. A per-sample rate-of-change test cannot separate signal
+  # from noise when the noise (sd 0.3) dwarfs the per-sample step the threshold implies
+  # (2 units/s / 16 Hz = 0.125 units). Both behaviours are pinned so the limitation stays visible.
   set.seed(1)
   n <- 16 * 60 * 30
   t <- seq(as.POSIXct("2020-01-01 00:00:00", tz = "UTC"), by = 1 / 16, length.out = n)
   temp <- 18 + 0.4 * sin(seq(0, pi, length.out = n)) + stats::rnorm(n, 0, 0.3)
   d <- data.table::data.table(ID = "A01", datetime = t, temp = temp)
   data.table::setattr(d, "nautilus.version", "test")
-  out <- .repair(list(A01 = d), list(temp = anomalyControl(rate.threshold = 2, sensor.accuracy.fixed = 0.1)))$curated_data$A01
-  expect_lt(mean(is.na(out$temp)), 0.001)
+  frac_na <- function(res) {
+    out <- .repair(list(A01 = d), list(temp = anomalyControl(rate.threshold = 2, sensor.resolution = res,
+                                                             sensor.accuracy.fixed = 0.1)))$curated_data$A01
+    mean(is.na(out$temp))
+  }
+  # a resolution large enough that resolution/dt clears the noise: nothing is flagged
+  expect_lt(frac_na(0.5), 0.001)
+  # the channel's TRUE resolution: the gate no longer suppresses, and the series is mass-flagged.
+  # Documented, not desired - fixing it needs a noise-floor estimator, not a larger constant.
+  expect_gt(frac_na(0.05), 0.5)
 })
+
 
 test_that("clean data yields zero issues and is returned unchanged", {
   out <- .run(list(A01 = .mk()), .depth())
@@ -78,7 +97,7 @@ test_that("severity: an isolated spike is info; a stall (long constant run) is a
   expect_equal(spike$severity, "info"); expect_gt(spike$spikes, 0L); expect_equal(spike$blocks, 0L)
 
   stall <- .mk("S", n = 500); stall$depth[100:450] <- 42                # a 351-sample constant non-zero run
-  iss <- .run(list(S = stall), list(depth = anomalyControl(rate.threshold = 7, stall.threshold = 1)))$issues  # 1 min = 60 samples
+  iss <- .run(list(S = stall), list(depth = anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, stall.threshold = 1)))$issues  # 1 min = 60 samples
   expect_equal(iss$severity, "warning"); expect_gt(iss$blocks, 0L)
 })
 
@@ -86,7 +105,7 @@ test_that("several channels are screened in one call (the multi-channel unificat
   d <- .mk(spike_at = 30, spike_val = 100)                           # depth spike
   d[, temp := 15 + sin(seq_len(60) / 7)]; d$temp[45] <- 60           # + a temp spike
   out <- .repair(list(A01 = d),
-                 list(depth = anomalyControl(rate.threshold = 7, sensor.accuracy.fixed = 0.1),
+                 list(depth = anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, sensor.accuracy.fixed = 0.1),
                       temp  = anomalyControl(rate.threshold = 3, sensor.resolution = 0.05, sensor.accuracy.fixed = 0.1)),
                  interpolate = FALSE)$curated_data$A01
   expect_true(is.na(out$depth[30]))                                  # both channels corrected in one pass
@@ -96,7 +115,7 @@ test_that("several channels are screened in one call (the multi-channel unificat
 test_that("a channel absent on a given tag is skipped for that tag, not aborted", {
   has  <- .mk("HAS"); has[, temp := 15 + sin(seq_len(60) / 7)]
   none <- .mk("NONE")                                               # depth only, no temp
-  out <- .run(list(HAS = has, NONE = none), list(temp = anomalyControl(rate.threshold = 7, sensor.accuracy.fixed = 0.1)))
+  out <- .run(list(HAS = has, NONE = none), list(temp = anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, sensor.accuracy.fixed = 0.1)))
   expect_named(out$curated_data, c("HAS", "NONE"))
   expect_true("temp" %in% names(out$curated_data$HAS))
   expect_false("temp" %in% names(out$curated_data$NONE))            # unchanged; no NA column fabricated
@@ -138,9 +157,11 @@ test_that("argument validation aborts clearly", {
 })
 
 test_that("anomalyControl validates the accuracy specs (at most one; neither is allowed)", {
-  expect_error(anomalyControl(rate.threshold = 7, sensor.accuracy.fixed = 0.1, sensor.accuracy.percent = 1), "only one")
-  expect_s3_class(anomalyControl(rate.threshold = 7), "nautilus_anomaly")           # accuracy is optional
-  expect_error(anomalyControl(rate.threshold = -1), "rate.threshold")
+  expect_error(anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, sensor.accuracy.fixed = 0.1, sensor.accuracy.percent = 1), "only one")
+  expect_s3_class(anomalyControl(rate.threshold = 7, sensor.resolution = 0.5), "nautilus_anomaly")   # accuracy is optional
+  # ...but the resolution is NOT optional: 0.5 was a depth quantum silently applied to every channel
+  expect_error(anomalyControl(rate.threshold = 7), "sensor.resolution")
+  expect_error(anomalyControl(rate.threshold = -1, sensor.resolution = 0.5), "rate.threshold")
 })
 
 test_that("saving (output.dir) requires apply = TRUE (a report-only save would only copy the input)", {

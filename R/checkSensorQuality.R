@@ -279,12 +279,27 @@ checkSensorQuality <- function(data,
   times <- dt[[datetime.col]]
   v <- dt[[sensor.col]]                              # WORKING COPY - the algorithm mutates this, never dt
 
-  # rate of change, gated on the resolution-propagated rate uncertainty (suppresses high-rate noise)
   time_diffs <- round(as.numeric(diff(times), units = "secs"), 6)
   nominal_interval <- stats::median(time_diffs, na.rm = TRUE)
   sampling_freq <- round(1 / nominal_interval, 1)
   dt_secs <- c(NA, as.numeric(diff(times), units = "secs"))
   value_diff <- c(NA, diff(v))
+
+  # Rate of change, gated so ordinary quantisation and high-frequency noise are not read as events.
+  #
+  # CAUTION, and read this before "fixing" the line below. It compares a VALUE (units) against
+  # `sensor.resolution / dt` (units per second), which is dimensionally incoherent, and the obvious
+  # correction - comparing like with like, `abs(value_diff) > sensor.resolution` - is WORSE. It was
+  # tried and reverted. Measurement noise of standard deviation s produces apparent rates of about
+  # s*sqrt(2)/dt, which grows without bound as the sampling interval shrinks, so at a high rate ANY
+  # fixed physical rate threshold is exceeded by noise alone. Measured on the 16 Hz / sd 0.3 fixture in
+  # test-checkSensorQuality.R: typical |diff| is 0.42, an apparent 6.8 units/s against a 2 units/s
+  # threshold, and the dimensionally-correct gate mass-flagged the whole series.
+  #
+  # So the `/ dt` is doing real work: it is the only term that scales the floor with the sampling
+  # interval. It is the wrong QUANTITY for that job - the thing that should scale is the measured NOISE
+  # of the channel, not its quantisation step - but replacing it needs a noise-floor estimator and a
+  # decision about how to expose it, not a units patch. Left as is, deliberately, and flagged.
   rate_uncertainty <- sensor.resolution / dt_secs
   rate_of_change <- ifelse(abs(value_diff) > rate_uncertainty, value_diff / dt_secs, NA)
 
