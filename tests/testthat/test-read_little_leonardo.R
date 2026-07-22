@@ -3,7 +3,8 @@
 # a header block, CRLF line endings, padded columns, a trailing comma and no-leading-zero decimals.
 # They are written through `.write_crlf()` (helper-crlf.R) - see the test below for why that matters.
 
-.ll_fixture <- function(dir = tempfile(), n_sec = 5L, hz = 10L, with_dt = TRUE, id = "LLTEST") {
+.ll_fixture <- function(dir = tempfile(), n_sec = 5L, hz = 10L, with_dt = TRUE, id = "LLTEST",
+                        video = NULL, with_video = TRUE) {
   dir.create(dir, showWarnings = FALSE, recursive = TRUE)
   n <- n_sec * hz
   set.seed(7)
@@ -14,14 +15,22 @@
            " X  ,Y   ,Z   ",
            sprintf("%s,%s,%s,", ax, ay, az))              # note the trailing comma
   .write_crlf(acc, file.path(dir, paste0(id, "_A.txt")))
+  vid <- if (is.null(video)) rep(0L, n_sec) else as.integer(video)   # default: all-off (no video ancillary)
   if (with_dt) {
-    dep <- c("Depth, Temp, and Video Data ", "",          # <- title line: must NOT be read as the header
-             "RECORD TIME   0 hours 1 minutes", "START DATE   0000/00/00", "START TIME    00:00:00", "",
-             "Depth , Temp,  Video ",
-             sprintf("%s  ,%s  ,0", seq_len(n_sec), 20 + seq_len(n_sec)))
+    if (with_video) {
+      dep <- c("Depth, Temp, and Video Data ", "",        # <- title line: must NOT be read as the header
+               "RECORD TIME   0 hours 1 minutes", "START DATE   0000/00/00", "START TIME    00:00:00", "",
+               "Depth , Temp,  Video ",
+               sprintf("%s  ,%s  ,%d", seq_len(n_sec), 20 + seq_len(n_sec), vid))
+    } else {                                               # a 2-column DT: depth/temp only, no video flag
+      dep <- c("Depth and Temp Data ", "",
+               "RECORD TIME   0 hours 1 minutes", "START DATE   0000/00/00", "START TIME    00:00:00", "",
+               "Depth , Temp ",
+               sprintf("%s  ,%s", seq_len(n_sec), 20 + seq_len(n_sec)))
+    }
     .write_crlf(dep, file.path(dir, paste0(id, "_DT.txt")))
   }
-  list(dir = dir, n = n, n_sec = n_sec, hz = hz, ax = ax, ay = ay, az = az)
+  list(dir = dir, n = n, n_sec = n_sec, hz = hz, ax = ax, ay = ay, az = az, video = vid)
 }
 
 .t0 <- function() as.POSIXct("2025-07-21 22:33:00", tz = "UTC")
@@ -81,6 +90,33 @@ test_that("read_little_leonardo reads accel + depth, synthesising timestamps fro
   expect_equal(res$unit_notes, "timestamps synthesised from data_start + 10 Hz (header)")
 })
 
+test_that("the per-second video flag is preserved as a transition-encoded ancillary, not a sensor channel", {
+  # video ON for seconds 3-4 of a 6-second, 10 Hz record
+  f <- .ll_fixture(n_sec = 6L, hz = 10L, video = c(0, 0, 1, 1, 0, 0))
+  res <- nautilus:::read_little_leonardo(f$dir, start = .t0(), timezone = "UTC")
+  expect_null(res$reason)
+  va <- res$ancillary$video
+  expect_false(is.null(va))
+  expect_identical(va$encoding, "transitions")
+  expect_named(va$data, c("datetime", "video"))
+  # transitions: off at t0, on at t0+2 s (accel row 21), off at t0+4 s - three rows, states F/T/F
+  expect_equal(nrow(va$data), 3L)
+  expect_equal(va$data$video, c(FALSE, TRUE, FALSE))
+  expect_equal(as.numeric(va$data$datetime[2]) - as.numeric(.t0()), 2)
+  # it is coverage metadata, NOT a measurand: it must not leak into the sensor table
+  expect_false("video" %in% names(res$data))
+})
+
+test_that("no video ancillary is produced when the camera never recorded or the column is absent", {
+  # all-off video column -> nothing to preserve
+  off <- nautilus:::read_little_leonardo(.ll_fixture(video = c(0, 0, 0, 0, 0))$dir, start = .t0())
+  expect_null(off$ancillary$video)
+  # a 2-column DT (depth/temp only, no video flag) -> no ancillary, and depth/temp still read
+  none <- nautilus:::read_little_leonardo(.ll_fixture(with_video = FALSE)$dir, start = .t0())
+  expect_null(none$ancillary$video)
+  expect_true(all(c("depth", "temp") %in% names(none$data)))
+})
+
 test_that("read_little_leonardo refuses to guess a clock, and reports why", {
   f <- .ll_fixture()
   expect_match(nautilus:::read_little_leonardo(f$dir, start = NULL)$reason, "no recording start time")
@@ -119,9 +155,9 @@ test_that("the reader's output feeds buildTagData() and the rest of the pipeline
 
 # ---- wiring: importTagData(format=) / the tag_format + data_start roles ----------------------------
 
-.ll_deploy <- function(id = "LLTEST", n_sec = 20L, hz = 10L) {
+.ll_deploy <- function(id = "LLTEST", n_sec = 20L, hz = 10L, video = NULL) {
   root <- tempfile(); dir.create(root)
-  f <- .ll_fixture(dir = file.path(root, id), n_sec = n_sec, hz = hz, id = id)
+  f <- .ll_fixture(dir = file.path(root, id), n_sec = n_sec, hz = hz, id = id, video = video)
   c(f, list(root = root, folder = file.path(root, id)))
 }
 .ll_md <- function(id = "LLTEST", data_start = .t0()) {
@@ -150,6 +186,18 @@ test_that("importTagData(format = 'little_leonardo') imports a LL deployment end
   expect_equal(as.numeric(m$span$first_datetime), as.numeric(.t0()))
   # the audit trail names the operation the user invoked, not the internal assembler
   expect_identical(vapply(m$processing, function(p) p$step, character(1)), "importTagData")
+})
+
+test_that("importTagData carries the LL video flag through to meta$ancillary$video", {
+  f <- .ll_deploy(n_sec = 20L, hz = 10L, video = c(rep(0, 5), rep(1, 10), rep(0, 5)))  # on for 10 s
+  tag <- importTagData(data.folders = f$folder, format = "little_leonardo",
+                       id.metadata = .ll_md(), columns = .ll_cols(),
+                       return.data = TRUE, verbose = "quiet")[["LLTEST"]]
+  vid <- nautilus:::.getMeta(tag)$ancillary$video
+  expect_false(is.null(vid))
+  expect_identical(vid$encoding, "transitions")
+  expect_equal(vid$data$video, c(FALSE, TRUE, FALSE))          # off -> on (t0+5s) -> off (t0+15s)
+  expect_false("video" %in% names(tag))                        # never a sensor column
 })
 
 test_that("the tag_format metadata role dispatches per deployment, overriding the format argument", {

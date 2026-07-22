@@ -34,8 +34,9 @@ additional (Wildlife Computers) tag data.}
 \item{format}{Character. The raw data format to read: \code{"cats"} (default; the CATS/CEiiA multi-sensor
 CSV export), \code{"little_leonardo"} (Little Leonardo archival loggers - a \verb{_A.txt} acceleration file
 plus an optional \verb{_DT.txt} depth/temperature file, which carry no clock and so additionally need the
-\code{data_start} role, see \code{\link{metadataColumns}}), or \code{"auto"} to identify each deployment's format
-from its files.
+\code{data_start} role, see \code{\link{metadataColumns}}; its per-second camera-on flag, when present, is
+preserved as a transition-encoded \code{meta$ancillary$video} stream), or \code{"auto"} to identify each
+deployment's format from its files.
 
 \code{"auto"} inspects the headers of the files in each folder and routes it to the matching reader. It
 never guesses: a folder matching two readers, or none, is reported rather than assumed - so a

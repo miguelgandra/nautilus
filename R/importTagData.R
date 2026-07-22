@@ -51,8 +51,9 @@
 #' @param format Character. The raw data format to read: `"cats"` (default; the CATS/CEiiA multi-sensor
 #'   CSV export), `"little_leonardo"` (Little Leonardo archival loggers - a `_A.txt` acceleration file
 #'   plus an optional `_DT.txt` depth/temperature file, which carry no clock and so additionally need the
-#'   `data_start` role, see \code{\link{metadataColumns}}), or `"auto"` to identify each deployment's format
-#'   from its files.
+#'   `data_start` role, see \code{\link{metadataColumns}}; its per-second camera-on flag, when present, is
+#'   preserved as a transition-encoded `meta$ancillary$video` stream), or `"auto"` to identify each
+#'   deployment's format from its files.
 #'
 #'   `"auto"` inspects the headers of the files in each folder and routes it to the matching reader. It
 #'   never guesses: a folder matching two readers, or none, is reported rather than assumed - so a
@@ -782,6 +783,7 @@ importTagData <- function(data.folders,
     calibration_info  <- res$calibration_info
     excluded_channels <- res$excluded
     temp_status       <- res$temp_status
+    reader_ancillary  <- res$ancillary          # primary-tag ancillary streams the reader parsed in-band
     rows <- nrow(sensor_data)
 
     # collect the reader's per-deployment issues. Temperature: the reliable `temp` is the pressure-sensor
@@ -910,6 +912,17 @@ importTagData <- function(data.folders,
     }
     if (lvl >= 2L && length(wc_anc)) .reportAlignment(att$info, lvl)
 
+    # primary-tag video coverage (e.g. the Little Leonardo in-band flag): a top-level line, since it
+    # belongs to the primary logger, not a co-deployed device. Reconstruct on-duration from the encoded
+    # transitions (closed at the record end) for a coverage percentage.
+    if (lvl >= 2L && !is.null(reader_ancillary$video)) {
+      vt <- as.numeric(reader_ancillary$video$data$datetime); vs <- as.logical(reader_ancillary$video$data$video)
+      t0 <- as.numeric(min(sensor_data$datetime, na.rm = TRUE)); tend <- as.numeric(max(sensor_data$datetime, na.rm = TRUE))
+      on_dur <- sum((c(vt[-1], tend) - vt)[vs]); total <- tend - t0; n_int <- sum(vs)
+      .log_detail(lvl, "video: ", n_int, " recording interval", if (n_int != 1L) "s" else "",
+                  if (is.finite(total) && total > 0) sprintf(" (%.0f%% of record)", 100 * on_dur / total) else "")
+    }
+
 
     ############################################################################
     # Save relevant attributes #################################################
@@ -972,6 +985,10 @@ importTagData <- function(data.folders,
       meta$ancillary$source_device <- list(make = "Wildlife Computers",
                                            model  = wc_model  %||% NA_character_,
                                            serial = wc_serial %||% NA_character_)
+    # primary-tag ancillary streams the reader parsed in-band (e.g. the Little Leonardo video-coverage
+    # flag -> meta$ancillary$video). These belong to the primary logger, not a co-deployed device, and
+    # are carried through verbatim; file-based video (CATS/CEiiA) stays with the video subsystem.
+    for (nm in names(reader_ancillary)) meta$ancillary[[nm]] <- reader_ancillary[[nm]]
     meta <- .appendProcessing(meta, "importTagData",
                               directory = data.folders[i],
                               imported_columns = selected_cols,

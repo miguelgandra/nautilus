@@ -125,7 +125,10 @@
 #' @param verbose Unused; present for reader-contract symmetry with read_cats().
 #' @return The reader contract: `data` (canonical frame, or NULL), `reason`, `assembly`, `mapping`,
 #'   `selected_cols`, `calibration_info`, `temp_status`, `excluded`, `tz_mismatch`, `tz_note`,
-#'   `unit_notes`.
+#'   `unit_notes`, and `ancillary` - a named list of primary-tag ancillary streams parsed in-band, or
+#'   `NULL`. Currently this carries `video` (the DT file's per-second camera-on flag, transition-encoded
+#'   into `meta$ancillary$video` with the same shape as the WC wet/dry stream) when a video column is
+#'   present and the camera recorded at all.
 #' @keywords internal
 #' @noRd
 read_little_leonardo <- function(folder,
@@ -180,6 +183,7 @@ read_little_leonardo <- function(folder,
   # expanded onto the acceleration grid by whole-second index, which is how the two streams relate: the
   # DT file carries one row per second of the same recording.
   n_dt <- 0L
+  video_anc <- NULL                                   # video-coverage ancillary (meta$ancillary$video), if any
   if (!is.na(files$depth)) {
     dhead <- tryCatch(readLines(files$depth, n = 10L, warn = FALSE), error = function(e) character(0))
     skip_d <- .llSkip(dhead, "^\\s*Depth\\s*,")
@@ -196,6 +200,20 @@ read_little_leonardo <- function(folder,
         idx[idx > n_dt] <- n_dt                       # a short DT file holds the last value
         dt[, depth := dtemp$depth[idx]]
         if ("temp" %in% names(dtemp)) dt[, temp := dtemp$temp[idx]]
+
+        # The DT file's third column is a per-second 0/1 flag: was the on-board camera recording? It is
+        # coverage metadata, NOT a measurand, so it is preserved as a transition-encoded ancillary stream
+        # (meta$ancillary$video) - the same shape as the WC wet/dry stream - rather than a sensor channel.
+        # Mapped onto the sensor timeline by the same whole-second index as depth/temp, then encoded.
+        if ("video" %in% names(dtemp)) {
+          von <- suppressWarnings(as.numeric(dtemp$video[idx])) != 0
+          von[is.na(von)] <- FALSE
+          if (any(von)) {
+            enc <- .transitionEncode(dt$datetime, von)
+            video_anc <- list(source = "Little Leonardo video flag", encoding = "transitions",
+                              data = data.frame(datetime = enc$datetime, video = enc$state))
+          }
+        }
       }
     }
   }
@@ -223,5 +241,6 @@ read_little_leonardo <- function(folder,
        selected_cols = c("X", "Y", "Z", if (!is.na(files$depth)) c("Depth", "Temp")),
        calibration_info = NULL, temp_status = "none", excluded = excluded_channels,
        tz_mismatch = FALSE, tz_note = NULL,
+       ancillary = if (!is.null(video_anc)) list(video = video_anc) else NULL,
        unit_notes = sprintf("timestamps synthesised from data_start + %g Hz (header)", hz))
 }
