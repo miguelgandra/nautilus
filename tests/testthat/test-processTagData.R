@@ -154,6 +154,31 @@ test_that("downsampling to 1 Hz reduces rows and keeps pitch-offset provenance (
   expect_false(is.na(.proc_rec(out)$pitch_offset_deg))
 })
 
+test_that("jerk is computed as the native-rate norm of d(accel)/dt and aggregated to the stored series", {
+  # a clean full-rate run must carry a finite, non-negative jerk channel (g/s)
+  out <- .run(list(A01 = .mk()), orientation.algorithm = "tilt_compass", downsample.to = NULL)$A01
+  expect_true("jerk" %in% names(out))
+  expect_true(all(out$jerk >= 0, na.rm = TRUE))
+  expect_true(any(is.finite(out$jerk)))
+  # only the first sample (no predecessor for the difference) is NA
+  expect_equal(sum(is.na(out$jerk)), 1L)
+
+  # the magnitude tracks the native rate: it is a derivative, so at a genuinely higher sampling rate the
+  # SAME per-sample noise process yields a proportionally larger jerk (diff * fs).
+  slow <- .run(list(A01 = .mk(rate = 10)), orientation.algorithm = "tilt_compass", downsample.to = NULL)$A01
+  fast <- .run(list(A01 = .mk(rate = 20)), orientation.algorithm = "tilt_compass", downsample.to = NULL)$A01
+  ratio <- median(fast$jerk, na.rm = TRUE) / median(slow$jerk, na.rm = TRUE)
+  expect_gt(ratio, 1.5); expect_lt(ratio, 2.5)
+})
+
+test_that("movement_jerk uses a single first difference (not the old triple difference)", {
+  # a linear ramp has a CONSTANT first difference (= 1), so RMS-jerk is ~1 under the corrected single-diff.
+  # The former triple-diff would difference that constant twice more to zero, giving ~0 - this locks the fix.
+  mj <- nautilus:::movement_jerk(as.numeric(1:100), window = 10)
+  expect_equal(median(mj, na.rm = TRUE), 1, tolerance = 1e-6)
+  expect_equal(sum(is.na(mj)), 1L)                # single diff loses exactly one leading sample
+})
+
 test_that("downsampling records BOTH sampling rates, which is what identifies the boxcar on depth", {
   # downsample.to mean-aggregates every numeric channel, depth included, so the bin IS a boxcar on the
   # stored depth channel. detectDives()/diveMetrics() derive the duration floor and depth_attenuation

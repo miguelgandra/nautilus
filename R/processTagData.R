@@ -125,10 +125,11 @@
 #'
 #' \strong{Acceleration:}
 #' \itemize{
-#'   \item Total Acceleration (g): The total magnitude of the animal's acceleration, calculated from the three orthogonal accelerometer components.
-#'   \item Vectorial Dynamic Body Acceleration (VeDBA) (g): Quantifies the physical acceleration of the animal, calculated as the vector magnitude of the dynamic body acceleration, which is the difference between raw accelerometer data and the moving average (static acceleration).
+#'   \item Total Acceleration (g): The overall strength of the acceleration signal at each instant, combining both the animal's movement and the constant pull of gravity.
+#'   \item Vectorial Dynamic Body Acceleration (VeDBA) (g): A measure of how vigorously the animal is moving at each instant, once the steady pull of gravity is set aside. It is one of the most widely used indices of activity level and energy use, and because it does not depend on which way the tag is facing, it stays reliable even on tags that can shift or rotate on the animal.
 #'   \item Overall Dynamic Body Acceleration (ODBA) (g): A scalar measure of the animal's overall acceleration, calculated as the sum of the absolute values of the dynamic acceleration components along the X, Y, and Z axes. Retained for comparability, but note ODBA is orientation-dependent; \strong{VeDBA is preferred for towed or loosely-attached tags} because it is rotation-invariant.
-#'   \item Burst Swimming Events: A binary flag marking the most energetic samples, defined as the top quantile(s) of instantaneous VeDBA (the magnitude of the dynamic, gravity-removed acceleration). VeDBA is used rather than total acceleration because the latter is dominated by the gravity baseline and biased toward gravity-aligned bursts. The threshold is relative (per-deployment): each quantile always flags the same fraction of a record (see \code{burst.quantiles}).
+#'   \item Jerk (g/s): How suddenly the animal's movement changes from one moment to the next. Steady swimming gives low jerk; sharp, forceful actions - a strike at prey, a startle, an abrupt turn - give brief spikes, which is why jerk is often used as a clue to possible prey-capture attempts, especially on fast tags mounted near the head (Ydesen et al. 2014). \strong{It flags sudden movement, not confirmed feeding}: any quick motion raises it (even the animal breaking the surface or a knock to the tag), so check events against video where you can. Jerk only carries this detail on fast-recording tags (roughly 30 Hz or more); on slower tags it is mostly noise, and a caution is shown when the tag is too slow. On the downsampled output it becomes an average level of jerkiness rather than a record of individual spikes - use the full-resolution data to see single events, and interpret it alongside the original sampling rate (\code{sampling_hz_original}).
+#'   \item Burst Swimming Events: A flag marking each animal's most energetic moments - the times when its overall activity (VeDBA) is among the highest for that deployment. Because the cut-off is set relative to each animal's own record, it always marks the same fraction of the time and stays comparable across individuals and tag types, including slower-recording tags. Use it to ask when the animal was working hardest or sustaining high effort, as opposed to the brief, sudden movements captured by jerk. Set the fraction flagged with \code{burst.quantiles}.
 #' }
 #'
 #' \strong{Orientation:}
@@ -762,6 +763,26 @@ processTagData <- function(data,
       }
     }
 
+    # jerk: the magnitude of the rate of change of acceleration, ||d a / dt|| (g/s), formed HERE at the
+    # native sampling rate from the raw (total) acceleration. The norm is rotation-invariant and a constant
+    # gravity vector differentiates to zero, so - unlike ODBA/VeDBA - no gravity/static removal is needed;
+    # this is the "norm-jerk" of the biologging literature (Ydesen et al. 2014, doi:10.1242/jeb.100016). It
+    # emphasises brief high-frequency transients (strikes, startles, rapid manoeuvres). Being a DERIVATIVE
+    # it MUST be formed before any downsampling - at 1 Hz the transient band is already gone - after which
+    # the per-second mean aggregation below yields a mean-jerk activity index. A first difference across an
+    # NA gap yields NA (not a spurious spike), so gaps propagate cleanly.
+    jerkX <- c(NA_real_, diff(individual_data$ax)) * sampling_freq
+    jerkY <- c(NA_real_, diff(individual_data$ay)) * sampling_freq
+    jerkZ <- c(NA_real_, diff(individual_data$az)) * sampling_freq
+    individual_data[, jerk := sqrt(jerkX^2 + jerkY^2 + jerkZ^2)]
+    rm(jerkX, jerkY, jerkZ)
+
+    # jerk amplifies high-frequency and quantisation noise: below ~30 Hz the prey-capture strike band
+    # aliases away (Broell et al. 2013, doi:10.1242/jeb.077396), so on low-rate tags jerk is only a coarse
+    # activity index, never an event detector. Flag the degraded regime at the NATIVE rate.
+    if (sampling_freq < 25)
+      say(sprintf("! jerk computed at %g Hz - below ~30 Hz it is dominated by noise and cannot resolve rapid transients; treat as a coarse activity index only", sampling_freq))
+
     ############################################################################
     # Calculate linear motion metrics ##########################################
     ############################################################################
@@ -1294,7 +1315,7 @@ processTagData <- function(data,
     # select columns to keep (raw channels that are absent for partial sensor sets,
     # e.g. no gyroscope/magnetometer/temperature, are dropped via the intersect below)
     metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
-                 "accel","odba","vedba","roll", "pitch", "heading",
+                 "accel","odba","vedba","jerk","roll", "pitch", "heading",
                  "surge", "sway", "heave", "vertical_velocity", "turning_angle",
                  "paddle_freq", "paddle_speed")          # paddle cols kept only when present (dropped by intersect below)
     metrics <- intersect(metrics, names(individual_data))
@@ -1414,6 +1435,9 @@ processTagData <- function(data,
       # odba/vedba are sums of the 4 dp surge/sway/heave below; storing them coarser than their own
       # inputs was the dominant error in the dynamics chain and produced quantile-threshold ties.
       dynamics = list(vars = c("accel", "odba", "vedba"), digits = 4),# [g]
+      # jerk is a derivative (g/s), so its per-sample noise floor scales with the native rate; 3 dp keeps
+      # the stored (mean-aggregated) series above that floor while resolving the mean-jerk activity level.
+      jerk = list(vars = "jerk", digits = 3),                         # [g/s]
       orientation = list(vars = c("roll", "pitch", "heading"), digits = 2), # [degrees]
       movement = list(vars = c("surge", "sway", "heave"), digits = 4),# [g]
       # 3 dp: measured noise floor of the stored series is 0.0018-0.0024 m/s, so 0.01 m/s was above it

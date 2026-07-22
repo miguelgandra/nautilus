@@ -93,7 +93,7 @@ Complex Features (when enhanced.features = TRUE):
 \item "movement_predictability": Predictability using ratio of SD to mean
 \item "movement_consistency": Consistency using SD metrics
 \item "movement_smoothness": Smoothness using rate of change
-\item "movement_jerk": Enhanced jerk calculation
+\item "movement_jerk": Windowed RMS of the input signal's rate of change (its "jerk" when the input is an acceleration channel); distinct from the core rotation-invariant \code{jerk} channel from \code{\link{processTagData}}
 \item "posture_stability": Stability from pitch/roll SD metrics
 \item "turning_rate_variability": Variability in turning rates
 \item "activity_index": Combined activity from multiple rates

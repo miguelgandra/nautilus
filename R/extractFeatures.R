@@ -48,7 +48,7 @@
 #' - "movement_predictability": Predictability using ratio of SD to mean
 #' - "movement_consistency": Consistency using SD metrics
 #' - "movement_smoothness": Smoothness using rate of change
-#' - "movement_jerk": Enhanced jerk calculation
+#' - "movement_jerk": Windowed RMS of the input signal's rate of change (its "jerk" when the input is an acceleration channel); distinct from the core rotation-invariant `jerk` channel from \code{\link{processTagData}}
 #' - "posture_stability": Stability from pitch/roll SD metrics
 #' - "turning_rate_variability": Variability in turning rates
 #' - "activity_index": Combined activity from multiple rates
@@ -1188,21 +1188,25 @@ movement_smoothness <- function(signal, window = 30) {
 
 
 
-# Enhanced jerk calculation
+# Windowed RMS "jerk" of a movement signal: the root-mean-square of its FIRST difference (rate of change)
+# over a rolling window. Applied to an acceleration-like input (ODBA, VeDBA, surge/sway/heave) this is a
+# per-variable jerkiness feature for behavioural classification. It is DISTINCT from - and should not be
+# confused with - the core `jerk` channel that processTagData() computes as the rotation-invariant
+# norm-jerk ||d a / dt|| at the native sampling rate; use that channel for physical jerk. (This previously
+# took a triple difference, i.e. the third derivative of the input, which for an acceleration signal is two
+# derivative orders too high; corrected to a single difference here.)
 movement_jerk <- function(signal, window = 30) {
-  if (length(signal) < 4) return(rep(NA, length(signal)))
+  if (length(signal) < 2) return(rep(NA, length(signal)))
 
-  vel <- diff(signal)
-  acc <- diff(vel)
-  jerk <- diff(acc)
+  jerk <- diff(signal)                 # first difference: rate of change (jerk when the input is acceleration)
   jerk_squared <- jerk^2
 
   rms_jerk <- sqrt(zoo::rollapply(jerk_squared, width = min(window, length(jerk_squared)),
                                   FUN = mean, na.rm = TRUE, fill = "extend", align = "center"))
 
-  # Pad to match original length
+  # Pad to match original length (a first difference loses one leading sample)
   result <- rep(NA, length(signal))
-  result[4:length(result)] <- rms_jerk
+  result[2:length(result)] <- rms_jerk
   return(result)
 }
 
