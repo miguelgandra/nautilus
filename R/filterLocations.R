@@ -408,12 +408,10 @@ filterLocations <- function(data,
     }
   }
 
-  # first User fix, as a last resort
-  from_user <- NULL
-  uidx <- which(pos$type == "User" & !is.na(pos$lon) & !is.na(pos$lat))
-  if (length(uidx)) from_user <- list(lon = pos$lon[uidx[1]], lat = pos$lat[uidx[1]], source = "first User fix")
-
-  from_md %||% from_meta %||% from_user
+  # The deploy origin comes from authoritative metadata only. (A former last-resort "first User fix"
+  # fallback was dropped: importTagData no longer imports User-type positions - they are deploy/pop-up
+  # coordinates that belong in meta$deployment, not tracking fixes - so the fallback could not fire anyway.)
+  from_md %||% from_meta
 }
 
 

@@ -865,14 +865,34 @@ importTagData <- function(data.folders,
 
     # A co-deployed WC tag is a separate DEVICE, not a format of this one: it gets its own reader and
     # attaches to the assembled tag, so no primary reader ever learns about it (see R/read_wc.R). The
-    # COMPLETE position record is kept as an independent ancillary stream at its own cadence - NOT snapped
-    # to sensor rows and NOT trimmed to the recording window - so the full fix history survives downstream
+    # complete TRACKING-fix record (FastGPS/Argos; the deploy/pop-up "User" rows are dropped - they live
+    # in meta$deployment) is kept as an independent ancillary stream at its own cadence - NOT snapped to
+    # sensor rows and NOT trimmed to the recording window - so the full fix history survives downstream
     # (tracks, maps, post-deployment surface drift). Deploy/pop-up positions live in meta$deployment.
     wc_anc <- read_wc(locations_file, archive_files[i])
-    if (lvl >= 2L && !is.null(wc_anc$positions)) {
-      wc_model <- .wcModel(dirname(wc_files[i])); instr <- if (!is.null(wc_model)) wc_model else "WC"
-      .log_detail(lvl, "locations: ", sprintf("%d %s fix%s", nrow(wc_anc$positions$data), instr,
-                                              if (nrow(wc_anc$positions$data) != 1) "es" else ""))
+
+    # Identify the co-deployed device. The serial from the .wch filename is the only identifier present on
+    # every deployment (the Summary.csv model/PTT are often "Unknown"), so it anchors the label; the model
+    # enriches it when known. Computed unconditionally so it is stored in metadata regardless of verbosity.
+    wc_model <- wc_serial <- NULL
+    if (length(wc_anc)) {
+      wc_dir <- if (!is.na(locations_file)) dirname(locations_file) else
+                if (!is.na(archive_files[i])) dirname(archive_files[i]) else NA_character_
+      wc_model  <- .wcModel(wc_dir)
+      wc_serial <- .wcSerial(wc_dir)
+    }
+    # verbose (level 2): one "ancillary tag" line, with each stream that device contributed nested beneath.
+    if (lvl >= 2L && length(wc_anc)) {
+      .log_detail(lvl, "ancillary tag: Wildlife Computers ",
+                  if (!is.null(wc_model)) wc_model else "tag",
+                  if (!is.null(wc_serial)) paste0(" (", wc_serial, ")") else "")
+      if (!is.null(wc_anc$positions))
+        .log_subdetail(lvl, "locations: ", .fmtFixTypes(wc_anc$positions$data$type))
+      if (!is.null(wc_anc$dry)) {
+        n_dry <- sum(wc_anc$dry$data$dry, na.rm = TRUE)
+        .log_subdetail(lvl, "wet/dry: ", formatC(n_dry, format = "d", big.mark = ","),
+                       " surface interval", if (n_dry != 1L) "s" else "")
+      }
     }
 
     # Align the co-deployed device's clock onto this tag's timeline and attach. attachAncillary() is the
@@ -946,6 +966,12 @@ importTagData <- function(data.folders,
     # clock-alignment provenance rides alongside them, so the applied offset - or the reason the aligner
     # abstained - stays inspectable downstream.
     for (nm in names(att$ancillary)) meta$ancillary[[nm]] <- att$ancillary[[nm]]
+    # co-deployed device identity (make / model / serial) for provenance and summaries: the serial anchors
+    # it (present on every deployment), the model enriches it when the Summary.csv names one.
+    if (length(wc_anc))
+      meta$ancillary$source_device <- list(make = "Wildlife Computers",
+                                           model  = wc_model  %||% NA_character_,
+                                           serial = wc_serial %||% NA_character_)
     meta <- .appendProcessing(meta, "importTagData",
                               directory = data.folders[i],
                               imported_columns = selected_cols,
@@ -1470,6 +1496,38 @@ importTagData <- function(data.folders,
   NULL
 }
 
+#' Best-effort Wildlife Computers tag serial from the `.wch` archive filename in the WC directory
+#' (e.g. "PIN_01_17A0269.wch" -> "17A0269", "19U0836.wch" -> "19U0836"). The serial is the physical-tag
+#' identity (reused across redeployments), and unlike the Summary.csv model/PTT it is present on every
+#' deployment in practice, so it anchors the ancillary-tag label. Returns NULL when no `.wch` is found.
+#' @keywords internal
+#' @noRd
+.wcSerial <- function(wc_dir) {
+  if (is.null(wc_dir) || is.na(wc_dir) || !dir.exists(wc_dir)) return(NULL)
+  f <- list.files(wc_dir, pattern = "\\.wch$", full.names = FALSE, ignore.case = TRUE)
+  if (!length(f)) return(NULL)
+  b <- sub("\\.wch$", "", f[1], ignore.case = TRUE)
+  parts <- strsplit(b, "_", fixed = TRUE)[[1]]     # PIN_01_17A0269 -> last token is the serial
+  s <- trimws(parts[length(parts)])
+  if (nzchar(s)) s else NULL
+}
+
+#' Format the position-fix type breakdown for the verbose ancillary line: a single type collapses to
+#' "N <Type> fixes"; a mix reads "N fixes (a <T1>, b <T2>)". `types` is the position record's `type`
+#' column (User rows are already excluded upstream in `.readPositionsAncillary`).
+#' @keywords internal
+#' @noRd
+.fmtFixTypes <- function(types) {
+  types <- types[!is.na(types)]
+  n <- length(types)
+  plur <- if (n != 1L) "es" else ""
+  if (!n) return("0 fixes")
+  tab <- sort(table(types), decreasing = TRUE)
+  if (length(tab) == 1L) return(sprintf("%s %s fix%s", .formatLargeNumber(n), names(tab), plur))
+  parts <- paste(sprintf("%d %s", as.integer(tab), names(tab)), collapse = ", ")
+  sprintf("%s fix%s (%s)", .formatLargeNumber(n), plur, parts)
+}
+
 #' Read the Wildlife Computers archival wet/dry ('Dry') signal into an ancillary metadata entry.
 #'
 #' The WC `...Archive.csv` carries a boolean `Dry` column (a sustained-dry interval means the tag was
@@ -1499,11 +1557,13 @@ importTagData <- function(data.folders,
        data = data.frame(datetime = enc$datetime, dry = enc$state))
 }
 
-#' Read the complete Wildlife Computers position record (`...Locations.csv`) into an ancillary entry.
+#' Read the Wildlife Computers tracking-fix record (`...Locations.csv`) into an ancillary entry.
 #'
-#' The full fix history at its own cadence - NOT snapped to sensor rows and NOT trimmed to the recording
-#' window - so downstream analyses (tracks, maps, post-deployment drift) keep every fix. Carries the
-#' useful WC columns (type, quality) rather than being constrained by a fixed sensor-table layout.
+#' The full tracking-fix history at its own cadence - NOT snapped to sensor rows and NOT trimmed to the
+#' recording window - so downstream analyses (tracks, maps, post-deployment drift) keep every fix. Carries
+#' the useful WC columns (type, quality). "User"-type rows (deploy/pop-up coordinates, held in
+#' meta$deployment) are excluded - they are not tracking fixes and inflate the record; the depth-drift
+#' correction ignores them regardless.
 #'
 #' @param locations_file Path to a WC `...Locations.csv` (or NA / a nonexistent path).
 #' @return list(source, data = data.frame(datetime, type, lon, lat, quality)) for
@@ -1526,6 +1586,11 @@ importTagData <- function(data.folders,
   out <- out[!is.na(out$datetime), , drop = FALSE]
   out <- out[!duplicated(out$datetime), , drop = FALSE]
   out <- out[order(out$datetime), , drop = FALSE]
+  # Drop "User" rows: these are the deploy/pop-up coordinates (already held in meta$deployment), not
+  # tracking fixes. The depth-drift correction ignores them (.gatherSurfaceEvidence uses FastGPS/Argos
+  # only), and counting them inflates and mislabels the location record - a deploy-only tag would import
+  # as a 2-fix "track". Genuine fix types (FastGPS, Argos, ...) are kept.
+  out <- out[is.na(out$type) | out$type != "User", , drop = FALSE]
   if (!nrow(out)) return(NULL)
   list(source = "Wildlife Computers Locations", data = out)
 }
@@ -1677,12 +1742,14 @@ importTagData <- function(data.folders,
 #' @noRd
 .reportAlignment <- function(info, lvl) {
   if (is.null(info) || identical(info$status, "disabled")) return(invisible())
+  # nested (level-2) beneath the "ancillary tag" line, as the operation applied to that device's streams;
+  # an abstention is ALSO collected for the run summary independently, so the plain nested line is enough.
   if (identical(info$status, "aligned")) {
-    .log_detail(lvl, "clock alignment: shifted ancillary streams by ",
+    .log_subdetail(lvl, "clock alignment: shifted streams by ",
                 sprintf("%+d s", as.integer(round(info$offset.seconds))),
                 " (cor = ", sprintf("%.2f", info$correlation), ")")
   } else {
-    .log_skip(lvl, "clock alignment: not applied \u2014 ", info$reason)
+    .log_subdetail(lvl, "clock alignment: not applied \u2014 ", info$reason)
   }
   invisible()
 }

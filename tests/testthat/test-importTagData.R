@@ -497,6 +497,12 @@ test_that("importTagData reads the complete WC Locations record into ancillary$p
                     Type = c("FastGPS", "User", "FastGPS"), Quality = c("7", "", "9"),
                     Latitude = c(38.1, 38.2, 38.9), Longitude = c(-25.1, -25.2, -25.9), stringsAsFactors = FALSE)
   data.table::fwrite(loc, file.path(wc, "ID_01-Locations.csv"))
+  file.create(file.path(wc, "ID_01_17A0269.wch"))                          # serial source for the ancillary tag id
+  # a wet/dry archive (Time + Dry, no Depth -> alignment still abstains): two dry (surface) intervals
+  arch <- data.frame(Time = c("00:00:05 01-Jan-2020", "00:00:15 01-Jan-2020",
+                              "00:00:25 01-Jan-2020", "00:00:35 01-Jan-2020"),
+                     Dry = c(1L, 0L, 1L, 0L))
+  data.table::fwrite(arch, file.path(wc, "ID_01-Archive.csv"))
   res <- NULL
   # this fixture's WC archive cannot support clock alignment (a 39 s overlap, or no depth channel), so
   # the aligner abstains and - since that abstention now reaches the consolidated issues - a deferred
@@ -507,9 +513,34 @@ test_that("importTagData reads the complete WC Locations record into ancillary$p
                          wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE))))
   pos <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$positions
   expect_false(is.null(pos))
-  expect_equal(nrow(pos$data), 3L)                                         # complete record, incl. the out-of-window 02:00 fix
-  expect_true(all(c("FastGPS", "User") %in% pos$data$type))
+  expect_equal(nrow(pos$data), 2L)                                         # 2 FastGPS (incl. out-of-window); User row excluded
+  expect_true(all(pos$data$type == "FastGPS"))
+  expect_false("User" %in% pos$data$type)
   expect_false(any(c("position_type", "lon", "lat") %in% names(res[["ID_01"]])))   # NOT carried as columns
+  # co-deployed device identity is stored (serial recovered from the .wch filename; model NA here - no Summary)
+  dev <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$source_device
+  expect_equal(dev$make, "Wildlife Computers")
+  expect_equal(dev$serial, "17A0269")
+  # the wet/dry stream imported (2 dry surface intervals) - the count the verbose line reports
+  dry <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$dry
+  expect_false(is.null(dry))
+  expect_equal(sum(dry$data$dry), 2L)
+})
+
+test_that(".wcSerial extracts the tag serial from the .wch filename; .fmtFixTypes formats the breakdown", {
+  d <- tempfile(); dir.create(d); on.exit(unlink(d, recursive = TRUE), add = TRUE)
+  file.create(file.path(d, "PIN_01_17A0269.wch"))
+  expect_equal(nautilus:::.wcSerial(d), "17A0269")                 # PIN_01_17A0269 -> last token
+  unlink(file.path(d, "PIN_01_17A0269.wch")); file.create(file.path(d, "19U0836.wch"))
+  expect_equal(nautilus:::.wcSerial(d), "19U0836")                 # no PIN prefix -> whole stem
+  unlink(file.path(d, "19U0836.wch"))
+  expect_null(nautilus:::.wcSerial(d))                             # no .wch present
+  expect_null(nautilus:::.wcSerial(NA))
+
+  expect_equal(nautilus:::.fmtFixTypes(rep("FastGPS", 46)), "46 FastGPS fixes")
+  expect_equal(nautilus:::.fmtFixTypes("FastGPS"), "1 FastGPS fix")
+  expect_equal(nautilus:::.fmtFixTypes(c(rep("FastGPS", 45), rep("Argos", 5))),
+               "50 fixes (45 FastGPS, 5 Argos)")
 })
 
 test_that("importTagData fails loudly on empty input, not a silent empty import", {

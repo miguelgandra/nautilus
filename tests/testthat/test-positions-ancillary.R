@@ -19,18 +19,28 @@ Sys.setlocale("LC_TIME", "C")
   nautilus:::new_nautilus_tag(d, m)
 }
 
-test_that(".readPositionsAncillary reads the complete WC Locations record", {
+test_that(".readPositionsAncillary reads tracking fixes and EXCLUDES User (deploy/pop-up) rows", {
   f <- tempfile(fileext = ".csv"); on.exit(unlink(f), add = TRUE)
   loc <- data.frame(Date = c("00:00:10 01-Jan-2020", "00:00:30 01-Jan-2020", "02:00:00 01-Jan-2020"),
                     Type = c("FastGPS", "User", "FastGPS"), Latitude = c(38.1, 38.2, 38.9),
                     Longitude = c(-25.1, -25.2, -25.9), Quality = c("7", "", "9"), stringsAsFactors = FALSE)
   data.table::fwrite(loc, f)
   anc <- nautilus:::.readPositionsAncillary(f)
-  expect_equal(nrow(anc$data), 3L)                                  # incl. the out-of-window 02:00 fix
+  expect_equal(nrow(anc$data), 2L)                                  # the 2 FastGPS fixes; the User row dropped
   expect_named(anc$data, c("datetime", "type", "lon", "lat", "quality"))
-  expect_true(all(c("FastGPS", "User") %in% anc$data$type))
+  expect_true(all(anc$data$type == "FastGPS"))
+  expect_false("User" %in% anc$data$type)
   expect_s3_class(anc$data$datetime, "POSIXct")
   expect_null(nautilus:::.readPositionsAncillary(NA))
+})
+
+test_that(".readPositionsAncillary returns NULL for a deploy-only (all-User) record", {
+  f <- tempfile(fileext = ".csv"); on.exit(unlink(f), add = TRUE)
+  loc <- data.frame(Date = c("14:00:00 30-Aug-2023", "09:20:00 31-Aug-2023"),
+                    Type = c("User", "User"), Latitude = c(38.0, 38.0),
+                    Longitude = c(-29.9, -29.9), Quality = c("", ""), stringsAsFactors = FALSE)
+  data.table::fwrite(loc, f)
+  expect_null(nautilus:::.readPositionsAncillary(f))                # no tracking fixes -> no positions stream
 })
 
 test_that(".tagPositions returns the canonical record (empty when absent)", {
