@@ -239,7 +239,7 @@ test_that(".llDetect reads as far as the reader does (12 lines, not 6)", {
 
 test_that("format = 'auto' routes a stock CEiiA deployment to read_cats()", {
   f <- .ceiia_fixture()
-  tags <- importTagData(data.folders = f$folder, format = "auto", id.metadata = .ce_md(),
+  tags <- importTagData(data.folders = f$folder, format = "auto", metadata = .ce_md(),
                         columns = .ce_cols(), return.data = TRUE, verbose = "quiet")
   expect_s3_class(tags[["CE_01"]], "nautilus_tag")
   expect_setequal(nautilus:::.getMeta(tags[["CE_01"]])$sensors$present, c("ax", "ay", "az", "depth"))
@@ -247,7 +247,7 @@ test_that("format = 'auto' routes a stock CEiiA deployment to read_cats()", {
 
 test_that("format = 'auto' routes a Little Leonardo deployment to its own reader", {
   f <- .auto_ll()
-  tags <- importTagData(data.folders = f$folder, format = "auto", id.metadata = .auto_ll_md(),
+  tags <- importTagData(data.folders = f$folder, format = "auto", metadata = .auto_ll_md(),
                         columns = .auto_ll_cols(), return.data = TRUE, verbose = "quiet")
   expect_s3_class(tags[["LLTEST"]], "nautilus_tag")
   expect_equal(nrow(tags[["LLTEST"]]), f$n)
@@ -263,7 +263,7 @@ test_that("format = 'auto' imports a MIXED batch in one call", {
     data.frame(id = "LLTEST", tag = "Little Leonardo", type = "LL",
                deploy_date = as.POSIXct("2025-07-21 22:33:00", tz = "UTC"), lon = -28.6, lat = 38.6,
                data_start = as.POSIXct("2025-07-21 22:33:00", tz = "UTC"), stringsAsFactors = FALSE))
-  tags <- importTagData(data.folders = c(ce$folder, ll$folder), format = "auto", id.metadata = md,
+  tags <- importTagData(data.folders = c(ce$folder, ll$folder), format = "auto", metadata = md,
                         columns = metadataColumns(id = "id", tag_model = "tag", tag_type = "type",
                                                   deploy_datetime = "deploy_date", deploy_lon = "lon",
                                                   deploy_lat = "lat", data_start = "data_start"),
@@ -281,7 +281,7 @@ test_that("files present but unidentifiable is a LOUD per-folder failure, and th
   junk <- .csv_fixture(c("foo", "bar"), id = "JUNK_01", root = ce$root)
   md <- rbind(.ce_md("CE_01"), .ce_md("JUNK_01"))
   w <- testthat::capture_warnings(
-    tags <- importTagData(data.folders = c(ce$folder, junk$folder), format = "auto", id.metadata = md,
+    tags <- importTagData(data.folders = c(ce$folder, junk$folder), format = "auto", metadata = md,
                           columns = .ce_cols(), return.data = TRUE, verbose = "quiet"))
   # assert the LOUD text AND the absence of the quiet text. Matching "JUNK_01" alone would not do: the
   # quiet-skip notice names the folder too, so such a test stays green even if the feature regresses into
@@ -301,7 +301,7 @@ test_that("a folder's failure is never silenced by another folder sharing its ba
   b <- tempfile(); dir.create(file.path(b, "DUP_01", "CMD"), recursive = TRUE)   # empty -> quiet skip
   w <- testthat::capture_warnings(
     importTagData(data.folders = c(a$folder, file.path(b, "DUP_01")), format = "auto",
-                  id.metadata = .ce_md("DUP_01"), columns = .ce_cols(), return.data = TRUE,
+                  metadata = .ce_md("DUP_01"), columns = .ce_cols(), return.data = TRUE,
                   verbose = "quiet"))
   expect_true(any(grepl("could not be imported", w)))
 })
@@ -312,7 +312,7 @@ test_that("a folder with no data at all stays a quiet pre-flight skip under auto
   md <- rbind(.ce_md("CE_01"), .ce_md("EMPTY_01"))
   w <- testthat::capture_warnings(
     tags <- importTagData(data.folders = c(ce$folder, file.path(ce$root, "EMPTY_01")), format = "auto",
-                          id.metadata = md, columns = .ce_cols(), return.data = TRUE, verbose = "quiet"))
+                          metadata = md, columns = .ce_cols(), return.data = TRUE, verbose = "quiet"))
   # the EXISTING pre-flight notice, not an auto-specific one: here "no sensor file found" is simply true
   expect_true(any(grepl("no sensor file found", w)))
   expect_true(any(grepl("EMPTY_01", w)))
@@ -329,7 +329,7 @@ test_that("auto aborts when it matches more than one reader, naming the folder a
   writeLines(c("Date,Ax (g),Depth (m)", "2020-01-01 00:00:00,0.1,1.0"), file.path(root, id, "s.csv"))
   expect_error(
     importTagData(data.folders = file.path(root, id), format = "auto", sensor.subdirectory = ".",
-                  id.metadata = .ce_md(id), columns = .ce_cols(), verbose = "quiet"),
+                  metadata = .ce_md(id), columns = .ce_cols(), verbose = "quiet"),
     "matched more than one"
   )
 })
@@ -350,7 +350,7 @@ test_that("the ambiguous abort renders cleanly for several folders, and never ev
   folders <- vapply(ids, function(i) mk_both(root, i), character(1))
   md <- do.call(rbind, lapply(ids, .ce_md))
   err <- tryCatch(importTagData(data.folders = folders, format = "auto", sensor.subdirectory = ".",
-                                id.metadata = md, columns = .ce_cols(), verbose = "quiet"),
+                                metadata = md, columns = .ce_cols(), verbose = "quiet"),
                   error = function(e) conditionMessage(e))
   expect_match(err, "matched more than one")
   expect_match(err, "2 folders")                    # pluralised, not raw "{length(ambiguous)}"
@@ -364,7 +364,7 @@ test_that("auto aborts, naming itself, when NO reader can even find files anywhe
   # which no reader found any data at all (here: an empty CMD).
   root <- tempfile(); dir.create(file.path(root, "N_01", "CMD"), recursive = TRUE)
   err <- tryCatch(importTagData(data.folders = file.path(root, "N_01"), format = "auto",
-                                id.metadata = .ce_md("N_01"), columns = .ce_cols(), verbose = "quiet"),
+                                metadata = .ce_md("N_01"), columns = .ce_cols(), verbose = "quiet"),
                   error = function(e) conditionMessage(e))
   expect_match(err, "No readable")
   expect_match(err, "auto")            # names the mode that failed
@@ -389,7 +389,7 @@ test_that("a tag_format value wins over auto, and only the unnamed rows are dete
                           deploy_lon = "lon", deploy_lat = "lat", data_start = "data_start",
                           tag_format = "fmt")
   # LLTEST is NAMED (honoured); CE_01's cell is NA, so it falls through to detection
-  tags <- importTagData(data.folders = c(ce$folder, ll$folder), format = "auto", id.metadata = md,
+  tags <- importTagData(data.folders = c(ce$folder, ll$folder), format = "auto", metadata = md,
                         columns = cols, return.data = TRUE, verbose = "quiet")
   expect_s3_class(tags[["CE_01"]], "nautilus_tag")
   expect_s3_class(tags[["LLTEST"]], "nautilus_tag")
@@ -399,18 +399,18 @@ test_that("'auto' is legal as the argument but never as a tag_format column valu
   # the column names a READER; "auto" is not one. Keeping it out of .readerFormats() is what buys this.
   f <- .ceiia_fixture()
   md <- .ce_md("CE_01", fmt = "auto")
-  expect_error(importTagData(data.folders = f$folder, format = "cats", id.metadata = md,
+  expect_error(importTagData(data.folders = f$folder, format = "cats", metadata = md,
                              columns = .ce_cols(tag_format = "fmt"), verbose = "quiet"),
                "Unsupported tag format")
 })
 
 test_that("an unknown format is still rejected, and auto does not widen what the column accepts", {
   f <- .ceiia_fixture()
-  expect_error(importTagData(data.folders = f$folder, format = "nope", id.metadata = .ce_md(),
+  expect_error(importTagData(data.folders = f$folder, format = "nope", metadata = .ce_md(),
                              columns = .ce_cols(), verbose = "quiet"),
                "Unsupported tag format")
   md <- .ce_md("CE_01", fmt = "not_a_reader")
-  expect_error(importTagData(data.folders = f$folder, format = "auto", id.metadata = md,
+  expect_error(importTagData(data.folders = f$folder, format = "auto", metadata = md,
                              columns = .ce_cols(tag_format = "fmt"), verbose = "quiet"),
                "Unsupported tag format")
 })

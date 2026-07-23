@@ -181,13 +181,13 @@ test_that("factor columns in user-supplied TABLES no longer become level codes",
                       warning = function(w) { ws <<- c(ws, conditionMessage(w)); invokeRestart("muffleWarning") })
   expect_true(any(grepl("arrived as", ws)))
 
-  # qcDeploymentMetadata: factor coordinates became lon 1 / lat 2, which then feed declination and diel
+  # checkDeploymentMetadata: factor coordinates became lon 1 / lat 2, which then feed declination and diel
   md <- data.frame(ID = c("A", "B"), tag = c("t1", "t2"),
                    tagging_date = as.POSIXct(c("2023-01-01", "2023-01-02"), tz = "UTC"),
                    deploy_lon = c(-25.5, -24.9), deploy_lat = c(37.1, 37.4), stringsAsFactors = FALSE)
   mdf <- md; mdf$deploy_lon <- factor(mdf$deploy_lon); mdf$deploy_lat <- factor(mdf$deploy_lat)
-  expect_equal(quiet(qcDeploymentMetadata(mdf, verbose = FALSE))$deploy_lon,
-               quiet(qcDeploymentMetadata(md,  verbose = FALSE))$deploy_lon, tolerance = 1e-8)
+  expect_equal(quiet(checkDeploymentMetadata(mdf, verbose = FALSE))$deploy_lon,
+               quiet(checkDeploymentMetadata(md,  verbose = FALSE))$deploy_lon, tolerance = 1e-8)
 })
 
 test_that(".coerceNumericCols converts via labels and names the offending columns", {

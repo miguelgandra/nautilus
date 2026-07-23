@@ -42,7 +42,7 @@ ID (\code{"CAM"} in the ID -> "Camera", otherwise "MS"). Default \code{NULL}.}
 (defaults \code{"deploy_lon"} / \code{"deploy_lat"}).}
 
 \item{recovery_datetime}{Column holding the recovery (or detachment) datetime, POSIXct, or \code{NULL}.
-Mapping it enables the recovery-before-deployment check in \code{\link{qcDeploymentMetadata}}, and
+Mapping it enables the recovery-before-deployment check in \code{\link{checkDeploymentMetadata}}, and
 is also required by the package-overlap check. Default \code{NULL}.}
 
 \item{popup_datetime, popup_lon, popup_lat}{Columns holding the pop-up (detachment) datetime /
@@ -51,18 +51,18 @@ longitude / latitude. Supply all three to enable pop-up location integration. De
 \item{package_id}{Column holding the physical tag-package ID (the housing whose axis orientation is
 constant), or \code{NULL}. Enables paddle-wheel speed calibration, per-package axis-orientation
 consensus (\code{\link{consensusAxisMapping}}), and the package-overlap check in
-\code{\link{qcDeploymentMetadata}} - which additionally requires \code{recovery_datetime}, since it needs
+\code{\link{checkDeploymentMetadata}} - which additionally requires \code{recovery_datetime}, since it needs
 a deployment window to intersect. Default \code{NULL}.}
 
 \item{logger_id}{Column holding the logger / data-recorder ID (the unit that owns the raw recording
 file, which may be reused across packages), or \code{NULL}. Enables the logger-reuse note in
-\code{\link{qcDeploymentMetadata}}, which flags a logger appearing on more than one deployment.
+\code{\link{checkDeploymentMetadata}}, which flags a logger appearing on more than one deployment.
 Default \code{NULL}.}
 
 \item{exclude_sensors}{Column listing sensor channels known to be unusable on a deployment (a
 data-quality fact kept separate from axis orientation, e.g. a firmware bug), or \code{NULL}. Each value
 is a comma-separated list of families (\code{"accel"}, \code{"gyro"}, \code{"mag"}) and/or channels (e.g.
-\code{"mx"}, \code{"gz"}), blank for none. Reported by \code{\link{qcDeploymentMetadata}} and dropped by
+\code{"mx"}, \code{"gz"}), blank for none. Reported by \code{\link{checkDeploymentMetadata}} and dropped by
 \code{\link{importTagData}} (so the channel is simply absent downstream). Default \code{NULL}.}
 
 \item{axis_config}{Column naming the IMU orientation configuration of each deployment (e.g.
@@ -102,10 +102,10 @@ grouping, filtering, and plotting (e.g. \code{group = "sex"}). Default \code{NUL
 }
 \value{
 A validated \code{nautilus_metadata_columns} object (a named list) for the \code{columns} argument of
-\code{\link{importTagData}} and \code{\link{qcDeploymentMetadata}}.
+\code{\link{importTagData}} and \code{\link{checkDeploymentMetadata}}.
 }
 \description{
-Describes which columns of your \code{id.metadata} table hold each piece of deployment information.
+Describes which columns of your \code{metadata} table hold each piece of deployment information.
 It replaces the long list of individual \verb{*.col} arguments with a single, self-documenting object:
 fields default to the canonical nautilus names, so metadata that already uses those names needs no
 configuration, and only non-standard columns have to be named explicitly.
@@ -146,5 +146,5 @@ metadataColumns()
 metadataColumns(deploy_datetime = "tagging_date", package_id = "PackageID")
 }
 \seealso{
-\code{\link{importTagData}}, \code{\link{qcDeploymentMetadata}}
+\code{\link{importTagData}}, \code{\link{checkDeploymentMetadata}}
 }

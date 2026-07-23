@@ -52,13 +52,13 @@ test_that("two variables produce a depth AND temperature table", {
 })
 
 test_that("grouping by a column facets and tags rows with the group", {
-  s <- .to_pdf(.tad_cohort(), group = "species")$res
+  s <- .to_pdf(.tad_cohort(), group.by = "species")$res
   expect_setequal(unique(s$group), c("shallow", "deep"))
   expect_equal(s$group[s$id == "A02"][1], "deep")
 })
 
 test_that("grouping accepts a named id -> group vector", {
-  s <- .to_pdf(.tad_cohort(), group = c(A01 = "g1", A02 = "g2", A03 = "g2"))$res
+  s <- .to_pdf(.tad_cohort(), group.by = c(A01 = "g1", A02 = "g2", A03 = "g2"))$res
   expect_setequal(unique(s$group), c("g1", "g2"))
 })
 
@@ -147,13 +147,13 @@ test_that("group facets of a variable share one x scale unless same.scale = FALS
   flat  <- .mk_tad("F1", function(n) runif(n, 0, 120), species = "flat")   # time spread thinly over bins
   peaky <- .mk_tad("P1", function(n) rep(3, n), species = "peaky")         # ~all time in one bin
   pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
-  s <- suppressMessages(plotTimeAtDepth(list(F1 = flat, P1 = peaky), group = "species",
+  s <- suppressMessages(plotTimeAtDepth(list(F1 = flat, P1 = peaky), group.by = "species",
                                         plot = FALSE, plot.file = pf, verbose = FALSE))
   peak_by_group <- tapply(s$pct, s$group, max)
   expect_gt(max(peak_by_group) / min(peak_by_group), 2)        # the groups genuinely differ in scale
   expect_true(file.size(pf) > 0)
   # both settings must render; same.scale is validated as a flag
-  expect_silent(suppressMessages(plotTimeAtDepth(list(F1 = flat, P1 = peaky), group = "species",
+  expect_silent(suppressMessages(plotTimeAtDepth(list(F1 = flat, P1 = peaky), group.by = "species",
                                                  same.scale = FALSE, plot = FALSE, plot.file = pf, verbose = FALSE)))
   expect_error(suppressMessages(plotTimeAtDepth(list(F1 = flat), same.scale = "yes",
                                                 plot = FALSE, plot.file = pf, verbose = FALSE)))
@@ -216,7 +216,7 @@ test_that("input problems fail by name instead of surfacing as raw R errors", {
   co <- list(A = one("A", c("depth", "temp")), B = one("B", "temp"))
   expect_no_error(suppressWarnings(suppressMessages(
     plotTimeAtDepth(co, variable = c("depth", "temp"), order.by = "median",
-                    group = c(A = "g1", B = "g2"), plot = FALSE, plot.file = pf, verbose = FALSE))))
+                    group.by = c(A = "g1", B = "g2"), plot = FALSE, plot.file = pf, verbose = FALSE))))
   expect_no_error(suppressWarnings(suppressMessages(
     plotTimeAtDepth(co, variable = c("depth", "temp"), order.by = "median", style = "heatmap",
                     plot = FALSE, plot.file = pf, verbose = FALSE))))
@@ -266,7 +266,7 @@ test_that("silently-wrong inputs are corrected or reported, never quietly plotte
   # a deployment with no group value is on no facet; it used to disappear while still counting as plotted
   g <- list(A = mk("A", abs(stats::rnorm(300, 50, 20))), B = mk("B", abs(stats::rnorm(300, 50, 20))),
             C = mk("C", abs(stats::rnorm(300, 50, 20))))
-  expect_warning(noisy(plotTimeAtDepth(g, group = c(A = "x", B = "x"), plot = FALSE, plot.file = pf,
+  expect_warning(noisy(plotTimeAtDepth(g, group.by = c(A = "x", B = "x"), plot = FALSE, plot.file = pf,
                                        verbose = FALSE)),
                  "no .*group.* value")
 })
@@ -295,7 +295,7 @@ test_that("malformed arguments abort by name rather than deep inside base graphi
                                        datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(300) * 60,
                                        depth = abs(stats::rnorm(300, 50, 20)), stringsAsFactors = FALSE)
   quiet <- function(e) suppressWarnings(suppressMessages(e))
-  co <- function(x) quiet(plotTimeAtDepth(list(A = one()), diel = TRUE, coordinates = x,
+  co <- function(x) quiet(plotTimeAtDepth(list(A = one()), diel = TRUE, coords = x,
                                           plot = FALSE, plot.file = pf, verbose = FALSE))
 
   # every malformed `coordinates` shape used to fall through .tadCoords() to NULL, silently skipping the
@@ -317,10 +317,10 @@ test_that("malformed arguments abort by name rather than deep inside base graphi
 
   # a blank grouping cell is not a group level: gcols[[""]] was "subscript out of bounds"
   g <- list(A = one("A"), B = one("B"), C = one("C"))
-  expect_no_error(quiet(plotTimeAtDepth(g, group = c(A = "", B = "", C = "b"),
+  expect_no_error(quiet(plotTimeAtDepth(g, group.by = c(A = "", B = "", C = "b"),
                                         plot = FALSE, plot.file = pf, verbose = FALSE)))
   # a grouping column nobody matches used to pool silently, after the header announced "grouped by ..."
-  expect_warning(suppressMessages(plotTimeAtDepth(g, group = "nosuchcol", plot = FALSE, plot.file = pf,
+  expect_warning(suppressMessages(plotTimeAtDepth(g, group.by = "nosuchcol", plot = FALSE, plot.file = pf,
                                                   verbose = FALSE)),
                  "No deployment has a usable")
 })

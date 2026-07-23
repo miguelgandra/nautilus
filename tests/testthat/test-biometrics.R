@@ -24,7 +24,7 @@ test_that("the metadata schema carries an (empty) biometrics slot", {
 test_that("a plot groups by an imported trait read from meta$biometrics", {
   tags <- list(A = .mk_tag("A", list(sex = "F")), B = .mk_tag("B", list(sex = "M")), C = .mk_tag("C", list(sex = "F")))
   pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
-  s <- suppressMessages(plotTimeAtDepth(tags, group = "sex", plot = FALSE, plot.file = pf, verbose = FALSE))
+  s <- suppressMessages(plotTimeAtDepth(tags, group.by = "sex", plot = FALSE, plot.file = pf, verbose = FALSE))
   expect_setequal(unique(s$group), c("F", "M"))                  # grouping resolved from stored biometrics
 })
 

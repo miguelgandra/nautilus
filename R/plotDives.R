@@ -308,7 +308,7 @@
 #' @param metrics Character. Columns to draw, one panel each. `NULL` (default) uses
 #'   `c("amplitude_m", "duration_s")`.
 #' @param labels Named character mapping a metric to its axis label, overriding the built-in ones.
-#' @param group Grouping for the deployments: a column name (resolved from the table or the tag
+#' @param group.by Grouping for the deployments: a column name (resolved from the table or the tag
 #'   metadata), a named `id -> group` vector, or a two-column `data.frame`. `NULL` (default) draws one
 #'   ungrouped block. Deployments the grouping does not cover are drawn in a trailing `(ungrouped)`
 #'   block rather than dropped - see Details.
@@ -371,7 +371,7 @@
 plotDives <- function(data,
                       metrics      = NULL,
                       labels       = NULL,
-                      group        = NULL,
+                      group.by        = NULL,
                       order.by     = c("id", "input", "median"),
                       order.metric = NULL,
                       trim      = 0.95,
@@ -431,7 +431,7 @@ plotDives <- function(data,
 
   # a metric dropped above must not remain the thing the cohort is ordered by
   if (!is.null(order.metric) && !order.metric %in% metrics) order.metric <- NULL
-  grp <- .pdGroups(dm, id.col, group)
+  grp <- .pdGroups(dm, id.col, group.by)
   ids <- .pdOrder(as.character(dm[[id.col]]), order.by, st, order.metric %||% metrics[1])
   lay <- .pdLayout(ids, grp, theme$palette)
   ids <- lay$ids
@@ -606,7 +606,7 @@ plotDives <- function(data,
   }, character(1))
   g[!is.na(g) & !nzchar(trimws(g))] <- NA_character_
   if (all(is.na(g)))
-    cli::cli_warn(c("No deployment has a usable {.arg group} value; drawing one ungrouped block.",
+    cli::cli_warn(c("No deployment has a usable {.arg group.by} value; drawing one ungrouped block.",
                     "i" = "Check that the grouping column or lookup covers the deployment ids."))
   stats::setNames(g, ids)
 }

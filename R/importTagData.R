@@ -107,14 +107,14 @@
 #'   `c("depth", "temp")` or `c("ax","ay","az","gx","gy","gz","mx","my","mz")`. Valid names:
 #'   `ax`, `ay`, `az`, `gx`, `gy`, `gz`, `mx`, `my`, `mz`, `depth`, `temp`, `paddle_speed`,
 #'   `paddle_freq`. Note that downstream analyses may still require particular sensors.
-#' @param id.metadata Data frame. Metadata about the IDs to associate with the processed data.
+#' @param metadata Data frame. Metadata about the IDs to associate with the processed data.
 #' Must contain at least columns for ID, tag model, and deployment date/longitude/latitude (see `columns`).
-#' Preferably a \code{nautilus_deployments} object returned by \code{\link{qcDeploymentMetadata}}: it
+#' Preferably a \code{nautilus_deployments} object returned by \code{\link{checkDeploymentMetadata}}: it
 #' carries its own column schema (so `columns` is not needed) and a QC verdict that is reported in the
 #' header and rejected if it failed. If a plain data.frame is supplied instead, the same metadata checks
 #' are run inline as a guard, and blocking errors abort the import before the long read.
 #' @param columns A column-mapping schema built with \code{\link{metadataColumns}}, describing which
-#'   columns of `id.metadata` hold each piece of deployment information (ID, tag model/type,
+#'   columns of `metadata` hold each piece of deployment information (ID, tag model/type,
 #'   deployment and pop-up datetime/longitude/latitude, package ID, paddle wheel, attachment site).
 #'   Fields default to the canonical nautilus names, so metadata that already uses those names needs
 #'   no configuration; override only the columns that differ, e.g.
@@ -184,11 +184,11 @@
 #' @examples
 #' \dontrun{
 #' # QC the deployment metadata first, then feed it straight to the import:
-#' meta <- qcDeploymentMetadata(raw_metadata, columns = metadataColumns())
+#' meta <- checkDeploymentMetadata(raw_metadata, columns = metadataColumns())
 #' imported <- importTagData(
 #'   data.folders        = list.dirs("./tags", recursive = FALSE),
 #'   sensor.subdirectory = "CMD",
-#'   id.metadata         = meta,
+#'   metadata         = meta,
 #'   timezone            = "UTC")
 #' }
 #' @export
@@ -201,7 +201,7 @@ importTagData <- function(data.folders,
                           timezone = "UTC",
                           import.mapping = NULL,
                           required.sensors = NULL,
-                          id.metadata,
+                          metadata,
                           columns = metadataColumns(),
                           return.data = TRUE,
                           output.dir = NULL,
@@ -212,15 +212,15 @@ importTagData <- function(data.folders,
                           alignment = alignmentControl(),
                           verbose = "detailed") {
 
-  # A QC'd metadata table (a nautilus_deployments from qcDeploymentMetadata) is authoritative about its
+  # A QC'd metadata table (a nautilus_deployments from checkDeploymentMetadata) is authoritative about its
   # own column names and carries a QC verdict: adopt its embedded schema and keep the stamp (reported in
   # the header; a FAILED verdict is rejected before the long read). A plain data.frame is screened
   # inline further below by the same check engine, as a guard.
   qc_stamp <- NULL
-  if (is_nautilus_deployments(id.metadata)) {
-    qc_stamp <- attr(id.metadata, "nautilus.qc")
-    columns  <- attr(id.metadata, "nautilus.columns") %||% columns
-    class(id.metadata) <- "data.frame"
+  if (is_nautilus_deployments(metadata)) {
+    qc_stamp <- attr(metadata, "nautilus.qc")
+    columns  <- attr(metadata, "nautilus.columns") %||% columns
+    class(metadata) <- "data.frame"
   }
 
   # resolve the metadata column schema, then unpack into the local names used below
@@ -316,9 +316,9 @@ importTagData <- function(data.folders,
   .assert_compress(compress)
   .assert_output(return.data, output.dir)
 
-  # validate `id.metadata`
-  if (!is.data.frame(id.metadata)) .abort("{.arg id.metadata} must be a data.frame or data.table.")
-  if (inherits(id.metadata, "data.table")) id.metadata <- as.data.frame(id.metadata)
+  # validate `metadata`
+  if (!is.data.frame(metadata)) .abort("{.arg metadata} must be a data.frame or data.table.")
+  if (inherits(metadata, "data.table")) metadata <- as.data.frame(metadata)
 
   # validate import.mapping
   if (!is.null(import.mapping)) {
@@ -355,11 +355,11 @@ importTagData <- function(data.folders,
     }
   }
 
-  # check that the configured metadata columns exist in id.metadata (NULL = optional column, skipped)
+  # check that the configured metadata columns exist in metadata (NULL = optional column, skipped)
   need_col <- function(col, field) {
-    if (!is.null(col) && !col %in% names(id.metadata)) {
-      .abort(c("Column {.val {col}} (set via {.code columns${field}}) was not found in {.arg id.metadata}.",
-               "i" = "Columns present: {.val {names(id.metadata)}}."))
+    if (!is.null(col) && !col %in% names(metadata)) {
+      .abort(c("Column {.val {col}} (set via {.code columns${field}}) was not found in {.arg metadata}.",
+               "i" = "Columns present: {.val {names(metadata)}}."))
     }
   }
   need_col(id.col,              "id")
@@ -382,10 +382,10 @@ importTagData <- function(data.folders,
   # paddle-wheel column: if set, must be logical or numeric 0/1 (coerced to logical)
   if (!is.null(paddle.wheel.col)) {
     need_col(paddle.wheel.col, "paddle_wheel")
-    paddle_values <- id.metadata[[paddle.wheel.col]]
+    paddle_values <- metadata[[paddle.wheel.col]]
     if (!is.logical(paddle_values)) {
       if (is.numeric(paddle_values) && all(paddle_values %in% c(0, 1, NA))) {
-        id.metadata[[paddle.wheel.col]] <- as.logical(paddle_values)
+        metadata[[paddle.wheel.col]] <- as.logical(paddle_values)
       } else {
         .abort("Column {.val {paddle.wheel.col}} ({.code columns$paddle_wheel}) must be logical or numeric 0/1.")
       }
@@ -394,20 +394,20 @@ importTagData <- function(data.folders,
 
   # check if deployment info exists for all individuals
   processing_ids <- basename(data.folders)
-  processing_metadata <- id.metadata[id.metadata[[id.col]] %in% processing_ids, ]
+  processing_metadata <- metadata[metadata[[id.col]] %in% processing_ids, ]
   missing_deploy_idx <- is.na(processing_metadata[[deploy.date.col]]) | is.na(processing_metadata[[deploy.lon.col]]) | is.na(processing_metadata[[deploy.lat.col]])
   missing_deploy_ids <- processing_metadata[missing_deploy_idx, id.col]
   if (length(missing_deploy_ids) > 0) {
-    .abort(c("Some IDs are missing deployment info (datetime, lon, or lat) in {.arg id.metadata}:",
+    .abort(c("Some IDs are missing deployment info (datetime, lon, or lat) in {.arg metadata}:",
              "x" = "{.val {missing_deploy_ids}}"))
   }
 
   # deployment / pop-up datetimes must be POSIXct
-  if (!inherits(id.metadata[[deploy.date.col]], "POSIXct")) {
-    .abort("Column {.val {deploy.date.col}} in {.arg id.metadata} must be of class {.cls POSIXct}.")
+  if (!inherits(metadata[[deploy.date.col]], "POSIXct")) {
+    .abort("Column {.val {deploy.date.col}} in {.arg metadata} must be of class {.cls POSIXct}.")
   }
-  if (!is.null(pop.date.col) && !inherits(id.metadata[[pop.date.col]], "POSIXct")) {
-    .abort("Column {.val {pop.date.col}} in {.arg id.metadata} must be of class {.cls POSIXct}.")
+  if (!is.null(pop.date.col) && !inherits(metadata[[pop.date.col]], "POSIXct")) {
+    .abort("Column {.val {pop.date.col}} in {.arg metadata} must be of class {.cls POSIXct}.")
   }
 
   # timezone
@@ -430,12 +430,12 @@ importTagData <- function(data.folders,
   # Retrieve directory files ###################################################
   ##############################################################################
 
-  # validate folder animal IDs against id.metadata
+  # validate folder animal IDs against metadata
   folder_ids <- basename(data.folders)
-  missing_ids <- setdiff(folder_ids, id.metadata[[id.col]])
+  missing_ids <- setdiff(folder_ids, metadata[[id.col]])
   if (length(missing_ids) > 0) {
-    .abort(c("Some folder IDs were not found in {.arg id.metadata}: {.val {missing_ids}}.",
-             "i" = "Add these IDs to {.arg id.metadata}, or drop the folders from {.arg data.folders}."))
+    .abort(c("Some folder IDs were not found in {.arg metadata}: {.val {missing_ids}}.",
+             "i" = "Add these IDs to {.arg metadata}, or drop the folders from {.arg data.folders}."))
   }
 
   # resolve each deployment's raw format: the `tag_format` metadata column wins (so one call can mix tag
@@ -446,7 +446,7 @@ importTagData <- function(data.folders,
   if (!is.null(tag.format.col)) {
     col_vals <- character(0)
     for (k in seq_along(ids_in)) {
-      v <- id.metadata[[tag.format.col]][id.metadata[[id.col]] == ids_in[k]]
+      v <- metadata[[tag.format.col]][metadata[[id.col]] == ids_in[k]]
       if (length(v) && !is.na(v[1]) && nzchar(as.character(v[1]))) {
         fmt_by_folder[k] <- as.character(v[1])
         col_vals <- c(col_vals, as.character(v[1]))
@@ -622,7 +622,7 @@ importTagData <- function(data.folders,
   }
 
   # metadata QC: a pre-QC'd nautilus_deployments carries a verdict (shown in the header, rejected here
-  # if FAILED); a plain data.frame is screened inline by the same engine as qcDeploymentMetadata(),
+  # if FAILED); a plain data.frame is screened inline by the same engine as checkDeploymentMetadata(),
   # restricted to the deployments being imported. Errors abort before the long read.
   qc_guard_err <- .empty_issues(); qc_guard_inline <- is.null(qc_stamp)
   if (qc_guard_inline) {
@@ -663,13 +663,13 @@ importTagData <- function(data.folders,
 
   # reject metadata with blocking errors before committing to the (potentially long) import
   if (!is.null(qc_stamp) && isFALSE(qc_stamp$passed)) {
-    .abort(c("{.arg id.metadata} failed metadata QC ({qc_stamp$n_errors} error{?s}).",
-             "i" = "Inspect them with {.code qcIssues()} and fix the metadata before importing."))
+    .abort(c("{.arg metadata} failed metadata QC ({qc_stamp$n_errors} error{?s}).",
+             "i" = "Inspect them with {.code issues()} and fix the metadata before importing."))
   }
   if (nrow(qc_guard_err) > 0L) {
     .abort(c("Metadata QC found {nrow(qc_guard_err)} blocking error{?s} in the deployments being imported:",
              stats::setNames(qc_guard_err$message, rep("x", nrow(qc_guard_err))),
-             "i" = "Run {.code qcDeploymentMetadata()} to diagnose, or fix the metadata."))
+             "i" = "Run {.code checkDeploymentMetadata()} to diagnose, or fix the metadata."))
   }
 
 
@@ -692,7 +692,7 @@ importTagData <- function(data.folders,
     locations_file <- wc_files[i]
 
     # retrieve metadata for the current animal ID from the metadata table
-    animal_info <- id.metadata[id.metadata[[id.col]]==id,]
+    animal_info <- metadata[metadata[[id.col]]==id,]
 
 
     ############################################################################

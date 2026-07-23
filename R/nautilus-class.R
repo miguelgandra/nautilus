@@ -465,7 +465,7 @@ processingHistory <- function(x) {
 #'
 #' @param data A `nautilus_tag` / data.frame, a (named) list of them, or a character vector of `.rds`
 #'   paths (the output of any processing step).
-#' @param id.metadata The deployment-metadata table (a data.frame or a `nautilus_deployments` object),
+#' @param metadata The deployment-metadata table (a data.frame or a `nautilus_deployments` object),
 #'   one row per deployment, holding the trait columns and the id column.
 #' @param columns A \code{\link{metadataColumns}} object naming the id column (`id`) and the trait
 #'   columns (`traits`). Traits not listed here are left untouched.
@@ -488,13 +488,13 @@ processingHistory <- function(x) {
 #' @examples
 #' \dontrun{
 #' # correct a trait in the deployment table, then re-stamp it onto processed data
-#' id.metadata <- data.frame(ID = c("shark01", "shark02"),
+#' metadata <- data.frame(ID = c("shark01", "shark02"),
 #'                           sex = c("F", "M"), length_cm = c(612, 548))
 #' cols <- metadataColumns(id = "ID", traits = c("sex", "length_cm"))
-#' tags <- updateBiometrics(processed, id.metadata, columns = cols, id.col = "ID")
+#' tags <- updateBiometrics(processed, metadata, columns = cols, id.col = "ID")
 #' }
 #' @export
-updateBiometrics <- function(data, id.metadata, columns = metadataColumns(), id.col = "ID",
+updateBiometrics <- function(data, metadata, columns = metadataColumns(), id.col = "ID",
                              return.data = TRUE, output.dir = NULL,
                              output.suffix = NULL, compress = TRUE, verbose = "detailed") {
   start.time <- Sys.time(); lvl <- .verbosity(verbose)
@@ -502,13 +502,13 @@ updateBiometrics <- function(data, id.metadata, columns = metadataColumns(), id.
   .assert_string(id.col, "id.col"); .assert_flag(return.data, "return.data")
   .assert_dir(output.dir, "output.dir"); .assert_compress(compress)
   .assert_output(return.data, output.dir)
-  if (is.data.frame(id.metadata)) id.metadata <- as.data.frame(id.metadata) else .abort("{.arg id.metadata} must be a data.frame.")
+  if (is.data.frame(metadata)) metadata <- as.data.frame(metadata) else .abort("{.arg metadata} must be a data.frame.")
   traits <- columns$traits
   if (is.null(traits) || !length(traits)) .abort(c("{.arg columns} names no {.field traits}.",
                                                    "i" = "Set {.code metadataColumns(traits = c(...))}."))
   mid <- columns$id
-  miss <- setdiff(c(mid, traits), names(id.metadata))
-  if (length(miss)) .abort("Column{?s} {.val {miss}} not found in {.arg id.metadata}.")
+  miss <- setdiff(c(mid, traits), names(metadata))
+  if (length(miss)) .abort("Column{?s} {.val {miss}} not found in {.arg metadata}.")
 
   r <- .resolveInput(data, id.col = id.col)
   .log_header(lvl, "updateBiometrics", "Refreshing biological traits",
@@ -520,7 +520,7 @@ updateBiometrics <- function(data, id.metadata, columns = metadataColumns(), id.
     x <- r$get(i)
     id <- tryCatch(as.character(unique(x[[id.col]])[1]), error = function(e) NA_character_)
     if (!length(id) || is.na(id)) id <- as.character(.getMeta(x)$id %||% r$ids[i])   # id may live only in meta$id
-    row <- id.metadata[as.character(id.metadata[[mid]]) == id, , drop = FALSE]
+    row <- metadata[as.character(metadata[[mid]]) == id, , drop = FALSE]
     if (!nrow(row)) { unmatched <- c(unmatched, id); if (return.data) results[[i]] <- x; next }
     meta <- .getMeta(.ensureMeta(x))
     for (tr in traits) { v <- row[[tr]][1]; meta$biometrics[[tr]] <- if (is.factor(v)) as.character(v) else v }
@@ -529,7 +529,7 @@ updateBiometrics <- function(data, id.metadata, columns = metadataColumns(), id.
     saved[i] <- list(.saveOutput(x, id, output.dir = output.dir, output.suffix = output.suffix, compress = compress))
     if (return.data) results[[i]] <- x
   }
-  if (length(unmatched)) cli::cli_warn("{length(unmatched)} dataset{?s} had no matching id.metadata row: {.val {utils::head(unmatched, 6)}}.")
+  if (length(unmatched)) cli::cli_warn("{length(unmatched)} dataset{?s} had no matching metadata row: {.val {utils::head(unmatched, 6)}}.")
   if (lvl >= 1L) {
     .log_summary(lvl); .log_done(lvl, n_updated, " of ", r$n, " dataset", if (r$n != 1) "s", " refreshed")
     .log_runtime(lvl, start.time)

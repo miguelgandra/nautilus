@@ -28,7 +28,7 @@
   res <- NULL
   invisible(capture.output(suppressWarnings(suppressMessages(
     res <- importTagData(file.path(fx$root, "ID_01"), import.mapping = fx$mapping,
- id.metadata = .meta(),
+ metadata = .meta(),
                          columns = metadataColumns(deploy_datetime = "deploy_date"), required.sensors = required.sensors,
                          return.data = TRUE, verbose = FALSE)))))
   res
@@ -71,7 +71,7 @@ test_that("invalid required.sensors raises a clear error", {
   on.exit(unlink(fx$root, recursive = TRUE), add = TRUE)
   expect_error(
     suppressWarnings(importTagData(file.path(fx$root, "ID_01"), import.mapping = fx$mapping,
-                                   id.metadata = .meta(), columns = metadataColumns(deploy_datetime = "deploy_date"),
+                                   metadata = .meta(), columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    required.sensors = c("ax", "not_a_sensor"),
                                    return.data = TRUE, verbose = FALSE)),
     "required.sensors"

@@ -72,7 +72,7 @@ deploy/pop-up anchors are trusted and kept. All three checks are opt-in.
 library(nautilus)
 
 # `tags` is the processed object. Deployment coordinates for the (optional) distance check are
-# taken from each tag's metadata; pass id.metadata = meta only to override or cross-check them.
+# taken from each tag's metadata; pass metadata = meta only to override or cross-check them.
 tags <- filterLocations(
   tags,
   max.speed.kmh  = 10,     # reject fixes implying > 10 km/h to BOTH neighbours

@@ -163,7 +163,7 @@ animal_metadata$obs <- NULL   # done parsing the notes; drop them
 # STEP 2. Quality-check the deployment metadata                                #
 ################################################################################
 
-# qcDeploymentMetadata() validates and cleans the metadata before any sensor data is read - catching
+# checkDeploymentMetadata() validates and cleans the metadata before any sensor data is read - catching
 # the small field-sheet slips that would otherwise quietly poison the analysis: a duplicate ID, an
 # impossible tagging coordinate, a recovery date before the deployment, two deployments overlapping on
 # the same physical tag. Fixing these here is far cheaper than discovering them after a long import.
@@ -174,7 +174,7 @@ animal_metadata$obs <- NULL   # done parsing the notes; drop them
 # enables per-package orientation consensus and paddle-wheel calibration, biological traits ride along
 # into every object for later grouping. Roles you don't map are simply skipped.
 
-deployments <- qcDeploymentMetadata(
+deployments <- checkDeploymentMetadata(
   animal_metadata,
   columns = metadataColumns(
     # The five required roles (shown here even where they match the defaults, so the menu is visible):
@@ -196,15 +196,15 @@ deployments <- qcDeploymentMetadata(
     attachment_site   = "attachment_site",
     deployment_type   = "deployment_type",    # "towed" or "rigid"; selects the posture scorer
     # Passive biological traits: carried verbatim into each object's metadata (tagMetadata(x)$biometrics)
-    # so they're available later for grouping, filtering and plotting (e.g. plotTimeAtDepth(group = "sex")).
+    # so they're available later for grouping, filtering and plotting (e.g. plotTimeAtDepth(group.by = "sex")).
     # A corrected value can be re-stamped later with updateBiometrics() - no re-import needed.
     traits            = c("sex", "size")),
   future.tolerance = 1,                  # allow a day of clock slop before flagging a "future" date
   verbose          = "detailed")
 
 # Read the verdict, fix anything flagged at the source, and re-run until it's clean.
-qcIssues(deployments)                    # all issues
-qcIssues(deployments, severity = "error")# just the blocking ones
+issues(deployments)                    # all issues
+issues(deployments, severity = "error")# just the blocking ones
 
 
 ################################################################################
@@ -224,7 +224,7 @@ qcIssues(deployments, severity = "error")# just the blocking ones
 #     sensor  = c("datetime","ax","ay","az","mx","my","mz","temp","depth"),
 #     units   = c("UTC","g","g","g","uT","uT","uT","C","m"))
 #
-# Passing the QC'd 'deployments' object as id.metadata does two things: it carries its own column
+# Passing the QC'd 'deployments' object as metadata does two things: it carries its own column
 # schema (so no columns argument is needed here), and it carries the QC verdict - if the metadata
 # failed STEP 2, the import refuses to start rather than wasting time on a long read. The data is
 # imported in its raw axis frame; rotating it into the animal's frame is a deliberate, separate step
@@ -238,7 +238,7 @@ data_folders <- data_folders[1:58]       # subset the deployments to process, if
 data_list <- importTagData(data.folders       = data_folders,
                            sensor.subdirectory = "CMD",        # the per-animal folder holding the tag CSV
                            wc.subdirectory     = NULL,         # NULL = auto-detect the Wildlife Computers folder
-                           id.metadata         = deployments,
+                           metadata         = deployments,
                            import.mapping      = NULL,         # NULL = standard CATS / CEiiA layout
                            import.calibration  = TRUE,         # also parse any sidecar calibration file, for provenance
                            timezone            = "UTC",        # labels the timestamps; never shifts them
@@ -757,7 +757,7 @@ tad_summary <- plotTimeAtDepth(profile_files,
                                plot      = FALSE,
                                plot.file = "./plots/time-at-depth.pdf")
 # Compare groups, restyled with a theme preset:
-# plotTimeAtDepth(profile_files, group = "sex", theme = plotTheme("minimal"),
+# plotTimeAtDepth(profile_files, group.by = "sex", theme = plotTheme("minimal"),
 #                 plot.file = "./plots/tad-by-sex.pdf")
 
 

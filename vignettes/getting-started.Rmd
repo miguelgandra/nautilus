@@ -129,14 +129,14 @@ first:
 library(nautilus)
 
 # Validate and normalise the deployment metadata before anything else.
-meta <- qcDeploymentMetadata("deployments.csv", columns = cols)
+meta <- checkDeploymentMetadata("deployments.csv", columns = cols)
 
 # Import each animal's sensor CSVs into nautilus_tag objects.
-# `data.folders` points at the per-animal folders; `id.metadata` is the table above.
+# `data.folders` points at the per-animal folders; `metadata` is the table above.
 tags <- importTagData(
   data.folders        = list.dirs("tags", recursive = FALSE),
   sensor.subdirectory = "CMD",
-  id.metadata         = meta,
+  metadata         = meta,
   columns             = cols
 )
 ```
@@ -168,7 +168,7 @@ tag <- buildTagData(
   my_sensor_df, id = "LL01",
   start = as.POSIXct("2025-07-21 22:33:00", tz = "UTC"),   # only needed if there is no datetime column
   sampling.rate = 100,                                     # Hz
-  metadata = my_deployments_row                            # optional: a qcDeploymentMetadata() row
+  metadata = my_deployments_row                            # optional: a checkDeploymentMetadata() row
 )
 ```
 
@@ -302,7 +302,7 @@ each deployment is written to disk instead of being kept in memory, and the func
 ```{r at-scale}
 paths <- importTagData(
   data.folders = list.dirs("tags", recursive = FALSE),
-  id.metadata  = meta,
+  metadata  = meta,
   columns      = cols,
   return.data  = FALSE,
   output.dir   = "processed"

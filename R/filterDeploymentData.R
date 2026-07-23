@@ -114,7 +114,7 @@
 #' @seealso \link{importTagData}, \link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
 #' @examples
 #' \dontrun{
-#' imported <- importTagData(folders, id.metadata = meta)
+#' imported <- importTagData(folders, metadata = meta)
 #' # Trim each record to the on-animal window detected from the depth trace:
 #' deployed <- filterDeploymentData(imported,
 #'                                  depth.threshold      = 3.5,

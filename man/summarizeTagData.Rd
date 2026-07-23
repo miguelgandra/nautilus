@@ -26,11 +26,11 @@ external per-deployment metric, e.g. total video duration from \link{getVideoMet
 \verb{v <- aggregate(duration ~ ID, getVideoMetadata(...), sum); v$duration <- v$duration / 3600} and
 pass \code{v} (renamed) as a covariate. Default \code{NULL}.}
 
-\item{deployments}{Optional \code{nautilus_deployments} object from \link{qcDeploymentMetadata}. When
+\item{deployments}{Optional \code{nautilus_deployments} object from \link{checkDeploymentMetadata}. When
 supplied, the summary is completed into the full study roster: every deployment in \code{deployments}
 gets a row, and a \code{status} column marks each as \code{"included"} (processed data present, full metrics)
 or \code{"excluded"} (in the roster but absent from \code{data} - NA metrics, identity filled from the
-roster). The reason for exclusion is not inferred here; see \link{qcIssues}. Default \code{NULL}.}
+roster). The reason for exclusion is not inferred here; see \link{issues}. Default \code{NULL}.}
 
 \item{error.stat}{Error statistic for the display-only population row: \code{"sd"} (standard deviation,
 default) or \code{"se"} (standard error).}

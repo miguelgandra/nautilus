@@ -140,7 +140,7 @@
 #'     and \code{message}.
 #' }
 #'
-#' @seealso \link{checkSensorQuality}, \link{qcDeploymentMetadata}, \link{checkTagMapping}.
+#' @seealso \link{checkSensorQuality}, \link{checkDeploymentMetadata}, \link{checkTagMapping}.
 #' @examples
 #' \dontrun{
 #' regularized <- regularizeTimeSeries(filtered)

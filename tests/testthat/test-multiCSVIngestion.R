@@ -30,7 +30,7 @@
   invisible(capture.output(suppressWarnings(suppressMessages(
     res <- importTagData(
       data.folders = file.path(root, "ID_01"),
-      import.mapping = .mp, id.metadata = .md(),
+      import.mapping = .mp, metadata = .md(),
       columns = metadataColumns(deploy_datetime = "deploy_date"), return.data = TRUE,
       verbose = FALSE)
   ))))

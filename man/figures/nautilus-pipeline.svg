@@ -18,7 +18,7 @@
   <!-- spine band 1 -->
   <rect x="70" y="124" width="860" height="60" rx="8" fill="#ffffff" stroke="#9db8c9" stroke-width="1.5"/>
   <text x="90" y="147" font-size="11" font-weight="700" letter-spacing="1.2" fill="#2c6b8f">1 &#183; PREPARE &amp; IMPORT</text>
-  <text x="90" y="169" font-size="11.5" font-family="'SF Mono', Menlo, Consolas, monospace" fill="#2b3d49">qcDeploymentMetadata()  -&gt;  importTagData()</text>
+  <text x="90" y="169" font-size="11.5" font-family="'SF Mono', Menlo, Consolas, monospace" fill="#2b3d49">checkDeploymentMetadata()  -&gt;  importTagData()</text>
   <text x="912" y="147" text-anchor="end" font-size="10.5" font-style="italic" fill="#6b7d88">check the deployment sheet, then read</text>
   <text x="912" y="163" text-anchor="end" font-size="10.5" font-style="italic" fill="#6b7d88">sensors, video and co-deployed tags</text>
   <line x1="500" y1="184" x2="500" y2="200" stroke="#5a7c93" stroke-width="2" marker-end="url(#arrow)"/>

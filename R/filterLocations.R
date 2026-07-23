@@ -55,12 +55,12 @@
 #' @param data A `nautilus_tag`/data.frame, a (named) list of them, or a character vector of `.rds`
 #'   file paths - the output of \code{\link{importTagData}} (or any later step). A single aggregated
 #'   data.frame is split by `id.col`. File paths are loaded one at a time to save memory.
-#' @param id.metadata Optional deployment-metadata table (one row per deployment) supplying the reference
+#' @param metadata Optional deployment-metadata table (one row per deployment) supplying the reference
 #'   deployment coordinates for the distance check and the diagnostic map. If `NULL` (default), the
 #'   coordinates stored in each tag's metadata (`meta$deployment`, populated at import) are used. When
 #'   both are present they are cross-checked and a disagreement is warned about.
 #' @param id.col Character. Name of the ID column, used to split a single data.frame and to match rows in
-#'   `id.metadata`. Default "ID".
+#'   `metadata`. Default "ID".
 #' @param datetime.col Character. Name of the POSIXct datetime column of the sensor data (used only for
 #'   labelling; the position fixes carry their own timestamps). Default "datetime".
 #' @param max.speed.kmh Numeric. Maximum plausible sustained speed (km/h) between consecutive fixes for
@@ -74,7 +74,7 @@
 #'   speed test (minimum time separation, iteration cap, optional direction-reversal spike test). `NULL`
 #'   (default) uses the defaults.
 #' @param deploy.lon.col,deploy.lat.col Character. Names of the deployment longitude/latitude columns in
-#'   `id.metadata`. Defaults "deploy_lon" / "deploy_lat". Ignored when `id.metadata` is `NULL`.
+#'   `metadata`. Defaults "deploy_lon" / "deploy_lat". Ignored when `metadata` is `NULL`.
 #' @param plot Logical. Draw the diagnostic map (one page per individual with removed fixes) to the active
 #'   graphics device. Default `FALSE`.
 #' @param plot.file Character. Path to a single multi-page PDF for the diagnostic maps. The parent
@@ -105,7 +105,7 @@
 #'   \code{\link{reconstructTrack}}, \code{\link{crossValidateTrack}}.
 #' @examples
 #' \dontrun{
-#' imported <- importTagData(folders, id.metadata = meta)
+#' imported <- importTagData(folders, metadata = meta)
 #' # Location QC: drop Fastloc fixes implying > 8 km/h to both neighbours or from < 4 satellites
 #' cleaned <- filterLocations(imported,
 #'                            max.speed.kmh  = 8,
@@ -116,7 +116,7 @@
 
 
 filterLocations <- function(data,
-                            id.metadata = NULL,
+                            metadata = NULL,
                             id.col = "ID",
                             datetime.col = "datetime",
                             max.speed.kmh = NULL,
@@ -177,10 +177,10 @@ filterLocations <- function(data,
              "i" = "Install it with {.code install.packages(\"geosphere\")}, or leave {.arg max.speed.kmh} and {.arg max.distance.km} as {.code NULL}."))
   }
 
-  # validate id.metadata if supplied (deployment coordinates for the distance check / map anchor)
-  if (!is.null(id.metadata)) {
-    .assert_columns(id.metadata, c(id.col, deploy.lon.col, deploy.lat.col), "id.metadata")
-    id.metadata <- as.data.frame(id.metadata)
+  # validate metadata if supplied (deployment coordinates for the distance check / map anchor)
+  if (!is.null(metadata)) {
+    .assert_columns(metadata, c(id.col, deploy.lon.col, deploy.lat.col), "metadata")
+    metadata <- as.data.frame(metadata)
   }
 
   make_plots <- plot || !is.null(plot.file)
@@ -243,8 +243,8 @@ filterLocations <- function(data,
     # only the automatically-acquired fixes may be removed; User fixes are trusted anchors
     removable <- pos$type %in% c("FastGPS", "Argos") & !is.na(pos$lon) & !is.na(pos$lat)
 
-    # resolve the reference deployment position (id.metadata -> meta$deployment -> first User fix)
-    deploy <- .resolveDeployPosition(meta, id.metadata, id, id.col, deploy.lon.col, deploy.lat.col, pos, lvl)
+    # resolve the reference deployment position (metadata -> meta$deployment -> first User fix)
+    deploy <- .resolveDeployPosition(meta, metadata, id, id.col, deploy.lon.col, deploy.lat.col, pos, lvl)
 
     # per-fix outcome, filled as the checks run (""=kept)
     reason <- rep(NA_character_, n_fix)               # NA while retained; set to the removing check
@@ -377,13 +377,13 @@ filterLocations <- function(data,
 #######################################################################################################
 
 # The reference deployment coordinate used by the distance check and the diagnostic map. Resolution
-# order: an explicit `id.metadata` row (deploy.lon.col / deploy.lat.col), then the tag's own metadata
-# (meta$deployment, populated at import), then the first "User" fix. When both id.metadata and
+# order: an explicit `metadata` row (deploy.lon.col / deploy.lat.col), then the tag's own metadata
+# (meta$deployment, populated at import), then the first "User" fix. When both metadata and
 # meta$deployment are present they are cross-checked and a disagreement over 1 km is warned about.
 # Returns list(lon, lat, source) or NULL when no reference is available.
 #' @keywords internal
 #' @noRd
-.resolveDeployPosition <- function(meta, id.metadata, id, id.col, deploy.lon.col, deploy.lat.col, pos, lvl) {
+.resolveDeployPosition <- function(meta, metadata, id, id.col, deploy.lon.col, deploy.lat.col, pos, lvl) {
 
   from_meta <- NULL
   dep <- meta$deployment
@@ -392,11 +392,11 @@ filterLocations <- function(data,
   }
 
   from_md <- NULL
-  if (!is.null(id.metadata)) {
-    row <- id.metadata[as.character(id.metadata[[id.col]]) == as.character(id), , drop = FALSE]
+  if (!is.null(metadata)) {
+    row <- metadata[as.character(metadata[[id.col]]) == as.character(id), , drop = FALSE]
     if (nrow(row) > 0) {
       dl <- .asNumericSafe(row[[deploy.lon.col]][1]); da <- .asNumericSafe(row[[deploy.lat.col]][1])
-      if (!is.na(dl) && !is.na(da)) from_md <- list(lon = dl, lat = da, source = "id.metadata")
+      if (!is.na(dl) && !is.na(da)) from_md <- list(lon = dl, lat = da, source = "metadata")
     }
   }
 
@@ -404,7 +404,7 @@ filterLocations <- function(data,
   if (!is.null(from_md) && !is.null(from_meta) && requireNamespace("geosphere", quietly = TRUE)) {
     dkm <- geosphere::distGeo(c(from_md$lon, from_md$lat), c(from_meta$lon, from_meta$lat)) / 1000
     if (is.finite(dkm) && dkm > 1) {
-      cli::cli_warn("{id}: deployment position from id.metadata differs from the tag metadata by {sprintf('%.1f', dkm)} km.")
+      cli::cli_warn("{id}: deployment position from metadata differs from the tag metadata by {sprintf('%.1f', dkm)} km.")
     }
   }
 

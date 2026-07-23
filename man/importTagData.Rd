@@ -12,7 +12,7 @@ importTagData(
   timezone = "UTC",
   import.mapping = NULL,
   required.sensors = NULL,
-  id.metadata,
+  metadata,
   columns = metadataColumns(),
   return.data = TRUE,
   output.dir = NULL,
@@ -95,15 +95,15 @@ require depth for dive analysis, or a full IMU), pass their names, e.g.
 \code{ax}, \code{ay}, \code{az}, \code{gx}, \code{gy}, \code{gz}, \code{mx}, \code{my}, \code{mz}, \code{depth}, \code{temp}, \code{paddle_speed},
 \code{paddle_freq}. Note that downstream analyses may still require particular sensors.}
 
-\item{id.metadata}{Data frame. Metadata about the IDs to associate with the processed data.
+\item{metadata}{Data frame. Metadata about the IDs to associate with the processed data.
 Must contain at least columns for ID, tag model, and deployment date/longitude/latitude (see \code{columns}).
-Preferably a \code{nautilus_deployments} object returned by \code{\link{qcDeploymentMetadata}}: it
+Preferably a \code{nautilus_deployments} object returned by \code{\link{checkDeploymentMetadata}}: it
 carries its own column schema (so \code{columns} is not needed) and a QC verdict that is reported in the
 header and rejected if it failed. If a plain data.frame is supplied instead, the same metadata checks
 are run inline as a guard, and blocking errors abort the import before the long read.}
 
 \item{columns}{A column-mapping schema built with \code{\link{metadataColumns}}, describing which
-columns of \code{id.metadata} hold each piece of deployment information (ID, tag model/type,
+columns of \code{metadata} hold each piece of deployment information (ID, tag model/type,
 deployment and pop-up datetime/longitude/latitude, package ID, paddle wheel, attachment site).
 Fields default to the canonical nautilus names, so metadata that already uses those names needs
 no configuration; override only the columns that differ, e.g.
@@ -221,11 +221,11 @@ For optimal performance with very large datasets, consider:
 \examples{
 \dontrun{
 # QC the deployment metadata first, then feed it straight to the import:
-meta <- qcDeploymentMetadata(raw_metadata, columns = metadataColumns())
+meta <- checkDeploymentMetadata(raw_metadata, columns = metadataColumns())
 imported <- importTagData(
   data.folders        = list.dirs("./tags", recursive = FALSE),
   sensor.subdirectory = "CMD",
-  id.metadata         = meta,
+  metadata         = meta,
   timezone            = "UTC")
 }
 }

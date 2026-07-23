@@ -6,7 +6,7 @@
 \usage{
 filterLocations(
   data,
-  id.metadata = NULL,
+  metadata = NULL,
   id.col = "ID",
   datetime.col = "datetime",
   max.speed.kmh = NULL,
@@ -29,13 +29,13 @@ filterLocations(
 file paths - the output of \code{\link{importTagData}} (or any later step). A single aggregated
 data.frame is split by \code{id.col}. File paths are loaded one at a time to save memory.}
 
-\item{id.metadata}{Optional deployment-metadata table (one row per deployment) supplying the reference
+\item{metadata}{Optional deployment-metadata table (one row per deployment) supplying the reference
 deployment coordinates for the distance check and the diagnostic map. If \code{NULL} (default), the
 coordinates stored in each tag's metadata (\code{meta$deployment}, populated at import) are used. When
 both are present they are cross-checked and a disagreement is warned about.}
 
 \item{id.col}{Character. Name of the ID column, used to split a single data.frame and to match rows in
-\code{id.metadata}. Default "ID".}
+\code{metadata}. Default "ID".}
 
 \item{datetime.col}{Character. Name of the POSIXct datetime column of the sensor data (used only for
 labelling; the position fixes carry their own timestamps). Default "datetime".}
@@ -55,7 +55,7 @@ speed test (minimum time separation, iteration cap, optional direction-reversal 
 (default) uses the defaults.}
 
 \item{deploy.lon.col, deploy.lat.col}{Character. Names of the deployment longitude/latitude columns in
-\code{id.metadata}. Defaults "deploy_lon" / "deploy_lat". Ignored when \code{id.metadata} is \code{NULL}.}
+\code{metadata}. Defaults "deploy_lon" / "deploy_lat". Ignored when \code{metadata} is \code{NULL}.}
 
 \item{plot}{Logical. Draw the diagnostic map (one page per individual with removed fixes) to the active
 graphics device. Default \code{FALSE}.}
@@ -136,7 +136,7 @@ chronological path through the retained fixes, and the deployment anchors, for v
 }
 \examples{
 \dontrun{
-imported <- importTagData(folders, id.metadata = meta)
+imported <- importTagData(folders, metadata = meta)
 # Location QC: drop Fastloc fixes implying > 8 km/h to both neighbours or from < 4 satellites
 cleaned <- filterLocations(imported,
                            max.speed.kmh  = 8,

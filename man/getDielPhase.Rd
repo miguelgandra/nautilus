@@ -4,14 +4,14 @@
 \alias{getDielPhase}
 \title{Estimate diel phase}
 \usage{
-getDielPhase(datetimes, coordinates, phases = 2, solar.depth = 18)
+getDielPhase(datetimes, coords, phases = 2, solar.depth = 18)
 }
 \arguments{
 \item{datetimes}{A POSIXct object containing the respective datetimes or time-bins.}
 
-\item{coordinates}{A SpatialPoints, matrix, or data frame object containing geographic (unprojected)
+\item{coords}{A SpatialPoints, matrix, or data frame object containing geographic (unprojected)
 longitude and latitude coordinates (in that order) for which to estimate sunrise and sunset times.
-If a single point or a matrix/data frame with one row is provided, the same coordinates
+If a single point or a matrix/data frame with one row is provided, the same coords
 will be used for all calculations.}
 
 \item{phases}{Integer indicating the number of diel phases to return (2, 3, or 4).}
@@ -24,7 +24,7 @@ when \code{phases > 2}.}
 A factor indicating the diel phase.
 }
 \description{
-Function to retrieve diel phase (e.g. day/night) for given datetimes and coordinates.\cr
+Function to retrieve diel phase (e.g. day/night) for given datetimes and coords.\cr
 
 The number of retrieved levels can be set by the 'phases' argument:\cr
 • phases=2:  day | night\cr
@@ -39,7 +39,7 @@ Crepuscular periods can be defined based on different solar elevation angles:\cr
 \examples{
 \dontrun{
 datetimes <- as.POSIXct("2024-05-30 12:00:00")
-coordinates <- c(-7.997, 37.008)
-getDielPhase(datetimes, coordinates, phases=4, solar.depth=12)
+coords <- c(-7.997, 37.008)
+getDielPhase(datetimes, coords, phases=4, solar.depth=12)
 }
 }

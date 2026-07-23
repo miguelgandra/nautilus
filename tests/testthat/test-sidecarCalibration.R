@@ -108,7 +108,7 @@ test_that("importTagData attaches the calibration attribute from a sibling .txt"
     res <- NULL
     invisible(capture.output(suppressWarnings(suppressMessages(
       res <- importTagData(file.path(root, "ID_01"), import.mapping = mp,
-                           id.metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
+                           metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
                            return.data = TRUE, verbose = FALSE,
                            import.calibration = import.calibration)))))
     res[["ID_01"]]
@@ -146,7 +146,7 @@ test_that("sidecar sample rate is not persisted in calibration metadata (inferre
   res <- NULL
   invisible(capture.output(suppressWarnings(suppressMessages(
     res <- importTagData(file.path(root, "ID_01"), import.mapping = mp,
-                         id.metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
+                         metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
                          return.data = TRUE, verbose = FALSE)))))
   cal <- nautilus:::.getMeta(res[["ID_01"]])$calibration
   expect_false(is.null(cal))               # the sidecar was paired and stored
@@ -188,7 +188,7 @@ test_that("a sidecar utc_offset disagreeing with `timezone` warns and is recorde
     res <- NULL
     invisible(capture.output(
       res <- importTagData(file.path(root, "ID_01"), import.mapping = mp,
-                           id.metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
+                           metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
                            return.data = TRUE, verbose = FALSE, timezone = timezone)))
     res[["ID_01"]]
   }

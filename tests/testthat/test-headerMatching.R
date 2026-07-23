@@ -70,7 +70,7 @@ test_that("importTagData matches real CATS camera headers via default mappings (
     res <- importTagData(
       data.folders = file.path(root, "ID_01"),
       import.mapping = NULL,   # exercise DEFAULT mappings
-      id.metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
+      metadata = meta, columns = metadataColumns(deploy_datetime = "deploy_date"),
       return.data = TRUE, verbose = FALSE
     )
   ))))

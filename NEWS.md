@@ -6,7 +6,7 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Deployment metadata and import
 
-* `qcDeploymentMetadata()` validates and normalises the deployment table before import, with
+* `checkDeploymentMetadata()` validates and normalises the deployment table before import, with
   `metadataColumns()` mapping arbitrary column names onto canonical roles and `updateBiometrics()`
   attaching passive animal traits.
 * `importTagData()` reads each animal's multi-sensor CSVs, standardises sensor names and units, folds
@@ -85,7 +85,7 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Summaries and plots
 
-* `summarizeTagData()`, `processingSummary()` and `qcIssues()` provide per-deployment overviews.
+* `summarizeTagData()`, `processingSummary()` and `issues()` provide per-deployment overviews.
 * `plotDepthProfiles()`, `plotTimeAtDepth()`, `plotDistributions()`, `plotDives()`, `plotTracks()` and
   the shared `plotTheme()` render the main diagnostic and result figures.
 

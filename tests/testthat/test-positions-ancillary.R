@@ -76,7 +76,7 @@ test_that("filterLocations filters bad fixes, writes back ancillary, preserves o
   tag <- nautilus:::new_nautilus_tag(d, m)
   fl <- NULL
   invisible(capture.output(suppressWarnings(suppressMessages(
-    fl <- filterLocations(list(A = tag), id.metadata = data.frame(ID = "A", deploy_lon = -25.1, deploy_lat = 38.1),
+    fl <- filterLocations(list(A = tag), metadata = data.frame(ID = "A", deploy_lon = -25.1, deploy_lat = 38.1),
                           max.distance.km = 100, plot = FALSE)))))
   after <- nautilus:::.tagPositions(fl[["A"]])
   expect_equal(nrow(after), 3L)                                    # far fix dropped, 3 kept

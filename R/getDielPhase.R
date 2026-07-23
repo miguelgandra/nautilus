@@ -4,7 +4,7 @@
 
 #' Estimate diel phase
 #'
-#' @description Function to retrieve diel phase (e.g. day/night) for given datetimes and coordinates.\cr
+#' @description Function to retrieve diel phase (e.g. day/night) for given datetimes and coords.\cr
 #'
 #' The number of retrieved levels can be set by the 'phases' argument:\cr
 #'  • phases=2:  day | night\cr
@@ -17,9 +17,9 @@
 #'  • solar.depth=18: astronomical twilight\cr
 #'
 #' @param datetimes A POSIXct object containing the respective datetimes or time-bins.
-#' @param coordinates A SpatialPoints, matrix, or data frame object containing geographic (unprojected)
+#' @param coords A SpatialPoints, matrix, or data frame object containing geographic (unprojected)
 #' longitude and latitude coordinates (in that order) for which to estimate sunrise and sunset times.
-#' If a single point or a matrix/data frame with one row is provided, the same coordinates
+#' If a single point or a matrix/data frame with one row is provided, the same coords
 #' will be used for all calculations.
 #' @param phases Integer indicating the number of diel phases to return (2, 3, or 4).
 #' @param solar.depth Numeric value indicating the angle of the sun below the horizon (in degrees) that
@@ -30,14 +30,14 @@
 #' @examples
 #' \dontrun{
 #' datetimes <- as.POSIXct("2024-05-30 12:00:00")
-#' coordinates <- c(-7.997, 37.008)
-#' getDielPhase(datetimes, coordinates, phases=4, solar.depth=12)
+#' coords <- c(-7.997, 37.008)
+#' getDielPhase(datetimes, coords, phases=4, solar.depth=12)
 #' }
 #' @export
 
 
 getDielPhase <- function(datetimes,
-                         coordinates,
+                         coords,
                          phases = 2,
                          solar.depth = 18) {
 
@@ -49,8 +49,8 @@ getDielPhase <- function(datetimes,
   errors <- c()
   if(!inherits(datetimes, "POSIXct")) errors <- c(errors, "Datetimes must be provided in POSIXct format.")
   if(!phases %in% c(2,3,4)) errors <- c(errors, "Number of phases should be between 2, 3 and 4")
-  if(!inherits(coordinates, c("SpatialPoints", "matrix", "data.frame"))) errors <- c(errors, "Coordinates must be a SpatialPoints, matrix, or data frame object")
-  if(is.data.frame(coordinates) && ncol(coordinates)!=2) errors <- c(errors, "Coordinates data.frame must contain 2 columns (longitude and latitude)")
+  if(!inherits(coords, c("SpatialPoints", "matrix", "data.frame"))) errors <- c(errors, "Coordinates must be a SpatialPoints, matrix, or data frame object")
+  if(is.data.frame(coords) && ncol(coords)!=2) errors <- c(errors, "Coordinates data.frame must contain 2 columns (longitude and latitude)")
   # print errors if any
   if(length(errors)>0){
     stop_message <- sapply(errors, function(x) paste(strwrap(x, width=getOption("width")), collapse="\n"))
@@ -59,23 +59,23 @@ getDielPhase <- function(datetimes,
   }
 
   # convert SpatialPoints or data frame to matrix if necessary
-  if(inherits(coordinates, "SpatialPoints")) {
-    coordinates <- coordinates@coords
-  }else if (is.data.frame(coordinates)) {
-    coordinates <- as.matrix(coordinates)
+  if(inherits(coords, "SpatialPoints")) {
+    coords <- coords@coords
+  }else if (is.data.frame(coords)) {
+    coords <- as.matrix(coords)
   }
 
   # if only one row is supplied, repeat it for all datetimes values
-  if (nrow(coordinates)==1) coordinates <- matrix(rep(coordinates, length(datetimes)), ncol=2, byrow=TRUE)
+  if (nrow(coords)==1) coords <- matrix(rep(coords, length(datetimes)), ncol=2, byrow=TRUE)
 
-  # validate length of coordinates against length of datetimes
-  if (nrow(coordinates) != length(datetimes)) {
-    stop("Length of coordinates must be either 1 or equal to the length of datetimes", call.=FALSE)
+  # validate length of coords against length of datetimes
+  if (nrow(coords) != length(datetimes)) {
+    stop("Length of coords must be either 1 or equal to the length of datetimes", call.=FALSE)
   }
 
-  # calculate sunrise and sunset times for the given coordinates (columns: longitude, latitude)
-  coordinates <- matrix(coordinates, ncol=2)
-  lon <- coordinates[, 1]; lat <- coordinates[, 2]
+  # calculate sunrise and sunset times for the given coords (columns: longitude, latitude)
+  coords <- matrix(coords, ncol=2)
+  lon <- coords[, 1]; lat <- coords[, 2]
   sunrise <- .solarEventTime(lon, lat, datetimes, solarDep = 0.833, morning = TRUE)
   sunset  <- .solarEventTime(lon, lat, datetimes, solarDep = 0.833, morning = FALSE)
 

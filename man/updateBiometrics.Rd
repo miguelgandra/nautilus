@@ -6,7 +6,7 @@
 \usage{
 updateBiometrics(
   data,
-  id.metadata,
+  metadata,
   columns = metadataColumns(),
   id.col = "ID",
   return.data = TRUE,
@@ -20,7 +20,7 @@ updateBiometrics(
 \item{data}{A \code{nautilus_tag} / data.frame, a (named) list of them, or a character vector of \code{.rds}
 paths (the output of any processing step).}
 
-\item{id.metadata}{The deployment-metadata table (a data.frame or a \code{nautilus_deployments} object),
+\item{metadata}{The deployment-metadata table (a data.frame or a \code{nautilus_deployments} object),
 one row per deployment, holding the trait columns and the id column.}
 
 \item{columns}{A \code{\link{metadataColumns}} object naming the id column (\code{id}) and the trait
@@ -59,10 +59,10 @@ objects stay the single source of truth while remaining correctable.
 \examples{
 \dontrun{
 # correct a trait in the deployment table, then re-stamp it onto processed data
-id.metadata <- data.frame(ID = c("shark01", "shark02"),
+metadata <- data.frame(ID = c("shark01", "shark02"),
                           sex = c("F", "M"), length_cm = c(612, 548))
 cols <- metadataColumns(id = "ID", traits = c("sex", "length_cm"))
-tags <- updateBiometrics(processed, id.metadata, columns = cols, id.col = "ID")
+tags <- updateBiometrics(processed, metadata, columns = cols, id.col = "ID")
 }
 }
 \seealso{

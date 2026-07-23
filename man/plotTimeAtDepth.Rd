@@ -7,7 +7,7 @@
 plotTimeAtDepth(
   data,
   variable = "depth",
-  group = NULL,
+  group.by = NULL,
   diel = FALSE,
   style = c("profile", "heatmap"),
   bin.width = NULL,
@@ -16,7 +16,7 @@ plotTimeAtDepth(
   gap.factor = 3,
   order.by = c("id", "input", "median"),
   same.scale = TRUE,
-  coordinates = NULL,
+  coords = NULL,
   theme = plotTheme(),
   plot = TRUE,
   plot.file = NULL,
@@ -30,12 +30,12 @@ plotTimeAtDepth(
 
 \item{variable}{Character. \code{"depth"} (default), \code{"temp"}, or \code{c("depth","temp")} for both.}
 
-\item{group}{Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
+\item{group.by}{Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
 at import via \link{metadataColumns}), a named \code{id -> group} vector, or a two-column
 \code{data.frame(id, group)}. \code{NULL} (default) pools all individuals into one profile.}
 
 \item{diel}{Logical. Split each bin into night vs day back-to-back bars (needs coordinates; see
-\code{coordinates}). Default \code{FALSE}. Ignored by \code{style = "heatmap"}.}
+\code{coords}). Default \code{FALSE}. Ignored by \code{style = "heatmap"}.}
 
 \item{style}{\code{"profile"} (default) or \code{"heatmap"} (a deployment x bin heatmap - compact for many
 individuals).}
@@ -55,7 +55,7 @@ comparable across group facets (the comparison the faceting exists to support). 
 flatter than the others - at the cost of equal-length bars meaning different values. Depth and
 temperature always keep separate scales.}
 
-\item{coordinates}{For \code{diel}: a \code{c(lon, lat)}, a named \code{id -> c(lon,lat)} list, or a
+\item{coords}{For \code{diel}: a \code{c(lon, lat)}, a named \code{id -> c(lon,lat)} list, or a
 \code{data.frame(id, lon, lat)}. If \code{NULL}, longitude/latitude are read from the data or tag metadata.}
 
 \item{theme}{A \link{plotTheme} object (or a list of overrides) controlling the visual style.}
@@ -83,7 +83,7 @@ scalar min / mean / max of \link{summarizeTagData} and the raw traces of \link{p
 One composable geometry covers the common needs, so the API stays small:
 \itemize{
 \item \strong{variable} - \code{"depth"}, \code{"temp"}, or both (\code{c("depth","temp")}) side by side.
-\item \strong{group} - split the cohort by a metadata factor (species, sex, ...); each group becomes
+\item \strong{group.by} - split the cohort by a metadata factor (species, sex, ...); each group becomes
 a faceted panel of the group mean +/- SE across its individuals. \code{NULL} pools all individuals.
 \item \strong{diel} - \code{TRUE} mirrors each bin into night (left) vs day (right) back-to-back bars.
 }
@@ -98,7 +98,7 @@ The look is set by a shared \link{plotTheme} object.
 \dontrun{
 files <- list.files("./processed", full.names = TRUE)
 plotTimeAtDepth(files, variable = c("depth", "temp"), diel = TRUE)          # ref: pooled mirrored
-plotTimeAtDepth(files, group = "species", plot.file = "./plots/tad.pdf")    # faceted by species
+plotTimeAtDepth(files, group.by = "species", plot.file = "./plots/tad.pdf")    # faceted by species
 }
 }
 \seealso{

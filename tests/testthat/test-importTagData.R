@@ -51,7 +51,7 @@ test_that("importTagData imports a folder with default arguments (I1 regression)
     res <- importTagData(
       data.folders = file.path(root, "ID_01"),
       import.mapping = .mapping,
-      id.metadata = .meta("ID_01"),
+      metadata = .meta("ID_01"),
       columns = metadataColumns(deploy_datetime = "deploy_date"),
       return.data = TRUE, verbose = FALSE
     )
@@ -74,7 +74,7 @@ test_that("importTagData carries declared traits into meta$biometrics (import-an
   md <- cbind(.meta("ID_01"), sex = "F", length = 8.2, species = "R. typus", stringsAsFactors = FALSE)
   res <- NULL
   invisible(capture.output(
-    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = md,
+    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, metadata = md,
                          columns = metadataColumns(deploy_datetime = "deploy_date", traits = c("sex", "length", "species")),
                          return.data = TRUE, verbose = FALSE)))
   bio <- nautilus:::.getMeta(res[["ID_01"]])$biometrics
@@ -83,10 +83,10 @@ test_that("importTagData carries declared traits into meta$biometrics (import-an
   expect_equal(bio$species, "R. typus")
 })
 
-test_that("importTagData errors when a declared trait column is missing from id.metadata", {
+test_that("importTagData errors when a declared trait column is missing from metadata", {
   root <- .make_fixture("ID_01"); on.exit(unlink(root, recursive = TRUE), add = TRUE)
   expect_error(suppressMessages(importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
-    id.metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date", traits = "sex"),
+    metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date", traits = "sex"),
     return.data = TRUE, verbose = FALSE)), "sex", ignore.case = TRUE)
 })
 
@@ -95,12 +95,12 @@ test_that("traits survive the qc -> nautilus_deployments -> importTagData path (
   # multi-trait vector and renamed a single trait column to "traits", losing the name)
   root <- .make_fixture("ID_01"); on.exit(unlink(root, recursive = TRUE), add = TRUE)
   md  <- cbind(.meta("ID_01"), sex = factor("F", levels = c("F", "M")), length = 8.2)
-  dep <- suppressMessages(qcDeploymentMetadata(md, columns = metadataColumns(deploy_datetime = "deploy_date",
+  dep <- suppressMessages(checkDeploymentMetadata(md, columns = metadataColumns(deploy_datetime = "deploy_date",
                           traits = c("sex", "length")), verbose = FALSE))
   expect_true(all(c("sex", "length") %in% names(dep)))          # columns kept under their own names
   res <- NULL
   invisible(capture.output(res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
-    id.metadata = dep, return.data = TRUE, verbose = FALSE)))
+    metadata = dep, return.data = TRUE, verbose = FALSE)))
   bio <- nautilus:::.getMeta(res[["ID_01"]])$biometrics
   expect_equal(bio$sex, "F"); expect_true(is.character(bio$sex)); expect_equal(bio$length, 8.2)
 })
@@ -111,7 +111,7 @@ test_that("importTagData returns nautilus_tag objects with populated metadata", 
   res <- NULL
   invisible(capture.output(suppressWarnings(suppressMessages(
     res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
-                         id.metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date"),
+                         metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date"),
                          return.data = TRUE, verbose = FALSE)))))
   x <- res[["ID_01"]]
   expect_true(nautilus:::is_nautilus_tag(x))
@@ -130,7 +130,7 @@ test_that("importTagData is silent when verbose = FALSE", {
     res <- importTagData(
       data.folders = file.path(root, "ID_01"),
       import.mapping = .mapping,
-      id.metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date"),
+      metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date"),
       return.data = TRUE, verbose = FALSE
     )
   )))
@@ -144,7 +144,7 @@ test_that("importTagData imports raw (no axis transform) and reads attachment.si
 
   res <- NULL
   invisible(capture.output(suppressWarnings(suppressMessages(
-    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = meta,
+    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, metadata = meta,
                          columns = metadataColumns(deploy_datetime = "deploy_date", tag_type = "type",
                                                attachment_site = "site"),
                          return.data = TRUE, verbose = FALSE)))))
@@ -164,7 +164,7 @@ test_that("importTagData drops the correct elements when >= 2 folders are skippe
       res <- importTagData(
         data.folders = folders,
         import.mapping = .mapping,
-        id.metadata = .meta(c("ID_01", "ID_02", "ID_03", "ID_04")),
+        metadata = .meta(c("ID_01", "ID_02", "ID_03", "ID_04")),
         columns = metadataColumns(deploy_datetime = "deploy_date"),
         return.data = TRUE, verbose = FALSE
       )
@@ -184,7 +184,7 @@ test_that("compress controls saved-file size and validates input; default writes
 
   imp <- function(...) invisible(capture.output(suppressWarnings(suppressMessages(
     importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
-                  id.metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date"),
+                  metadata = .meta("ID_01"), columns = metadataColumns(deploy_datetime = "deploy_date"),
                   return.data = FALSE, output.dir = out_dir, verbose = FALSE, ...)))))
 
   imp(compress = FALSE, output.suffix = "_u")
@@ -196,7 +196,7 @@ test_that("compress controls saved-file size and validates input; default writes
   expect_equal(nrow(readRDS(fu)), nrow(readRDS(fz)))    # identical content either way
 
   expect_error(
-    importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
+    importTagData(file.path(root, "ID_01"), import.mapping = .mapping, metadata = .meta("ID_01"),
                   columns = metadataColumns(deploy_datetime = "deploy_date"),
                   output.dir = out_dir, compress = "lz4", verbose = FALSE),
     "compress")
@@ -211,7 +211,7 @@ test_that("verbose = 2 adds per-individual sub-headers + grouped detail; tally s
   # cli_fmt() captures cli output reliably; plain capture.output() does not once testthat
   # is managing the output streams.
   grab <- function(v) paste(cli::cli_fmt(suppressWarnings(
-    importTagData(folders, import.mapping = .mapping, id.metadata = meta,
+    importTagData(folders, import.mapping = .mapping, metadata = meta,
                   columns = metadataColumns(deploy_datetime = "deploy_date"),
                   return.data = TRUE, verbose = v))), collapse = "\n")
 
@@ -300,7 +300,7 @@ test_that(".buildFileMapping reports no temperature when none is present (temp_s
   withCallingHandlers(
     invisible(capture.output(suppressMessages(
       out <- importTagData(file.path(root, id), import.mapping = mapping,
-                           id.metadata = .meta(id), columns = metadataColumns(deploy_datetime = "deploy_date"),
+                           metadata = .meta(id), columns = metadataColumns(deploy_datetime = "deploy_date"),
                            return.data = TRUE, verbose = FALSE)))),
     warning = function(wn) { w <<- c(w, conditionMessage(wn)); invokeRestart("muffleWarning") })
   list(data = out[[id]], warnings = w)
@@ -340,7 +340,7 @@ test_that("at verbose >= 1 issues are cli-only (inline + tally, no base-R warnin
   msgs <- character(0)
   txt <- paste(cli::cli_fmt(withCallingHandlers(
     suppressMessages(importTagData(file.path(root, "ID_T1"), import.mapping = .temp_user_map,
- id.metadata = .meta("ID_T1"),
+ metadata = .meta("ID_T1"),
                                    columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    return.data = TRUE, verbose = 2)),
     warning = function(w) { msgs <<- c(msgs, conditionMessage(w)); invokeRestart("muffleWarning") })),
@@ -350,16 +350,16 @@ test_that("at verbose >= 1 issues are cli-only (inline + tally, no base-R warnin
   expect_length(msgs, 0)                                                            # no base-R warnings
 })
 
-test_that("a folder absent from id.metadata is a hard abort", {
+test_that("a folder absent from metadata is a hard abort", {
   root <- .make_fixture("ID_01")                              # ID_01 valid (tag TestTag)
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   dir.create(file.path(root, "ID_X", "CMD"), recursive = TRUE, showWarnings = FALSE)  # exists, not in metadata
   expect_error(
     suppressWarnings(suppressMessages(importTagData(file.path(root, c("ID_01", "ID_X")), import.mapping = .mapping,
-                                     id.metadata = .meta("ID_01"),
+                                     metadata = .meta("ID_01"),
                                      columns = metadataColumns(deploy_datetime = "deploy_date"),
                                      return.data = TRUE, verbose = 0))),
-    "not found in")                                           # hard abort: ID_X absent from id.metadata
+    "not found in")                                           # hard abort: ID_X absent from metadata
 })
 
 
@@ -368,7 +368,7 @@ test_that("a folder absent from id.metadata is a hard abort", {
 test_that("importTagData consumes a QC'd nautilus_deployments directly (no columns arg)", {
   root <- .make_fixture("ID_01")
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
-  meta <- qcDeploymentMetadata(.meta("ID_01"),
+  meta <- checkDeploymentMetadata(.meta("ID_01"),
                                columns = metadataColumns(deploy_datetime = "deploy_date"),
                                verbose = 0)
   expect_s3_class(meta, "nautilus_deployments")
@@ -377,7 +377,7 @@ test_that("importTagData consumes a QC'd nautilus_deployments directly (no colum
   res <- NULL
   invisible(capture.output(
     res <- importTagData(data.folders = file.path(root, "ID_01"),
-                         import.mapping = .mapping, id.metadata = meta,
+                         import.mapping = .mapping, metadata = meta,
                          return.data = TRUE, verbose = FALSE)))
   expect_named(res, "ID_01")
   expect_equal(nrow(res[["ID_01"]]), 40)
@@ -387,12 +387,12 @@ test_that("importTagData rejects a FAILED nautilus_deployments before importing"
   root <- .make_fixture("ID_01")
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   bad <- .meta("ID_01"); bad$deploy_lon <- 200            # out-of-range -> QC error
-  meta <- suppressWarnings(qcDeploymentMetadata(bad,
+  meta <- suppressWarnings(checkDeploymentMetadata(bad,
             columns = metadataColumns(deploy_datetime = "deploy_date"), verbose = 0))
   expect_false(attr(meta, "nautilus.qc")$passed)
   expect_error(
     suppressWarnings(importTagData(data.folders = file.path(root, "ID_01"),
-                     import.mapping = .mapping, id.metadata = meta,
+                     import.mapping = .mapping, metadata = meta,
                      return.data = TRUE, verbose = FALSE)),
     "failed metadata QC")
 })
@@ -403,7 +403,7 @@ test_that("importTagData runs an inline QC guard on un-QC'd metadata and aborts 
   bad <- .meta("ID_01"); bad$deploy_lon <- 200            # out-of-range -> guard error
   expect_error(
     suppressWarnings(importTagData(data.folders = file.path(root, "ID_01"),
-                     import.mapping = .mapping, id.metadata = bad,
+                     import.mapping = .mapping, metadata = bad,
                      columns = metadataColumns(deploy_datetime = "deploy_date"),
                      return.data = TRUE, verbose = FALSE)),
     "Metadata QC")
@@ -416,7 +416,7 @@ test_that("importTagData drops channels listed in the exclude_sensors metadata c
   meta <- .meta("ID_01"); meta$bad <- "mag"
   res <- NULL
   invisible(capture.output(
-    res <- importTagData(data.folders = file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = meta,
+    res <- importTagData(data.folders = file.path(root, "ID_01"), import.mapping = .mapping, metadata = meta,
              columns = metadataColumns(deploy_datetime = "deploy_date", exclude_sensors = "bad"),
              return.data = TRUE, verbose = FALSE)))
   dt <- res[["ID_01"]]
@@ -434,7 +434,7 @@ test_that("importTagData carries axis_config onto the tag metadata", {
   meta <- .meta("ID_01"); meta$cfg <- "CATS Camera"
   res <- NULL
   invisible(capture.output(
-    res <- importTagData(data.folders = file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = meta,
+    res <- importTagData(data.folders = file.path(root, "ID_01"), import.mapping = .mapping, metadata = meta,
              columns = metadataColumns(deploy_datetime = "deploy_date", axis_config = "cfg"),
              return.data = TRUE, verbose = FALSE)))
   expect_equal(nautilus:::.getMeta(res[["ID_01"]])$tag$axis_config, "CATS Camera")
@@ -479,7 +479,7 @@ test_that("importTagData reads the WC 'Dry' archive into ancillary$dry", {
   # the aligner abstains and - since that abstention now reaches the consolidated issues - a deferred
   # warning is raised at verbose = 0. Expected here; the abstention itself is tested on its own below.
   invisible(capture.output(suppressWarnings(
-    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
+    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, metadata = .meta("ID_01"),
                          columns = metadataColumns(deploy_datetime = "deploy_date"),
                          wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE))))
   anc <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$dry
@@ -508,7 +508,7 @@ test_that("importTagData reads the complete WC Locations record into ancillary$p
   # the aligner abstains and - since that abstention now reaches the consolidated issues - a deferred
   # warning is raised at verbose = 0. Expected here; the abstention itself is tested on its own below.
   invisible(capture.output(suppressWarnings(
-    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
+    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping, metadata = .meta("ID_01"),
                          columns = metadataColumns(deploy_datetime = "deploy_date"),
                          wc.subdirectory = "WC", return.data = TRUE, verbose = FALSE))))
   pos <- nautilus:::.getMeta(res[["ID_01"]])$ancillary$positions
@@ -545,7 +545,7 @@ test_that(".wcSerial extracts the tag serial from the .wch filename; .fmtFixType
 
 test_that("importTagData fails loudly on empty input, not a silent empty import", {
   # (a) data.folders resolved to character(0) - the mistyped-list.files() pattern from the bug report
-  expect_error(importTagData(data.folders = character(0), id.metadata = .meta("ID_01"),
+  expect_error(importTagData(data.folders = character(0), metadata = .meta("ID_01"),
                              columns = metadataColumns(deploy_datetime = "deploy_date"), verbose = FALSE),
                "empty", ignore.case = TRUE)
 
@@ -555,7 +555,7 @@ test_that("importTagData fails loudly on empty input, not a silent empty import"
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
   expect_error(
     suppressWarnings(importTagData(data.folders = file.path(root, c("ID_01", "ID_02")),
-                                   import.mapping = .mapping, id.metadata = .meta(c("ID_01", "ID_02")),
+                                   import.mapping = .mapping, metadata = .meta(c("ID_01", "ID_02")),
                                    columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    return.data = TRUE, verbose = FALSE)),
     "No readable", ignore.case = TRUE)
@@ -566,7 +566,7 @@ test_that("importTagData fails loudly on empty input, not a silent empty import"
   expect_error(
     suppressWarnings(importTagData(data.folders = file.path(root2, c("ID_01", "ID_02")),
                                    sensor.subdirectory = "CMDX",             # typo -> no CSV found anywhere
-                                   import.mapping = .mapping, id.metadata = .meta(c("ID_01", "ID_02")),
+                                   import.mapping = .mapping, metadata = .meta(c("ID_01", "ID_02")),
                                    columns = metadataColumns(deploy_datetime = "deploy_date"),
                                    return.data = TRUE, verbose = FALSE)),
     "No readable", ignore.case = TRUE)
@@ -590,7 +590,7 @@ test_that("clock-alignment abstentions reach the final SUMMARY, not only the inl
 
   w <- character(0)
   invisible(capture.output(withCallingHandlers(
-    importTagData(file.path(root, "ID_01"), import.mapping = .mapping, id.metadata = .meta("ID_01"),
+    importTagData(file.path(root, "ID_01"), import.mapping = .mapping, metadata = .meta("ID_01"),
                   columns = metadataColumns(deploy_datetime = "deploy_date"),
                   wc.subdirectory = "WC", return.data = TRUE, verbose = 0),
     warning = function(cnd) { w <<- c(w, conditionMessage(cnd)); invokeRestart("muffleWarning") })))

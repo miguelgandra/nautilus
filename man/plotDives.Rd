@@ -8,7 +8,7 @@ plotDives(
   data,
   metrics = NULL,
   labels = NULL,
-  group = NULL,
+  group.by = NULL,
   order.by = c("id", "input", "median"),
   order.metric = NULL,
   trim = 0.95,
@@ -28,7 +28,7 @@ plotDives(
 
 \item{labels}{Named character mapping a metric to its axis label, overriding the built-in ones.}
 
-\item{group}{Grouping for the deployments: a column name (resolved from the table or the tag
+\item{group.by}{Grouping for the deployments: a column name (resolved from the table or the tag
 metadata), a named \code{id -> group} vector, or a two-column \code{data.frame}. \code{NULL} (default) draws one
 ungrouped block. Deployments the grouping does not cover are drawn in a trailing \code{(ungrouped)}
 block rather than dropped - see Details.}

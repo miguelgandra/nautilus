@@ -32,7 +32,7 @@
 #' \code{popup_lon}/\code{lat}/\code{datetime}, \code{tag_model}, \code{tag_type}, \code{package_id},
 #' \code{logger_id}, \code{axis_config}, \code{paddle_wheel}, \code{attachment_site},
 #' \code{deployment_type}). A single-row \code{nautilus_deployments} object from
-#' \code{\link{qcDeploymentMetadata}} is accepted directly (its columns already use these names). Columns
+#' \code{\link{checkDeploymentMetadata}} is accepted directly (its columns already use these names). Columns
 #' named in \code{traits} are carried through verbatim as passive biometric traits (into
 #' \code{meta$biometrics}). Anything not supplied stays \code{NA}; none of it is required to run the
 #' accelerometer pipeline.
@@ -68,7 +68,7 @@
 #' @return A validated \code{nautilus_tag} (a \code{data.table} carrying the consolidated \code{nautilus}
 #'   metadata), ready for \code{\link{processTagData}}.
 #' @seealso \code{\link{importTagData}}, \code{\link{processTagData}}, \code{\link{applyAxisMapping}},
-#'   \code{\link{qcDeploymentMetadata}}, \code{\link{metadataColumns}}
+#'   \code{\link{checkDeploymentMetadata}}, \code{\link{metadataColumns}}
 #' @examples
 #' # a minimal accelerometer-only tag from an in-memory data frame
 #' n  <- 6000

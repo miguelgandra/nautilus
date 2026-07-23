@@ -36,24 +36,24 @@
 #'   emitted (the channel headless callers can catch).
 #'
 #' @return A \code{nautilus_deployments} object: the normalised metadata table (a data.frame) with the
-#'   QC verdict and the issue table attached. Retrieve the issues with \code{\link{qcIssues}}. The
+#'   QC verdict and the issue table attached. Retrieve the issues with \code{\link{issues}}. The
 #'   function never \code{stop()}s on data problems - errors are reported and carried on the object so
 #'   you can inspect them; \code{importTagData} is what refuses to import on unresolved errors.
-#' @seealso \code{\link{metadataColumns}}, \code{\link{importTagData}}, \code{\link{qcIssues}}
+#' @seealso \code{\link{metadataColumns}}, \code{\link{importTagData}}, \code{\link{issues}}
 #' @examples
 #' \dontrun{
-#' meta <- qcDeploymentMetadata(
+#' meta <- checkDeploymentMetadata(
 #'   raw_metadata,
 #'   columns = metadataColumns(id = "id", tag_model = "tag", deploy_datetime = "dateTime",
 #'                             deploy_lon = "longitudeD", deploy_lat = "latitudeD",
 #'                             package_id = "PackageID", logger_id = "ID_CMD",
 #'                             recovery_datetime = "recoveryDate"))
-#' qcIssues(meta)                       # inspect the flagged records
-#' data <- importTagData(folders, id.metadata = meta)   # consumes the cleaned table directly
+#' issues(meta)                       # inspect the flagged records
+#' data <- importTagData(folders, metadata = meta)   # consumes the cleaned table directly
 #' }
 #' @export
 
-qcDeploymentMetadata <- function(metadata,
+checkDeploymentMetadata <- function(metadata,
                                  columns = metadataColumns(),
                                  future.tolerance = 1,
                                  verbose = "detailed") {
@@ -99,7 +99,7 @@ qcDeploymentMetadata <- function(metadata,
   .qcReportConsole(out, lvl, start.time)
   if (lvl == 0L && n_err > 0L) {
     msgs <- issues$message[issues$severity == "error"]
-    warning(sprintf("qcDeploymentMetadata: %d metadata error%s found:\n  %s",
+    warning(sprintf("checkDeploymentMetadata: %d metadata error%s found:\n  %s",
                     n_err, if (n_err != 1L) "s" else "", paste(msgs, collapse = "\n  ")), call. = FALSE)
   }
 
@@ -199,7 +199,7 @@ qcDeploymentMetadata <- function(metadata,
 #' `d` is a canonical table as produced by .qcNormalizeMetadata; `roles` is the vector of mapped
 #' roles. Each check runs only if the roles it needs are present. Returns a data.frame of issues
 #' (columns: id, check, severity, message); zero rows when the metadata is clean. This is the single
-#' source of truth for both qcDeploymentMetadata() and importTagData()'s pre-flight guard.
+#' source of truth for both checkDeploymentMetadata() and importTagData()'s pre-flight guard.
 #' @keywords internal
 #' @noRd
 .runMetadataQC <- function(d, roles, future.tolerance = 1) {
@@ -371,21 +371,21 @@ is_nautilus_deployments <- function(x) inherits(x, "nautilus_deployments")
 
 #' Retrieve the QC issues from a `nautilus_deployments` object
 #'
-#' @param x A \code{nautilus_deployments} object returned by \code{\link{qcDeploymentMetadata}}.
+#' @param x A \code{nautilus_deployments} object returned by \code{\link{checkDeploymentMetadata}}.
 #' @param severity Optional character vector to filter by severity (`"error"`, `"warning"`, `"info"`).
 #'   Default `NULL` (all).
 #' @return A data.frame with columns \code{id}, \code{check}, \code{severity}, \code{message} - one row
 #'   per flagged record. Zero rows when the metadata is clean.
-#' @seealso \code{\link{qcDeploymentMetadata}}
+#' @seealso \code{\link{checkDeploymentMetadata}}
 #' @examples
 #' \dontrun{
-#' qcIssues(meta)
-#' qcIssues(meta, severity = "error")
+#' issues(meta)
+#' issues(meta, severity = "error")
 #' }
 #' @export
-qcIssues <- function(x, severity = NULL) {
+issues <- function(x, severity = NULL) {
   if (!is_nautilus_deployments(x))
-    .abort("{.arg x} must be a {.cls nautilus_deployments} object from {.fn qcDeploymentMetadata}.")
+    .abort("{.arg x} must be a {.cls nautilus_deployments} object from {.fn checkDeploymentMetadata}.")
   iss <- attr(x, "nautilus.qc.issues") %||% .empty_issues()
   if (!is.null(severity)) iss <- iss[iss$severity %in% severity, , drop = FALSE]
   rownames(iss) <- NULL
@@ -413,7 +413,7 @@ qcIssues <- function(x, severity = NULL) {
   if ("package_id" %in% roles) counts <- c(counts, sprintf("packages: %d", .nDistinct(x[["package_id"]])))
   if ("logger_id" %in% roles)  counts <- c(counts, sprintf("loggers: %d", .nDistinct(x[["logger_id"]])))
   if (length(counts)) bullets <- c(bullets, paste(counts, collapse = paste0(" ", .mid_dot(), " ")))
-  .log_header(lvl, "qcDeploymentMetadata", "Validating deployment metadata",
+  .log_header(lvl, "checkDeploymentMetadata", "Validating deployment metadata",
               bullets = bullets, arrow = paste0("Roles mapped: ", paste(roles, collapse = ", ")))
 
   # detail notes (lvl >= 2): normalisation + informational findings

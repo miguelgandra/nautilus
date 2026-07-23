@@ -172,7 +172,7 @@ test_that("the reader's output feeds buildTagData() and the rest of the pipeline
 test_that("importTagData(format = 'little_leonardo') imports a LL deployment end to end", {
   f <- .ll_deploy()
   tags <- importTagData(data.folders = f$folder, format = "little_leonardo",
-                        id.metadata = .ll_md(), columns = .ll_cols(),
+                        metadata = .ll_md(), columns = .ll_cols(),
                         return.data = TRUE, verbose = "quiet")
   expect_length(tags, 1)
   tag <- tags[["LLTEST"]]
@@ -191,7 +191,7 @@ test_that("importTagData(format = 'little_leonardo') imports a LL deployment end
 test_that("importTagData carries the LL video flag through to meta$ancillary$video", {
   f <- .ll_deploy(n_sec = 20L, hz = 10L, video = c(rep(0, 5), rep(1, 10), rep(0, 5)))  # on for 10 s
   tag <- importTagData(data.folders = f$folder, format = "little_leonardo",
-                       id.metadata = .ll_md(), columns = .ll_cols(),
+                       metadata = .ll_md(), columns = .ll_cols(),
                        return.data = TRUE, verbose = "quiet")[["LLTEST"]]
   vid <- nautilus:::.getMeta(tag)$ancillary$video
   expect_false(is.null(vid))
@@ -205,7 +205,7 @@ test_that("the tag_format metadata role dispatches per deployment, overriding th
   md <- .ll_md(); md$fmt <- "little_leonardo"
   # format = "cats" would find nothing here; the tag_format column must win
   tags <- importTagData(data.folders = f$folder, format = "cats",
-                        id.metadata = md, columns = .ll_cols(tag_format = "fmt"),
+                        metadata = md, columns = .ll_cols(tag_format = "fmt"),
                         return.data = TRUE, verbose = "quiet")
   expect_s3_class(tags[["LLTEST"]], "nautilus_tag")
   expect_equal(nrow(tags[["LLTEST"]]), f$n)
@@ -214,11 +214,11 @@ test_that("the tag_format metadata role dispatches per deployment, overriding th
 test_that("an unsupported format is rejected, from the argument or the tag_format column", {
   f <- .ll_deploy()
   expect_error(importTagData(data.folders = f$folder, format = "nope",
-                             id.metadata = .ll_md(), columns = .ll_cols(), verbose = "quiet"),
+                             metadata = .ll_md(), columns = .ll_cols(), verbose = "quiet"),
                "Unsupported tag format")
   md <- .ll_md(); md$fmt <- "not_a_reader"
   expect_error(importTagData(data.folders = f$folder, format = "little_leonardo",
-                             id.metadata = md, columns = .ll_cols(tag_format = "fmt"), verbose = "quiet"),
+                             metadata = md, columns = .ll_cols(tag_format = "fmt"), verbose = "quiet"),
                "Unsupported tag format")
 })
 
@@ -227,7 +227,7 @@ test_that("a clock-less logger without data_start fails loudly rather than inven
   # data_start not mapped -> the reader refuses. The files EXIST, so the pre-flight passes and this is a
   # per-deployment failure (reported + collected), not a whole-run abort: the deployment yields no tag.
   w <- testthat::capture_warnings(
-    tags <- importTagData(data.folders = f$folder, format = "little_leonardo", id.metadata = .ll_md(),
+    tags <- importTagData(data.folders = f$folder, format = "little_leonardo", metadata = .ll_md(),
                           columns = metadataColumns(id = "id", tag_model = "tag",
                                                     deploy_datetime = "deploy_date",
                                                     deploy_lon = "lon", deploy_lat = "lat"),
@@ -239,6 +239,6 @@ test_that("a clock-less logger without data_start fails loudly rather than inven
 test_that("the run guard names the format when no folder holds readable data", {
   empty <- tempfile(); dir.create(file.path(empty, "NOPE"), recursive = TRUE)
   expect_error(importTagData(data.folders = file.path(empty, "NOPE"), format = "little_leonardo",
-                             id.metadata = .ll_md("NOPE"), columns = .ll_cols(), verbose = "quiet"),
+                             metadata = .ll_md("NOPE"), columns = .ll_cols(), verbose = "quiet"),
                "Little Leonardo")
 })

@@ -29,11 +29,11 @@
 #'   external per-deployment metric, e.g. total video duration from \link{getVideoMetadata}:
 #'   `v <- aggregate(duration ~ ID, getVideoMetadata(...), sum); v$duration <- v$duration / 3600` and
 #'   pass `v` (renamed) as a covariate. Default `NULL`.
-#' @param deployments Optional `nautilus_deployments` object from \link{qcDeploymentMetadata}. When
+#' @param deployments Optional `nautilus_deployments` object from \link{checkDeploymentMetadata}. When
 #'   supplied, the summary is completed into the full study roster: every deployment in `deployments`
 #'   gets a row, and a `status` column marks each as `"included"` (processed data present, full metrics)
 #'   or `"excluded"` (in the roster but absent from `data` - NA metrics, identity filled from the
-#'   roster). The reason for exclusion is not inferred here; see \link{qcIssues}. Default `NULL`.
+#'   roster). The reason for exclusion is not inferred here; see \link{issues}. Default `NULL`.
 #' @param error.stat Error statistic for the display-only population row: `"sd"` (standard deviation,
 #'   default) or `"se"` (standard error).
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
@@ -101,7 +101,7 @@ summarizeTagData <- function(data,
   .assert_choice(error.stat, "error.stat", c("sd", "se"))
   if (!is.null(deployments)) {
     if (!inherits(deployments, "nautilus_deployments"))
-      .abort("{.arg deployments} must be a {.cls nautilus_deployments} object from {.fn qcDeploymentMetadata}.")
+      .abort("{.arg deployments} must be a {.cls nautilus_deployments} object from {.fn checkDeploymentMetadata}.")
     .assert_columns(deployments, "id", "deployments")
   }
   if (!is.null(extra.metadata)) .assert_columns(extra.metadata, "ID", "extra.metadata")
@@ -402,7 +402,7 @@ summarizeTagData <- function(data,
 #' roster but absent from the processed data get NA metrics, their identity filled from the roster, and
 #' status "excluded". `status` is intentionally coarse: summarizeTagData cannot reliably attribute WHY a
 #' deployment is absent (a QC error, a sensor exclusion, or a manual drop), so the detailed reasons stay
-#' in qcIssues(). The `nautilus_deployments` table is normalised to canonical role names, so identity is
+#' in issues(). The `nautilus_deployments` table is normalised to canonical role names, so identity is
 #' read straight off it (optional roles such as tag_type/attachment_site/paddle_wheel may be absent).
 #' @keywords internal
 #' @noRd

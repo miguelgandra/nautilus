@@ -46,7 +46,7 @@ deployment.
 ## What nautilus does
 
 **Prepare and import**
-- Validate and normalise the deployment table before import (`qcDeploymentMetadata()`),
+- Validate and normalise the deployment table before import (`checkDeploymentMetadata()`),
   mapping arbitrary column names onto canonical roles (`metadataColumns()`).
 - Read each animal's multi-sensor CSVs, standardise sensor names and units, fold in
   Wildlife Computers location files, and store everything as a `nautilus_tag` object
@@ -114,9 +114,9 @@ returns an annotated one.
 library(nautilus)
 
 # --- Mandatory spine: prepare, clean, orient --------------------------------
-meta <- qcDeploymentMetadata("deployments.csv")        # validate deployment metadata
+meta <- checkDeploymentMetadata("deployments.csv")        # validate deployment metadata
 tags <- importTagData(data.folders = "tag-data/",      # -> one nautilus_tag per animal
-                      id.metadata  = meta)
+                      metadata  = meta)
 
 tags <- filterDeploymentData(tags)                     # trim to the on-animal period
 tags <- regularizeTimeSeries(tags)                     # place on a regular time grid

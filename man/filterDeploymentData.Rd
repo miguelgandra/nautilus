@@ -157,7 +157,7 @@ with custom plot options, including additional behavioral metrics, to aid in vis
 }
 \examples{
 \dontrun{
-imported <- importTagData(folders, id.metadata = meta)
+imported <- importTagData(folders, metadata = meta)
 # Trim each record to the on-animal window detected from the depth trace:
 deployed <- filterDeploymentData(imported,
                                  depth.threshold      = 3.5,

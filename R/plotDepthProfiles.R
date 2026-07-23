@@ -441,7 +441,7 @@ plotDepthProfiles <- function(data,
   usr    <- graphics::par("usr")
   step   <- max(60, (usr[2] - usr[1]) / 1500)                    # cap resolution so long records stay cheap
   tseq   <- as.POSIXct(seq(usr[1], usr[2], by = step), origin = "1970-01-01", tz = "UTC")
-  phase  <- getDielPhase(tseq, coordinates = data.frame(lon = coords[["lon"]], lat = coords[["lat"]]), phases = 3)
+  phase  <- getDielPhase(tseq, coords = data.frame(lon = coords[["lon"]], lat = coords[["lat"]]), phases = 3)
   breaks <- c(1, which(diff(as.integer(factor(phase))) != 0) + 1, length(tseq))
   cols   <- .dielFills()
   tnum   <- as.numeric(tseq)

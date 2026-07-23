@@ -234,7 +234,7 @@ head(ssm_input)
 video_folders <- list.dirs("~/Desktop/Whale Sharks/CAMS", recursive = FALSE)
 video_folders <- video_folders[grepl("PIN_CAM_39", video_folders, fixed=TRUE)]
 video_info <- getVideoMetadata(video_folders,
-                               id.metadata = animal_metadata,
+                               metadata = animal_metadata,
                                tagdate.col = "deploy_date")
 video_info$start[1] <- as.POSIXct("2022-10-10 15:42:27", tz="UTC")
 video_info$start[2] <- as.POSIXct("2022-10-10 16:12:31", tz="UTC")

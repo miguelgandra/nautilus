@@ -12,7 +12,7 @@
 #' One composable geometry covers the common needs, so the API stays small:
 #' \itemize{
 #'   \item \strong{variable} - `"depth"`, `"temp"`, or both (`c("depth","temp")`) side by side.
-#'   \item \strong{group} - split the cohort by a metadata factor (species, sex, ...); each group becomes
+#'   \item \strong{group.by} - split the cohort by a metadata factor (species, sex, ...); each group becomes
 #'     a faceted panel of the group mean +/- SE across its individuals. `NULL` pools all individuals.
 #'   \item \strong{diel} - `TRUE` mirrors each bin into night (left) vs day (right) back-to-back bars.
 #' }
@@ -25,11 +25,11 @@
 #'
 #' @param data Processed data: `.rds` paths, a single `nautilus_tag` / data.frame, or a list of them.
 #' @param variable Character. `"depth"` (default), `"temp"`, or `c("depth","temp")` for both.
-#' @param group Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
+#' @param group.by Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
 #'   at import via \link{metadataColumns}), a named `id -> group` vector, or a two-column
 #'   `data.frame(id, group)`. `NULL` (default) pools all individuals into one profile.
 #' @param diel Logical. Split each bin into night vs day back-to-back bars (needs coordinates; see
-#'   `coordinates`). Default `FALSE`. Ignored by `style = "heatmap"`.
+#'   `coords`). Default `FALSE`. Ignored by `style = "heatmap"`.
 #' @param style `"profile"` (default) or `"heatmap"` (a deployment x bin heatmap - compact for many
 #'   individuals).
 #' @param bin.width,breaks,n.bins Bin definition. `breaks` gives explicit (possibly non-uniform) edges;
@@ -43,7 +43,7 @@
 #'   `FALSE` lets each panel autoscale, which resolves detail in a group whose time budget is much
 #'   flatter than the others - at the cost of equal-length bars meaning different values. Depth and
 #'   temperature always keep separate scales.
-#' @param coordinates For `diel`: a `c(lon, lat)`, a named `id -> c(lon,lat)` list, or a
+#' @param coords For `diel`: a `c(lon, lat)`, a named `id -> c(lon,lat)` list, or a
 #'   `data.frame(id, lon, lat)`. If `NULL`, longitude/latitude are read from the data or tag metadata.
 #' @param theme A \link{plotTheme} object (or a list of overrides) controlling the visual style.
 #' @param plot Logical. Draw to the active device. Default `TRUE`.
@@ -63,13 +63,13 @@
 #' \dontrun{
 #' files <- list.files("./processed", full.names = TRUE)
 #' plotTimeAtDepth(files, variable = c("depth", "temp"), diel = TRUE)          # ref: pooled mirrored
-#' plotTimeAtDepth(files, group = "species", plot.file = "./plots/tad.pdf")    # faceted by species
+#' plotTimeAtDepth(files, group.by = "species", plot.file = "./plots/tad.pdf")    # faceted by species
 #' }
 #' @export
 
 plotTimeAtDepth <- function(data,
                             variable     = "depth",
-                            group        = NULL,
+                            group.by        = NULL,
                             diel         = FALSE,
                             style        = c("profile", "heatmap"),
                             bin.width    = NULL,
@@ -78,7 +78,7 @@ plotTimeAtDepth <- function(data,
                             gap.factor   = 3,
                             order.by     = c("id", "input", "median"),
                             same.scale   = TRUE,
-                            coordinates  = NULL,
+                            coords  = NULL,
                             theme        = plotTheme(),
                             plot         = TRUE,
                             plot.file    = NULL,
@@ -114,21 +114,21 @@ plotTimeAtDepth <- function(data,
                "i" = "Received {length(breaks)} value{?s} spanning {n_edge} distinct edge{?s}."))
     }
   }
-  if (!is.null(coordinates)) .tadCheckCoordinates(coordinates)
+  if (!is.null(coords)) .tadCheckCoordinates(coords)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
   if (style == "heatmap" && diel) { if (lvl >= 1L) cli::cli_alert_info("diel split is ignored for {.val heatmap} style."); diel <- FALSE }
-  if (style == "heatmap" && !is.null(group) && lvl >= 1L)
-    cli::cli_alert_info("{.arg group} is ignored for {.val heatmap} style (every deployment gets its own column).")
+  if (style == "heatmap" && !is.null(group.by) && lvl >= 1L)
+    cli::cli_alert_info("{.arg group.by} is ignored for {.val heatmap} style (every deployment gets its own column).")
 
   src <- .resolveInput(data, id.col)
 
   # header BEFORE the loading bar, so the bar has context while it runs (matching the other plot* functions).
   # Only what is knowable pre-load is reported: the group LEVELS are not resolved until the tags are read,
   # so the bullet names the grouping column rather than counting facets.
-  grp_desc <- if (is.null(group)) "pooled"
-              else if (is.character(group) && length(group) == 1L) sprintf("grouped by %s", group)
+  grp_desc <- if (is.null(group.by)) "pooled"
+              else if (is.character(group.by) && length(group.by) == 1L) sprintf("grouped by %s", group.by)
               else "grouped"
   .log_header(lvl, "plotTimeAtDepth",
               sprintf("Binning %s over time", paste(vapply(variable, .tadTitle, ""), collapse = " + ")),
@@ -150,11 +150,11 @@ plotTimeAtDepth <- function(data,
     # ABSENT rather than carried forward: it used to reach the binner and die on `rep(0, nb)`
     series <- lapply(series, function(z) if (is.null(z) || !any(is.finite(z))) NULL else z)
     if (all(vapply(series, is.null, logical(1)))) { n_missing <- n_missing + 1L; next }
-    phase <- if (diel) .tadDielPhase(x, coordinates, id, datetime.col, lvl) else NULL
+    phase <- if (diel) .tadDielPhase(x, coords, id, datetime.col, lvl) else NULL
     # `loaded` is keyed by id, so a repeated id would overwrite an earlier record and drop it from the
     # figure without a word. Ids are made unique instead, and the collision is reported.
     if (!is.null(loaded[[id]])) { dup_ids <- c(dup_ids, id); id <- .tadUniqueId(id, names(loaded)) }
-    loaded[[id]] <- list(id = id, group = .deploymentGroup(x, id, group), t = tnum,
+    loaded[[id]] <- list(id = id, group = .deploymentGroup(x, id, group.by), t = tnum,
                          series = series, phase = phase)
   }
   .log_progress_done(pb)
@@ -174,7 +174,7 @@ plotTimeAtDepth <- function(data,
   # write a blank figure. Fall back to the pooled profile, which is what the data actually supports.
   if (diel && !any(vapply(loaded, function(d) !is.null(d$phase) && any(!is.na(d$phase)), logical(1)))) {
     cli::cli_warn(c("{.arg diel = TRUE} needs coordinates, and none could be resolved for any deployment.",
-                    "i" = "Plotting the pooled profile instead. Supply {.arg coordinates}, or lon/lat columns/metadata."))
+                    "i" = "Plotting the pooled profile instead. Supply {.arg coords}, or lon/lat columns/metadata."))
     diel <- FALSE
   }
 
@@ -207,7 +207,7 @@ plotTimeAtDepth <- function(data,
       d <- loaded[[id]]; sv <- d$series[[v]]; if (is.null(sv)) next
       for (ph in phases) {
         keep <- if (ph == "all") rep(TRUE, length(sv)) else !is.na(d$phase) & d$phase == ph
-        # a deployment with no usable samples for this phase (e.g. no coordinates -> no diel split, or a
+        # a deployment with no usable samples for this phase (e.g. no coords -> no diel split, or a
         # record spanning only one phase) is EXCLUDED from that phase's aggregate, not counted as all-zero.
         if (ph != "all" && sum(keep) < 2L) next
         tb <- .timeAtDepthBins(sv[keep], d$t[keep], br, gap.factor)
@@ -238,17 +238,17 @@ plotTimeAtDepth <- function(data,
   ## ---- group levels + colours ----
   grp_of <- vapply(loaded, function(d) d$group %||% NA_character_, character(1))
   grp_of[!is.na(grp_of) & !nzchar(trimws(grp_of))] <- NA_character_     # "" / "   " are not group labels
-  grouped <- !is.null(group) && any(!is.na(grp_of))
+  grouped <- !is.null(group.by) && any(!is.na(grp_of))
   glevels <- if (grouped) .tadGroupLevels(loaded, order.by, variable) else "All"
-  if (!is.null(group) && !grouped)
+  if (!is.null(group.by) && !grouped)
     # the header has already announced "grouped by X"; without this the run just silently pools
-    cli::cli_warn(c("No deployment has a usable {.arg group} value; plotting a single pooled profile.",
+    cli::cli_warn(c("No deployment has a usable {.arg group.by} value; plotting a single pooled profile.",
                     "i" = "Check that the grouping column or lookup covers the deployment ids."))
   if (grouped && any(is.na(grp_of))) {
     # such deployments appear in the returned table but on no facet - they used to vanish from the
     # figure while still being counted as "plotted"
     ungrouped <- names(grp_of)[is.na(grp_of)]; n_ung <- length(ungrouped)
-    cli::cli_warn(c("{n_ung} deployment{?s} ha{?s/ve} no {.arg group} value and {?is/are} not shown in any panel.",
+    cli::cli_warn(c("{n_ung} deployment{?s} ha{?s/ve} no {.arg group.by} value and {?is/are} not shown in any panel.",
                     "i" = "Ungrouped: {.val {ungrouped}}."))
   }
   gcols <- stats::setNames(.themePalette(theme$palette, length(glevels)), glevels)
@@ -388,41 +388,41 @@ plotTimeAtDepth <- function(data,
   lv
 }
 
-#' A single representative day/night phase vector for one deployment (or NULL if no coordinates).
+#' A single representative day/night phase vector for one deployment (or NULL if no coords).
 #' @keywords internal
 #' @noRd
-.tadDielPhase <- function(x, coordinates, id, datetime.col, lvl) {
-  co <- .tadCoords(x, coordinates, id)
-  if (is.null(co)) { if (lvl >= 1L) cli::cli_alert_warning("{.val {id}}: no coordinates for diel split; skipped."); return(NULL) }
+.tadDielPhase <- function(x, coords, id, datetime.col, lvl) {
+  co <- .tadCoords(x, coords, id)
+  if (is.null(co)) { if (lvl >= 1L) cli::cli_alert_warning("{.val {id}}: no coords for diel split; skipped."); return(NULL) }
   as.character(getDielPhase(x[[datetime.col]], matrix(co, ncol = 2), phases = 2))
 }
 
-#' Validate the shape of `coordinates` up front.
+#' Validate the shape of `coords` up front.
 #'
 #' Every malformed shape used to fail silently: `.tadCoords()` simply fell through to NULL, so the diel
 #' split was skipped for every deployment and the run ended in a blank figure (or, for a two-column
 #' data.frame, a bare "undefined columns selected" from deep inside the resolver).
 #' @keywords internal
 #' @noRd
-.tadCheckCoordinates <- function(coordinates) {
-  bad <- function(...) .abort(c(..., "i" = "Give {.arg coordinates} as {.code c(lon, lat)}, a named {.code id -> c(lon, lat)} list, or {.code data.frame(id, lon, lat)}."))
-  if (is.data.frame(coordinates)) {
-    if (ncol(coordinates) < 3L) bad("{.arg coordinates} data.frame needs three columns (id, lon, lat), not {ncol(coordinates)}.")
-    .tadCheckLonLat(coordinates[[2]], coordinates[[3]])
+.tadCheckCoordinates <- function(coords) {
+  bad <- function(...) .abort(c(..., "i" = "Give {.arg coords} as {.code c(lon, lat)}, a named {.code id -> c(lon, lat)} list, or {.code data.frame(id, lon, lat)}."))
+  if (is.data.frame(coords)) {
+    if (ncol(coords) < 3L) bad("{.arg coords} data.frame needs three columns (id, lon, lat), not {ncol(coords)}.")
+    .tadCheckLonLat(coords[[2]], coords[[3]])
     return(invisible(TRUE))
   }
-  if (is.list(coordinates)) {
-    if (is.null(names(coordinates))) bad("{.arg coordinates} list must be named by deployment id.")
-    for (nm in names(coordinates)) {
-      z <- suppressWarnings(as.numeric(coordinates[[nm]]))
-      if (length(z) != 2L || anyNA(z)) bad("{.arg coordinates[[{nm}]]} must be two finite numbers {.code c(lon, lat)}.")
+  if (is.list(coords)) {
+    if (is.null(names(coords))) bad("{.arg coords} list must be named by deployment id.")
+    for (nm in names(coords)) {
+      z <- suppressWarnings(as.numeric(coords[[nm]]))
+      if (length(z) != 2L || anyNA(z)) bad("{.arg coords[[{nm}]]} must be two finite numbers {.code c(lon, lat)}.")
       .tadCheckLonLat(z[1], z[2])
     }
     return(invisible(TRUE))
   }
-  if (!is.numeric(coordinates) || length(coordinates) != 2L || anyNA(coordinates))
-    bad("{.arg coordinates} must be two finite numbers {.code c(lon, lat)}.")
-  .tadCheckLonLat(coordinates[1], coordinates[2])
+  if (!is.numeric(coords) || length(coords) != 2L || anyNA(coords))
+    bad("{.arg coords} must be two finite numbers {.code c(lon, lat)}.")
+  .tadCheckLonLat(coords[1], coords[2])
   invisible(TRUE)
 }
 
@@ -432,26 +432,26 @@ plotTimeAtDepth <- function(data,
 .tadCheckLonLat <- function(lon, lat) {
   lon <- suppressWarnings(as.numeric(lon)); lat <- suppressWarnings(as.numeric(lat))
   ok <- is.finite(lon) & is.finite(lat)
-  if (any(!ok)) .abort("{.arg coordinates} contains non-finite longitude/latitude values.")
-  if (any(abs(lat) > 90)) .abort(c("{.arg coordinates} latitude out of range: {.val {lat[abs(lat) > 90][1]}} (must be -90 to 90).",
+  if (any(!ok)) .abort("{.arg coords} contains non-finite longitude/latitude values.")
+  if (any(abs(lat) > 90)) .abort(c("{.arg coords} latitude out of range: {.val {lat[abs(lat) > 90][1]}} (must be -90 to 90).",
                                    "i" = "Longitude and latitude may be the wrong way round."))
-  if (any(abs(lon) > 180)) .abort("{.arg coordinates} longitude out of range: {.val {lon[abs(lon) > 180][1]}} (must be -180 to 180).")
+  if (any(abs(lon) > 180)) .abort("{.arg coords} longitude out of range: {.val {lon[abs(lon) > 180][1]}} (must be -180 to 180).")
   invisible(TRUE)
 }
 
 #' Resolve a single representative c(lon, lat) for a deployment (data cols -> arg -> metadata).
 #' @keywords internal
 #' @noRd
-.tadCoords <- function(x, coordinates, id) {
+.tadCoords <- function(x, coords, id) {
   ln <- intersect(c("lon", "longitude"), names(x)); la <- intersect(c("lat", "latitude"), names(x))
   if (length(ln) && length(la)) {
     lo <- stats::median(x[[ln[1]]], na.rm = TRUE); aa <- stats::median(x[[la[1]]], na.rm = TRUE)
     if (is.finite(lo) && is.finite(aa)) return(c(lo, aa))
   }
-  if (!is.null(coordinates)) {
-    if (is.numeric(coordinates) && length(coordinates) == 2) return(coordinates)
-    if (is.list(coordinates) && !is.data.frame(coordinates) && !is.null(coordinates[[id]])) return(as.numeric(coordinates[[id]]))
-    if (is.data.frame(coordinates)) { hit <- coordinates[as.character(coordinates[[1]]) == id, , drop = FALSE]
+  if (!is.null(coords)) {
+    if (is.numeric(coords) && length(coords) == 2) return(coords)
+    if (is.list(coords) && !is.data.frame(coords) && !is.null(coords[[id]])) return(as.numeric(coords[[id]]))
+    if (is.data.frame(coords)) { hit <- coords[as.character(coords[[1]]) == id, , drop = FALSE]
       if (nrow(hit)) return(as.numeric(hit[1, 2:3])) }
   }
   m <- tryCatch(.getMeta(x)$deployment, error = function(e) NULL)

@@ -301,7 +301,7 @@ test_that("the three `group` spec forms resolve to the same per-deployment label
   # the assertion is on the label that came back attached to each deployment.
   f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
   g <- function(spec) {
-    st <- plotDives(dm, metrics = "amplitude_m", group = spec, min.n = 1L,
+    st <- plotDives(dm, metrics = "amplitude_m", group.by = spec, min.n = 1L,
                     plot = FALSE, plot.file = f, verbose = FALSE)
     stats::setNames(st$group, st$id)[c("A", "B", "C", "D")]
   }
@@ -324,7 +324,7 @@ test_that("a deployment the grouping does not cover keeps its slot, in a trailin
             max(unlist(lay$blocks[names(lay$blocks) != "(ungrouped)"])))
 
   f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
-  st <- plotDives(dm, metrics = "amplitude_m", group = c(A = "north", B = "south", C = "north"),
+  st <- plotDives(dm, metrics = "amplitude_m", group.by = c(A = "north", B = "south", C = "north"),
                   min.n = 1L, plot = FALSE, plot.file = f, verbose = FALSE)
   expect_true("D" %in% st$id)
   expect_equal(nrow(st), 4L)                                      # all four still audited
@@ -386,7 +386,7 @@ test_that("a grouping that covers no deployment warns and falls back to one ungr
   expect_equal(lay$xpos, c(1, 2, 3, 4))                            # one block, so no gap anywhere
 
   f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
-  expect_warning(st <- plotDives(dm, metrics = "amplitude_m", group = c(Z = "north"), min.n = 1L,
+  expect_warning(st <- plotDives(dm, metrics = "amplitude_m", group.by = c(Z = "north"), min.n = 1L,
                                  plot = FALSE, plot.file = f, verbose = FALSE), "ungrouped")
   expect_equal(sort(st$id), c("A", "B", "C", "D"))
   expect_true(all(is.na(st$group)))
@@ -404,7 +404,7 @@ test_that("a single group level draws one block, with no phantom second one", {
   expect_equal(length(unique(lay$cols)), 1L)                       # one level, one colour
 
   f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
-  st <- plotDives(dm, metrics = "amplitude_m", group = spec, min.n = 1L,
+  st <- plotDives(dm, metrics = "amplitude_m", group.by = spec, min.n = 1L,
                   plot = FALSE, plot.file = f, verbose = FALSE)
   expect_equal(st$group, rep("north", 4L))
 })
@@ -413,7 +413,7 @@ test_that("the returned group column is what was drawn, and NA never becomes the
   dm   <- .pdGrouped()
   spec <- c(A = "north", B = "south", C = "north")
   f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
-  st <- plotDives(dm, metrics = c("amplitude_m", "duration_s"), group = spec, min.n = 1L,
+  st <- plotDives(dm, metrics = c("amplitude_m", "duration_s"), group.by = spec, min.n = 1L,
                   plot = FALSE, plot.file = f, verbose = FALSE)
   grp <- .pdGroups(dm, "ID", spec)
   lay <- .pdLayout(sort(unique(dm$ID)), grp, plotTheme()$palette)
@@ -437,14 +437,14 @@ test_that("order.by orders WITHIN a block, never across blocks", {
   p <- function(...) plotDives(dm, metrics = "amplitude_m", min.n = 1L, plot = FALSE,
                                plot.file = f, verbose = FALSE, ...)
   expect_equal(p(order.by = "median")$id, c("A", "B", "C", "D"))            # ungrouped: the global order
-  expect_equal(p(order.by = "median", group = spec)$id, c("A", "C", "B", "D"))
-  expect_false(identical(p(order.by = "median", group = spec)$id, p(order.by = "median")$id))
+  expect_equal(p(order.by = "median", group.by = spec)$id, c("A", "C", "B", "D"))
+  expect_false(identical(p(order.by = "median", group.by = spec)$id, p(order.by = "median")$id))
 
   # and it is genuinely the median driving the within-block order, not the alphabetical id order it
   # happens to coincide with above: reverse the values and each block reverses while the blocks stay put
   dm <- .pdGrouped(c(A = 10, B = 20, C = 30, D = 40))
-  expect_equal(p(order.by = "median", group = spec)$id, c("C", "A", "D", "B"))
-  expect_equal(p(order.by = "id", group = spec)$id, c("A", "C", "B", "D"))
+  expect_equal(p(order.by = "median", group.by = spec)$id, c("C", "A", "D", "B"))
+  expect_equal(p(order.by = "id", group.by = spec)$id, c("A", "C", "B", "D"))
   expect_equal(p(order.by = "median")$id, c("D", "C", "B", "A"))            # ...global order did move
 })
 

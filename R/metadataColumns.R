@@ -5,7 +5,7 @@
 #' Map deployment-metadata columns for importTagData()
 #'
 #' @description
-#' Describes which columns of your `id.metadata` table hold each piece of deployment information.
+#' Describes which columns of your `metadata` table hold each piece of deployment information.
 #' It replaces the long list of individual `*.col` arguments with a single, self-documenting object:
 #' fields default to the canonical nautilus names, so metadata that already uses those names needs no
 #' configuration, and only non-standard columns have to be named explicitly.
@@ -19,23 +19,23 @@
 #' @param deploy_lon,deploy_lat Columns holding the deployment longitude / latitude. Required
 #'   (defaults `"deploy_lon"` / `"deploy_lat"`).
 #' @param recovery_datetime Column holding the recovery (or detachment) datetime, POSIXct, or `NULL`.
-#'   Mapping it enables the recovery-before-deployment check in \code{\link{qcDeploymentMetadata}}, and
+#'   Mapping it enables the recovery-before-deployment check in \code{\link{checkDeploymentMetadata}}, and
 #'   is also required by the package-overlap check. Default `NULL`.
 #' @param popup_datetime,popup_lon,popup_lat Columns holding the pop-up (detachment) datetime /
 #'   longitude / latitude. Supply all three to enable pop-up location integration. Default `NULL`.
 #' @param package_id Column holding the physical tag-package ID (the housing whose axis orientation is
 #'   constant), or `NULL`. Enables paddle-wheel speed calibration, per-package axis-orientation
 #'   consensus (\code{\link{consensusAxisMapping}}), and the package-overlap check in
-#'   \code{\link{qcDeploymentMetadata}} - which additionally requires `recovery_datetime`, since it needs
+#'   \code{\link{checkDeploymentMetadata}} - which additionally requires `recovery_datetime`, since it needs
 #'   a deployment window to intersect. Default `NULL`.
 #' @param logger_id Column holding the logger / data-recorder ID (the unit that owns the raw recording
 #'   file, which may be reused across packages), or `NULL`. Enables the logger-reuse note in
-#'   \code{\link{qcDeploymentMetadata}}, which flags a logger appearing on more than one deployment.
+#'   \code{\link{checkDeploymentMetadata}}, which flags a logger appearing on more than one deployment.
 #'   Default `NULL`.
 #' @param exclude_sensors Column listing sensor channels known to be unusable on a deployment (a
 #'   data-quality fact kept separate from axis orientation, e.g. a firmware bug), or `NULL`. Each value
 #'   is a comma-separated list of families (`"accel"`, `"gyro"`, `"mag"`) and/or channels (e.g.
-#'   `"mx"`, `"gz"`), blank for none. Reported by \code{\link{qcDeploymentMetadata}} and dropped by
+#'   `"mx"`, `"gz"`), blank for none. Reported by \code{\link{checkDeploymentMetadata}} and dropped by
 #'   \code{\link{importTagData}} (so the channel is simply absent downstream). Default `NULL`.
 #' @param axis_config Column naming the IMU orientation configuration of each deployment (e.g.
 #'   `"CATS Camera"`), or `NULL`. The name is looked up in a `configs` dictionary by
@@ -96,8 +96,8 @@
 #' check), for later grouping / filtering / plotting - see the `traits` argument.
 #'
 #' @return A validated `nautilus_metadata_columns` object (a named list) for the `columns` argument of
-#'   \code{\link{importTagData}} and \code{\link{qcDeploymentMetadata}}.
-#' @seealso \code{\link{importTagData}}, \code{\link{qcDeploymentMetadata}}
+#'   \code{\link{importTagData}} and \code{\link{checkDeploymentMetadata}}.
+#' @seealso \code{\link{importTagData}}, \code{\link{checkDeploymentMetadata}}
 #' @examples
 #' # metadata already uses the canonical names:
 #' metadataColumns()

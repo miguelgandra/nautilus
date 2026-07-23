@@ -184,5 +184,5 @@ checkSensorIntegrity(regularized,
 }
 }
 \seealso{
-\link{checkSensorQuality}, \link{qcDeploymentMetadata}, \link{checkTagMapping}.
+\link{checkSensorQuality}, \link{checkDeploymentMetadata}, \link{checkTagMapping}.
 }
