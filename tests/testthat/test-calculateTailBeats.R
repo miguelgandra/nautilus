@@ -223,10 +223,29 @@ test_that("the wavelet amplitude is corrected for band-pass attenuation at the b
                               sway = sin(2 * pi * 0.2 * t))
   data.table::setattr(d, "nautilus.version", "test")
   out <- NULL
+  # the tone sits ON the band floor, where the prominence floor cannot establish a peak (one-sided
+  # background), so it is disabled here: this test is about the gain correction, not the gate.
+  invisible(capture.output(suppressWarnings(
+    out <- calculateTailBeats(d, motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
+                              method = "wavelet", ridge.prominence = 0, verbose = FALSE)[[1]])))
+  expect_equal(median(out$tbf_amplitude, na.rm = TRUE), 1.0, tolerance = 0.05)
+})
+
+test_that("by default a tone sitting ON the band floor is withheld, not reported", {
+  skip_if_not_installed("signal")
+  # The companion to the test above. A peak at a band edge has background on one side only, so no bump
+  # can be established and the estimate is withheld -- and the band-edge check then says why.
+  fs <- 20; t <- seq(0, 600, by = 1 / fs)
+  d <- data.table::data.table(ID = "A01", datetime = as.POSIXct("2020-01-01", tz = "UTC") + t,
+                              sway = sin(2 * pi * 0.2 * t))
+  data.table::setattr(d, "nautilus.version", "test")
+  out <- NULL
   invisible(capture.output(suppressWarnings(
     out <- calculateTailBeats(d, motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
                               method = "wavelet", verbose = FALSE)[[1]])))
-  expect_equal(median(out$tbf_amplitude, na.rm = TRUE), 1.0, tolerance = 0.05)
+  expect_true(mean(is.na(out$tbf_hz)) > 0.9)                  # withheld rather than reported
+  step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
+  expect_gt(step$pct_edge, 5)                                 # band placement still diagnosed, from the raw ridge
 })
 
 test_that(".bandpassPowerGain is bounded across the band, so it cannot amplify noise", {
@@ -376,9 +395,13 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_match(d2, "Bandpass: [0-9.]+ . [0-9.]+ Hz")     # band is fixed config: its own header line, not per deployment
   expect_match(d2, "input:.*Hz")                         # rows | sampling rate | duration (fs shown ONCE, here)
   expect_match(d2, "axis: sway")                         # selected axis (single candidate present here)
-  expect_match(d2, "swimming:")                          # merged activity + behaviour line
-  expect_match(d2, "frequency: median")                  # dedicated frequency line
-  expect_match(d2, "amplitude: median.*g")               # dedicated amplitude line (with unit)
+  # two backends -> one frequency line per method, each qualified by the method that produced it
+  expect_match(d2, "frequency \\(peaks\\): median")
+  expect_match(d2, "frequency \\(wavelet\\): median")
+  expect_match(d2, "amplitude \\(peaks\\): median.*g")   # only the primary method retains an amplitude
+  # min.amplitude is a run-wide setting: stated once in the header, never repeated per deployment
+  expect_match(d2, "Swimming: not classified \\(no min\\.amplitude\\)")
+  expect_false(grepl("swimming:", d2, fixed = TRUE))
   # noise removed from the per-deployment block: sampling headroom (folded into input), the per-deployment
   # bandpass line (now a header line), the peaks-only detection line, and the old split activity/behaviour
   expect_false(grepl("sampling:", d2, fixed = TRUE))
@@ -392,7 +415,46 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_false(grepl("[1/1]", d2, fixed = TRUE))         # legacy crayon "[i/n]" header gone
   expect_false(grepl("input:", d1, fixed = TRUE))        # the diagnostic block is level-2 only
   expect_match(d1, "median")                             # normal level keeps the compact one-line outcome
-  expect_match(d1, "swimming")
+  expect_false(grepl("swimming", d1, fixed = TRUE))      # nothing to say when classification is off
+})
+
+test_that("a single method reports unqualified frequency/amplitude lines and no agreement line", {
+  skip_if_not_installed("signal")
+  d2 <- paste(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(list(A01 = .sway()), motion.col = "sway", method = "peaks",
+                       min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = 2))), collapse = "\n")
+  expect_match(d2, "Method: peaks")                      # header names one backend, singular
+  expect_match(d2, "frequency: median")                  # no "(peaks)" qualifier when there is nothing to disambiguate
+  expect_match(d2, "amplitude: median")
+  expect_false(grepl("frequency (", d2, fixed = TRUE))
+  expect_false(grepl("agreement:", d2, fixed = TRUE))    # nothing to compare against
+})
+
+test_that("supplying min.amplitude restores the per-deployment swimming line and drops the header note", {
+  skip_if_not_installed("signal")
+  grab <- function(v) paste(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(list(A01 = .sway()), motion.col = "sway", min.amplitude = 0.2,
+                       min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = v))), collapse = "\n")
+  d2 <- grab(2); d1 <- grab(1)
+  expect_match(d2, "swimming: [0-9]+%")                  # classified -> reported per deployment
+  expect_false(grepl("Swimming: not classified", d2, fixed = TRUE))
+  expect_match(d1, "% swimming")                         # compact line carries it too
+})
+
+test_that("naming surge or heave no longer triggers a prescriptive axis warning", {
+  skip_if_not_installed("signal")
+  # which axis carries the beat is species-, placement- and gait-dependent (this package's own manta
+  # validation found the wingbeat in surge), so the estimator reports the axis it chose rather than
+  # prescribing one. The 2f concern is handled by cross-axis consensus + the data-driven harmonic flag.
+  d <- .sway(fs = 20, dur = 200)
+  d[, surge := d$sway]
+  seen <- character(0)
+  withCallingHandlers(
+    invisible(capture.output(suppressMessages(
+      calculateTailBeats(list(A01 = d), motion.col = "surge", min.freq.Hz = 0.2, max.freq.Hz = 3,
+                         verbose = FALSE)))),
+    warning = function(w) { seen <<- c(seen, conditionMessage(w)); invokeRestart("muffleWarning") })
+  expect_false(any(grepl("cleanest|2x the true frequency", seen)))
 })
 
 test_that(".reportTailBeatCohort rolls up the cohort, showing conditional lines only when they apply", {
@@ -632,21 +694,78 @@ test_that(".selectMotionAxis rejects dead AND near-dead channels via a relative 
   expect_identical(nautilus:::.selectMotionAxis(dn, c("sway", "surge", "heave"), 20, 0.2, 1.5)$axis, "heave")
 })
 
-test_that("towed deployments emit ONE consolidated tow-pendulum warning, listing all of them", {
+.towed_tag <- function(id, towed = TRUE) {
+  d <- .sway(id = id, freq = 0.8, fs = 20, dur = 200)
+  data.table::setattr(d, "nautilus", list(deployment = list(deployment_type = if (towed) "towed" else "fixed")))
+  d
+}
+
+.tb_warnings <- function(tags, motion.col = "sway", ...) {
+  testthat::capture_warnings(
+    invisible(capture.output(calculateTailBeats(tags, motion.col = motion.col, min.freq.Hz = 0.2,
+                                                max.freq.Hz = 3, return.data = TRUE, verbose = FALSE, ...))))
+}
+
+# the same fixture under a second ID, so a batch can exercise the grouped (one-warning) path
+.relabel <- function(d, id) { d <- data.table::copy(d); data.table::set(d, j = "ID", value = id); d }
+
+test_that("an all-towed batch emits ONE tow-pendulum warning and does not list the IDs", {
   skip_if_not_installed("signal")
-  towed <- function(id) {
-    d <- .sway(id = id, freq = 0.8, fs = 20, dur = 200)
-    data.table::setattr(d, "nautilus", list(deployment = list(deployment_type = "towed")))
-    d
-  }
-  w <- testthat::capture_warnings(
-    invisible(capture.output(calculateTailBeats(list(T1 = towed("T1"), T2 = towed("T2")),
-                                                motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
-                                                return.data = TRUE, verbose = FALSE))))
+  w <- .tb_warnings(list(T1 = .towed_tag("T1"), T2 = .towed_tag("T2")))
   towed_w <- w[grepl("tow-pendulum", w)]
   expect_length(towed_w, 1L)                                    # consolidated: one warning, not one per tag
-  expect_match(towed_w, "2 towed deployments")                  # names the count
-  expect_true(grepl("T1", towed_w) && grepl("T2", towed_w))     # and lists the affected deployments
+  expect_match(towed_w, "All 2 deployments are towed")
+  # every deployment being towed makes the ID list uninformative, so it is dropped
+  expect_false(grepl("T1", towed_w)); expect_false(grepl("T2", towed_w))
+  expect_match(towed_w, "cross-check against the other motion axes")
+})
+
+test_that("a towed SUBSET is named, because there the IDs identify which tags are affected", {
+  skip_if_not_installed("signal")
+  w <- .tb_warnings(list(T1 = .towed_tag("T1"), F2 = .towed_tag("F2", towed = FALSE)))
+  towed_w <- w[grepl("tow-pendulum", w)]
+  expect_length(towed_w, 1L)
+  expect_match(towed_w, "1 of 2 deployments are towed")
+  expect_true(grepl("T1", towed_w)); expect_false(grepl("F2", towed_w))
+})
+
+test_that("a single towed deployment is named rather than counted", {
+  skip_if_not_installed("signal")
+  towed_w <- Filter(function(x) grepl("tow-pendulum", x), .tb_warnings(list(T1 = .towed_tag("T1"))))
+  expect_length(towed_w, 1L)
+  expect_match(towed_w, "Deployment .*T1.* is towed")
+})
+
+test_that("band-edge pile-ups are raised as ONE warning listing every affected deployment, worst first", {
+  skip_if_not_installed("signal")
+  # 3.5 Hz against a 0.2-3 Hz band leaks through the filter transition and the wavelet clamps it to the
+  # ceiling: estimates pile up at the edge. Two such tags used to emit two identical three-line warnings.
+  tags <- list(A01 = .tone_tag(3.5), A02 = .tone_tag(3.5))
+  data.table::set(tags$A02, j = "ID", value = "A02")
+  w <- .tb_warnings(tags)
+  edge_w <- w[grepl("band limits", w)]
+  expect_length(edge_w, 1L)                                     # one warning for the whole batch
+  expect_match(edge_w, "2 deployments pile up against the frequency band limits")
+  expect_match(edge_w, "Affected deployments:")
+  expect_match(edge_w, "A01: [0-9.]+% of estimates at a band edge")
+  expect_match(edge_w, "A02: [0-9.]+% of estimates at a band edge")
+  # the shared diagnosis and fix are stated once, not once per deployment
+  expect_length(gregexpr("Widen the band", edge_w)[[1]], 1L)
+  expect_match(edge_w, "min\\.freq\\.Hz")
+})
+
+test_that(".warn_grouped emits one warning, keeps items verbatim, and is a no-op when empty", {
+  w <- testthat::capture_warnings(
+    nautilus:::.warn_grouped("Headline for {n} thing{?s}.", items = c("a: 1", "b: 2"),
+                             hints = "Do this instead.", .envir = list2env(list(n = 2))))
+  expect_length(w, 1L)
+  expect_match(w, "Headline for 2 things")
+  expect_match(w, "Do this instead")
+  expect_match(w, "Affected deployments:")
+  expect_true(grepl("a: 1", w) && grepl("b: 2", w))
+  # braces in data-derived items are literal, not glue expressions
+  expect_match(testthat::capture_warnings(nautilus:::.warn_grouped("H", items = "ID_{x}: 1")), "ID_\\{x\\}")
+  expect_silent(nautilus:::.warn_grouped("H", items = character(0)))
 })
 
 test_that("the axis line splits into the selected axis and an indented peak-frequency sub-line", {
@@ -669,29 +788,46 @@ test_that("two methods: the header names both and a cross-check agreement line i
 
   out2 <- fmt(method = c("peaks", "wavelet"))
   expect_match(out2, "Methods: peaks \\+ wavelet \\(cross-checked, peaks primary\\)")  # header names both + primary
-  expect_match(out2, "agreement: [0-9]+% . wavelet median [0-9.]+ Hz")                 # the cross-check payoff
+  # each method's median gets its own frequency line, so the agreement line carries only the comparison
+  expect_match(out2, "frequency \\(peaks\\): median [0-9.]+ Hz")
+  expect_match(out2, "frequency \\(wavelet\\): median [0-9.]+ Hz")
+  expect_match(out2, "agreement: [0-9]+% . typical diff [0-9.]+ Hz")                   # the cross-check payoff
+  expect_false(grepl("wavelet median", out2, fixed = TRUE))                            # median no longer repeated here
 
   out1 <- fmt(method = "peaks")
   expect_match(out1, "Method: peaks")                    # single method -> "Method:", no cross-check
   expect_false(grepl("agreement:", out1, fixed = TRUE))
 })
 
-test_that("disagreeing candidate axes trigger an axis-disagreement warning", {
+test_that("axes that disagree raise ONE grouped warning naming each tag and its per-axis peaks", {
   skip_if_not_installed("signal")
   d <- .multiaxis()   # loco 0.8 surge/heave, non-harmonic artefact 0.6 sway
-  w <- testthat::capture_warnings(
-    invisible(capture.output(calculateTailBeats(d, motion.col = c("surge", "sway"), min.freq.Hz = 0.2,
-                                                max.freq.Hz = 3, return.data = TRUE, verbose = FALSE))))
-  expect_true(any(grepl("disagree", w)))
+  w <- .tb_warnings(list(M01 = d, M02 = .relabel(d, "M02")), motion.col = c("surge", "sway"))
+  dis <- w[grepl("disagree", w)]
+  expect_length(dis, 1L)                                       # two tags, one warning
+  expect_match(dis, "in 2 deployments")
+  expect_match(dis, "Affected deployments:")
+  # the bullet keeps what varies: the chosen axis and every candidate's dominant frequency
+  expect_match(dis, "M01: chose \\w+ \\(surge [0-9.]+ Hz, sway [0-9.]+ Hz\\)")
+  expect_match(dis, "M02: chose \\w+ \\(surge [0-9.]+ Hz, sway [0-9.]+ Hz\\)")
+  expect_length(gregexpr("no other axis corroborates it", dis)[[1]], 1L)   # rationale stated once
 })
 
-test_that("a possible 2f-harmonic pick triggers a harmonic warning naming the alternative axis", {
+test_that("a possible 2f-harmonic pick raises ONE grouped warning naming the alternative per tag", {
   skip_if_not_installed("signal")
   d <- .multiaxis(loco = 1.4, artefact = 0.7, artefact.amp = 3)   # surge/heave 1.4, sway 0.7 (=1.4/2)
-  w <- testthat::capture_warnings(
-    invisible(capture.output(calculateTailBeats(d, motion.col = c("surge", "sway", "heave"),
-                                                min.freq.Hz = 0.2, max.freq.Hz = 3,
-                                                return.data = TRUE, verbose = FALSE))))
-  expect_true(any(grepl("harmonic", w)))
-  expect_true(any(grepl("sway", w)))
+  w <- .tb_warnings(list(M01 = d, M02 = .relabel(d, "M02")), motion.col = c("surge", "sway", "heave"))
+  harm <- w[grepl("2f harmonic", w)]
+  expect_length(harm, 1L)
+  expect_match(harm, "in 2 deployments")
+  # each bullet names the chosen axis, its frequency, and the alternative that peaks near half it
+  expect_match(harm, "M01: chose \\w+ at [0-9.]+ Hz; sway peaks at [0-9.]+ Hz")
+  expect_match(harm, "M02: chose \\w+ at [0-9.]+ Hz; sway peaks at [0-9.]+ Hz")
+  expect_match(harm, "motion.col")                             # the generic re-run hint
+})
+
+test_that("a clean single-axis batch raises none of the grouped axis warnings", {
+  skip_if_not_installed("signal")
+  w <- .tb_warnings(list(A01 = .sway(freq = 1.0, fs = 20, dur = 200)))
+  expect_false(any(grepl("disagree|2f harmonic|band limits", w)))
 })

@@ -19,6 +19,7 @@ calculateTailBeats(
   min.amplitude = NULL,
   smooth.window = 10,
   max.interp.gap = 10,
+  ridge.prominence = 2,
   plot = FALSE,
   plot.file = NULL,
   plot.wavelet = TRUE,
@@ -56,8 +57,9 @@ The two fail on different signals (see Details), so where they agree that agreem
 several are given, the axis is chosen per individual by \emph{cross-axis frequency consensus} (the
 axis whose dominant in-band frequency is corroborated by another axis, which rejects an axis-isolated
 artefact such as a tow-pendulum swing), falling back to plain in-band power -- with a warning -- when
-no two axes agree. Tail beats are cleanest on the lateral (\code{"sway"}) or yaw axis;
-\code{"surge"}/\code{"heave"} can carry energy at twice the beat frequency and trigger a warning.}
+no two axes agree. Which axis carries the beat is species-, tag-placement- and gait-dependent, so no
+axis is prescribed here: the function reports the axis it selected, and flags per individual when
+that axis looks like a 2f harmonic of another candidate (see Details).}
 
 \item{min.freq.Hz}{Numeric. The lowest frequency of interest (in Hz). Default is 0.1 Hz.}
 
@@ -86,6 +88,14 @@ Set to 0 to disable smoothing. Default is 10 seconds.}
 
 \item{max.interp.gap}{Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
 Set to NULL to disable interpolation. Default is 10 seconds.}
+
+\item{ridge.prominence}{Numeric (default 2). Wavelet method only. The factor by which the winning
+wavelet scale must exceed its own local spectral background for the estimate to be reported; below
+it the sample is \code{NA}. A per-column maximum always returns \emph{something}, so without this
+floor a record containing no oscillation yields a confident-looking frequency (for the 1/f-shaped
+background typical of these records, one pinned near \code{min.freq.Hz}). Set \code{0} to disable
+and recover the unguarded behaviour. See Details for how the background is estimated and why a peak
+sitting exactly on a band edge cannot be established.}
 
 \item{plot}{Logical. If \code{TRUE}, draw the diagnostic plots to the active graphics device. Default \code{FALSE}.}
 
@@ -169,6 +179,10 @@ metadata marks a tag as towed (\code{deployment_type == "towed"}), a warning fla
 oscillation may contaminate the lateral axis and bias the reported frequency, whichever axis is used.
 The chosen axis, its selection basis (\code{single}/\code{consensus}/\code{power}), the per-axis peak
 frequencies and any harmonic alternative are recorded in the processing metadata and the console log.
+All of these QC warnings -- no axis consensus, possible harmonic, band-edge pile-up, towed tag -- are
+\emph{grouped}: each is raised once per run, with the shared diagnosis and recommendation stated once
+and one bullet naming each affected deployment, so a large batch does not bury the console (nor lose
+warnings past R's 50-warning buffer).
 
 \strong{Band-pass filtering.} A Butterworth band-pass of order \code{filter.order} is applied within
 continuous data segments before detection, isolating the tail-beat band and removing low-frequency

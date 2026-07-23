@@ -24,6 +24,32 @@
 }
 
 
+#' Raise one grouped warning for a fault that recurs across deployments.
+#'
+#' Warning per deployment floods the console on a batch run: the same multi-line caveat is repeated once
+#' per tag, and R's warning buffer then silently truncates the tail (only the first 50 are kept). This
+#' raises the caveat ONCE - headline, the shared hints, then one bullet per affected deployment carrying
+#' only the part that actually differs (the ID and its magnitude) - so the diagnosis and the recommendation
+#' are read once and the per-deployment evidence stays intact however large the batch.
+#'
+#' `headline` and `hints` are cli format strings, interpolated in `.envir` like any other cli message.
+#' `items` are data-derived and are inserted VERBATIM: braces are escaped so an ID containing `{` cannot be
+#' mistaken for a glue expression. Nothing is emitted when `items` is empty, so callers can pass a filtered
+#' vector without guarding first.
+#' @keywords internal
+#' @noRd
+.warn_grouped <- function(headline, items, hints = NULL, items.header = "Affected deployments:",
+                          .envir = parent.frame()) {
+  if (!length(items)) return(invisible(NULL))
+  items <- gsub("}", "}}", gsub("{", "{{", items, fixed = TRUE), fixed = TRUE)
+  cli::cli_warn(c(headline,
+                  if (length(hints)) stats::setNames(hints, rep("i", length(hints))),
+                  stats::setNames(c(items.header, items), c("", rep("*", length(items))))),
+                .envir = .envir)
+  invisible(NULL)
+}
+
+
 #' Validate a single logical flag.
 #' @keywords internal
 #' @noRd

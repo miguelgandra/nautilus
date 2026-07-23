@@ -652,10 +652,12 @@ data_list <- processTagData(
 # tether motion oscillate in the same band), so tbf_swimming is NA unless you pass a min.amplitude
 # reference to threshold against.
 #
-# Two things matter for the axis. For laterally-swimming fish (most sharks and teleosts) the tail beat
-# is cleanest on the lateral "sway" axis; animals that beat vertically (cetaceans, some rays) want the
-# "heave" axis instead. And watch the sampling rate: you need at least twice max.freq.Hz to resolve the
-# beat (four times is comfortable), or the frequency can fold over and read double.
+# Two things matter for the axis. Which axis actually carries the beat depends on the species, the gait
+# and where the tag sits, and it is not always the one the body plan suggests (in our own manta records
+# the wingbeat sat in surge, not sway), so if you are unsure pass several candidates and let the built-in
+# cross-axis consensus pick - it reports the axis it chose and flags a possible 2f harmonic. And watch
+# the sampling rate: you need at least twice max.freq.Hz to resolve the beat (four times is comfortable),
+# or the frequency can fold over and read double.
 
 data_list <- calculateTailBeats(data            = list.files("./data interim/processed", full.names = TRUE),
                                 method          = "peaks",   # per-beat peaks; "wavelet" gives a time-frequency ridge

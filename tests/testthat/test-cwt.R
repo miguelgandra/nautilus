@@ -70,3 +70,56 @@ test_that(".cwtRidge builds a spectrogram only when asked, within its column bud
   expect_lte(ncol(s$power), 500)
   expect_equal(nrow(s$power), length(s$freqs))
 })
+
+# ---- prominence floor -------------------------------------------------------------------------------
+# A per-column argmax always returns something. These tests pin the behaviour that separates "there is a
+# resolvable oscillation here" from "there is only background", which is what the floor exists to do.
+
+.rednoise <- function(n, seed = 42) {
+  set.seed(seed)
+  x <- cumsum(rnorm(n))
+  x <- x - as.numeric(stats::filter(x, rep(1 / 401, 401), sides = 2))
+  x[is.na(x)] <- 0
+  x / stats::sd(x)
+}
+
+test_that("the floor withholds a frequency for noise with no oscillation, but keeps a real beat", {
+  fs <- 20; n <- 20000L
+  noise <- .rednoise(n)
+  r_noise <- .cwtRidge(noise, fs, 0.09, 2.75)
+  expect_gt(r_noise$meta$pct_masked_prominence, 50)            # most of a beat-free record is withheld
+  t <- seq_len(n) / fs
+  r_beat <- .cwtRidge(4 * sin(2 * pi * 0.5 * t) + noise, fs, 0.09, 2.75)
+  expect_lt(r_beat$meta$pct_masked_prominence, 5)              # a clear beat is not touched
+  expect_equal(stats::median(r_beat$freq, na.rm = TRUE), 0.5, tolerance = 0.05)
+})
+
+test_that("prominence separates noise from signal, and prominence = 0 restores the old behaviour", {
+  fs <- 20; n <- 20000L
+  noise <- .rednoise(n)
+  t <- seq_len(n) / fs
+  expect_lt(stats::median(.cwtRidge(noise, fs, 0.09, 2.75)$prominence, na.rm = TRUE), 1.5)
+  expect_gt(stats::median(.cwtRidge(4 * sin(2 * pi * 0.5 * t) + noise, fs, 0.09, 2.75)$prominence,
+                          na.rm = TRUE), 4)
+  off <- .cwtRidge(noise, fs, 0.09, 2.75, prominence = 0)
+  expect_equal(off$meta$pct_masked_prominence, 0)
+  expect_false(all(is.na(off$freq)))                           # unguarded: a number for every sample
+})
+
+test_that("freq_raw keeps the unmasked ridge, so band-placement QC survives the floor", {
+  fs <- 20; n <- 20000L
+  r <- .cwtRidge(.rednoise(n), fs, 0.09, 2.75)
+  expect_length(r$freq_raw, n)
+  expect_gt(sum(!is.na(r$freq_raw)), sum(!is.na(r$freq)))      # strictly more retained than reported
+  # every reported sample must also be present in the raw ridge, and with the same value
+  keep <- !is.na(r$freq)
+  expect_equal(r$freq[keep], r$freq_raw[keep])
+})
+
+test_that(".cwtScaleBackground medians away a single-scale peak but follows a slope", {
+  # a spike on a flat background is removed; a monotone ramp is reproduced (so a slope is NOT a peak)
+  LP <- matrix(0, 41, 3); LP[21, ] <- 10
+  expect_equal(max(.cwtScaleBackground(LP, 1:41, 21L)), 0)
+  ramp <- matrix(rep(seq_len(41), 3), 41, 3)
+  expect_equal(.cwtScaleBackground(ramp, 1:41, 21L)[21, 1], 21)
+})

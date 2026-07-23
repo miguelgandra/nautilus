@@ -36,8 +36,16 @@
 #'   several are given, the axis is chosen per individual by \emph{cross-axis frequency consensus} (the
 #'   axis whose dominant in-band frequency is corroborated by another axis, which rejects an axis-isolated
 #'   artefact such as a tow-pendulum swing), falling back to plain in-band power -- with a warning -- when
-#'   no two axes agree. Tail beats are cleanest on the lateral (\code{"sway"}) or yaw axis;
-#'   \code{"surge"}/\code{"heave"} can carry energy at twice the beat frequency and trigger a warning.
+#'   no two axes agree. Which axis carries the beat is species-, tag-placement- and gait-dependent, so no
+#'   axis is prescribed here: the function reports the axis it selected, and flags per individual when
+#'   that axis looks like a 2f harmonic of another candidate (see Details).
+#' @param ridge.prominence Numeric (default 2). Wavelet method only. The factor by which the winning
+#'   wavelet scale must exceed its own local spectral background for the estimate to be reported; below
+#'   it the sample is \code{NA}. A per-column maximum always returns \emph{something}, so without this
+#'   floor a record containing no oscillation yields a confident-looking frequency (for the 1/f-shaped
+#'   background typical of these records, one pinned near \code{min.freq.Hz}). Set \code{0} to disable
+#'   and recover the unguarded behaviour. See Details for how the background is estimated and why a peak
+#'   sitting exactly on a band edge cannot be established.
 #' @param min.amplitude Numeric or NULL (default). An absolute in-band amplitude-envelope threshold, in
 #'   the units of \code{motion.col}, above which a sample is classified as actively swimming. Supplying
 #'   it enables the swimming/gliding call (\code{tbf_swimming}); with \code{NULL} that call is withheld
@@ -119,6 +127,10 @@
 #' oscillation may contaminate the lateral axis and bias the reported frequency, whichever axis is used.
 #' The chosen axis, its selection basis (\code{single}/\code{consensus}/\code{power}), the per-axis peak
 #' frequencies and any harmonic alternative are recorded in the processing metadata and the console log.
+#' All of these QC warnings -- no axis consensus, possible harmonic, band-edge pile-up, towed tag -- are
+#' \emph{grouped}: each is raised once per run, with the shared diagnosis and recommendation stated once
+#' and one bullet naming each affected deployment, so a large batch does not bury the console (nor lose
+#' warnings past R's 50-warning buffer).
 #'
 #' \strong{Band-pass filtering.} A Butterworth band-pass of order \code{filter.order} is applied within
 #' continuous data segments before detection, isolating the tail-beat band and removing low-frequency
@@ -209,6 +221,7 @@ calculateTailBeats <- function(data,
                                min.amplitude = NULL,
                                smooth.window = 10,
                                max.interp.gap = 10,
+                               ridge.prominence = 2,
                                plot = FALSE,
                                plot.file = NULL,
                                plot.wavelet = TRUE,
@@ -316,17 +329,17 @@ calculateTailBeats <- function(data,
 
   # validate bandpass filter parameters
   .assert_flag(bandpass.filter, "bandpass.filter")
+  .assert_number(ridge.prominence, "ridge.prominence", min = 0)
 
   # default band edges (also used for axis selection even when bandpass.filter = FALSE)
   if (is.null(filter.low.freq))  filter.low.freq  <- min.freq.Hz * 0.9
   if (is.null(filter.high.freq)) filter.high.freq <- max.freq.Hz * 1.1
 
-  # tail beats appear most cleanly on the lateral (sway) / yaw axes; surge/heave often carry energy
-  # at twice the beat frequency, which can bias the estimate
-  if (any(motion.col %in% c("surge", "heave"))) {
-    cli::cli_warn(c("{.arg motion.col} includes {.val {intersect(motion.col, c('surge','heave'))}}.",
-                    "i" = "Tail beats are cleanest on {.val sway} (or yaw); surge/heave can report ~2x the true frequency."))
-  }
+  # NOTE: no axis is warned about up front. Which axis carries the beat depends on the species, the tag
+  # placement and the gait (in this package's own manta validation the wingbeat sat in surge, not sway),
+  # so a blanket "sway is best" warning would be wrong as often as right. The 2f concern is handled where
+  # it can actually be measured: cross-axis consensus during selection, plus the per-individual harmonic
+  # flag raised from the data further below.
 
   if (bandpass.filter) {
     # validate filter frequencies
@@ -382,6 +395,8 @@ calculateTailBeats <- function(data,
   if (!is.null(output.dir)) hdr_bullets <- c(hdr_bullets, paste0("Output: ", output.dir))
   # header config, one fact per line: the method(s) - naming BOTH and which is primary when cross-checking -
   # then the fixed analysis band and smoothing. These are shown once here, never repeated per deployment.
+  # The swimming line only appears when classification is OFF: it is a run-wide setting, so stating it once
+  # here is clearer than repeating "not classified" under every deployment.
   .log_header(lvl, "calculateTailBeats",
               paste0("Estimating tail beats from ", paste(motion.col, collapse = " or ")),
               bullets = hdr_bullets,
@@ -391,7 +406,8 @@ calculateTailBeats <- function(data,
                 else paste0("Method: ", method),
                 if (bandpass.filter) sprintf("Bandpass: %g \u2013 %g Hz", filter.low.freq, filter.high.freq)
                 else "Bandpass: none",
-                if (smooth.window > 0) sprintf("Smoothing: %g s moving average", smooth.window) else "Smoothing: none"))
+                if (smooth.window > 0) sprintf("Smoothing: %g s moving average", smooth.window) else "Smoothing: none",
+                if (is.null(min.amplitude)) "Swimming: not classified (no min.amplitude)"))
 
   # graphics setup (active device for `plot`, single multi-page PDF for `plot.file`)
   caller_dev <- grDevices::dev.cur()
@@ -409,9 +425,15 @@ calculateTailBeats <- function(data,
   # initialize list to hold results
   data_list <- vector("list", n_animals)
   saved <- vector("list", n_animals)
-  towed_ids <- character(0)   # collected across the loop, warned once at the end (see below)
+  # axis/QC caveats collected across the loop and each warned ONCE at the end (see the end-of-run block).
+  # `towed_ids` holds bare IDs (the caveat is the same sentence for all of them); the other two hold
+  # pre-formatted bullets, because there the per-deployment detail is what makes the warning actionable.
+  towed_ids      <- character(0)
+  disagree_items <- character(0)
+  harmonic_items <- character(0)
   # per-deployment stats, filled in the loop and rolled up into the final SUMMARY block (NA where a
   # deployment produced no estimate). Vectors, index-aligned with the deployment order.
+  co_id     <- rep(NA_character_, n_animals)   # deployment ID (for the grouped end-of-run warnings)
   co_freq   <- rep(NA_real_,      n_animals)   # median tail-beat frequency
   co_axis   <- rep(NA_character_, n_animals)   # selected motion axis
   co_reason <- rep(NA_character_, n_animals)   # how the axis was chosen ("consensus" / "power")
@@ -419,6 +441,7 @@ calculateTailBeats <- function(data,
   co_agree  <- rep(NA_real_,      n_animals)   # method agreement (two backends), as a fraction
   co_swim   <- rep(NA_real_,      n_animals)   # fraction swimming (only when classified)
   co_edge   <- rep(NA_real_,      n_animals)   # fraction of estimates sitting on a band edge
+  co_unres  <- rep(NA_real_,      n_animals)   # wavelet: fraction withheld for lack of peak prominence
 
 
   ##############################################################################
@@ -530,6 +553,8 @@ calculateTailBeats <- function(data,
 
     # get ID
     id <- unique(individual_data[[id.col]])[1]
+    co_id[i] <- id
+    alt_edge <- NULL; alt_unres <- NULL      # per-deployment; never inherited from the previous one
 
     # per-individual sub-header (detailed level only)
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals))
@@ -566,27 +591,33 @@ calculateTailBeats <- function(data,
       next
     }
 
-    # Surface two axis-related risks (both are warnings, so they fire regardless of verbosity). (1) A towed
-    # tag can carry a tow-pendulum swing that dominates and biases the lateral (sway/yaw) axis whether or
-    # not it was auto-selected - the same caveat for every towed tag, so it is COLLECTED here and warned
-    # once after the loop rather than repeated per deployment. (2) When several candidate axes were supplied
-    # but none corroborate each other's dominant frequency, the power-based pick may be an artefact; that
-    # one carries per-deployment specifics (which axes, which frequencies), so it stays inline.
+    # Collect the three axis-related risks here and raise each ONCE after the loop (see the end-of-run
+    # block). All three share a diagnosis and a recommendation that do not vary by deployment, so warning
+    # per tag would print the same paragraphs 50 times on a large batch - and R discards warnings past the
+    # first 50, which would drop the tail of a genuinely long list. What DOES vary per deployment (which
+    # axes, which frequencies, which alternative) is kept, as one bullet each.
+    # (1) A towed tag can carry a tow-pendulum swing that dominates and biases the lateral (sway/yaw) axis,
+    #     whether or not that axis was auto-selected.
     dep_type <- .getMeta(individual_data)$deployment$deployment_type
     if (!is.null(dep_type) && length(dep_type) == 1L && !is.na(dep_type) && tolower(dep_type) == "towed") {
       towed_ids <- c(towed_ids, id)
     }
-    if (isFALSE(sel$agree)) {
-      freq_str <- paste(sprintf("%s %.2f Hz", names(sel$freqs), sel$freqs), collapse = ", ")
-      cli::cli_warn(c("{.val {id}}: candidate motion axes disagree on their dominant frequency ({freq_str}).",
-        "i" = "Chose {.val {axis}} on in-band power alone, but no two axes corroborate one another, so the estimate may reflect an artefact (e.g. tag wobble) rather than locomotion."))
+    axis_hz <- function(a) {                        # this deployment's dominant frequency on axis `a`
+      v <- suppressWarnings(sel$freqs[[a]])
+      if (length(v) == 1L && is.finite(v)) sprintf("%.2f Hz", v) else "n/a"
     }
-    # A possible 2f-harmonic pick: an axis peaks at ~half the chosen frequency. Cannot be resolved from the
-    # signal (a lateral swimmer's fundamental is single-axis with a 2f pair; a ray wingbeat's fundamental is
-    # the pair) so we surface it rather than guess -- the chosen frequency stands, the user decides.
+    # (2) Several candidate axes were supplied but none corroborate each other's dominant frequency, so the
+    #     power-based pick may be an artefact rather than locomotion.
+    if (isFALSE(sel$agree)) {
+      disagree_items <- c(disagree_items, sprintf("%s: chose %s (%s)", id, axis,
+        paste(sprintf("%s %.2f Hz", names(sel$freqs), sel$freqs), collapse = ", ")))
+    }
+    # (3) A possible 2f-harmonic pick: an axis peaks at ~half the chosen frequency. Cannot be resolved from
+    # the signal (a lateral swimmer's fundamental is single-axis with a 2f pair; a ray wingbeat's fundamental
+    # is the pair) so we surface it rather than guess -- the chosen frequency stands, the user decides.
     if (!is.na(sel$harmonic_alt)) {
-      cli::cli_warn(c("{.val {id}}: the chosen axis {.val {axis}} may be a 2f harmonic.",
-        "i" = "Axis {.val {sel$harmonic_alt}} peaks near half its frequency; for an animal that beats on a single axis (a laterally-swimming fish) that is likely the true tail-beat axis. Re-run with {.code motion.col = \"{sel$harmonic_alt}\"} to compare."))
+      harmonic_items <- c(harmonic_items, sprintf("%s: chose %s at %s; %s peaks at %s", id, axis,
+                                                  axis_hz(axis), sel$harmonic_alt, axis_hz(sel$harmonic_alt)))
     }
 
     # diagnostics (detailed level): input shape, the selected axis (and why), and the sampling-rate
@@ -628,6 +659,7 @@ calculateTailBeats <- function(data,
         min.freq.Hz = min.freq.Hz, max.freq.Hz = max.freq.Hz, bandpass.filter = bandpass.filter,
         filter.low.freq = filter.low.freq, filter.high.freq = filter.high.freq, filter.order = filter.order,
         min.amplitude = min.amplitude, smooth.window = smooth.window, max.interp.gap = max.interp.gap,
+        ridge.prominence = ridge.prominence,
         plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
         draw.devices = draw_devices, lvl = lvl)
     }
@@ -653,8 +685,11 @@ calculateTailBeats <- function(data,
                 filter.low.freq = filter.low.freq, filter.high.freq = filter.high.freq,
                 filter.order = filter.order, min.amplitude = min.amplitude,
                 smooth.window = smooth.window, max.interp.gap = max.interp.gap,
+                ridge.prominence = ridge.prominence,
                 plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
                 draw.devices = draw_devices, lvl = 0L)
+      alt_edge <- attr(alt, "tb_ridge_edge", exact = TRUE)
+      alt_unres <- attr(alt, "tb_unresolved", exact = TRUE)
       data.table::set(data_list[[i]], j = "tbf_hz_alt", value = alt$tbf_hz)
       data.table::set(data_list[[i]], j = "tbf_agree",
                       value = .tbAgreement(data_list[[i]]$tbf_hz, alt$tbf_hz))
@@ -682,15 +717,14 @@ calculateTailBeats <- function(data,
     # implies an out-of-band frequency. Only the former leaves a pile-up to find, so looking at the
     # primary alone would miss it whenever peak detection is primary.
     edges <- c(.tbEdgeOccupancy(tbf_v, min.freq.Hz, max.freq.Hz),
-               if (!is.null(res_i$tbf_hz_alt)) .tbEdgeOccupancy(res_i$tbf_hz_alt, min.freq.Hz, max.freq.Hz))
+               if (!is.null(res_i$tbf_hz_alt)) .tbEdgeOccupancy(res_i$tbf_hz_alt, min.freq.Hz, max.freq.Hz),
+               # the wavelet's own pre-mask ridge, whichever run produced it (primary or cross-check)
+               attr(data_list[[i]], "tb_ridge_edge", exact = TRUE), alt_edge)
     edges <- edges[is.finite(edges)]                  # neither track estimated anything: nothing to judge
     edge_occ <- if (length(edges)) max(edges) else NA_real_
     agree <- if (!is.null(res_i$tbf_agree)) mean(res_i$tbf_agree, na.rm = TRUE) else NA_real_
-    if (isTRUE(edge_occ > 0.05)) {
-      cli::cli_warn(c("{round(100 * edge_occ, 1)}% of tail-beat estimates for ID {.val {id}} sit on a band edge.",
-                      "i" = "Estimates piling up against an edge suggest the true frequency is outside {.val {min.freq.Hz}}-{.val {max.freq.Hz}} Hz.",
-                      "i" = "Widen the band, or check {.arg motion.col} and the species' expected range."))
-    }
+    # NOTE: edge occupancy is only RECORDED here. The diagnosis and the fix are identical for every
+    # affected deployment, so they are raised once after the loop (see below) instead of once per tag.
 
     # record this deployment's stats for the cohort roll-up (median is NA when nothing was estimated)
     co_freq[i]   <- stats::median(tbf_v, na.rm = TRUE)
@@ -700,6 +734,7 @@ calculateTailBeats <- function(data,
     co_agree[i]  <- agree
     co_swim[i]   <- swim
     co_edge[i]   <- edge_occ
+    co_unres[i]  <- attr(data_list[[i]], "tb_unresolved", exact = TRUE) %||% alt_unres %||% NA_real_
 
     meta <- .getMeta(res_i)
     if (!is.null(meta)) {
@@ -711,6 +746,7 @@ calculateTailBeats <- function(data,
                                 median_amplitude = if (!is.null(amp_v)) round(stats::median(amp_v, na.rm = TRUE), 3) else NA_real_,
                                 pct_swimming = round(100 * swim, 1),
                                 pct_edge = round(100 * edge_occ, 1),
+                                pct_unresolved = if (is.na(co_unres[i])) NA_real_ else round(100 * co_unres[i], 1),
                                 pct_agree = if (is.na(agree)) NA_real_ else round(100 * agree, 1))
       res_i <- .restoreMeta(res_i, meta)
     }
@@ -728,32 +764,47 @@ calculateTailBeats <- function(data,
       b <- cli::symbol$bullet
       med_f <- stats::median(tbf_v, na.rm = TRUE)
       if (lvl >= 2L) {
+        # with two backends the estimates are two distinct answers, not one answer plus a footnote, so each
+        # gets its own frequency line qualified by the method that produced it. The method qualifier is
+        # dropped in single-method runs, where it would only add noise.
+        has_alt <- length(methods) > 1L && !is.null(res_i$tbf_hz_alt) && any(!is.na(res_i$tbf_hz_alt))
         fr <- range(tbf_v, na.rm = TRUE)
-        .log_detail(lvl, sprintf("frequency: median %.2f Hz (%.2f \u2013 %.2f Hz)", med_f, fr[1], fr[2]))
-        # when both backends ran, surface the cross-check: how often they concur (samples within 10%), the
-        # secondary method's own median, and the typical per-sample gap - the payoff of running both.
-        if (length(methods) > 1L && !is.na(agree) && !is.null(res_i$tbf_hz_alt)) {
-          alt_med  <- stats::median(res_i$tbf_hz_alt, na.rm = TRUE)
-          diff_med <- stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
-          .log_detail(lvl, sprintf("agreement: %.0f%% \u00b7 %s median %.2f Hz (typical diff %.2f Hz)",
-                                   100 * agree, methods[2], alt_med, diff_med))
+        .log_detail(lvl, sprintf("frequency%s: median %.2f Hz (%.2f \u2013 %.2f Hz)",
+                                 if (has_alt) paste0(" (", methods[1], ")") else "", med_f, fr[1], fr[2]))
+        if (has_alt) {
+          alt_r <- range(res_i$tbf_hz_alt, na.rm = TRUE)
+          .log_detail(lvl, sprintf("frequency (%s): median %.2f Hz (%.2f \u2013 %.2f Hz)", methods[2],
+                                   stats::median(res_i$tbf_hz_alt, na.rm = TRUE), alt_r[1], alt_r[2]))
         }
         if (!is.null(amp_v) && any(is.finite(amp_v))) {
           ar <- range(amp_v, na.rm = TRUE)
           # the unit follows the axis: hardcoding "g" mislabels a gyro channel as an accelerometer one
           u <- .tbAxisUnits(axis)
-          .log_detail(lvl, sprintf("amplitude: median %.2f %s (%.2f \u2013 %.2f %s)",
+          # only the primary method's amplitude is retained (the alt backend stores frequency only), so the
+          # qualifier makes explicit which estimate this envelope belongs to.
+          .log_detail(lvl, sprintf("amplitude%s: median %.2f %s (%.2f \u2013 %.2f %s)",
+                                   if (has_alt) paste0(" (", methods[1], ")") else "",
                                    stats::median(amp_v, na.rm = TRUE), u, ar[1], ar[2], u))
         }
-        # one line for swimming, merging the old "activity" (how it was classified) and "behaviour"
-        # (the resulting %). `swim` is NA exactly when no classification ran (min.amplitude unset), so the
-        # old, confusing "NA% swimming" becomes an explicit "not classified".
-        .log_detail(lvl, if (is.na(swim)) "swimming: not classified (set min.amplitude)"
-                         else sprintf("swimming: %.0f%%", 100 * swim))
+        # The wavelet withholds a sample when no scale stands above the local background. A large share
+        # is the finding itself -- the record has no resolvable oscillation for much of its length -- and
+        # it distinguishes that from the other reason two methods disagree (a competing real component).
+        if (!is.na(co_unres[i]) && co_unres[i] > 0.05)
+          .log_detail(lvl, sprintf("unresolved: %.0f%% of the record has no in-band peak (wavelet)",
+                                   100 * co_unres[i]))
+        # with the per-method medians already stated above, this line carries only the comparison itself:
+        # how often the two backends concur (samples within 10%) and the typical per-sample gap.
+        if (has_alt && !is.na(agree)) {
+          diff_med <- stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
+          .log_detail(lvl, sprintf("agreement: %.0f%% \u00b7 typical diff %.2f Hz", 100 * agree, diff_med))
+        }
+        # `swim` is NA exactly when no classification ran (min.amplitude unset) - a run-wide fact already
+        # stated once in the header, so nothing is reported per deployment in that case.
+        if (!is.na(swim)) .log_detail(lvl, sprintf("swimming: %.0f%%", 100 * swim))
         if (!is.null(saved_to)) .log_ok(lvl, "saved ", basename(saved_to)) else .log_ok(lvl, id, " processed")
       } else {
-        swim_txt <- if (is.na(swim)) "swimming n/a" else paste0(round(100 * swim, 0), "% swimming")
-        .log_ok(lvl, id, " ", b, " ", axis, " ", b, " median ", round(med_f, 2), " Hz ", b, " ", swim_txt,
+        .log_ok(lvl, id, " ", b, " ", axis, " ", b, " median ", round(med_f, 2), " Hz",
+                if (!is.na(swim)) paste0(" ", b, " ", round(100 * swim, 0), "% swimming"),
                 if (!is.null(saved_to)) paste0(" ", b, " saved ", basename(saved_to)))
       }
     } else {
@@ -762,12 +813,50 @@ calculateTailBeats <- function(data,
     .log_gap(lvl)
   }
 
-  # one consolidated tow-pendulum caveat for every towed deployment, rather than an identical warning per
-  # tag (which floods the console on a large batch). Fires regardless of verbosity, like any warning.
+  # End-of-run caveats. All fire regardless of verbosity (they are warnings) and each is raised ONCE for
+  # the whole batch: the diagnosis and the recommendation are identical for every affected deployment, so
+  # repeating them per tag only floods the console - and past 50 warnings R starts discarding them. They
+  # are ordered by how directly they undermine the number that was reported: an axis chosen without
+  # corroboration, then a frequency that may be double the true one, then a band that may be misplaced,
+  # then the standing tow caveat.
+
+  # (1) No cross-axis corroboration: the pick rests on in-band power alone.
+  .warn_grouped(
+    "Candidate motion axes disagree on their dominant frequency in {length(disagree_items)} deployment{?s}.",
+    items = disagree_items,
+    hints = c("The axis with the most in-band power was chosen, but no other axis corroborates it, so the estimate may reflect an artefact (e.g. tag wobble) rather than locomotion.",
+              "Compare the per-axis frequencies below against the species' expected range before using these values."))
+
+  # (2) Possible 2f-harmonic pick. The alternative axis differs per deployment, so it is named in the
+  # bullet and the hint stays generic - the ambiguity itself cannot be resolved from the signal.
+  .warn_grouped(
+    "The selected axis may be a 2f harmonic in {length(harmonic_items)} deployment{?s}.",
+    items = harmonic_items,
+    hints = c("Another axis peaks near half the chosen frequency; for an animal that beats on a single axis (a laterally-swimming fish) that axis is likely the true tail-beat axis.",
+              "Re-run with {.arg motion.col} set to the alternative named below to compare."))
+
+  # (3) Band-edge pile-up. Here the per-deployment magnitude does carry information (a tag at 60% is a
+  # different problem from one at 6%), so each affected deployment gets a bullet, worst first.
+  edge_hit <- which(!is.na(co_edge) & co_edge > 0.05)
+  if (length(edge_hit)) {
+    edge_hit <- edge_hit[order(co_edge[edge_hit], decreasing = TRUE)]
+    .warn_grouped(
+      "Tail-beat estimates in {length(edge_hit)} deployment{?s} pile up against the frequency band limits ({.val {min.freq.Hz}}-{.val {max.freq.Hz}} Hz).",
+      items = sprintf("%s: %.1f%% of estimates at a band edge", co_id[edge_hit], 100 * co_edge[edge_hit]),
+      hints = c("A pile-up at an edge suggests the true frequency lies outside the searched range.",
+                "Widen the band via {.arg min.freq.Hz} / {.arg max.freq.Hz}, or check {.arg motion.col} and the species' expected range."))
+  }
+
+  # (4) Tow-pendulum caveat. Unlike the others there is no per-deployment detail to report - the caveat is
+  # the same sentence for every towed tag - so the IDs are named only when being towed distinguishes a
+  # SUBSET of the batch. When every deployment is towed the list identifies nothing and is dropped.
   if (length(towed_ids)) {
+    subject <- if (n_animals == 1L) "Deployment {.val {towed_ids}} is towed"
+               else if (length(towed_ids) == n_animals) "All {n_animals} deployments are towed"
+               else "{length(towed_ids)} of {n_animals} deployments are towed ({.val {towed_ids}})"
     cli::cli_warn(c(
-      "{length(towed_ids)} towed deployment{?s} ({.val {towed_ids}}): a tow-pendulum oscillation can dominate the lateral (sway/yaw) axis and bias the reported tail-beat frequency.",
-      "i" = "Treat these as estimates and cross-check the axes."))
+      paste0(subject, ": a tow-pendulum oscillation can dominate the lateral (sway/yaw) axis and bias the reported tail-beat frequency."),
+      "i" = "Treat these frequencies as estimates and cross-check against the other motion axes where available."))
   }
 
 
@@ -796,8 +885,8 @@ calculateTailBeats <- function(data,
 #'
 #' The outcome tally and the cohort frequency distribution are always shown; the axis-usage tally, method
 #' agreement, swimming, and the QC-flag rollup appear only when they apply - so a clean run stays short and
-#' a messy one surfaces exactly what needs a look. Counts, not IDs: the per-deployment warnings already
-#' name the individual tags (towed, harmonic, band-edge), so this is the cohort overview, not a repeat.
+#' a messy one surfaces exactly what needs a look. Counts, not IDs: the grouped end-of-run warnings already
+#' name the affected tags, so this is the cohort overview, not a repeat.
 #'
 #' @param n_total Number of deployments the run was asked to process.
 #' @param freq,agree,swim,edge Per-deployment numeric vectors (median frequency; method-agreement fraction;
@@ -882,7 +971,7 @@ calculateTailBeats <- function(data,
 #' @return The input data.table with `tbf_hz` and `tbf_amplitude` added.
 #' @keywords internal
 #' @noRd
-.runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col,
+.runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col, ridge.prominence = 2,
                     min.freq.Hz, max.freq.Hz, bandpass.filter, filter.low.freq,
                     filter.high.freq, filter.order, min.amplitude, smooth.window, max.interp.gap,
                     plot.wavelet, plot.diagnostic, draw.devices = integer(0), lvl = 1L) {
@@ -910,7 +999,14 @@ calculateTailBeats <- function(data,
         else motion - mean(motion, na.rm = TRUE)
 
   want_spec <- isTRUE(plot.wavelet) && length(draw.devices) > 0
-  r <- .cwtRidge(bp, fs, min.freq.Hz, max.freq.Hz, spectrogram = want_spec)
+  r <- .cwtRidge(bp, fs, min.freq.Hz, max.freq.Hz, prominence = ridge.prominence, spectrogram = want_spec)
+
+  # Band-placement QC travels on the UNMASKED ridge. An out-of-band beat leaks through the filter and
+  # pins the ridge to an edge; the prominence floor then (correctly) refuses to report it, so reading
+  # edge occupancy off the masked column would silently retire the band-placement check. Published as
+  # attributes rather than columns: they are per-deployment scalars, not per-sample data.
+  data.table::setattr(dt, "tb_ridge_edge", .tbEdgeOccupancy(r$freq_raw, min.freq.Hz, max.freq.Hz))
+  data.table::setattr(dt, "tb_unresolved", r$meta$pct_masked_prominence / 100)
 
   # Undo the band-pass attenuation before smoothing, at each sample's own estimated frequency. The
   # ridge is confined to [min.freq.Hz, max.freq.Hz], over which this correction is bounded, so it
