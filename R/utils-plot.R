@@ -161,21 +161,160 @@
 }
 
 
-#' Draw a light land/coastline over the current lon/lat panel from `maps`/`mapdata`, if installed.
+#' Resolve the `bathy.contours` argument to contour levels (or NULL when off).
 #'
-#' A graceful, silent no-op when `maps` is absent (so the geographic plotters keep working without the
-#' Suggests). Everything is drawn directly in WGS84 lon/lat - no reprojection - so it co-registers with
-#' the data primitives. Uses the high-resolution `worldHires` database when `mapdata` is available,
-#' otherwise the coarser `world`.
+#' `FALSE`/`NULL` -> off (returns NULL); `TRUE` -> on with auto-chosen isobaths (returns `numeric(0)`,
+#' a sentinel the drawer reads as "pick pretty levels"); a numeric vector -> those explicit isobath
+#' depths (negative metres). Keeping the toggle and the levels in one argument follows the value-or-data
+#' rule shared with `basemap`/`coastline`.
 #' @keywords internal
 #' @noRd
-.drawCoastline <- function(lon_range, lat_range, land = "#D9D2C5", border = "#B8AE9C") {
-  if (!requireNamespace("maps", quietly = TRUE)) return(invisible(NULL))
-  db <- if (requireNamespace("mapdata", quietly = TRUE)) "worldHires" else "world"
-  tryCatch(
-    suppressWarnings(maps::map(db, add = TRUE, fill = TRUE, col = land, border = border,
-                               lwd = 0.4, xlim = lon_range, ylim = lat_range)),
-    error = function(e) invisible(NULL))
+.resolveBathyContours <- function(x) {
+  if (is.null(x) || isFALSE(x)) return(NULL)
+  if (isTRUE(x)) return(numeric(0))
+  if (is.numeric(x) && length(x) >= 1L && all(is.finite(x))) return(as.numeric(x))
+  .abort(c("{.arg bathy.contours} must be {.code FALSE}, {.code TRUE}, or a numeric vector of depths.",
+           "i" = "e.g. {.code bathy.contours = c(-50, -200, -1000)}, or {.code seq(-200, -4000, by = -200)} for a regular interval."))
+}
+
+
+#' Resolve and validate the `basemap` canvas keyword.
+#'
+#' Phase 1 implements the vector canvases only: `"land"` (filled coastline + sea) and `"none"` (blank
+#' sea). The raster canvases (`"bathymetry"`, `"satellite"`) and a user-supplied raster are reserved and
+#' error cleanly, pointing at the vector features that ARE available. `choices` differs by function
+#' (`filterLocations` does not offer a bathymetry canvas).
+#' @keywords internal
+#' @noRd
+.resolveBasemap <- function(basemap, choices) {
+  # a non-character basemap is a user-supplied raster (reserved); a character vector - including the
+  # multi-element formal default - is resolved by match.arg (which picks the first when unspecified)
+  if (!is.character(basemap))
+    .abort(c("A user-supplied raster {.arg basemap} is not available yet.",
+             "i" = "Currently supported: {.val land} (default) and {.val none}.",
+             "i" = "For a high-resolution coastline use {.arg coastline}; for depth contours use {.arg bathy.contours}."))
+  bm <- match.arg(basemap, choices)
+  if (!bm %in% c("land", "none"))
+    .abort(c("{.arg basemap = {.val {bm}}} is not available yet (reserved for a later release).",
+             "i" = "Use {.val land} (default) or {.val none} for now.",
+             "i" = if (identical(bm, "bathymetry")) "For depth contours on the current map, set {.arg bathy.contours = TRUE}."
+                   else "For a high-resolution coastline, set {.arg coastline = \"high\"} or pass a custom coastline."))
+  bm
+}
+
+
+#' Resolve the `coastline` argument to a drawable spec ONCE per run (and hint if it degrades).
+#'
+#' `coastline` is polymorphic (the value-or-data rule shared with `basemap`): a keyword selecting a
+#' bundled vector source by resolution, or a user-supplied coastline of the appropriate type.
+#'   \itemize{
+#'     \item `"auto"` (default) - the highest-resolution installed source: `mapdata::worldHires` if
+#'       present, else the coarse `maps::world` with a one-time hint to install \pkg{mapdata}, else none.
+#'     \item `"high"` - force `worldHires`; errors (with an install hint) if \pkg{mapdata} is absent,
+#'       because the caller asked for it explicitly.
+#'     \item `"low"` - force the coarse `maps::world`.  `"none"` - draw no coastline.
+#'     \item a custom coastline: an \pkg{sf} object, a two-column lon/lat `data.frame`/`matrix`
+#'       (NA-separated rings), or a path to a spatial file (`.rds`, or anything \pkg{sf} can read).
+#'   }
+#' The one-time hint (and any explicit-request error) is emitted HERE, so it fires once per run rather
+#' than once per panel. Returns a spec consumed by `.drawCoastline()`.
+#' @keywords internal
+#' @noRd
+.resolveCoastline <- function(coastline = "auto", lvl = 0L) {
+  # custom coastline (anything that is not one of the keywords)
+  if (!(is.character(coastline) && length(coastline) == 1L &&
+        coastline %in% c("auto", "high", "low", "none"))) {
+    return(list(kind = "custom", polys = .coastlineToPolys(coastline)))
+  }
+  if (identical(coastline, "none")) return(list(kind = "none"))
+
+  has_maps    <- requireNamespace("maps", quietly = TRUE)
+  has_mapdata <- requireNamespace("mapdata", quietly = TRUE)
+
+  if (identical(coastline, "high")) {
+    if (!has_mapdata)
+      .abort(c("{.arg coastline = \"high\"} needs the {.pkg mapdata} package.",
+               "i" = "Install it with {.code install.packages(\"mapdata\")}, use {.arg coastline = \"low\"}, or pass a custom coastline."))
+    return(list(kind = "maps", db = "worldHires"))
+  }
+  if (identical(coastline, "low")) {
+    if (!has_maps) return(list(kind = "none"))
+    return(list(kind = "maps", db = "world"))
+  }
+  # "auto": prefer worldHires, fall back to the coarse world with a one-time hint, else nothing
+  if (has_mapdata) return(list(kind = "maps", db = "worldHires"))
+  if (has_maps) {
+    # plain text: .log_info wraps its message in a glue span, so cli class markup would print literally
+    .log_info(lvl, "coastline is low-resolution (maps::world); install 'mapdata' for ",
+              "high-resolution coastlines, or pass a custom coastline via `coastline=`.")
+    return(list(kind = "maps", db = "world"))
+  }
+  list(kind = "none")
+}
+
+
+#' Normalise a user-supplied coastline to a list of lon/lat polygon rings (NA-separated within each).
+#' @keywords internal
+#' @noRd
+.coastlineToPolys <- function(x) {
+  # a path: read it first, then re-dispatch on the loaded object
+  if (is.character(x) && length(x) == 1L) {
+    if (!file.exists(x)) .abort("Custom {.arg coastline} file not found: {.path {x}}.")
+    obj <- if (grepl("\\.rds$", x, ignore.case = TRUE)) readRDS(x)
+           else if (requireNamespace("sf", quietly = TRUE)) sf::st_read(x, quiet = TRUE)
+           else .abort(c("Reading a spatial coastline file needs the {.pkg sf} package.",
+                         "i" = "Install {.pkg sf}, or pass an {.pkg sf} object / a lon-lat data.frame."))
+    return(.coastlineToPolys(obj))
+  }
+  # an sf / sfc object -> coordinate matrix grouped by polygon
+  if (inherits(x, c("sf", "sfc", "sfg"))) {
+    if (!requireNamespace("sf", quietly = TRUE))
+      .abort("A custom {.arg coastline} of class {.cls sf} needs the {.pkg sf} package installed.")
+    co <- sf::st_coordinates(sf::st_geometry(x))
+    grp <- interaction(as.data.frame(co)[, setdiff(colnames(co), c("X", "Y")), drop = FALSE], drop = TRUE)
+    parts <- split(as.data.frame(co[, c("X", "Y")]), grp)
+    m <- do.call(rbind, lapply(parts, function(p) rbind(as.matrix(p), c(NA, NA))))
+    return(list(unname(m)))
+  }
+  # a data.frame / matrix of lon,lat (NA rows separate rings)
+  d <- as.data.frame(x)
+  lon <- .pickCol(d, c("lon", "longitude", "x")); lat <- .pickCol(d, c("lat", "latitude", "y"))
+  if (is.null(lon) || is.null(lat)) {
+    if (ncol(d) < 2L) .abort("A custom {.arg coastline} data.frame/matrix needs lon and lat columns.")
+    lon <- 1L; lat <- 2L
+  }
+  list(unname(as.matrix(d[, c(lon, lat)])))
+}
+
+#' First data.frame column whose (lower-cased) name matches one of `cands`; NULL if none.
+#' @keywords internal
+#' @noRd
+.pickCol <- function(d, cands) {
+  hit <- which(tolower(names(d)) %in% cands)
+  if (length(hit)) hit[1] else NULL
+}
+
+
+#' Draw a resolved coastline spec over the current lon/lat panel. A silent no-op for `kind = "none"`.
+#'
+#' Everything is drawn directly in WGS84 lon/lat - no reprojection - so it co-registers with the data
+#' primitives, and the panel clips it to the visible extent.
+#' @keywords internal
+#' @noRd
+.drawCoastline <- function(lon_range, lat_range, spec = NULL, land = "#D9D2C5", border = "#B8AE9C") {
+  if (is.null(spec)) spec <- .resolveCoastline("auto")     # back-compat default when no spec supplied
+  if (identical(spec$kind, "none")) return(invisible(NULL))
+  if (identical(spec$kind, "maps")) {
+    tryCatch(
+      suppressWarnings(maps::map(spec$db, add = TRUE, fill = TRUE, col = land, border = border,
+                                 lwd = 0.4, xlim = lon_range, ylim = lat_range)),
+      error = function(e) invisible(NULL))
+    return(invisible(NULL))
+  }
+  # custom rings
+  for (m in spec$polys)
+    tryCatch(graphics::polygon(m[, 1], m[, 2], col = land, border = border, lwd = 0.4),
+             error = function(e) invisible(NULL))
   invisible(NULL)
 }
 

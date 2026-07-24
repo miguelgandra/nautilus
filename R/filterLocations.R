@@ -80,6 +80,11 @@
 #' @param plot.file Character. Path to a single multi-page PDF for the diagnostic maps. The parent
 #'   directory must already exist; must end in `.pdf`. `NULL` (default) writes no file. Independent of
 #'   `plot`.
+#' @param basemap The diagnostic-map background canvas: `"land"` (default; filled coastline over a flat
+#'   sea) or `"none"` (blank sea). `"satellite"` is reserved for a later release and currently errors.
+#' @param coastline Which vector coastline to draw when `basemap = "land"`: `"auto"` (default), `"high"`,
+#'   `"low"`, `"none"`, or a custom coastline (\pkg{sf} object, lon/lat `data.frame`/`matrix`, or file
+#'   path). See \code{\link{plotTracks}} for the full description of the resolution ladder.
 #' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
 #'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
 #'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
@@ -127,6 +132,8 @@ filterLocations <- function(data,
                             deploy.lat.col = "deploy_lat",
                             plot = FALSE,
                             plot.file = NULL,
+                            basemap = c("land", "satellite", "none"),
+                            coastline = "auto",
                             return.data = TRUE,
                             output.dir = NULL,
                             output.suffix = NULL,
@@ -158,6 +165,12 @@ filterLocations <- function(data,
   .assert_number(max.distance.km, "max.distance.km", min = 0, null_ok = TRUE)
   .assert_count(min.satellites, "min.satellites", min = 1L, null_ok = TRUE)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")   # fail-fast: parent dir must exist
+  # diagnostic-map background: only the vector "land"/"none" are live; "satellite" errors cleanly (Phase 2)
+  basemap <- .resolveBasemap(basemap, c("land", "satellite", "none"))
+  # resolve the coastline only when a map is actually drawn, so the low-res hint never fires on a
+  # filter-only run (plot = FALSE); a silent no-op otherwise
+  coast_spec <- if ((plot || !is.null(plot.file)) && identical(basemap, "land"))
+                  .resolveCoastline(coastline, lvl) else list(kind = "none")
   .assert_dir(output.dir, "output.dir")                        # fail-fast: must exist
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
   .assert_compress(compress)
@@ -347,7 +360,7 @@ filterLocations <- function(data,
     to_draw <- Filter(function(p) !is.null(p) && any(p$removed), payloads)
     if (length(to_draw)) {
       draw <- function(to.file = FALSE, unicode = TRUE) {
-        for (p in to_draw) .plotLocationPanel(p, unicode = unicode)
+        for (p in to_draw) .plotLocationPanel(p, coast_spec = coast_spec, unicode = unicode)
       }
       .renderToDevices(draw, plot = plot, plot.file = plot.file, width = 8, height = 8, cairo = TRUE)
     } else if (lvl >= 1L) {
@@ -508,7 +521,7 @@ filterLocations <- function(data,
 # bar (prettymapr, if installed). `p` is the payload assembled in filterLocations().
 #' @keywords internal
 #' @noRd
-.plotLocationPanel <- function(p, unicode = TRUE) {
+.plotLocationPanel <- function(p, coast_spec = NULL, unicode = TRUE) {
 
   pos <- p$pos; removed <- p$removed; reason <- p$reason
   deploy <- p$deploy
@@ -538,8 +551,8 @@ filterLocations <- function(data,
   graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3], graphics::par("usr")[2], graphics::par("usr")[4],
                  col = "#EAF1F6", border = NA)
 
-  # optional coastline (skip silently if the map packages are absent)
-  .drawCoastline(lon_range, lat_range)
+  # optional coastline (resolved once in the driver; silent no-op if the map packages are absent)
+  .drawCoastline(lon_range, lat_range, coast_spec)
 
   graphics::box(col = "#BBBBBB")
   graphics::axis(1, at = pretty(lon_range, 5), labels = sprintf("%.2f", pretty(lon_range, 5)), cex.axis = 0.85)

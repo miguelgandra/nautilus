@@ -17,6 +17,8 @@ filterLocations(
   deploy.lat.col = "deploy_lat",
   plot = FALSE,
   plot.file = NULL,
+  basemap = c("land", "satellite", "none"),
+  coastline = "auto",
   return.data = TRUE,
   output.dir = NULL,
   output.suffix = NULL,
@@ -63,6 +65,13 @@ graphics device. Default \code{FALSE}.}
 \item{plot.file}{Character. Path to a single multi-page PDF for the diagnostic maps. The parent
 directory must already exist; must end in \code{.pdf}. \code{NULL} (default) writes no file. Independent of
 \code{plot}.}
+
+\item{basemap}{The diagnostic-map background canvas: \code{"land"} (default; filled coastline over a flat
+sea) or \code{"none"} (blank sea). \code{"satellite"} is reserved for a later release and currently errors.}
+
+\item{coastline}{Which vector coastline to draw when \code{basemap = "land"}: \code{"auto"} (default), \code{"high"},
+\code{"low"}, \code{"none"}, or a custom coastline (\pkg{sf} object, lon/lat \code{data.frame}/\code{matrix}, or file
+path). See \code{\link{plotTracks}} for the full description of the resolution ladder.}
 
 \item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
 function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next

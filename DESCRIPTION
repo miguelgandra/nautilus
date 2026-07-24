@@ -38,6 +38,7 @@ Suggests:
 	tesseract,
 	magick,
 	geosphere,
+	sf,
 	maps,
 	mapdata,
 	prettymapr,

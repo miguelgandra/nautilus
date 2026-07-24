@@ -230,3 +230,59 @@ test_that("a colour that is not a colour is rejected by name, NA included", {
   expect_error(p(colors = c(track = NA_character_)), "not a valid colour")
   expect_error(p(colors = c(nosuchelement = "red")), "unrecognised")
 })
+
+# ---- Phase 1: basemap canvas + coastline ladder + bathy.contours -------------------------------------
+
+test_that("reserved raster canvases error cleanly, pointing at the available options", {
+  tag <- list(A01 = .mk_track_tag(n = 40))
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = "satellite", verbose = FALSE)), "not available yet")
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = "bathymetry", verbose = FALSE)), "not available yet")
+  # a user-supplied raster (non-character basemap) is likewise reserved
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = matrix(1, 2, 2), verbose = FALSE)), "not available yet")
+  # an unknown keyword is rejected by match.arg
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = "bogus", verbose = FALSE)))
+})
+
+test_that("basemap = 'none' and the coastline keywords all render the full draw path", {
+  tag <- list(A01 = .mk_track_tag(n = 60))
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = "none", verbose = FALSE)))
+  expect_silent(draw_to_pdf(plotTracks(tag, coastline = "none", verbose = FALSE)))
+  expect_silent(draw_to_pdf(plotTracks(tag, coastline = "low", verbose = FALSE)))
+})
+
+test_that("a custom coastline draws with no map packages required (data.frame of lon/lat)", {
+  # a small square 'island' near the synthetic track; graphics::polygon path, zero dependencies
+  ring <- data.frame(lon = c(-25.29, -25.27, -25.27, -25.29, -25.29),
+                     lat = c(37.02, 37.02, 37.04, 37.04, 37.02))
+  expect_silent(draw_to_pdf(plotTracks(list(A01 = .mk_track_tag(n = 60)),
+                                       coastline = ring, verbose = FALSE)))
+  # a two-column matrix is accepted too
+  expect_silent(draw_to_pdf(plotTracks(list(A01 = .mk_track_tag(n = 60)),
+                                       coastline = as.matrix(ring), verbose = FALSE)))
+})
+
+test_that("coastline = 'high' errors with an install hint when mapdata is absent", {
+  skip_if(requireNamespace("mapdata", quietly = TRUE), "mapdata is installed - fallback path not exercised")
+  expect_error(nautilus:::.resolveCoastline("high"), "mapdata")
+  expect_error(draw_to_pdf(plotTracks(list(A01 = .mk_track_tag(n = 40)),
+                                      coastline = "high", verbose = FALSE)), "mapdata")
+})
+
+test_that("bathy.contours validates its value and requires marmap", {
+  tag <- list(A01 = .mk_track_tag(n = 40))
+  # bad value
+  expect_error(draw_to_pdf(plotTracks(tag, bathy.contours = "deep", verbose = FALSE)),
+               "bathy.contours")
+  # on (TRUE or numeric levels) needs marmap
+  skip_if(requireNamespace("marmap", quietly = TRUE), "marmap installed - the guard is not exercised")
+  expect_error(draw_to_pdf(plotTracks(tag, bathy.contours = TRUE, verbose = FALSE)), "marmap")
+  expect_error(draw_to_pdf(plotTracks(tag, bathy.contours = c(-50, -200), verbose = FALSE)), "marmap")
+})
+
+test_that("the auto coastline falls back with a single hint when mapdata is absent", {
+  skip_if(requireNamespace("mapdata", quietly = TRUE), "mapdata installed - no fallback")
+  skip_if_not(requireNamespace("maps", quietly = TRUE), "maps needed for the world fallback")
+  txt <- paste(cli::cli_fmt(nautilus:::.resolveCoastline("auto", 2L)), collapse = "\n")
+  expect_match(txt, "low-resolution")
+  expect_match(txt, "mapdata")
+})

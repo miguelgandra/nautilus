@@ -8,8 +8,9 @@ plotTracks(
   data,
   color.by = NULL,
   show.uncertainty = TRUE,
-  show.bathymetry = FALSE,
-  bathy.resolution = 1,
+  basemap = c("land", "bathymetry", "satellite", "none"),
+  coastline = "auto",
+  bathy.contours = FALSE,
   theme = plotTheme(),
   colors = NULL,
   max.points = 5000,
@@ -33,11 +34,24 @@ columns drive the track). A single aggregated data.frame is split by \code{id.co
 \item{show.uncertainty}{Logical. Draw the \code{pseudo_error} uncertainty corridor around the pseudo-track.
 Default \code{TRUE}.}
 
-\item{show.bathymetry}{Logical. Overlay bathymetry contours fetched from NOAA via \pkg{marmap} (a
-network download, performed once for the whole run). Default \code{FALSE}.}
+\item{basemap}{The background canvas (choose ONE): \code{"land"} (default; filled coastline over a flat
+sea), or \code{"none"} (blank sea). The raster canvases \code{"bathymetry"} (shaded relief) and \code{"satellite"}
+(imagery), and a user-supplied raster, are reserved for a later release and currently error with a
+pointer to the available options.}
 
-\item{bathy.resolution}{Numeric. Resolution (arc-minutes) of the NOAA bathymetry grid when
-\code{show.bathymetry = TRUE}. Larger is coarser and faster. Default 1.}
+\item{coastline}{Which vector coastline to draw (used when \code{basemap = "land"}). A keyword selecting a
+bundled source by resolution -- \code{"auto"} (default: the highest-resolution installed source,
+\verb{\pkg{mapdata}}'s \code{worldHires} if present, else the coarse \code{maps::world} with a one-time hint),
+\code{"high"} (force \code{worldHires}; errors if \pkg{mapdata} is absent), \code{"low"} (force \code{maps::world}),
+\code{"none"} -- OR a custom coastline: an \pkg{sf} object, a two-column lon/lat \code{data.frame}/\code{matrix}
+(NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
+the \code{data.frame}/\code{matrix} form; \pkg{sf} is needed for \code{sf} objects and most file paths.}
+
+\item{bathy.contours}{Bathymetric contour overlay (composes with any \code{basemap}). \code{FALSE} (default) is
+off; \code{TRUE} draws auto-chosen isobaths; a numeric vector draws exactly those isobath depths (negative
+metres), e.g. \code{c(-50, -200, -1000)} or \code{seq(-200, -4000, by = -200)} for a regular interval. Needs
+\pkg{marmap} (a one-off NOAA download for the whole run); the grid resolution is chosen automatically
+from the map extent.}
 
 \item{theme}{A \code{\link{plotTheme}} object (or a named list of its fields) controlling the shared
 look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
@@ -82,11 +96,15 @@ visualization step of the movement-tracks branch (\code{reconstructTrack()} ->
 }
 \details{
 Everything is drawn in a single WGS84 longitude/latitude coordinate system with a latitude-corrected
-equal-aspect projection, so points, track and (optional) coastline co-register exactly. The basemap is
-deliberately lightweight: an optional land outline from the \pkg{maps}/\pkg{mapdata} packages that
-degrades to a silent no-op when they are absent (no tile server, no Java, no network). Optional
-bathymetry contours (\code{show.bathymetry}, via \pkg{marmap}) are fetched once for the whole run and
-reused across panels.
+equal-aspect projection, so points, track and coastline co-register exactly. The background is composed
+of three orthogonal layers: a \emph{canvas} (\code{basemap}), the \emph{coastline} vector
+(\code{coastline}), and optional \emph{overlays} that compose on top (\code{show.uncertainty},
+\code{bathy.contours}). The default canvas is a lightweight bundled vector coastline that degrades to a
+silent no-op when \pkg{maps}/\pkg{mapdata} are absent (no tile server, no Java, no network). For
+fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use \code{coastline = "high"}
+(or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
+\code{coastline}. Bathymetry contours (\code{bathy.contours}, via \pkg{marmap}) are fetched once for
+the whole run and reused across panels.
 
 \strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
 anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as

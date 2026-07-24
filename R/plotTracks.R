@@ -14,11 +14,15 @@
 #'
 #' @details
 #' Everything is drawn in a single WGS84 longitude/latitude coordinate system with a latitude-corrected
-#' equal-aspect projection, so points, track and (optional) coastline co-register exactly. The basemap is
-#' deliberately lightweight: an optional land outline from the \pkg{maps}/\pkg{mapdata} packages that
-#' degrades to a silent no-op when they are absent (no tile server, no Java, no network). Optional
-#' bathymetry contours (\code{show.bathymetry}, via \pkg{marmap}) are fetched once for the whole run and
-#' reused across panels.
+#' equal-aspect projection, so points, track and coastline co-register exactly. The background is composed
+#' of three orthogonal layers: a \emph{canvas} (\code{basemap}), the \emph{coastline} vector
+#' (\code{coastline}), and optional \emph{overlays} that compose on top (\code{show.uncertainty},
+#' \code{bathy.contours}). The default canvas is a lightweight bundled vector coastline that degrades to a
+#' silent no-op when \pkg{maps}/\pkg{mapdata} are absent (no tile server, no Java, no network). For
+#' fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use \code{coastline = "high"}
+#' (or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
+#' \code{coastline}. Bathymetry contours (\code{bathy.contours}, via \pkg{marmap}) are fetched once for
+#' the whole run and reused across panels.
 #'
 #' \strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
 #' anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as
@@ -42,10 +46,22 @@
 #'   (`pseudo_depth`) or `"speed"` (`speed_dr`). Ignored for deployments without that column.
 #' @param show.uncertainty Logical. Draw the `pseudo_error` uncertainty corridor around the pseudo-track.
 #'   Default `TRUE`.
-#' @param show.bathymetry Logical. Overlay bathymetry contours fetched from NOAA via \pkg{marmap} (a
-#'   network download, performed once for the whole run). Default `FALSE`.
-#' @param bathy.resolution Numeric. Resolution (arc-minutes) of the NOAA bathymetry grid when
-#'   `show.bathymetry = TRUE`. Larger is coarser and faster. Default 1.
+#' @param basemap The background canvas (choose ONE): `"land"` (default; filled coastline over a flat
+#'   sea), or `"none"` (blank sea). The raster canvases `"bathymetry"` (shaded relief) and `"satellite"`
+#'   (imagery), and a user-supplied raster, are reserved for a later release and currently error with a
+#'   pointer to the available options.
+#' @param coastline Which vector coastline to draw (used when `basemap = "land"`). A keyword selecting a
+#'   bundled source by resolution -- `"auto"` (default: the highest-resolution installed source,
+#'   `\pkg{mapdata}`'s `worldHires` if present, else the coarse `maps::world` with a one-time hint),
+#'   `"high"` (force `worldHires`; errors if \pkg{mapdata} is absent), `"low"` (force `maps::world`),
+#'   `"none"` -- OR a custom coastline: an \pkg{sf} object, a two-column lon/lat `data.frame`/`matrix`
+#'   (NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
+#'   the `data.frame`/`matrix` form; \pkg{sf} is needed for `sf` objects and most file paths.
+#' @param bathy.contours Bathymetric contour overlay (composes with any `basemap`). `FALSE` (default) is
+#'   off; `TRUE` draws auto-chosen isobaths; a numeric vector draws exactly those isobath depths (negative
+#'   metres), e.g. `c(-50, -200, -1000)` or `seq(-200, -4000, by = -200)` for a regular interval. Needs
+#'   \pkg{marmap} (a one-off NOAA download for the whole run); the grid resolution is chosen automatically
+#'   from the map extent.
 #' @param theme A \code{\link{plotTheme}} object (or a named list of its fields) controlling the shared
 #'   look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
 #'   scale (`cex`) and the sequential ramp used for `color.by`. Default `plotTheme()`.
@@ -86,8 +102,9 @@
 plotTracks <- function(data,
                        color.by         = NULL,
                        show.uncertainty = TRUE,
-                       show.bathymetry  = FALSE,
-                       bathy.resolution = 1,
+                       basemap          = c("land", "bathymetry", "satellite", "none"),
+                       coastline        = "auto",
+                       bathy.contours   = FALSE,
                        theme            = plotTheme(),
                        colors           = NULL,
                        max.points       = 5000,
@@ -108,8 +125,11 @@ plotTracks <- function(data,
 
   if (!is.null(color.by)) .assert_choice(color.by, "color.by", c("depth", "speed"))
   .assert_flag(show.uncertainty, "show.uncertainty")
-  .assert_flag(show.bathymetry, "show.bathymetry")
-  .assert_number(bathy.resolution, "bathy.resolution", min = 0)
+  # canvas: only the vector "land"/"none" are live in this release; raster canvases error cleanly
+  basemap <- .resolveBasemap(basemap, c("land", "bathymetry", "satellite", "none"))
+  # bathymetry contour overlay: FALSE | TRUE (auto isobaths) | numeric depths (explicit isobaths)
+  bathy_levels <- .resolveBathyContours(bathy.contours)         # NULL when off; numeric(0) when auto
+  bathy_on     <- !is.null(bathy_levels)
   theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
   .assert_count(max.points, "max.points", min = 2L)
   if (!is.null(ncols)) .assert_count(ncols, "ncols", min = 1L)
@@ -119,9 +139,12 @@ plotTracks <- function(data,
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
-  if (show.bathymetry && !requireNamespace("marmap", quietly = TRUE))
-    .abort(c("{.arg show.bathymetry = TRUE} needs the {.pkg marmap} package.",
-             "i" = "Install it with {.code install.packages(\"marmap\")}, or set {.arg show.bathymetry = FALSE}."))
+  if (bathy_on && !requireNamespace("marmap", quietly = TRUE))
+    .abort(c("{.arg bathy.contours} needs the {.pkg marmap} package.",
+             "i" = "Install it with {.code install.packages(\"marmap\")}, or set {.arg bathy.contours = FALSE}."))
+  # resolve the coastline source ONCE (emits the low-res hint / explicit-request error a single time);
+  # drawn only under the vector "land" canvas, so it is a silent no-op for basemap = "none"
+  coast_draw <- if (identical(basemap, "land")) .resolveCoastline(coastline, lvl) else list(kind = "none")
 
   # Semantic MAP palette: one colour per map ELEMENT, deliberately not folded into `theme$palette` (which
   # is a qualitative SERIES palette for telling n categories apart - a track is not "category 3"). What a
@@ -211,11 +234,11 @@ plotTracks <- function(data,
 
   # union extent (used for a single bathymetry fetch and returned nowhere else)
   bathy <- NULL
-  if (show.bathymetry) {
+  if (bathy_on) {
     allx <- unlist(lapply(payloads, function(p) c(p$fixes$lon, p$track$lon, p$deploy$lon, p$popup$lon)))
     ally <- unlist(lapply(payloads, function(p) c(p$fixes$lat, p$track$lat, p$deploy$lat, p$popup$lat)))
     ext  <- .equalAspectExtent(allx, ally, f = 0.3)
-    if (!is.null(ext)) bathy <- .fetchBathy(ext$xlim, ext$ylim, bathy.resolution, lvl)
+    if (!is.null(ext)) bathy <- .fetchBathy(ext$xlim, ext$ylim, lvl)   # grid resolution auto from extent
   }
 
   ##############################################################################
@@ -236,6 +259,7 @@ plotTracks <- function(data,
       graphics::par(mfrow = c(lay$nrows, lay$ncols))
       for (k in pg) .plotTrackPanel(payloads[[k]], pal = pal, theme = theme, color.by = color.by,
                                     color_range = color_range, ramp = ramp, bathy = bathy,
+                                    bathy.levels = bathy_levels, coast_spec = coast_draw,
                                     show.uncertainty = show.uncertainty)
       for (b in seq_len(lay$per_page - length(pg))) graphics::plot.new()   # blank trailing cells
     }
@@ -305,7 +329,7 @@ plotTracks <- function(data,
 #' @keywords internal
 #' @noRd
 .plotTrackPanel <- function(payload, pal, theme, color.by, color_range, ramp, bathy,
-                            show.uncertainty) {
+                            bathy.levels = NULL, coast_spec = NULL, show.uncertainty) {
 
   fixes <- payload$fixes; track <- payload$track
   deploy <- payload$deploy; popup <- payload$popup
@@ -336,8 +360,9 @@ plotTracks <- function(data,
   graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3], graphics::par("usr")[2], graphics::par("usr")[4],
                  col = pal[["sea"]], border = NA)
 
-  if (!is.null(bathy)) .drawBathy(bathy, ext$xlim, ext$ylim, col = pal[["bathymetry"]], cex = cex)
-  .drawCoastline(ext$xlim, ext$ylim, land = pal[["land"]], border = pal[["land.border"]])
+  if (!is.null(bathy)) .drawBathy(bathy, ext$xlim, ext$ylim, col = pal[["bathymetry"]], cex = cex,
+                                  levels = if (length(bathy.levels)) bathy.levels else NULL)
+  .drawCoastline(ext$xlim, ext$ylim, coast_spec, land = pal[["land"]], border = pal[["land.border"]])
   graphics::box(col = axcol)
   graphics::axis(1, at = pretty(ext$xlim, 5), labels = sprintf("%.2f", pretty(ext$xlim, 5)), col = axcol, col.axis = axcol, cex.axis = cex * 0.8)
   graphics::axis(2, at = pretty(ext$ylim, 5), labels = sprintf("%.2f", pretty(ext$ylim, 5)), las = 1, col = axcol, col.axis = axcol, cex.axis = cex * 0.8)
@@ -480,7 +505,11 @@ plotTracks <- function(data,
 # marmap `bathy` object or NULL on failure (a graceful, reported skip).
 #' @keywords internal
 #' @noRd
-.fetchBathy <- function(xlim, ylim, resolution, lvl) {
+.fetchBathy <- function(xlim, ylim, lvl) {
+  # Grid resolution (arc-minutes) is derived from the extent, not a user knob: aim for ~300 grid points
+  # across the wider span (fine for an island window, coarse for an ocean basin), floored at 1' (ETOPO1).
+  span <- max(diff(range(xlim)), diff(range(ylim)))
+  resolution <- max(1, min(60, round(span * 60 / 300)))
   tryCatch({
     bathy <- NULL
     # capture.output() (not sink()) mutes getNOAA.bathy's progress prints exception-safely
@@ -494,10 +523,12 @@ plotTracks <- function(data,
 # Draw bathymetry contours in lon/lat over the current panel (so they co-register with the data).
 #' @keywords internal
 #' @noRd
-.drawBathy <- function(bathy, xlim, ylim, col = "#9DB4C0", cex = 1) {
+.drawBathy <- function(bathy, xlim, ylim, col = "#9DB4C0", cex = 1, levels = NULL) {
   lon <- as.numeric(rownames(bathy)); lat <- as.numeric(colnames(bathy))
   z <- unclass(bathy); z[z > 0] <- NA                                    # sea only
-  lv <- pretty(range(z, na.rm = TRUE), 6); lv <- lv[lv < 0]
+  # explicit isobaths when supplied (kept only where the range actually has depth), else pretty auto levels
+  lv <- if (!is.null(levels)) levels[levels < 0] else { l <- pretty(range(z, na.rm = TRUE), 6); l[l < 0] }
+  lv <- lv[is.finite(lv)]
   if (length(lv))
     graphics::contour(lon, lat, z, levels = lv, add = TRUE, drawlabels = TRUE,
                       col = col, lwd = 0.4, labcex = cex * 0.5, method = "edge")

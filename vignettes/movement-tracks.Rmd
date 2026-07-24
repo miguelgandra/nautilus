@@ -231,9 +231,12 @@ distinct styles, with the track's start and end marked. Crucially, the track car
 **uncertainty**: with `show.uncertainty = TRUE` (the default) a translucent corridor is drawn
 from `pseudo_error`, so a segment that passes close to a fix reads tighter than one that has
 drifted mid-gap; and `color.by = "depth"` (or `"speed"`) colours the track by the reconstructed
-depth or speed on a shared scale. The land outline is a lightweight optional layer (needs
-**maps**/**mapdata**, silently skipped if absent -- no tile server or network); set
-`show.bathymetry = TRUE` to overlay depth contours via **marmap**.
+depth or speed on a shared scale. The background is a lightweight bundled vector coastline
+(needs **maps**/**mapdata**, silently skipped if absent -- no tile server or network); for
+fine-scale maps around small islands, install **mapdata** and use `coastline = "high"` (or the
+default `"auto"`, which prefers it) or pass your own coastline via `coastline`. Set
+`bathy.contours = TRUE` to overlay auto-chosen depth isobaths via **marmap**, or pass specific
+depths, e.g. `bathy.contours = c(-50, -200, -1000)`.
 
 ## 6. Hand off to a state-space model
 
