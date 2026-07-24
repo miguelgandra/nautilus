@@ -725,9 +725,9 @@ test_that("the jerk caveat is shortened and sits immediately after the motion li
 test_that("re-processing an already-processed dataset is flagged inline and once at the end", {
   skip_if_not_installed("signal")
   once <- suppressWarnings(processTagData(list(A01 = .mk_tagged()), downsample.to = NULL, verbose = FALSE))
-  # inline (detailed): a per-deployment alert under the tag summary
+  # inline (detailed): a concise per-deployment alert under the tag summary
   txt <- paste(.pt_lines(once[[1]]), collapse = "\n")
-  expect_match(txt, "already been processed")
+  expect_match(txt, "dataset already processed")
   # consolidated (any verbosity): one warning naming the affected deployments
   w <- testthat::capture_warnings(invisible(capture.output(
     processTagData(list(A01 = once[[1]]), downsample.to = NULL, verbose = "quiet"))))
@@ -735,7 +735,7 @@ test_that("re-processing an already-processed dataset is flagged inline and once
   expect_length(rw, 1L)
   expect_match(rw, "A01")
   # a fresh (never-processed) tag triggers neither
-  expect_false(grepl("already been processed", paste(.pt_lines(.mk_tagged()), collapse = "\n")))
+  expect_false(grepl("already processed", paste(.pt_lines(.mk_tagged()), collapse = "\n")))
 })
 
 test_that("depth reporting never shows negative zero when the surface dips a few cm below 0", {

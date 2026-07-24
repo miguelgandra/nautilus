@@ -481,7 +481,7 @@ processTagData <- function(data,
       # alert immediately under it. The findings block (input, calibration, ...) is emitted after the work.
       if (!is.null(attrs_line)) cli::cli_text("{cli::symbol$bullet} {attrs_line}")
       if (already_processed)
-        say("! this dataset appears to have already been processed - re-running is idempotent but usually unintended")
+        say("! dataset already processed (re-running is usually unintended)")
     }
 
     # store original attributes, excluding internal ones
