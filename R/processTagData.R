@@ -389,6 +389,7 @@ processTagData <- function(data,
   unoriented_ids <- character(0)                 # ordering guard: tags not run through applyAxisMapping()
   uncalibrated_ids <- character(0)               # requested magnetometer that received ZERO correction (raw heading)
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
+  reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
   for (i in seq_along(data)) {
 
     ############################################################################
@@ -435,6 +436,13 @@ processTagData <- function(data,
     individual_data <- .ensureMeta(individual_data)
     imeta <- .getMeta(individual_data)   # input metadata (deployment, tag, etc.)
 
+    # RE-PROCESSING GUARD: the input already carries a processTagData step in its audit trail, so this is
+    # an accidental re-run. Re-running is idempotent (calibration/downsample skip, metrics recomputed),
+    # but almost always unintended, so flag it per deployment and once at the end for batch runs.
+    already_processed <- any(vapply(imeta$processing %||% list(),
+                                    function(p) identical(p$step, "processTagData"), logical(1)))
+    if (already_processed) reprocessed_ids <- c(reprocessed_ids, as.character(id))
+
     # ORDERING GUARD: orientation (pitch/roll/heading) assumes the IMU axes are already in the animal
     # body frame. If applyAxisMapping() was not run, that assumption is silently violated - flag it.
     if (!isTRUE(imeta$axis_mapping$applied)) unoriented_ids <- c(unoriented_ids, as.character(id))
@@ -468,6 +476,12 @@ processTagData <- function(data,
       n_chan_in <- length(intersect(.sensorChannels(), names(individual_data)))
       diag["input"] <- sprintf("input: %s rows | %d channel%s | ~%g Hz | %s", .formatLargeNumber(n_input),
                                n_chan_in, if (n_chan_in != 1) "s" else "", sampling_freq, .fmt_duration(secs))
+
+      # tag identity FIRST (it names the deployment and contexts everything below), then the re-processing
+      # alert immediately under it. The findings block (input, calibration, ...) is emitted after the work.
+      if (!is.null(attrs_line)) cli::cli_text("{cli::symbol$bullet} {attrs_line}")
+      if (already_processed)
+        say("! this dataset appears to have already been processed - re-running is idempotent but usually unintended")
     }
 
     # store original attributes, excluding internal ones
@@ -568,7 +582,8 @@ processTagData <- function(data,
         hard_iron_applied <- FALSE; soft_iron_applied <- FALSE
         coverage_ok <- isTRUE(imeta$mag_calibration$qc$coverage_ok)
         calibration_source <- "already applied"
-        if (lvl >= 1L) say("i magnetometer already calibrated - skipping re-application (idempotent)")
+        # (no inline message here: the "calibration: already applied (idempotent skip)" diagnostic line
+        #  below already reports this, and the re-processing alert covers the "already processed" case)
       } else if (use_stored) {
         mag_calibrated <- .applyMagCal(mag_data, prop$params$center, prop$params$soft_iron)
         hard_iron_applied <- TRUE; soft_iron_applied <- TRUE; coverage_ok <- TRUE
@@ -779,9 +794,10 @@ processTagData <- function(data,
 
     # jerk amplifies high-frequency and quantisation noise: below ~30 Hz the prey-capture strike band
     # aliases away (Broell et al. 2013, doi:10.1242/jeb.077396), so on low-rate tags jerk is only a coarse
-    # activity index, never an event detector. Flag the degraded regime at the NATIVE rate.
-    if (sampling_freq < 25)
-      say(sprintf("! jerk computed at %g Hz - below ~30 Hz it is dominated by noise and cannot resolve rapid transients; treat as a coarse activity index only", sampling_freq))
+    # activity index, never an event detector. Recorded as a diagnostic (not an inline message) so it sits
+    # in the findings block right after motion; the rate rationale lives in this comment and the docs.
+    if (lvl >= 2L && sampling_freq < 25)
+      diag["jerk"] <- sprintf("! jerk computed at %g Hz \u2013 treat as a coarse activity index only", sampling_freq)
 
     ############################################################################
     # Calculate linear motion metrics ##########################################
@@ -823,7 +839,8 @@ processTagData <- function(data,
       vedba_r <- range(individual_data$vedba, na.rm = TRUE)             # VeDBA: rotation-invariant, robust for towed tags
       diag["motion"] <- sprintf("motion: VeDBA %.2f \u2013 %.2f g", vedba_r[1], vedba_r[2])
       if ("depth" %in% names(individual_data)) {
-        dep_r <- range(individual_data$depth, na.rm = TRUE)
+        # .noNegZero: a residual few-cm-below-surface min otherwise prints as "-0" at 0 dp
+        dep_r <- .noNegZero(range(individual_data$depth, na.rm = TRUE), 0)
         diag["depth"] <- sprintf("depth: %.0f \u2013 %.0f m", dep_r[1], dep_r[2])
       }
     }
@@ -1013,7 +1030,7 @@ processTagData <- function(data,
                         is.finite(pitch_offset_deg) && abs(pitch_offset_deg) < orientation.warning.threshold
         if (apply_offset) {
           individual_data[, pitch := pitch - pitch_offset_deg]
-          off_pitch <- sprintf("pitch %+.2f\u00b0 (R\u00b2 %.2f)", pitch_offset_deg, pitch_offset_r2)
+          off_pitch <- sprintf("pitch %+.2f\u00b0 (R\u00b2 %.2f)", .noNegZero(pitch_offset_deg, 2), pitch_offset_r2)
         } else {
           # record WHY it was skipped (shown in the detailed diagnostic block)
           # `apply_offset` above is NA-safe, but this explanation ladder was not: a deployment with no
@@ -1076,7 +1093,7 @@ processTagData <- function(data,
         if (roll_applied) {
           # subtract the offset and re-wrap roll into [-180, 180]
           individual_data[, roll := ((roll - roll_offset_deg + 180) %% 360) - 180]
-          off_roll <- sprintf("roll %+.2f\u00b0", roll_offset_deg)
+          off_roll <- sprintf("roll %+.2f\u00b0", .noNegZero(roll_offset_deg, 2))
         } else {
           roll_offset_deg <- NULL
         }
@@ -1137,7 +1154,8 @@ processTagData <- function(data,
       hd <- paste0("heading ", if (heading_ok) "ok" else "NA")
       diag["orientation"] <- if (is.na(orient_method)) "orientation: insufficient sensor data"
         else if (is.finite(median_pitch))
-          sprintf("orientation: median pitch %.1f\u00b0 \u00b7 roll %.1f\u00b0 \u00b7 %s", median_pitch, median_roll, hd)
+          sprintf("orientation: median pitch %.1f\u00b0 \u00b7 roll %.1f\u00b0 \u00b7 %s",
+                  .noNegZero(median_pitch, 1), .noNegZero(median_roll, 1), hd)
         else paste0("orientation: ", hd)
       off <- c(off_pitch, off_roll)
       if (length(off)) diag["offsets"] <- paste0("offsets: ", paste(off, collapse = " \u00b7 "))
@@ -1529,9 +1547,10 @@ processTagData <- function(data,
     # line, then each finding in pipeline order. Slots left unset (e.g. speed when not requested)
     # are simply skipped, so the block always reflects exactly what happened for this deployment.
     if (lvl >= 2L) {
-      if (!is.null(attrs_line)) cli::cli_text("{cli::symbol$bullet} {attrs_line}")
+      # the tag identity and re-processing alert were emitted up front (right after the header); this
+      # block is the findings, in pipeline order. Jerk sits immediately after motion (related kinematics).
       for (k in c("input", "calibration", "denoise", "orientation", "offsets",
-                  "motion", "depthdrift", "depth", "speed", "downsample")) {
+                  "motion", "jerk", "depthdrift", "depth", "speed", "downsample")) {
         if (!is.na(diag[k])) say(diag[[k]])
       }
     }
@@ -1598,6 +1617,15 @@ processTagData <- function(data,
       "{length(dead_paddle_ids)} deployment{?s} had a CONSTANT imported paddle channel, now set to {.val NA}: {.val {utils::head(dead_paddle_ids, 8)}}.",
       "!" = "A channel holding one fixed value is a dead or absent paddle wheel, not a measurement; left in place it would count as that many genuine speed samples in any pooled statistic.",
       "i" = "These deployments simply have no paddle speed. Supply a {.arg paddle.calibration} row so it can be estimated from the magnetometer, or exclude them from speed analyses."))
+  }
+
+  # one consolidated notice for every deployment that had already been through processTagData - the common
+  # cause is pointing the function at an already-processed output folder. Re-running is idempotent, so this
+  # is a warning, not an error, but it is almost always a mistake worth catching in a batch run.
+  if (length(reprocessed_ids)) {
+    cli::cli_warn(c(
+      "{length(reprocessed_ids)} dataset{?s} had already been processed and {?was/were} re-run: {.val {utils::head(reprocessed_ids, 8)}}.",
+      "i" = "Re-running {.fn processTagData} is idempotent (calibration and downsampling are skipped, metrics recomputed), but this usually means an already-processed folder was supplied by mistake."))
   }
 
   # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering

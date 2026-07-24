@@ -221,6 +221,19 @@
   sprintf("%dh %02dm", h, m)
 }
 
+#' Round to `digits` and strip negative zero, so a residual tiny-negative value never prints as "-0".
+#'
+#' A value that rounds to zero from below is stored as IEEE negative zero, which `sprintf` renders with a
+#' minus ("-0", "-0.00"). Since `-0 == 0` is TRUE in R, reassigning 0 replaces it with a positive zero.
+#' Vectorised and NA-safe; returns a numeric to feed straight into a `sprintf`/`%f` format.
+#' @keywords internal
+#' @noRd
+.noNegZero <- function(x, digits = 2) {
+  r <- round(x, digits)
+  r[!is.na(r) & r == 0] <- 0
+  r
+}
+
 #' Format a duration in seconds at a human scale (e.g. "2.3 d", "5.1 h", "45 m").
 #' @keywords internal
 #' @noRd

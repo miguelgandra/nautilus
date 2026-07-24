@@ -1006,7 +1006,8 @@
   status <- drift_res$status
   if (identical(status, "disabled"))  return(NULL)
   if (identical(status, "abstained")) return("depth drift: skipped (no surface evidence)")
-  fmtm <- function(x) sub("\\.0$", "", formatC(x, format = "f", digits = 1))   # 1 dp, drop trailing .0
+  # 1 dp, drop trailing .0; .noNegZero stops a residual few-mm offset printing as "-0"
+  fmtm <- function(x) sub("\\.0$", "", formatC(.noNegZero(x, 1), format = "f", digits = 1))
   off  <- drift_res$outcome$offset_range_m
   off_txt <- if (isTRUE(all.equal(off[1], off[2]))) paste0(fmtm(off[1]), " m")
              else paste0(fmtm(off[1]), " \u2013 ", fmtm(off[2]), " m")

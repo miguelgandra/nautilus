@@ -674,3 +674,81 @@ test_that("the stored depth channel is NOT smoothed, while vertical velocity sti
   expect_equal(out$depth, out2$depth)
   expect_false(isTRUE(all.equal(out$vertical_velocity, out2$vertical_velocity)))
 })
+
+# ------------------------------------------------------------------------------------------------------
+# Verbose-output polish: tag summary first, re-processing guard, jerk placement, no negative-zero depth
+# ------------------------------------------------------------------------------------------------------
+
+# a tag carrying tag-identity metadata (for the summary line) and a depth that dips a few cm below 0 at
+# the surface (to exercise the negative-zero formatting fix), sampled at 20 Hz (so jerk is flagged).
+.mk_tagged <- function(id = "A01", secs = 120, rate = 20) {
+  set.seed(2); n <- secs * rate
+  t0 <- as.POSIXct("2020-01-01", tz = "UTC")
+  d <- data.table::data.table(
+    ID = id, datetime = t0 + (seq_len(n) - 1) / rate,
+    ax = rnorm(n, 0, 0.02), ay = rnorm(n, 0, 0.02), az = 1 + rnorm(n, 0, 0.02),
+    gx = rnorm(n, 0, 0.01), gy = rnorm(n, 0, 0.01), gz = rnorm(n, 0, 0.01),
+    mx = 20 + rnorm(n, 0, 0.05), my = 5 + rnorm(n, 0, 0.05), mz = -40 + rnorm(n, 0, 0.05),
+    # full dive cycles whose surface troughs are clamped a few cm below 0 (residual sensor noise)
+    depth = pmax(-0.3, 30 * sin(2 * pi * (seq_len(n) - 1) / (rate * 20))), temp = 20)
+  m <- nautilus:::.newNautilusMeta(); m$id <- id
+  m$deployment$lat <- 19.7; m$deployment$lon <- -156; m$deployment$datetime <- t0
+  m$tag$model <- "CATS"; m$tag$type <- "MS"; m$tag$package_id <- 52
+  m$axis_mapping$applied <- TRUE
+  nautilus:::new_nautilus_tag(d, m)
+}
+
+.pt_lines <- function(tag, v = 2) {
+  suppressWarnings(cli::cli_fmt(processTagData(list(A01 = tag), downsample.to = NULL, verbose = v)))
+}
+
+test_that("the tag-identity line is emitted first, before the findings block", {
+  skip_if_not_installed("signal")
+  ln <- .pt_lines(.mk_tagged())
+  ln <- ln[nzchar(trimws(ln))]
+  i_tag   <- grep("CATS", ln)[1]                       # bullet tag summary
+  i_input <- grep("input:", ln)[1]                     # first finding
+  i_sub   <- grep("A01 \\(1/1\\)", ln)[1]              # per-deployment sub-header
+  expect_true(i_sub < i_tag && i_tag < i_input)        # header -> tag summary -> findings
+})
+
+test_that("the jerk caveat is shortened and sits immediately after the motion line", {
+  skip_if_not_installed("signal")
+  txt <- paste(.pt_lines(.mk_tagged()), collapse = "\n")
+  expect_match(txt, "jerk computed at 20 Hz")
+  expect_false(grepl("dominated by noise", txt))                       # long clause removed
+  expect_match(txt, "coarse activity index only")
+  ln <- .pt_lines(.mk_tagged()); ln <- ln[nzchar(trimws(ln))]
+  expect_true(grep("jerk computed", ln)[1] == grep("motion:", ln)[1] + 1L)   # directly after motion
+})
+
+test_that("re-processing an already-processed dataset is flagged inline and once at the end", {
+  skip_if_not_installed("signal")
+  once <- suppressWarnings(processTagData(list(A01 = .mk_tagged()), downsample.to = NULL, verbose = FALSE))
+  # inline (detailed): a per-deployment alert under the tag summary
+  txt <- paste(.pt_lines(once[[1]]), collapse = "\n")
+  expect_match(txt, "already been processed")
+  # consolidated (any verbosity): one warning naming the affected deployments
+  w <- testthat::capture_warnings(invisible(capture.output(
+    processTagData(list(A01 = once[[1]]), downsample.to = NULL, verbose = "quiet"))))
+  rw <- w[grepl("already been processed and", w)]
+  expect_length(rw, 1L)
+  expect_match(rw, "A01")
+  # a fresh (never-processed) tag triggers neither
+  expect_false(grepl("already been processed", paste(.pt_lines(.mk_tagged()), collapse = "\n")))
+})
+
+test_that("depth reporting never shows negative zero when the surface dips a few cm below 0", {
+  skip_if_not_installed("signal")
+  tag <- .mk_tagged()
+  ln <- .pt_lines(tag)
+  depth_line <- grep("depth:", ln, value = TRUE)       # the "depth: <min> - <max> m" finding
+  expect_match(depth_line, "depth: 0 ")                # min renders as 0, not -0
+  expect_false(any(grepl("-0", depth_line, fixed = TRUE)))
+  # the degree-formatted lines (orientation / offsets) must not print "-0.0"/"-0.00" either
+  deg_lines <- grep("orientation:|offsets:", ln, value = TRUE)
+  expect_false(any(grepl("-0.0", deg_lines, fixed = TRUE)))
+  # and the stored depth is deliberately NOT clamped: the residual sub-surface noise is preserved
+  p <- suppressWarnings(processTagData(list(A01 = tag), downsample.to = NULL, verbose = FALSE))[[1]]
+  expect_lt(min(p$depth, na.rm = TRUE), 0)
+})
