@@ -19,6 +19,7 @@ filterLocations(
   plot.file = NULL,
   basemap = c("land", "satellite", "none"),
   coastline = "auto",
+  basemap.control = basemapControl(),
   return.data = TRUE,
   output.dir = NULL,
   output.suffix = NULL,
@@ -67,11 +68,16 @@ directory must already exist; must end in \code{.pdf}. \code{NULL} (default) wri
 \code{plot}.}
 
 \item{basemap}{The diagnostic-map background canvas: \code{"land"} (default; filled coastline over a flat
-sea) or \code{"none"} (blank sea). \code{"satellite"} is reserved for a later release and currently errors.}
+sea), \code{"satellite"} (imagery tiles via \pkg{maptiles} - useful for validating coastal fixes), \code{"none"}
+(blank sea), or a pre-fetched \pkg{terra} \code{SpatRaster} from \code{\link{getBasemap}}.}
 
-\item{coastline}{Which vector coastline to draw when \code{basemap = "land"}: \code{"auto"} (default), \code{"high"},
-\code{"low"}, \code{"none"}, or a custom coastline (\pkg{sf} object, lon/lat \code{data.frame}/\code{matrix}, or file
-path). See \code{\link{plotTracks}} for the full description of the resolution ladder.}
+\item{coastline}{Which vector coastline to draw: \code{"auto"} (default), \code{"high"}, \code{"low"}, \code{"none"}, or a
+custom coastline (\pkg{sf} object, lon/lat \code{data.frame}/\code{matrix}, or file path). See
+\code{\link{plotTracks}} for the full resolution ladder. Drawn filled under \code{basemap = "land"}, as an
+outline over a raster canvas.}
+
+\item{basemap.control}{A \code{\link{basemapControl}} object tuning the satellite fetch (provider,
+cache); used only when \code{basemap = "satellite"}.}
 
 \item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
 function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next

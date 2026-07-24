@@ -233,14 +233,33 @@ test_that("a colour that is not a colour is rejected by name, NA included", {
 
 # ---- Phase 1: basemap canvas + coastline ladder + bathy.contours -------------------------------------
 
-test_that("reserved raster canvases error cleanly, pointing at the available options", {
+test_that("the bathymetry raster canvas is reserved; satellite needs maptiles; a bad raster is rejected", {
   tag <- list(A01 = .mk_track_tag(n = 40))
-  expect_error(draw_to_pdf(plotTracks(tag, basemap = "satellite", verbose = FALSE)), "not available yet")
   expect_error(draw_to_pdf(plotTracks(tag, basemap = "bathymetry", verbose = FALSE)), "not available yet")
-  # a user-supplied raster (non-character basemap) is likewise reserved
-  expect_error(draw_to_pdf(plotTracks(tag, basemap = matrix(1, 2, 2), verbose = FALSE)), "not available yet")
+  # a non-SpatRaster object passed as basemap is rejected with a pointer to getBasemap
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = matrix(1, 2, 2), verbose = FALSE)), "SpatRaster")
   # an unknown keyword is rejected by match.arg
   expect_error(draw_to_pdf(plotTracks(tag, basemap = "bogus", verbose = FALSE)))
+  # satellite needs maptiles: on a machine without it, a clean install-hint error
+  skip_if(requireNamespace("maptiles", quietly = TRUE), "maptiles installed - the guard is not exercised")
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = "satellite", verbose = FALSE)), "maptiles")
+})
+
+test_that("a pre-fetched SpatRaster basemap renders (canvas + coastline outline), needing no network", {
+  skip_if_not_installed("terra")
+  tag <- list(A01 = .mk_track_tag(n = 60))
+  r <- terra::rast(nrows = 30, ncols = 30, xmin = -25.35, xmax = -24.95, ymin = 36.9, ymax = 37.1,
+                   nlyrs = 3, crs = "EPSG:4326")
+  terra::values(r) <- cbind(120, 150, 180)
+  attr(r, "nautilus.credit") <- "Tiles (c) Test"
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = r, verbose = FALSE)))            # + coastline outline
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = r, coastline = "none", verbose = FALSE)))  # imagery only
+})
+
+test_that("basemapControl validates and getBasemap reserves the bathymetry raster", {
+  expect_s3_class(basemapControl(), "nautilus_basemap")
+  expect_error(basemapControl(cache = 1L), "cache")
+  expect_error(getBasemap(list(A01 = .mk_track_tag(n = 20)), type = "bathymetry"), "not available yet")
 })
 
 test_that("basemap = 'none' and the coastline keywords all render the full draw path", {

@@ -81,10 +81,14 @@
 #'   directory must already exist; must end in `.pdf`. `NULL` (default) writes no file. Independent of
 #'   `plot`.
 #' @param basemap The diagnostic-map background canvas: `"land"` (default; filled coastline over a flat
-#'   sea) or `"none"` (blank sea). `"satellite"` is reserved for a later release and currently errors.
-#' @param coastline Which vector coastline to draw when `basemap = "land"`: `"auto"` (default), `"high"`,
-#'   `"low"`, `"none"`, or a custom coastline (\pkg{sf} object, lon/lat `data.frame`/`matrix`, or file
-#'   path). See \code{\link{plotTracks}} for the full description of the resolution ladder.
+#'   sea), `"satellite"` (imagery tiles via \pkg{maptiles} - useful for validating coastal fixes), `"none"`
+#'   (blank sea), or a pre-fetched \pkg{terra} `SpatRaster` from \code{\link{getBasemap}}.
+#' @param coastline Which vector coastline to draw: `"auto"` (default), `"high"`, `"low"`, `"none"`, or a
+#'   custom coastline (\pkg{sf} object, lon/lat `data.frame`/`matrix`, or file path). See
+#'   \code{\link{plotTracks}} for the full resolution ladder. Drawn filled under `basemap = "land"`, as an
+#'   outline over a raster canvas.
+#' @param basemap.control A \code{\link{basemapControl}} object tuning the satellite fetch (provider,
+#'   cache); used only when `basemap = "satellite"`.
 #' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
 #'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
 #'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
@@ -134,6 +138,7 @@ filterLocations <- function(data,
                             plot.file = NULL,
                             basemap = c("land", "satellite", "none"),
                             coastline = "auto",
+                            basemap.control = basemapControl(),
                             return.data = TRUE,
                             output.dir = NULL,
                             output.suffix = NULL,
@@ -165,11 +170,13 @@ filterLocations <- function(data,
   .assert_number(max.distance.km, "max.distance.km", min = 0, null_ok = TRUE)
   .assert_count(min.satellites, "min.satellites", min = 1L, null_ok = TRUE)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")   # fail-fast: parent dir must exist
-  # diagnostic-map background: only the vector "land"/"none" are live; "satellite" errors cleanly (Phase 2)
-  basemap <- .resolveBasemap(basemap, c("land", "satellite", "none"))
+  # diagnostic-map background canvas: "land"/"none"/"satellite"(+ a pre-fetched raster) are live
+  basemap.control <- .as_control(basemap.control, basemapControl, "nautilus_basemap", "basemap.control")
+  bm <- .resolveBasemap(basemap, c("land", "satellite", "none"))
+  coast_fill <- identical(bm$kind, "land")
   # resolve the coastline only when a map is actually drawn, so the low-res hint never fires on a
   # filter-only run (plot = FALSE); a silent no-op otherwise
-  coast_spec <- if ((plot || !is.null(plot.file)) && identical(basemap, "land"))
+  coast_spec <- if ((plot || !is.null(plot.file)) && bm$kind %in% c("land", "satellite", "raster"))
                   .resolveCoastline(coastline, lvl) else list(kind = "none")
   .assert_dir(output.dir, "output.dir")                        # fail-fast: must exist
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
@@ -360,7 +367,8 @@ filterLocations <- function(data,
     to_draw <- Filter(function(p) !is.null(p) && any(p$removed), payloads)
     if (length(to_draw)) {
       draw <- function(to.file = FALSE, unicode = TRUE) {
-        for (p in to_draw) .plotLocationPanel(p, coast_spec = coast_spec, unicode = unicode)
+        for (p in to_draw) .plotLocationPanel(p, coast_spec = coast_spec, coast_fill = coast_fill,
+                                              bm = bm, basemap.control = basemap.control, unicode = unicode)
       }
       .renderToDevices(draw, plot = plot, plot.file = plot.file, width = 8, height = 8, cairo = TRUE)
     } else if (lvl >= 1L) {
@@ -521,7 +529,8 @@ filterLocations <- function(data,
 # bar (prettymapr, if installed). `p` is the payload assembled in filterLocations().
 #' @keywords internal
 #' @noRd
-.plotLocationPanel <- function(p, coast_spec = NULL, unicode = TRUE) {
+.plotLocationPanel <- function(p, coast_spec = NULL, coast_fill = TRUE, bm = NULL,
+                               basemap.control = NULL, unicode = TRUE) {
 
   pos <- p$pos; removed <- p$removed; reason <- p$reason
   deploy <- p$deploy
@@ -551,8 +560,18 @@ filterLocations <- function(data,
   graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3], graphics::par("usr")[2], graphics::par("usr")[4],
                  col = "#EAF1F6", border = NA)
 
-  # optional coastline (resolved once in the driver; silent no-op if the map packages are absent)
-  .drawCoastline(lon_range, lat_range, coast_spec)
+  # raster basemap canvas (satellite / a pre-fetched raster), fetched at this panel's extent; then the
+  # coastline (filled under "land", an outline over a raster canvas)
+  tile_credit <- NULL
+  if (!is.null(bm) && bm$kind %in% c("satellite", "raster")) {
+    tile_rast <- if (identical(bm$kind, "satellite")) .fetchTiles(lon_range, lat_range, basemap.control)
+                 else bm$raster
+    if (!is.null(tile_rast)) {
+      .drawTiles(tile_rast)
+      tile_credit <- attr(tile_rast, "nautilus.credit", exact = TRUE) %||% bm$credit
+    }
+  }
+  .drawCoastline(lon_range, lat_range, coast_spec, fill = coast_fill)
 
   graphics::box(col = "#BBBBBB")
   graphics::axis(1, at = pretty(lon_range, 5), labels = sprintf("%.2f", pretty(lon_range, 5)), cex.axis = 0.85)
@@ -604,6 +623,7 @@ filterLocations <- function(data,
 
   # scale bar, if prettymapr is available (shared helper)
   .mapScalebar()
+  if (!is.null(tile_credit)) .drawAttribution(tile_credit)               # imagery provider credit
   invisible(NULL)
 }
 

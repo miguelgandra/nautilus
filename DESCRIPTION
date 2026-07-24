@@ -38,6 +38,8 @@ Suggests:
 	tesseract,
 	magick,
 	geosphere,
+	maptiles,
+	terra,
 	sf,
 	maps,
 	mapdata,

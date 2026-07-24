@@ -187,19 +187,93 @@
 #' @keywords internal
 #' @noRd
 .resolveBasemap <- function(basemap, choices) {
-  # a non-character basemap is a user-supplied raster (reserved); a character vector - including the
-  # multi-element formal default - is resolved by match.arg (which picks the first when unspecified)
-  if (!is.character(basemap))
-    .abort(c("A user-supplied raster {.arg basemap} is not available yet.",
-             "i" = "Currently supported: {.val land} (default) and {.val none}.",
-             "i" = "For a high-resolution coastline use {.arg coastline}; for depth contours use {.arg bathy.contours}."))
+  # a non-character basemap is a user-supplied raster canvas (a terra SpatRaster, e.g. from getBasemap())
+  if (!is.character(basemap)) {
+    if (!requireNamespace("terra", quietly = TRUE) || !inherits(basemap, "SpatRaster"))
+      .abort(c("A user-supplied {.arg basemap} must be a {.pkg terra} {.cls SpatRaster}.",
+               "i" = "Fetch one with {.fn getBasemap}, or pass a keyword ({.val land}, {.val satellite}, {.val none})."))
+    return(list(kind = "raster", raster = basemap, credit = attr(basemap, "nautilus.credit", exact = TRUE)))
+  }
   bm <- match.arg(basemap, choices)
-  if (!bm %in% c("land", "none"))
-    .abort(c("{.arg basemap = {.val {bm}}} is not available yet (reserved for a later release).",
-             "i" = "Use {.val land} (default) or {.val none} for now.",
-             "i" = if (identical(bm, "bathymetry")) "For depth contours on the current map, set {.arg bathy.contours = TRUE}."
-                   else "For a high-resolution coastline, set {.arg coastline = \"high\"} or pass a custom coastline."))
-  bm
+  if (identical(bm, "bathymetry"))
+    .abort(c("{.arg basemap = \"bathymetry\"} (shaded relief) is not available yet (reserved for a later release).",
+             "i" = "For depth contours on the current map, set {.arg bathy.contours = TRUE}.",
+             "i" = "Or use {.val land} (default), {.val satellite}, or {.val none}."))
+  if (identical(bm, "satellite")) {
+    if (!requireNamespace("maptiles", quietly = TRUE))
+      .abort(c("{.arg basemap = \"satellite\"} needs the {.pkg maptiles} package.",
+               "i" = "Install it with {.code install.packages(\"maptiles\")}, pass a pre-fetched raster from {.fn getBasemap}, or use {.val land}."))
+    return(list(kind = "satellite", raster = NULL, credit = NULL))
+  }
+  list(kind = bm, raster = NULL, credit = NULL)                 # "land" or "none"
+}
+
+
+#' Persistent cache directory for fetched basemap tiles (from a `basemapControl(cache=)` value).
+#' @keywords internal
+#' @noRd
+.tileCacheDir <- function(cache) {
+  if (isFALSE(cache)) return(NULL)                               # maptiles uses a session tempdir
+  dir <- if (isTRUE(cache)) tools::R_user_dir("nautilus", "cache") else cache
+  if (!dir.exists(dir)) dir.create(dir, recursive = TRUE, showWarnings = FALSE)
+  dir
+}
+
+
+#' Fetch a raster basemap (satellite/imagery tiles) covering [xlim] x [ylim], reprojected to lon/lat.
+#'
+#' Tiles arrive in Web Mercator (EPSG:3857); reprojecting to EPSG:4326 is what lets them co-register with
+#' the WGS84 degree-based drawing - the exact step the original OpenStreetMap basemap omitted. A network
+#' call, guarded and cached; returns a `terra` SpatRaster (with a `nautilus.credit` attribute) or NULL on
+#' a reported failure. Needs \pkg{maptiles} + \pkg{terra} + \pkg{sf}.
+#' @keywords internal
+#' @noRd
+.fetchTiles <- function(xlim, ylim, control = basemapControl(), lvl = 0L) {
+  for (pkg in c("maptiles", "terra", "sf"))
+    if (!requireNamespace(pkg, quietly = TRUE))
+      .abort(c("A satellite basemap needs the {.pkg {pkg}} package.",
+               "i" = "Install {.pkg maptiles}, {.pkg terra} and {.pkg sf}, or use {.arg basemap = \"land\"}."))
+  # get_tiles() wants an sf/sfc with a CRS, not a bare bbox: give it an sfc polygon of the extent
+  aoi <- sf::st_as_sfc(sf::st_bbox(c(xmin = xlim[1], ymin = ylim[1], xmax = xlim[2], ymax = ylim[2]),
+                                   crs = 4326))
+  rast <- tryCatch(
+    suppressWarnings(maptiles::get_tiles(aoi, provider = control$provider, crop = TRUE,
+                                         cachedir = .tileCacheDir(control$cache))),
+    error = function(e) { .log_skip(lvl, "satellite basemap unavailable: ", conditionMessage(e)); NULL })
+  if (is.null(rast)) return(NULL)
+  rast <- tryCatch(terra::project(rast, "EPSG:4326"), error = function(e) rast)
+  attr(rast, "nautilus.credit") <- tryCatch(maptiles::get_credit(control$provider), error = function(e) NULL)
+  rast
+}
+
+
+#' Draw an RGB raster basemap over the current lon/lat panel (co-registered via its geographic extent).
+#' @keywords internal
+#' @noRd
+.drawTiles <- function(rast) {
+  if (is.null(rast) || !requireNamespace("terra", quietly = TRUE)) return(invisible(NULL))
+  tryCatch({
+    e  <- as.vector(terra::ext(rast))                           # xmin, xmax, ymin, ymax
+    a  <- terra::as.array(rast)
+    if (length(dim(a)) < 3L || dim(a)[3] < 3L) return(invisible(NULL))
+    rgb <- a[, , 1:3, drop = FALSE]
+    if (max(rgb, na.rm = TRUE) > 1) rgb <- rgb / 255
+    rgb[!is.finite(rgb)] <- 1
+    graphics::rasterImage(grDevices::as.raster(rgb), e[1], e[3], e[2], e[4], interpolate = TRUE)
+  }, error = function(e) invisible(NULL))
+  invisible(NULL)
+}
+
+
+#' Small provider-attribution caption for a raster basemap (bottom-right, unobtrusive over imagery).
+#' @keywords internal
+#' @noRd
+.drawAttribution <- function(credit, cex = 1) {
+  if (is.null(credit) || !is.character(credit) || !nzchar(credit)) return(invisible(NULL))
+  usr <- graphics::par("usr")
+  graphics::text(usr[2] - 0.01 * diff(usr[1:2]), usr[3] + 0.02 * diff(usr[3:4]),
+                 labels = credit, adj = c(1, 0), cex = cex * 0.5, col = "#FFFFFFCC")
+  invisible(NULL)
 }
 
 
@@ -301,19 +375,21 @@
 #' primitives, and the panel clips it to the visible extent.
 #' @keywords internal
 #' @noRd
-.drawCoastline <- function(lon_range, lat_range, spec = NULL, land = "#D9D2C5", border = "#B8AE9C") {
+.drawCoastline <- function(lon_range, lat_range, spec = NULL, land = "#D9D2C5", border = "#B8AE9C",
+                           fill = TRUE) {
   if (is.null(spec)) spec <- .resolveCoastline("auto")     # back-compat default when no spec supplied
   if (identical(spec$kind, "none")) return(invisible(NULL))
+  col <- if (fill) land else NA                            # outline only over a raster canvas (imagery shows through)
   if (identical(spec$kind, "maps")) {
     tryCatch(
-      suppressWarnings(maps::map(spec$db, add = TRUE, fill = TRUE, col = land, border = border,
-                                 lwd = 0.4, xlim = lon_range, ylim = lat_range)),
+      suppressWarnings(maps::map(spec$db, add = TRUE, fill = fill, col = if (fill) land else border,
+                                 border = border, lwd = 0.4, xlim = lon_range, ylim = lat_range)),
       error = function(e) invisible(NULL))
     return(invisible(NULL))
   }
   # custom rings
   for (m in spec$polys)
-    tryCatch(graphics::polygon(m[, 1], m[, 2], col = land, border = border, lwd = 0.4),
+    tryCatch(graphics::polygon(m[, 1], m[, 2], col = col, border = border, lwd = 0.4),
              error = function(e) invisible(NULL))
   invisible(NULL)
 }

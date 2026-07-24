@@ -10,6 +10,7 @@ plotTracks(
   show.uncertainty = TRUE,
   basemap = c("land", "bathymetry", "satellite", "none"),
   coastline = "auto",
+  basemap.control = basemapControl(),
   bathy.contours = FALSE,
   theme = plotTheme(),
   colors = NULL,
@@ -35,9 +36,10 @@ columns drive the track). A single aggregated data.frame is split by \code{id.co
 Default \code{TRUE}.}
 
 \item{basemap}{The background canvas (choose ONE): \code{"land"} (default; filled coastline over a flat
-sea), or \code{"none"} (blank sea). The raster canvases \code{"bathymetry"} (shaded relief) and \code{"satellite"}
-(imagery), and a user-supplied raster, are reserved for a later release and currently error with a
-pointer to the available options.}
+sea), \code{"satellite"} (imagery tiles via \pkg{maptiles} - a network download, cached), \code{"none"} (blank
+sea), OR a pre-fetched \pkg{terra} \code{SpatRaster} from \code{\link{getBasemap}} (drawn as-is - the
+reproducible/offline path). Over a raster canvas the coastline is drawn as an outline, not filled.
+\code{"bathymetry"} (shaded relief) is reserved for a later release and currently errors.}
 
 \item{coastline}{Which vector coastline to draw (used when \code{basemap = "land"}). A keyword selecting a
 bundled source by resolution -- \code{"auto"} (default: the highest-resolution installed source,
@@ -46,6 +48,9 @@ bundled source by resolution -- \code{"auto"} (default: the highest-resolution i
 \code{"none"} -- OR a custom coastline: an \pkg{sf} object, a two-column lon/lat \code{data.frame}/\code{matrix}
 (NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
 the \code{data.frame}/\code{matrix} form; \pkg{sf} is needed for \code{sf} objects and most file paths.}
+
+\item{basemap.control}{A \code{\link{basemapControl}} object tuning the satellite fetch (tile
+\code{provider}, \code{cache}). Used only when \code{basemap = "satellite"}; ignored for a pre-fetched raster.}
 
 \item{bathy.contours}{Bathymetric contour overlay (composes with any \code{basemap}). \code{FALSE} (default) is
 off; \code{TRUE} draws auto-chosen isobaths; a numeric vector draws exactly those isobath depths (negative

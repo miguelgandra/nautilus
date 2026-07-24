@@ -62,6 +62,31 @@ calibrationControl <- function(hard.iron = TRUE, soft.iron = TRUE, use.stored = 
   structure(flags, class = "nautilus_calibration")
 }
 
+
+#' Control settings for a fetched raster basemap (\code{basemap = "satellite"})
+#'
+#' @description Tunes how a raster basemap canvas is fetched and cached by \code{\link{plotTracks}} /
+#' \code{\link{filterLocations}} when \code{basemap = "satellite"}. It governs only the \emph{auto-fetch}
+#' path; a pre-fetched raster passed directly as \code{basemap} (see \code{\link{getBasemap}}) ignores it.
+#' Tile zoom and grid resolution are deliberately not exposed -- both are derived from the map extent, and
+#' exact control is available by pre-fetching a raster and passing it in.
+#'
+#' @param provider Character. The \pkg{maptiles} tile provider id. Default `"Esri.WorldImagery"` (satellite
+#'   imagery). Any provider \pkg{maptiles} knows works (e.g. `"Esri.WorldTopoMap"`, `"OpenStreetMap"`).
+#' @param cache Cache fetched tiles for offline reuse: `TRUE` (default, a persistent per-user cache via
+#'   \code{\link[tools]{R_user_dir}}), `FALSE` (session temp dir only), or a directory path.
+#' @return A `nautilus_basemap` control object.
+#' @seealso \code{\link{plotTracks}}, \code{\link{getBasemap}}
+#' @examples
+#' basemapControl(provider = "Esri.WorldTopoMap")
+#' @export
+basemapControl <- function(provider = "Esri.WorldImagery", cache = TRUE) {
+  .assert_string(provider, "provider")
+  if (!(isTRUE(cache) || isFALSE(cache) || (is.character(cache) && length(cache) == 1L && !is.na(cache))))
+    .abort("{.arg cache} must be {.code TRUE}, {.code FALSE}, or a single directory path.")
+  structure(list(provider = provider, cache = cache), class = "nautilus_basemap")
+}
+
 #' Control the optional magnetometer hard/soft-iron calibration
 #'
 #' @description

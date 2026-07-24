@@ -47,9 +47,12 @@
 #' @param show.uncertainty Logical. Draw the `pseudo_error` uncertainty corridor around the pseudo-track.
 #'   Default `TRUE`.
 #' @param basemap The background canvas (choose ONE): `"land"` (default; filled coastline over a flat
-#'   sea), or `"none"` (blank sea). The raster canvases `"bathymetry"` (shaded relief) and `"satellite"`
-#'   (imagery), and a user-supplied raster, are reserved for a later release and currently error with a
-#'   pointer to the available options.
+#'   sea), `"satellite"` (imagery tiles via \pkg{maptiles} - a network download, cached), `"none"` (blank
+#'   sea), OR a pre-fetched \pkg{terra} `SpatRaster` from \code{\link{getBasemap}} (drawn as-is - the
+#'   reproducible/offline path). Over a raster canvas the coastline is drawn as an outline, not filled.
+#'   `"bathymetry"` (shaded relief) is reserved for a later release and currently errors.
+#' @param basemap.control A \code{\link{basemapControl}} object tuning the satellite fetch (tile
+#'   `provider`, `cache`). Used only when `basemap = "satellite"`; ignored for a pre-fetched raster.
 #' @param coastline Which vector coastline to draw (used when `basemap = "land"`). A keyword selecting a
 #'   bundled source by resolution -- `"auto"` (default: the highest-resolution installed source,
 #'   `\pkg{mapdata}`'s `worldHires` if present, else the coarse `maps::world` with a one-time hint),
@@ -104,6 +107,7 @@ plotTracks <- function(data,
                        show.uncertainty = TRUE,
                        basemap          = c("land", "bathymetry", "satellite", "none"),
                        coastline        = "auto",
+                       basemap.control  = basemapControl(),
                        bathy.contours   = FALSE,
                        theme            = plotTheme(),
                        colors           = NULL,
@@ -125,8 +129,9 @@ plotTracks <- function(data,
 
   if (!is.null(color.by)) .assert_choice(color.by, "color.by", c("depth", "speed"))
   .assert_flag(show.uncertainty, "show.uncertainty")
-  # canvas: only the vector "land"/"none" are live in this release; raster canvases error cleanly
-  basemap <- .resolveBasemap(basemap, c("land", "bathymetry", "satellite", "none"))
+  # canvas: "land"/"none"/"satellite"(+ a pre-fetched raster) are live; "bathymetry" is reserved
+  basemap.control <- .as_control(basemap.control, basemapControl, "nautilus_basemap", "basemap.control")
+  bm <- .resolveBasemap(basemap, c("land", "bathymetry", "satellite", "none"))
   # bathymetry contour overlay: FALSE | TRUE (auto isobaths) | numeric depths (explicit isobaths)
   bathy_levels <- .resolveBathyContours(bathy.contours)         # NULL when off; numeric(0) when auto
   bathy_on     <- !is.null(bathy_levels)
@@ -142,9 +147,12 @@ plotTracks <- function(data,
   if (bathy_on && !requireNamespace("marmap", quietly = TRUE))
     .abort(c("{.arg bathy.contours} needs the {.pkg marmap} package.",
              "i" = "Install it with {.code install.packages(\"marmap\")}, or set {.arg bathy.contours = FALSE}."))
-  # resolve the coastline source ONCE (emits the low-res hint / explicit-request error a single time);
-  # drawn only under the vector "land" canvas, so it is a silent no-op for basemap = "none"
-  coast_draw <- if (identical(basemap, "land")) .resolveCoastline(coastline, lvl) else list(kind = "none")
+  # resolve the coastline source ONCE (emits the low-res hint / explicit-request error a single time).
+  # It is filled land under the "land" canvas, and an outline over a raster canvas (satellite/raster);
+  # under "none" no coastline is drawn.
+  coast_fill <- identical(bm$kind, "land")
+  coast_draw <- if (bm$kind %in% c("land", "satellite", "raster")) .resolveCoastline(coastline, lvl)
+                else list(kind = "none")
 
   # Semantic MAP palette: one colour per map ELEMENT, deliberately not folded into `theme$palette` (which
   # is a qualitative SERIES palette for telling n categories apart - a track is not "category 3"). What a
@@ -232,13 +240,19 @@ plotTracks <- function(data,
     }
   }
 
-  # union extent (used for a single bathymetry fetch and returned nowhere else)
-  bathy <- NULL
-  if (bathy_on) {
+  # union extent: a SINGLE bathymetry and/or satellite fetch for the whole run, drawn clipped per panel
+  bathy <- NULL; tile_rast <- NULL; tile_credit <- NULL
+  need_tiles <- bm$kind %in% c("satellite", "raster")
+  if (bathy_on || need_tiles) {
     allx <- unlist(lapply(payloads, function(p) c(p$fixes$lon, p$track$lon, p$deploy$lon, p$popup$lon)))
     ally <- unlist(lapply(payloads, function(p) c(p$fixes$lat, p$track$lat, p$deploy$lat, p$popup$lat)))
     ext  <- .equalAspectExtent(allx, ally, f = 0.3)
-    if (!is.null(ext)) bathy <- .fetchBathy(ext$xlim, ext$ylim, lvl)   # grid resolution auto from extent
+    if (!is.null(ext)) {
+      if (bathy_on) bathy <- .fetchBathy(ext$xlim, ext$ylim, lvl)     # grid resolution auto from extent
+      if (identical(bm$kind, "satellite")) tile_rast <- .fetchTiles(ext$xlim, ext$ylim, basemap.control, lvl)
+      if (identical(bm$kind, "raster"))    tile_rast <- bm$raster
+      tile_credit <- if (!is.null(tile_rast)) attr(tile_rast, "nautilus.credit", exact = TRUE) %||% bm$credit
+    }
   }
 
   ##############################################################################
@@ -260,7 +274,8 @@ plotTracks <- function(data,
       for (k in pg) .plotTrackPanel(payloads[[k]], pal = pal, theme = theme, color.by = color.by,
                                     color_range = color_range, ramp = ramp, bathy = bathy,
                                     bathy.levels = bathy_levels, coast_spec = coast_draw,
-                                    show.uncertainty = show.uncertainty)
+                                    coast_fill = coast_fill, tile_rast = tile_rast,
+                                    tile_credit = tile_credit, show.uncertainty = show.uncertainty)
       for (b in seq_len(lay$per_page - length(pg))) graphics::plot.new()   # blank trailing cells
     }
   }
@@ -329,7 +344,8 @@ plotTracks <- function(data,
 #' @keywords internal
 #' @noRd
 .plotTrackPanel <- function(payload, pal, theme, color.by, color_range, ramp, bathy,
-                            bathy.levels = NULL, coast_spec = NULL, show.uncertainty) {
+                            bathy.levels = NULL, coast_spec = NULL, coast_fill = TRUE,
+                            tile_rast = NULL, tile_credit = NULL, show.uncertainty) {
 
   fixes <- payload$fixes; track <- payload$track
   deploy <- payload$deploy; popup <- payload$popup
@@ -360,9 +376,11 @@ plotTracks <- function(data,
   graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3], graphics::par("usr")[2], graphics::par("usr")[4],
                  col = pal[["sea"]], border = NA)
 
+  if (!is.null(tile_rast)) .drawTiles(tile_rast)                        # raster canvas over the sea colour
   if (!is.null(bathy)) .drawBathy(bathy, ext$xlim, ext$ylim, col = pal[["bathymetry"]], cex = cex,
                                   levels = if (length(bathy.levels)) bathy.levels else NULL)
-  .drawCoastline(ext$xlim, ext$ylim, coast_spec, land = pal[["land"]], border = pal[["land.border"]])
+  .drawCoastline(ext$xlim, ext$ylim, coast_spec, land = pal[["land"]], border = pal[["land.border"]],
+                 fill = coast_fill)
   graphics::box(col = axcol)
   graphics::axis(1, at = pretty(ext$xlim, 5), labels = sprintf("%.2f", pretty(ext$xlim, 5)), col = axcol, col.axis = axcol, cex.axis = cex * 0.8)
   graphics::axis(2, at = pretty(ext$ylim, 5), labels = sprintf("%.2f", pretty(ext$ylim, 5)), las = 1, col = axcol, col.axis = axcol, cex.axis = cex * 0.8)
@@ -411,6 +429,7 @@ plotTracks <- function(data,
     .trackColorbar(ramp, color_range, .defaultColorLabel(color.by), theme)
 
   .mapScalebar(label.cex = cex * 0.7)
+  if (!is.null(tile_rast)) .drawAttribution(tile_credit, cex)           # provider credit, over the imagery
   invisible(NULL)
 }
 

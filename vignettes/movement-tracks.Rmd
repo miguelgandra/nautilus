@@ -236,7 +236,10 @@ depth or speed on a shared scale. The background is a lightweight bundled vector
 fine-scale maps around small islands, install **mapdata** and use `coastline = "high"` (or the
 default `"auto"`, which prefers it) or pass your own coastline via `coastline`. Set
 `bathy.contours = TRUE` to overlay auto-chosen depth isobaths via **marmap**, or pass specific
-depths, e.g. `bathy.contours = c(-50, -200, -1000)`.
+depths, e.g. `bathy.contours = c(-50, -200, -1000)`. For a satellite-imagery background (useful
+for fine-scale coastal work) set `basemap = "satellite"` (needs **maptiles** + a network
+connection); for a reproducible, offline figure, pre-fetch it once with `getBasemap()`, save the
+returned raster, and pass it back as `basemap = <raster>`.
 
 ## 6. Hand off to a state-space model
 
