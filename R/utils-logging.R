@@ -90,13 +90,17 @@
 #' Strings are inserted as values (injection-safe), so paths with odd characters are fine.
 #' @keywords internal
 #' @noRd
-.log_header <- function(lvl, title, intro, bullets = NULL, arrow = NULL) {
+.log_header <- function(lvl, title, intro, bullets = NULL, arrow = NULL, sub = NULL) {
   if (lvl < 1L) return(invisible(NULL))
   .log_frame(lvl)
   .log_h1(lvl, title)
   cli::cli_text("")                                       # blank: rule -> intro
   cli::cli_alert_info("{intro}")
   for (b in bullets) cli::cli_text("{cli::symbol$bullet} {b}")
+  # `sub`: indented arrows hanging off the LAST bullet (e.g. a list of thresholds under "Criteria:").
+  # Rendered like .log_subdetail - a blank-name cli bullet indents without adding its own marker - and
+  # the text is built first so braces in a value stay literal.
+  for (s in sub) { txt <- paste0(cli::symbol$arrow_right, " ", s); cli::cli_bullets(stats::setNames("{txt}", " ")) }
   for (a in arrow) cli::cli_text("{cli::symbol$arrow_right} {a}")
   cli::cli_text("")                                       # blank: body -> bottom frame
   .log_frame(lvl)

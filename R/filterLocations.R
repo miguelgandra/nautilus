@@ -218,18 +218,20 @@ filterLocations <- function(data,
   # Header #####################################################################
   ##############################################################################
 
-  active <- c(if (do_speed) sprintf("speed <= %g km/h", max.speed.kmh),
-              if (do_dist)  sprintf("<= %g km from deployment", max.distance.km),
-              if (do_sat)   sprintf(">= %d satellites", min.satellites))
-  method_hdr <- if (length(active)) paste(active, collapse = paste0(" ", cli::symbol$bullet, " ")) else "no checks enabled"
+  # thresholds listed ONCE here, in the order the checks are applied, so the per-deployment blocks below
+  # need only report counts (the numbers stay available without being repeated 52 times)
+  criteria <- c(if (do_sat)   sprintf("Minimum satellites: %d", min.satellites),
+                if (do_dist)  sprintf("Maximum distance: %g km from deployment", max.distance.km),
+                if (do_speed) sprintf("Maximum speed: %g km/h", max.speed.kmh))
   hdr_bullets <- sprintf("Input: %d dataset%s", r$n, if (r$n != 1) "s" else "")
   if (!is.null(output.dir)) hdr_bullets <- c(hdr_bullets, paste0("Output: ", output.dir))
-  .log_header(lvl, "filterLocations", "Screening position fixes for implausible detections",
-              bullets = hdr_bullets, arrow = paste0("Checks: ", method_hdr))
+  hdr_bullets <- c(hdr_bullets, if (length(criteria)) "Filtering criteria:" else "No checks enabled")
+  .log_header(lvl, "filterLocations", "Screening position fixes for implausible locations",
+              bullets = hdr_bullets, sub = criteria)
 
   # nudge if the function would be a no-op (nothing enabled) - a QC step that removes nothing is
   # almost always an oversight (thresholds are species-specific, so there is no safe default)
-  if (!length(active)) {
+  if (!length(criteria)) {
     cli::cli_warn(c("No location checks are enabled, so no fixes will be removed.",
                     "i" = "Set {.arg max.speed.kmh}, {.arg min.satellites} and/or {.arg max.distance.km} to screen the fixes."))
   }
@@ -242,6 +244,8 @@ filterLocations <- function(data,
   saved    <- vector("list", r$n)
   payloads <- if (make_plots) vector("list", r$n) else NULL
   n_touched <- 0L; total_removed <- 0L
+  # per-criterion tallies for the SUMMARY breakdown (why fixes were discarded, not just how many)
+  total_sat <- 0L; total_dist <- 0L; total_speed <- 0L
 
   for (i in seq_len(r$n)) {
 
@@ -255,7 +259,10 @@ filterLocations <- function(data,
 
     # nothing to screen: no position fixes for this deployment
     if (!nrow(pos)) {
-      .log_skip(lvl, id, "  no position fixes ", cli::symbol$bullet, " skipped"); .log_gap(lvl)
+      # plain hyphen, not an em dash: this line must survive a non-UTF-8 device, where a raw \u2014
+      # would print as an escape (cli only auto-degrades its OWN symbols)
+      if (lvl >= 1L) cli::cli_text("{cli::symbol$bullet} skipped - no position fixes")
+      .log_gap(lvl)
       if (make_plots) payloads[[i]] <- NULL
       if (return.data) { results[[i]] <- x }
       next
@@ -317,9 +324,9 @@ filterLocations <- function(data,
     bt <- cli::symbol$bullet
     .log_detail(lvl, "fixes: ", n_fix, " (FastGPS ", sum(pos$type == "FastGPS"), " ", bt,
                 " Argos ", sum(pos$type == "Argos"), " ", bt, " User ", sum(pos$type == "User"), ")")
-    if (do_sat)   .log_detail(lvl, "satellites: ", counts$satellite, " removed (< ", min.satellites, ")")
-    if (do_dist)  .log_detail(lvl, "distance: ",  counts$distance,  " removed (> ", max.distance.km, " km)")
-    if (do_speed) .log_detail(lvl, "speed: ",     counts$speed,     " removed (> ", max.speed.kmh, " km/h to both neighbours)")
+    if (do_sat)   .log_detail(lvl, "satellites: ", counts$satellite, " removed")
+    if (do_dist)  .log_detail(lvl, "distance: ",  counts$distance,  " removed")
+    if (do_speed) .log_detail(lvl, "speed: ",     counts$speed,     " removed")
 
     # ---- gather diagnostic payload BEFORE dropping the removed fixes ---------------------------
     if (make_plots) {
@@ -354,12 +361,12 @@ filterLocations <- function(data,
     # closing line
     if (n_rm > 0) {
       n_touched <- n_touched + 1L; total_removed <- total_removed + n_rm
-      .log_skip(lvl, id, "  ", n_rm, " of ", n_fix, " fix", if (n_fix != 1) "es", " removed",
-                if (!is.null(saved_to)) paste0(" ", cli::symbol$bullet, " saved ", basename(saved_to)))
-    } else {
-      .log_ok(lvl, id, "  ", n_fix, " fix", if (n_fix != 1) "es", " retained",
-              if (!is.null(saved_to)) paste0(" ", cli::symbol$bullet, " saved ", basename(saved_to)))
+      .log_skip(lvl, n_rm, " of ", n_fix, " fix", if (n_fix != 1) "es", " removed")
     }
+    total_sat   <- total_sat   + counts$satellite
+    total_dist  <- total_dist  + counts$distance
+    total_speed <- total_speed + counts$speed
+    if (!is.null(saved_to)) .log_ok(lvl, "saved ", basename(saved_to)) else .log_ok(lvl, id, " screened")
     .log_gap(lvl)
 
     if (return.data) results[[i]] <- x
@@ -389,7 +396,11 @@ filterLocations <- function(data,
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, total_removed, " fix", if (total_removed != 1) "es", " removed across ",
-              n_touched, " dataset", if (n_touched != 1) "s")
+              r$n, " dataset", if (r$n != 1) "s")
+    # why they were removed, one line per ENABLED check (a disabled check has no row, not a zero row)
+    if (do_sat)   .log_subdetail(lvl, sprintf("Satellites (< %d): %d", min.satellites, total_sat))
+    if (do_dist)  .log_subdetail(lvl, sprintf("Distance (> %g km): %d", max.distance.km, total_dist))
+    if (do_speed) .log_subdetail(lvl, sprintf("Speed (> %g km/h): %d", max.speed.kmh, total_speed))
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)

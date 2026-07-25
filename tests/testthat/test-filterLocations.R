@@ -152,3 +152,43 @@ test_that("filterLocationsControl validates its fields", {
   expect_error(filterLocationsControl(spike.angle = 45), "spike.angle")
   expect_error(filterLocations(1, control = list(bogus = 1)), "unknown field")
 })
+
+# ---- verbose output: header criteria, compact per-deployment blocks, summary breakdown --------------
+
+test_that("thresholds are listed ONCE in the header, not repeated per deployment", {
+  f <- fx(c(0, 2, 4), "FastGPS", c(0, 0.01, 0.02), c(0, 0.01, 0.02), quality = c("6", "2", "7"))
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    filterLocations(list(shark01 = make_tag(f)), max.speed.kmh = 10, min.satellites = 4,
+                    verbose = "detailed"))), collapse = "\n")
+  # header carries the criteria, in the order the checks are applied
+  expect_match(txt, "Filtering criteria:")
+  expect_match(txt, "Minimum satellites: 4")
+  expect_match(txt, "Maximum speed: 10 km/h")
+  # per-deployment lines report counts only - the threshold is not repeated
+  expect_match(txt, "satellites: [0-9]+ removed")
+  expect_false(grepl("removed (< 4)", txt, fixed = TRUE))
+  expect_false(grepl("to both neighbours", txt, fixed = TRUE))
+  # the outcome line is just the save/screen, with no fix tally appended
+  expect_false(grepl("retained", txt, fixed = TRUE))
+})
+
+test_that("the summary breaks removals down by criterion, and only for ENABLED checks", {
+  f <- fx(c(0, 2, 4), "FastGPS", c(0, 0.01, 0.02), c(0, 0.01, 0.02), quality = c("6", "2", "7"))
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    filterLocations(list(shark01 = make_tag(f)), min.satellites = 4, verbose = "detailed"))),
+    collapse = "\n")
+  expect_match(txt, "Satellites \\(< 4\\): 1")
+  expect_false(grepl("Speed (", txt, fixed = TRUE))       # speed check disabled -> no row at all
+  expect_false(grepl("Distance (", txt, fixed = TRUE))
+})
+
+test_that("a deployment with no fixes reports a plain skip, not a warning marker", {
+  # a bare tag carrying sensor rows but no position record at all (as in the skip test above)
+  t0 <- as.POSIXct("2020-01-01", tz = "UTC")
+  sens <- data.table::data.table(ID = "s", datetime = seq(t0, by = "1 min", length.out = 10), depth = 0)
+  m <- nautilus:::.newNautilusMeta(); m$id <- "s"
+  tg <- nautilus:::new_nautilus_tag(sens, m)
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    filterLocations(list(s = tg), max.speed.kmh = 10, verbose = "detailed"))), collapse = "\n")
+  expect_match(txt, "skipped - no position fixes")
+})
