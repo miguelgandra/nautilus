@@ -36,10 +36,12 @@ columns drive the track). A single aggregated data.frame is split by \code{id.co
 Default \code{TRUE}.}
 
 \item{basemap}{The background canvas (choose ONE): \code{"land"} (default; filled coastline over a flat
-sea), \code{"satellite"} (imagery tiles via \pkg{maptiles} - a network download, cached), \code{"none"} (blank
-sea), OR a pre-fetched \pkg{terra} \code{SpatRaster} from \code{\link{getBasemap}} (drawn as-is - the
-reproducible/offline path). Over a raster canvas the coastline is drawn as an outline, not filled.
-\code{"bathymetry"} (shaded relief) is reserved for a later release and currently errors.}
+sea), \code{"bathymetry"} (a shaded depth relief painting the sea, with land drawn on top; via
+\pkg{marmap}), \code{"satellite"} (imagery tiles via \pkg{maptiles} - a network download, cached),
+\code{"none"} (blank sea), OR a pre-fetched canvas from \code{\link{getBasemap}} - a \pkg{terra}
+\code{SpatRaster} (imagery) or a \pkg{marmap} \code{bathy} grid (depth), drawn as-is: the reproducible/offline
+path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
+\code{basemap = "bathymetry"} and \code{bathy.contours} compose (relief + isobaths) and share ONE download.}
 
 \item{coastline}{Which vector coastline to draw (used when \code{basemap = "land"}). A keyword selecting a
 bundled source by resolution -- \code{"auto"} (default: the highest-resolution installed source,
@@ -65,7 +67,8 @@ scale (\code{cex}) and the sequential ramp used for \code{color.by}. Default \co
 \item{colors}{Optional named character vector overriding individual entries of the semantic MAP
 palette - the colour of each map \emph{element}, which is a different concept from \code{theme$palette} (a
 qualitative series palette for telling \code{n} categories apart). Recognised names: \code{fastgps}, \code{argos},
-\code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{land}, \code{land.border}, \code{bathymetry}, \code{uncertainty}.
+\code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{sea.deep}, \code{land}, \code{land.border}, \code{bathymetry},
+\code{uncertainty}. (\code{sea}/\code{sea.deep} are the shallow/deep ends of the \code{basemap = "bathymetry"} ramp.)
 Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
 their defaults. Default \code{NULL}.}
 
@@ -108,8 +111,12 @@ of three orthogonal layers: a \emph{canvas} (\code{basemap}), the \emph{coastlin
 silent no-op when \pkg{maps}/\pkg{mapdata} are absent (no tile server, no Java, no network). For
 fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use \code{coastline = "high"}
 (or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
-\code{coastline}. Bathymetry contours (\code{bathy.contours}, via \pkg{marmap}) are fetched once for
-the whole run and reused across panels.
+\code{coastline}. The two raster canvases are opt-in: \code{basemap = "bathymetry"} paints a shaded
+depth relief (\pkg{marmap}) under filled land, and \code{basemap = "satellite"} draws imagery tiles
+(\pkg{maptiles}) under an outlined coastline. Because the depth CANVAS and the depth CONTOURS
+(\code{bathy.contours}) are separate layers over one grid, they compose freely - relief alone, isobaths
+over any canvas, or relief with isobaths on top - and asking for both costs a single download, fetched
+once for the whole run and reused across panels.
 
 \strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
 anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as

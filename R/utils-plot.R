@@ -187,25 +187,29 @@
 #' @keywords internal
 #' @noRd
 .resolveBasemap <- function(basemap, choices) {
-  # a non-character basemap is a user-supplied raster canvas (a terra SpatRaster, e.g. from getBasemap())
+  # A non-character basemap is a user-supplied canvas, of either raster flavour: a terra SpatRaster
+  # (imagery, from getBasemap(type = "satellite")) or a marmap bathy grid (depth, from
+  # getBasemap(type = "bathymetry")). Both are "fetch once, pass back" reproducibility paths.
   if (!is.character(basemap)) {
+    if (inherits(basemap, "bathy"))
+      return(list(kind = "bathymetry", raster = NULL, bathy = basemap, credit = NULL))
     if (!requireNamespace("terra", quietly = TRUE) || !inherits(basemap, "SpatRaster"))
-      .abort(c("A user-supplied {.arg basemap} must be a {.pkg terra} {.cls SpatRaster}.",
-               "i" = "Fetch one with {.fn getBasemap}, or pass a keyword ({.val land}, {.val satellite}, {.val none})."))
-    return(list(kind = "raster", raster = basemap, credit = attr(basemap, "nautilus.credit", exact = TRUE)))
+      .abort(c("A user-supplied {.arg basemap} must be a {.pkg terra} {.cls SpatRaster} (imagery) or a {.pkg marmap} {.cls bathy} grid (depth).",
+               "i" = "Fetch one with {.fn getBasemap}, or pass a keyword ({.val land}, {.val bathymetry}, {.val satellite}, {.val none})."))
+    return(list(kind = "raster", raster = basemap, bathy = NULL,
+                credit = attr(basemap, "nautilus.credit", exact = TRUE)))
   }
   bm <- match.arg(basemap, choices)
-  if (identical(bm, "bathymetry"))
-    .abort(c("{.arg basemap = \"bathymetry\"} (shaded relief) is not available yet (reserved for a later release).",
-             "i" = "For depth contours on the current map, set {.arg bathy.contours = TRUE}.",
-             "i" = "Or use {.val land} (default), {.val satellite}, or {.val none}."))
+  if (identical(bm, "bathymetry") && !requireNamespace("marmap", quietly = TRUE))
+    .abort(c("{.arg basemap = \"bathymetry\"} (shaded relief) needs the {.pkg marmap} package.",
+             "i" = "Install it with {.code install.packages(\"marmap\")}, pass a pre-fetched grid from {.fn getBasemap}, or use {.val land}."))
   if (identical(bm, "satellite")) {
     if (!requireNamespace("maptiles", quietly = TRUE))
       .abort(c("{.arg basemap = \"satellite\"} needs the {.pkg maptiles} package.",
                "i" = "Install it with {.code install.packages(\"maptiles\")}, pass a pre-fetched raster from {.fn getBasemap}, or use {.val land}."))
-    return(list(kind = "satellite", raster = NULL, credit = NULL))
+    return(list(kind = "satellite", raster = NULL, bathy = NULL, credit = NULL))
   }
-  list(kind = bm, raster = NULL, credit = NULL)                 # "land" or "none"
+  list(kind = bm, raster = NULL, bathy = NULL, credit = NULL)   # "land", "bathymetry" or "none"
 }
 
 
@@ -309,14 +313,23 @@
     if (!has_mapdata)
       .abort(c("{.arg coastline = \"high\"} needs the {.pkg mapdata} package.",
                "i" = "Install it with {.code install.packages(\"mapdata\")}, use {.arg coastline = \"low\"}, or pass a custom coastline."))
+    if (!.mapdataUsable())
+      .abort(c("The {.pkg mapdata} {.val worldHires} database is installed but could not be loaded.",
+               "i" = "Re-install it with {.code install.packages(\"mapdata\")}, or use {.arg coastline = \"low\"}."))
     return(list(kind = "maps", db = "worldHires"))
   }
   if (identical(coastline, "low")) {
     if (!has_maps) return(list(kind = "none"))
     return(list(kind = "maps", db = "world"))
   }
-  # "auto": prefer worldHires, fall back to the coarse world with a one-time hint, else nothing
-  if (has_mapdata) return(list(kind = "maps", db = "worldHires"))
+  # "auto": prefer worldHires, fall back to the coarse world with a one-time hint, else nothing.
+  # The worldHires database is VERIFIED here rather than assumed: a broken/unloadable one previously
+  # failed inside the per-panel draw, where the error was swallowed and the map came out with NO LAND.
+  if (has_mapdata) {
+    if (.mapdataUsable()) return(list(kind = "maps", db = "worldHires"))
+    .log_info(lvl, "the 'mapdata' worldHires database could not be loaded - falling back to the ",
+              "coarse maps::world coastline.")
+  }
   if (has_maps) {
     # plain text: .log_info wraps its message in a glue span, so cli class markup would print literally
     .log_info(lvl, "coastline is low-resolution (maps::world); install 'mapdata' for ",
@@ -324,6 +337,38 @@
     return(list(kind = "maps", db = "world"))
   }
   list(kind = "none")
+}
+
+
+#' Is the \pkg{mapdata} `worldHires` database actually loadable? (Installed is not the same as usable.)
+#' Probed once per run by `.resolveCoastline()` so a broken database degrades loudly to `world` instead
+#' of silently drawing no land at all.
+#' @keywords internal
+#' @noRd
+.mapdataUsable <- function() {
+  isTRUE(.withMapdata("worldHires", tryCatch({
+    maps::map("worldHires", plot = FALSE, namesonly = TRUE, xlim = c(-10, 10), ylim = c(35, 45))
+    TRUE
+  }, error = function(e) FALSE)))
+}
+
+
+#' Evaluate `expr` with the \pkg{mapdata} database ATTACHED, restoring the search path afterwards.
+#'
+#' `worldHires` lives in \pkg{mapdata}, but `maps::map()` resolves a database NAME through the search
+#' path, not through a namespace - so `requireNamespace("mapdata")` (which loads without attaching) is
+#' not enough and the call fails with "'worldHiresMapEnv' is not an exported object". This attaches the
+#' package for the duration of the call and detaches it again only if we were the ones who attached it,
+#' so a user who already had it attached is left untouched. A no-op for the bundled `maps` databases.
+#' @keywords internal
+#' @noRd
+.withMapdata <- function(db, expr) {
+  if (identical(db, "worldHires") && !"package:mapdata" %in% search()) {
+    if (!requireNamespace("mapdata", quietly = TRUE)) return(invisible(NULL))
+    suppressWarnings(attachNamespace("mapdata"))
+    on.exit(try(detach("package:mapdata", character.only = TRUE), silent = TRUE), add = TRUE)
+  }
+  force(expr)
 }
 
 
@@ -381,10 +426,10 @@
   if (identical(spec$kind, "none")) return(invisible(NULL))
   col <- if (fill) land else NA                            # outline only over a raster canvas (imagery shows through)
   if (identical(spec$kind, "maps")) {
-    tryCatch(
+    .withMapdata(spec$db, tryCatch(
       suppressWarnings(maps::map(spec$db, add = TRUE, fill = fill, col = if (fill) land else border,
                                  border = border, lwd = 0.4, xlim = lon_range, ylim = lat_range)),
-      error = function(e) invisible(NULL))
+      error = function(e) invisible(NULL)))
     return(invisible(NULL))
   }
   # custom rings

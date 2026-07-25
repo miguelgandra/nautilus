@@ -173,6 +173,12 @@ filterLocations <- function(data,
   # diagnostic-map background canvas: "land"/"none"/"satellite"(+ a pre-fetched raster) are live
   basemap.control <- .as_control(basemap.control, basemapControl, "nautilus_basemap", "basemap.control")
   bm <- .resolveBasemap(basemap, c("land", "satellite", "none"))
+  # a depth canvas is a plotTracks concern (presentation), not location QC - reject it explicitly rather
+  # than silently drawing a blank sea for a pre-fetched marmap grid
+  if (identical(bm$kind, "bathymetry"))
+    .abort(c("A bathymetry {.arg basemap} is not available in {.fn filterLocations}.",
+             "i" = "Depth does not inform location QC; use {.val land} (default), {.val satellite} or {.val none}.",
+             "i" = "For depth relief or isobaths on a presentation map, see {.fn plotTracks}."))
   coast_fill <- identical(bm$kind, "land")
   # resolve the coastline only when a map is actually drawn, so the low-res hint never fires on a
   # filter-only run (plot = FALSE); a silent no-op otherwise
@@ -540,8 +546,13 @@ filterLocations <- function(data,
   col_argos  <- "#5B7FBD"    # kept Argos
   col_user   <- "#7E57C2"    # User anchors (trusted)
   col_path   <- "#B8C4CC"    # chronological path through kept fixes
-  col_deploy <- "#1D9E75"    # deployment anchor
+  # The deployment anchor is a REFERENCE point, not a fix: charcoal keeps it out of every data hue
+  # (teal FastGPS ramp, blue Argos, purple User, red removals, orange pop-up) so it reads instantly.
+  # The previous green sat right next to the FastGPS teal and disappeared into it.
+  col_deploy <- "#111111"    # deployment anchor
   col_popup  <- "#E8A33D"    # pop-up anchor
+  # --- 4. FastGPS chronological ramp: same teal identity, lightness carrying time (first light -> last dark)
+  fast_ramp  <- grDevices::colorRampPalette(c("#BFE8E4", "#0E5C57"))
   col_rm     <- c(satellite = "#C9A227", distance = "#C25B56", speed = "#B23A3A")
 
   kept <- !removed
@@ -573,7 +584,6 @@ filterLocations <- function(data,
   }
   .drawCoastline(lon_range, lat_range, coast_spec, fill = coast_fill)
 
-  graphics::box(col = "#BBBBBB")
   graphics::axis(1, at = pretty(lon_range, 5), labels = sprintf("%.2f", pretty(lon_range, 5)), cex.axis = 0.85)
   graphics::axis(2, at = pretty(lat_range, 5), labels = sprintf("%.2f", pretty(lat_range, 5)), las = 1, cex.axis = 0.85)
   graphics::title(xlab = "Longitude", line = 2.2, cex.lab = 0.95); graphics::title(ylab = "Latitude", line = 3.1, cex.lab = 0.95)
@@ -593,7 +603,14 @@ filterLocations <- function(data,
 
   # kept fixes, by type
   .pts <- function(sel, ...) if (any(sel)) graphics::points(pos$lon[sel], pos$lat[sel], ...)
-  .pts(kept & pos$type == "FastGPS", pch = 21, bg = col_fast,  col = "white", lwd = 0.4, cex = 1.2)
+  # FastGPS: one colour per fix, ramped over the deployment's own time span, so the eye reads the
+  # chronology directly. `pos` is already time-sorted, so rank over the KEPT subset is the time order.
+  sel_fast <- kept & pos$type == "FastGPS"
+  if (any(sel_fast)) {
+    nf <- sum(sel_fast)
+    graphics::points(pos$lon[sel_fast], pos$lat[sel_fast], pch = 21,
+                     bg = fast_ramp(max(nf, 2L))[seq_len(nf)], col = "white", lwd = 0.4, cex = 1.2)
+  }
   .pts(kept & pos$type == "Argos",   pch = 22, bg = col_argos, col = "white", lwd = 0.4, cex = 1.2)
   .pts(kept & pos$type == "User",    pch = 24, bg = col_user,  col = "white", lwd = 0.4, cex = 1.3)
 
@@ -607,7 +624,8 @@ filterLocations <- function(data,
   # legend (only entries actually present)
   lab <- character(0); pch <- integer(0); pcol <- character(0); pbg <- character(0)
   add <- function(l, pc, co, bg = NA) { lab[[length(lab) + 1L]] <<- l; pch[[length(pch) + 1L]] <<- pc; pcol[[length(pcol) + 1L]] <<- co; pbg[[length(pbg) + 1L]] <<- bg }
-  if (any(kept & pos$type == "FastGPS")) add(sprintf("FastGPS (%d)", sum(kept & pos$type == "FastGPS")), 21, "white", col_fast)
+  # the FastGPS swatch takes the ramp's mid tone; the strip below the legend carries the time meaning
+  if (any(sel_fast)) add(sprintf("FastGPS (%d)", sum(sel_fast)), 21, "white", fast_ramp(3)[2])
   if (any(kept & pos$type == "Argos"))   add(sprintf("Argos (%d)",   sum(kept & pos$type == "Argos")),   22, "white", col_argos)
   if (any(kept & pos$type == "User"))    add(sprintf("User (%d)",    sum(kept & pos$type == "User")),    24, "white", col_user)
   if (p$counts$speed > 0)     add(sprintf("removed: speed (%d)",     p$counts$speed),     4, col_rm[["speed"]])
@@ -617,13 +635,27 @@ filterLocations <- function(data,
   if (!is.null(popup))  add("pop-up", 23, "white", col_popup)
   # place the legend just outside the plot's right edge (device coords), so it never clips or overlaps data
   usr <- graphics::par("usr")
-  graphics::legend(x = usr[2] + 0.03 * (usr[2] - usr[1]), y = usr[4], legend = lab, pch = pch,
-                   col = pcol, pt.bg = pbg, bty = "n", xpd = NA, pt.lwd = 0.5, pt.cex = 1.2,
-                   y.intersp = 1.3, cex = 0.72)
+  lg <- graphics::legend(x = usr[2] + 0.03 * (usr[2] - usr[1]), y = usr[4], legend = lab, pch = pch,
+                         col = pcol, pt.bg = pbg, bty = "n", xpd = NA, pt.lwd = 0.5, pt.cex = 1.2,
+                         y.intersp = 1.3, cex = 0.72)
+
+  # time key for the FastGPS ramp: without it the shading is decoration rather than information
+  if (any(sel_fast)) {
+    kx <- lg$rect$left; ky <- lg$rect$top - lg$rect$h - 0.05 * (usr[4] - usr[3])
+    kw <- lg$rect$w * 0.72; kh <- 0.020 * (usr[4] - usr[3])
+    cols <- fast_ramp(40); xs <- seq(kx, kx + kw, length.out = length(cols) + 1L)
+    graphics::text(kx, ky, "FastGPS: time", adj = c(0, -0.45), cex = 0.62, xpd = NA)
+    graphics::rect(xs[-length(xs)], ky - kh, xs[-1], ky, col = cols, border = NA, xpd = NA)
+    graphics::rect(kx, ky - kh, kx + kw, ky, border = "#5A6672", lwd = 0.4, xpd = NA)
+    graphics::text(c(kx, kx + kw), ky - kh, c("first", "last"), adj = c(0, 1.5), cex = 0.58, xpd = NA)
+  }
 
   # scale bar, if prettymapr is available (shared helper)
   .mapScalebar()
   if (!is.null(tile_credit)) .drawAttribution(tile_credit)               # imagery provider credit
+  # a complete panel border, drawn LAST so neither the basemap nor an edge fix overprints it (a light
+  # grey box behind the darker axis lines read as "axes only")
+  graphics::box(col = "#5A6672", lwd = 1)
   invisible(NULL)
 }
 

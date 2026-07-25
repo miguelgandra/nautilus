@@ -21,8 +21,12 @@
 #' silent no-op when \pkg{maps}/\pkg{mapdata} are absent (no tile server, no Java, no network). For
 #' fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use \code{coastline = "high"}
 #' (or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
-#' \code{coastline}. Bathymetry contours (\code{bathy.contours}, via \pkg{marmap}) are fetched once for
-#' the whole run and reused across panels.
+#' \code{coastline}. The two raster canvases are opt-in: \code{basemap = "bathymetry"} paints a shaded
+#' depth relief (\pkg{marmap}) under filled land, and \code{basemap = "satellite"} draws imagery tiles
+#' (\pkg{maptiles}) under an outlined coastline. Because the depth CANVAS and the depth CONTOURS
+#' (\code{bathy.contours}) are separate layers over one grid, they compose freely - relief alone, isobaths
+#' over any canvas, or relief with isobaths on top - and asking for both costs a single download, fetched
+#' once for the whole run and reused across panels.
 #'
 #' \strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
 #' anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as
@@ -47,10 +51,12 @@
 #' @param show.uncertainty Logical. Draw the `pseudo_error` uncertainty corridor around the pseudo-track.
 #'   Default `TRUE`.
 #' @param basemap The background canvas (choose ONE): `"land"` (default; filled coastline over a flat
-#'   sea), `"satellite"` (imagery tiles via \pkg{maptiles} - a network download, cached), `"none"` (blank
-#'   sea), OR a pre-fetched \pkg{terra} `SpatRaster` from \code{\link{getBasemap}} (drawn as-is - the
-#'   reproducible/offline path). Over a raster canvas the coastline is drawn as an outline, not filled.
-#'   `"bathymetry"` (shaded relief) is reserved for a later release and currently errors.
+#'   sea), `"bathymetry"` (a shaded depth relief painting the sea, with land drawn on top; via
+#'   \pkg{marmap}), `"satellite"` (imagery tiles via \pkg{maptiles} - a network download, cached),
+#'   `"none"` (blank sea), OR a pre-fetched canvas from \code{\link{getBasemap}} - a \pkg{terra}
+#'   `SpatRaster` (imagery) or a \pkg{marmap} `bathy` grid (depth), drawn as-is: the reproducible/offline
+#'   path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
+#'   `basemap = "bathymetry"` and `bathy.contours` compose (relief + isobaths) and share ONE download.
 #' @param basemap.control A \code{\link{basemapControl}} object tuning the satellite fetch (tile
 #'   `provider`, `cache`). Used only when `basemap = "satellite"`; ignored for a pre-fetched raster.
 #' @param coastline Which vector coastline to draw (used when `basemap = "land"`). A keyword selecting a
@@ -71,7 +77,8 @@
 #' @param colors Optional named character vector overriding individual entries of the semantic MAP
 #'   palette - the colour of each map *element*, which is a different concept from `theme$palette` (a
 #'   qualitative series palette for telling `n` categories apart). Recognised names: `fastgps`, `argos`,
-#'   `user`, `track`, `deploy`, `popup`, `sea`, `land`, `land.border`, `bathymetry`, `uncertainty`.
+#'   `user`, `track`, `deploy`, `popup`, `sea`, `sea.deep`, `land`, `land.border`, `bathymetry`,
+#'   `uncertainty`. (`sea`/`sea.deep` are the shallow/deep ends of the `basemap = "bathymetry"` ramp.)
 #'   Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
 #'   their defaults. Default `NULL`.
 #' @param max.points Integer. Per-track cap on the number of pseudo-track points actually drawn (the track
@@ -144,15 +151,17 @@ plotTracks <- function(data,
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   if (!plot && is.null(plot.file))
     .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
-  if (bathy_on && !requireNamespace("marmap", quietly = TRUE))
+  # marmap is only needed to FETCH a grid: a pre-fetched one (basemap = <bathy>) already carries the depths
+  if (bathy_on && is.null(bm$bathy) && !requireNamespace("marmap", quietly = TRUE))
     .abort(c("{.arg bathy.contours} needs the {.pkg marmap} package.",
-             "i" = "Install it with {.code install.packages(\"marmap\")}, or set {.arg bathy.contours = FALSE}."))
+             "i" = "Install it with {.code install.packages(\"marmap\")}, pass a pre-fetched grid from {.fn getBasemap}, or set {.arg bathy.contours = FALSE}."))
   # resolve the coastline source ONCE (emits the low-res hint / explicit-request error a single time).
-  # It is filled land under the "land" canvas, and an outline over a raster canvas (satellite/raster);
+  # It is FILLED land under the vector "land" canvas and over the bathymetric relief (which paints only
+  # the sea, so land must be drawn on top), and an OUTLINE over imagery (which already shows the land);
   # under "none" no coastline is drawn.
-  coast_fill <- identical(bm$kind, "land")
-  coast_draw <- if (bm$kind %in% c("land", "satellite", "raster")) .resolveCoastline(coastline, lvl)
-                else list(kind = "none")
+  coast_fill <- bm$kind %in% c("land", "bathymetry")
+  coast_draw <- if (bm$kind %in% c("land", "bathymetry", "satellite", "raster"))
+                  .resolveCoastline(coastline, lvl) else list(kind = "none")
 
   # Semantic MAP palette: one colour per map ELEMENT, deliberately not folded into `theme$palette` (which
   # is a qualitative SERIES palette for telling n categories apart - a track is not "category 3"). What a
@@ -161,6 +170,9 @@ plotTracks <- function(data,
   pal <- c(fastgps = "#2AA7A0", argos = "#5B7FBD", user = "#7E57C2", track = "#C0392B",
            deploy = "#1D9E75", popup = "#E8A33D", sea = "#EAF1F6", land = "#D9D2C5",
            land.border = "#B8AE9C", bathymetry = "#9DB4C0", uncertainty = "#6C7A89",
+           # the deep end of the bathymetric-relief ramp; `sea` is its shallow end, so overriding either
+           # end via `colors` re-tints the whole depth canvas (basemap = "bathymetry")
+           sea.deep = "#2C4A63",
            # start/end are a CONTRAST PAIR, not chrome: the map reads them as light-disk versus
            # dark-disk. Kept here so no theme preset can collapse one into the other.
            start = "#FFFFFF", end = "#111111")
@@ -240,15 +252,19 @@ plotTracks <- function(data,
     }
   }
 
-  # union extent: a SINGLE bathymetry and/or satellite fetch for the whole run, drawn clipped per panel
+  # union extent: a SINGLE bathymetry and/or satellite fetch for the whole run, drawn clipped per panel.
+  # ONE marmap grid serves both the relief canvas and the contour overlay, so asking for both costs one
+  # download - which is exactly why the two are separate arguments over a shared layer.
   bathy <- NULL; tile_rast <- NULL; tile_credit <- NULL
+  relief_on  <- identical(bm$kind, "bathymetry")
   need_tiles <- bm$kind %in% c("satellite", "raster")
-  if (bathy_on || need_tiles) {
+  if (bathy_on || relief_on || need_tiles) {
     allx <- unlist(lapply(payloads, function(p) c(p$fixes$lon, p$track$lon, p$deploy$lon, p$popup$lon)))
     ally <- unlist(lapply(payloads, function(p) c(p$fixes$lat, p$track$lat, p$deploy$lat, p$popup$lat)))
     ext  <- .equalAspectExtent(allx, ally, f = 0.3)
     if (!is.null(ext)) {
-      if (bathy_on) bathy <- .fetchBathy(ext$xlim, ext$ylim, lvl)     # grid resolution auto from extent
+      if (relief_on && !is.null(bm$bathy)) bathy <- bm$bathy            # pre-fetched grid, passed straight in
+      else if (bathy_on || relief_on) bathy <- .fetchBathy(ext$xlim, ext$ylim, lvl)  # resolution auto from extent
       if (identical(bm$kind, "satellite")) tile_rast <- .fetchTiles(ext$xlim, ext$ylim, basemap.control, lvl)
       if (identical(bm$kind, "raster"))    tile_rast <- bm$raster
       tile_credit <- if (!is.null(tile_rast)) attr(tile_rast, "nautilus.credit", exact = TRUE) %||% bm$credit
@@ -273,7 +289,8 @@ plotTracks <- function(data,
       graphics::par(mfrow = c(lay$nrows, lay$ncols))
       for (k in pg) .plotTrackPanel(payloads[[k]], pal = pal, theme = theme, color.by = color.by,
                                     color_range = color_range, ramp = ramp, bathy = bathy,
-                                    bathy.levels = bathy_levels, coast_spec = coast_draw,
+                                    bathy.levels = bathy_levels, bathy.relief = relief_on,
+                                    bathy.contours = bathy_on, coast_spec = coast_draw,
                                     coast_fill = coast_fill, tile_rast = tile_rast,
                                     tile_credit = tile_credit, show.uncertainty = show.uncertainty)
       for (b in seq_len(lay$per_page - length(pg))) graphics::plot.new()   # blank trailing cells
@@ -344,7 +361,8 @@ plotTracks <- function(data,
 #' @keywords internal
 #' @noRd
 .plotTrackPanel <- function(payload, pal, theme, color.by, color_range, ramp, bathy,
-                            bathy.levels = NULL, coast_spec = NULL, coast_fill = TRUE,
+                            bathy.levels = NULL, bathy.relief = FALSE, bathy.contours = TRUE,
+                            coast_spec = NULL, coast_fill = TRUE,
                             tile_rast = NULL, tile_credit = NULL, show.uncertainty) {
 
   fixes <- payload$fixes; track <- payload$track
@@ -376,9 +394,13 @@ plotTracks <- function(data,
   graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3], graphics::par("usr")[2], graphics::par("usr")[4],
                  col = pal[["sea"]], border = NA)
 
+  # canvas first (imagery OR depth relief - never both), then the contour overlay on top of it
   if (!is.null(tile_rast)) .drawTiles(tile_rast)                        # raster canvas over the sea colour
-  if (!is.null(bathy)) .drawBathy(bathy, ext$xlim, ext$ylim, col = pal[["bathymetry"]], cex = cex,
-                                  levels = if (length(bathy.levels)) bathy.levels else NULL)
+  if (isTRUE(bathy.relief) && !is.null(bathy))
+    .drawBathyRelief(bathy, ext$xlim, ext$ylim, shallow = pal[["sea"]], deep = pal[["sea.deep"]])
+  if (isTRUE(bathy.contours) && !is.null(bathy))
+    .drawBathy(bathy, ext$xlim, ext$ylim, col = pal[["bathymetry"]], cex = cex,
+               levels = if (length(bathy.levels)) bathy.levels else NULL)
   .drawCoastline(ext$xlim, ext$ylim, coast_spec, land = pal[["land"]], border = pal[["land.border"]],
                  fill = coast_fill)
   graphics::box(col = axcol)
@@ -542,6 +564,29 @@ plotTracks <- function(data,
 # Draw bathymetry contours in lon/lat over the current panel (so they co-register with the data).
 #' @keywords internal
 #' @noRd
+#' Draw a shaded/coloured bathymetric relief as the panel canvas, from a marmap grid.
+#'
+#' The depth CANVAS, as opposed to `.drawBathy()`'s contour OVERLAY - the same grid serves both, so a
+#' single fetch covers `basemap = "bathymetry"` and `bathy.contours` together. Land (z >= 0) is masked so
+#' only the sea is painted and the coastline draws filled land on top. `graphics::image()` takes lon/lat
+#' vectors with z as a `[lon, lat]` matrix - exactly marmap's own layout (and `.drawBathy`'s) - so the
+#' relief co-registers with the data without any transposition or flip.
+#' @param bathy A marmap `bathy` object. @param xlim,ylim Panel extent (lon/lat).
+#' @param shallow,deep The two ends of the depth ramp (shallow water -> deep water).
+#' @keywords internal
+#' @noRd
+.drawBathyRelief <- function(bathy, xlim, ylim, shallow = "#EAF1F6", deep = "#2C4A63") {
+  lon <- as.numeric(rownames(bathy)); lat <- as.numeric(colnames(bathy))
+  z <- unclass(bathy); z[z >= 0] <- NA                                   # sea only; land is drawn over it
+  if (!any(is.finite(z))) return(invisible(NULL))                        # an all-land window: nothing to paint
+  ramp <- grDevices::colorRampPalette(c(deep, shallow))(120)             # deep -> shallow (image() maps low->high)
+  tryCatch(
+    graphics::image(lon, lat, z, col = ramp, add = TRUE, useRaster = FALSE),
+    error = function(e) invisible(NULL))
+  invisible(NULL)
+}
+
+
 .drawBathy <- function(bathy, xlim, ylim, col = "#9DB4C0", cex = 1, levels = NULL) {
   lon <- as.numeric(rownames(bathy)); lat <- as.numeric(colnames(bathy))
   z <- unclass(bathy); z[z > 0] <- NA                                    # sea only

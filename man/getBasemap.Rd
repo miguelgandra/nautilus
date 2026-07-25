@@ -17,8 +17,9 @@ getBasemap(
 \item{data}{A \code{nautilus_tag}, a list of them, an aggregated data.frame, or \code{.rds} file paths - the same
 \code{data} you would pass to \code{\link{plotTracks}}.}
 
-\item{type}{Character. The basemap kind. Currently only \code{"satellite"} (imagery); \code{"bathymetry"} (a
-shaded-relief raster) is reserved for a later release.}
+\item{type}{Character. The basemap kind: \code{"satellite"} (imagery tiles, via \pkg{maptiles}) or
+\code{"bathymetry"} (a depth grid, via \pkg{marmap}). Both are returned ready to pass straight back as
+\verb{basemap =}.}
 
 \item{control}{A \code{\link{basemapControl}} object (provider + cache).}
 
@@ -27,12 +28,14 @@ shaded-relief raster) is reserved for a later release.}
 \item{verbose}{Logical/character verbosity, as elsewhere. Default \code{TRUE}.}
 }
 \value{
-A \pkg{terra} \code{SpatRaster} (RGB, lon/lat) carrying a \code{nautilus.credit} attribute with the
-provider attribution. Ready to pass as \verb{plotTracks(..., basemap = <this>)}.
+For \code{type = "satellite"}, a \pkg{terra} \code{SpatRaster} (RGB, lon/lat) carrying a
+\code{nautilus.credit} attribute with the provider attribution; for \code{type = "bathymetry"}, a \pkg{marmap}
+\code{bathy} depth grid. Either is ready to pass as \verb{plotTracks(..., basemap = <this>)}.
 }
 \description{
-Fetches a raster basemap (currently satellite imagery, via \pkg{maptiles}) covering the
-geographic extent of \code{data}, reprojected to WGS84 lon/lat so it co-registers with the package's maps.
+Fetches a raster basemap - satellite imagery (via \pkg{maptiles}, reprojected to WGS84
+lon/lat so it co-registers with the package's maps) or a bathymetric depth grid (via \pkg{marmap}) -
+covering the geographic extent of \code{data}.
 Pass the returned raster straight back to \code{\link{plotTracks}} or \code{\link{filterLocations}} as
 \verb{basemap = <raster>}: this turns a live network fetch into a saved, reproducible, offline asset - the
 recommended pattern for publication figures (fetch once, \code{saveRDS()} it, reuse). It is the raster twin
@@ -41,9 +44,9 @@ of supplying your own \code{coastline}.
 \details{
 The extent is the union of every deployment's surface fixes, dead-reckoned pseudo-track and
 deploy/pop-up anchors (with a small margin), exactly as \code{\link{plotTracks}} frames its maps.
-Tile zoom is derived from that extent; provider and caching are set via
-\code{\link{basemapControl}}. Needs \pkg{maptiles}, \pkg{terra} and \pkg{sf}; a satellite basemap is a
-network download.
+Tile zoom and the bathymetry grid resolution are both derived from that extent; provider and caching
+are set via \code{\link{basemapControl}} (imagery only). Satellite needs \pkg{maptiles}, \pkg{terra}
+and \pkg{sf}; bathymetry needs \pkg{marmap}. Both are network downloads.
 }
 \examples{
 \donttest{
@@ -51,6 +54,8 @@ network download.
 # sat <- getBasemap(tag, type = "satellite")
 # saveRDS(sat, "azores_imagery.rds")           # reuse offline
 # plotTracks(tag, basemap = sat)
+# bat <- getBasemap(tag, type = "bathymetry")  # a marmap depth grid
+# plotTracks(tag, basemap = bat, bathy.contours = TRUE)
 }
 }
 \seealso{

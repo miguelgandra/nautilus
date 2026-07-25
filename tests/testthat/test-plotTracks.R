@@ -233,10 +233,9 @@ test_that("a colour that is not a colour is rejected by name, NA included", {
 
 # ---- Phase 1: basemap canvas + coastline ladder + bathy.contours -------------------------------------
 
-test_that("the bathymetry raster canvas is reserved; satellite needs maptiles; a bad raster is rejected", {
+test_that("the raster canvases are dependency-gated, and a bad canvas object is rejected", {
   tag <- list(A01 = .mk_track_tag(n = 40))
-  expect_error(draw_to_pdf(plotTracks(tag, basemap = "bathymetry", verbose = FALSE)), "not available yet")
-  # a non-SpatRaster object passed as basemap is rejected with a pointer to getBasemap
+  # a canvas object of the wrong class is rejected with a pointer to getBasemap (SpatRaster or bathy)
   expect_error(draw_to_pdf(plotTracks(tag, basemap = matrix(1, 2, 2), verbose = FALSE)), "SpatRaster")
   # an unknown keyword is rejected by match.arg
   expect_error(draw_to_pdf(plotTracks(tag, basemap = "bogus", verbose = FALSE)))
@@ -256,10 +255,11 @@ test_that("a pre-fetched SpatRaster basemap renders (canvas + coastline outline)
   expect_silent(draw_to_pdf(plotTracks(tag, basemap = r, coastline = "none", verbose = FALSE)))  # imagery only
 })
 
-test_that("basemapControl validates and getBasemap reserves the bathymetry raster", {
+test_that("basemapControl validates; getBasemap's bathymetry type is marmap-gated", {
   expect_s3_class(basemapControl(), "nautilus_basemap")
   expect_error(basemapControl(cache = 1L), "cache")
-  expect_error(getBasemap(list(A01 = .mk_track_tag(n = 20)), type = "bathymetry"), "not available yet")
+  skip_if(requireNamespace("marmap", quietly = TRUE), "marmap installed - the fetch guard is not exercised")
+  expect_error(getBasemap(list(A01 = .mk_track_tag(n = 20)), type = "bathymetry"), "marmap")
 })
 
 test_that("basemap = 'none' and the coastline keywords all render the full draw path", {
@@ -304,4 +304,103 @@ test_that("the auto coastline falls back with a single hint when mapdata is abse
   txt <- paste(cli::cli_fmt(nautilus:::.resolveCoastline("auto", 2L)), collapse = "\n")
   expect_match(txt, "low-resolution")
   expect_match(txt, "mapdata")
+})
+
+# ---- Phase 3: bathymetric relief canvas -------------------------------------------------------------
+
+# a marmap-shaped depth grid (rownames = lon, colnames = lat, z = depth; +ve is land): a central island
+# ringed by deepening sea. Lets the relief canvas be exercised without marmap or a network call.
+.mk_bathy <- function(xlim = c(-25.36, -24.94), ylim = c(36.88, 37.12), nx = 60) {
+  glon <- seq(xlim[1], xlim[2], length.out = nx); glat <- seq(ylim[1], ylim[2], length.out = nx)
+  z <- outer(glon, glat, function(a, b) {
+    r <- sqrt(((a + 25.15) / 0.10)^2 + ((b - 37.0) / 0.08)^2)
+    ifelse(r < 0.5, 30, -2000 * (r - 0.5))
+  })
+  dimnames(z) <- list(glon, glat); class(z) <- "bathy"; z
+}
+
+test_that("a pre-fetched bathy grid is accepted as the canvas and renders (no marmap needed)", {
+  tag <- list(A01 = .mk_track_tag(n = 60))
+  z <- .mk_bathy()
+  spec <- nautilus:::.resolveBasemap(z, c("land", "bathymetry", "satellite", "none"))
+  expect_identical(spec$kind, "bathymetry")
+  expect_false(is.null(spec$bathy))
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = z, verbose = FALSE)))
+})
+
+test_that("the depth CANVAS and the depth CONTOURS compose over one grid", {
+  tag <- list(A01 = .mk_track_tag(n = 60)); z <- .mk_bathy()
+  # relief alone, isobaths alone (over the default land canvas is marmap-gated, so use the grid), and both
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = z, verbose = FALSE)))
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = z, bathy.contours = TRUE, verbose = FALSE)))
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = z, bathy.contours = c(-200, -800), verbose = FALSE)))
+})
+
+test_that("sea.deep is a recognised map-palette entry (the deep end of the relief ramp)", {
+  tag <- list(A01 = .mk_track_tag(n = 40)); z <- .mk_bathy()
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = z, colors = c(sea.deep = "#12303F"), verbose = FALSE)))
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = z, colors = c(sea.deep = "not-a-colour"),
+                                      verbose = FALSE)))
+})
+
+test_that("filterLocations rejects a bathymetry canvas (depth does not serve location QC)", {
+  tag <- list(A01 = .mk_track_tag(n = 40))
+  expect_error(filterLocations(tag, basemap = .mk_bathy(), plot = TRUE, verbose = FALSE),
+               "not available in")
+})
+
+test_that("basemap = 'bathymetry' needs marmap to fetch, but a pre-fetched grid does not", {
+  tag <- list(A01 = .mk_track_tag(n = 40))
+  skip_if(requireNamespace("marmap", quietly = TRUE), "marmap installed - the fetch guard is not exercised")
+  expect_error(draw_to_pdf(plotTracks(tag, basemap = "bathymetry", verbose = FALSE)), "marmap")
+  # contours alongside a pre-fetched grid must NOT demand marmap (nothing left to fetch)
+  expect_silent(draw_to_pdf(plotTracks(tag, basemap = .mk_bathy(), bathy.contours = TRUE, verbose = FALSE)))
+})
+
+# ---- regression: the worldHires database must actually be USABLE, not merely installed --------------
+# maps::map() resolves a database NAME through the search path, so requireNamespace("mapdata") alone
+# left "worldHires" unresolvable; the error was swallowed per panel and maps came out with NO LAND.
+
+test_that(".withMapdata makes worldHires resolvable and restores the search path", {
+  skip_if_not_installed("mapdata")
+  skip_if_not_installed("maps")
+  was_attached <- "package:mapdata" %in% search()
+  nm <- nautilus:::.withMapdata("worldHires", maps::map("worldHires", plot = FALSE, namesonly = TRUE,
+                                                       xlim = c(-25.9, -24.6), ylim = c(36.6, 37.5)))
+  expect_true(length(nm) >= 1L)                       # the Azores islands are in this window
+  expect_true(any(grepl("Azores", nm)))
+  # the search path is left exactly as we found it
+  expect_equal("package:mapdata" %in% search(), was_attached)
+})
+
+test_that("a bare maps::map('worldHires') call is NOT resolvable without the attach (the bug)", {
+  skip_if_not_installed("mapdata")
+  skip_if("package:mapdata" %in% search(), "mapdata is attached in this session")
+  expect_error(maps::map("worldHires", plot = FALSE, namesonly = TRUE,
+                         xlim = c(-25.9, -24.6), ylim = c(36.6, 37.5)))
+})
+
+test_that("coastline = 'high' actually draws land (not a silent no-op)", {
+  skip_if_not_installed("mapdata")
+  # the window must CONTAIN land for this to mean anything: a track around Santa Maria (Azores).
+  # The default fixture sits in open water just NW of it, where every coastline setting draws the same.
+  t0 <- as.POSIXct("2021-01-01", tz = "UTC"); n <- 60
+  lon <- seq(-25.20, -25.00, length.out = n); lat <- seq(36.92, 37.02, length.out = n)
+  d <- data.table::data.table(ID = "SM", datetime = t0 + seq_len(n), depth = 0,
+                              pseudo_lon = lon, pseudo_lat = lat, pseudo_depth = 0,
+                              pseudo_error = 100, speed_dr = 1)
+  m <- nautilus:::.newNautilusMeta(); m$id <- "SM"
+  m$deployment$lon <- lon[1]; m$deployment$lat <- lat[1]; m$deployment$datetime <- t0
+  tag <- list(SM = nautilus:::new_nautilus_tag(d, m))
+  with_land <- render_pdf_lines(plotTracks(tag, coastline = "high", verbose = FALSE))
+  no_land   <- render_pdf_lines(plotTracks(tag, coastline = "none", verbose = FALSE))
+  expect_gt(length(with_land), length(no_land))       # land adds real drawing operations
+  # and the high-resolution database is materially richer than the coarse one at island scale
+  low_land <- render_pdf_lines(plotTracks(tag, coastline = "low", verbose = FALSE))
+  expect_gt(length(with_land), length(low_land))
+})
+
+test_that(".mapdataUsable() reports the database as usable when mapdata is installed", {
+  skip_if_not_installed("mapdata")
+  expect_true(nautilus:::.mapdataUsable())
 })
