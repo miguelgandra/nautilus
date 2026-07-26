@@ -302,7 +302,9 @@ read_cats <- function(folder,
 
   sensor_data   <- assembly$data
   file_mapping  <- assembly$mapping
-  selected_cols <- file_mapping$colname_in_csv
+  # the copy that gets RECORDED. `file_mapping$colname_in_csv` itself must keep the file's own bytes -
+  # it is what fread(select=) matches against - so normalise the record, never the key.
+  selected_cols <- .toUTF8(file_mapping$colname_in_csv)
 
   # ---- drop channels the caller flagged unusable for this deployment -------------------------------
   # Dropping - rather than NA-ing - makes the channel simply ABSENT, so every downstream analysis skips

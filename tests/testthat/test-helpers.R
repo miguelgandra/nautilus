@@ -116,3 +116,57 @@ test_that(".decimalPlaces counts decimals", {
 test_that(".rescale maps to the requested range", {
   expect_equal(.rescale(c(0, 5, 10), to = c(0, 1)), c(0, 0.5, 1))
 })
+
+
+# --- provenance encoding: stored text must be locale-independent -------------------------------------
+
+test_that(".appendProcessing normalises externally-sourced text to UTF-8", {
+  # the real CATS header bytes: latin1 superscript-two, micro sign and degree sign, which fread hands
+  # back with no declared encoding. Built from raw so this file stays ASCII.
+  lat1 <- c(rawToChar(as.raw(c(0x41, 0x63, 0x63, 0x20, 0x5b, 0x6d, 0x2f, 0x73, 0xb2, 0x5d))),
+            rawToChar(as.raw(c(0x4d, 0x61, 0x67, 0x20, 0x5b, 0xb5, 0x54, 0x5d))),
+            rawToChar(as.raw(c(0x54, 0x65, 0x6d, 0x70, 0x20, 0x5b, 0xb0, 0x43, 0x5d))))
+  expect_false(any(validUTF8(lat1)))                       # the input really is invalid UTF-8
+
+  m <- nautilus:::.appendProcessing(nautilus:::.newNautilusMeta(), "importTagData",
+                                    directory = "/tmp/x", imported_columns = lat1)
+  stored <- m$processing[[1]]$imported_columns
+  expect_true(all(validUTF8(stored)))                      # ...and the stored copy is not
+  expect_equal(stored, iconv(lat1, from = "latin1", to = "UTF-8"))   # text preserved, not mangled
+
+  # non-character provenance is untouched, and the record keeps its shape
+  m2 <- nautilus:::.appendProcessing(nautilus:::.newNautilusMeta(), "s", n = 5L, flag = TRUE, x = NULL)
+  expect_identical(m2$processing[[1]]$n, 5L)
+  expect_identical(m2$processing[[1]]$flag, TRUE)
+})
+
+test_that("a tag written in one locale carries no encoding warning when read in another", {
+  # THE bug this guards: text stored without a declared encoding means something different in a
+  # different locale. R keeps only the first 50 warnings of a call, so a batch of such reads also
+  # discards whatever the package itself was trying to warn about.
+  skip_on_cran()
+  lat1 <- rawToChar(as.raw(c(0x41, 0x63, 0x63, 0x20, 0x5b, 0x6d, 0x2f, 0x73, 0xb2, 0x5d)))
+  f <- tempfile(fileext = ".rds"); on.exit(unlink(f), add = TRUE)
+
+  m <- nautilus:::.appendProcessing(nautilus:::.newNautilusMeta(), "importTagData", imported_columns = lat1)
+  saveRDS(nautilus:::new_nautilus_tag(data.table::data.table(ID = "A", ax = 1), m), f)
+
+  w <- character(0)
+  withCallingHandlers(readRDS(f), warning = function(e) { w <<- c(w, conditionMessage(e)); invokeRestart("muffleWarning") })
+  expect_length(w, 0L)
+})
+
+test_that("the raw header bytes still select columns out of a latin1 CSV", {
+  # The counterpart guarantee: `colname_in_csv` must NOT be normalised, because it is what
+  # fread(select=) matches against. Re-encoding it makes every non-ASCII sensor column silently
+  # vanish from the import - 4 columns become 1.
+  f <- tempfile(fileext = ".csv"); on.exit(unlink(f), add = TRUE)
+  writeBin(charToRaw(paste0("Date,Acc [m/s", rawToChar(as.raw(0xb2)), "],Mag [",
+                            rawToChar(as.raw(0xb5)), "T]\n1,0.1,25\n")), f)
+  hdr <- names(data.table::fread(f, nrows = 0))
+  expect_equal(ncol(data.table::fread(f, select = hdr)), 3L)             # raw bytes: all columns
+  # fread warns once PER skipped column, and expect_warning consumes only the first - suppress the
+  # whole call and assert on the result, so the suite's warning count stays clean.
+  n <- suppressWarnings(ncol(data.table::fread(f, select = nautilus:::.toUTF8(hdr))))
+  expect_lt(n, 3L)                                                       # normalised: columns lost
+})

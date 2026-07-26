@@ -150,6 +150,13 @@ checkDeploymentMetadata <- function(metadata,
 
   notes <- .empty_issues()
 
+  # Every character cell here came out of the user's spreadsheet, and field metadata carries accented
+  # text as a matter of course (site names, observer names, free-text notes). Readers hand those back
+  # with no declared encoding, so a value saved from one locale is ambiguous in another - warnings on
+  # read, or mojibake in a figure label. Normalise the whole table once, at the point it enters the
+  # package, so every consumer downstream sees unambiguous UTF-8.
+  for (cn in names(d)) if (is.character(d[[cn]])) d[[cn]] <- .toUTF8(d[[cn]])
+
   # coerce / trim identifier-like roles, recording any value that was changed by trimming
   for (r in intersect(c("id", "package_id", "logger_id"), roles)) {
     raw <- as.character(d[[r]])

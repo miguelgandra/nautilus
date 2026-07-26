@@ -258,11 +258,19 @@ is_nautilus_tag <- function(x) inherits(x, "nautilus_tag")
 #' @noRd
 
 .appendProcessing <- function(meta, step, ...) {
+  # Provenance routinely records text that came off disk verbatim - CSV headers, directory names, format
+  # labels - and tag loggers write those in a single-byte encoding (CATS emits latin1 for "[m/s\u00b2]",
+  # "[\u00b5T]", "[\u00b0C]"). Readers hand them back with NO declared encoding, so their meaning depends on
+  # the session's locale: a tag saved from a UTF-8 session and read anywhere else warns once per string,
+  # or renders as mojibake. Normalise on the way IN, so what is persisted is unambiguous.
+  # This is safe precisely because provenance is a record, never a key - nothing is ever matched against
+  # it. The raw bytes must survive elsewhere: `colname_in_csv` still selects columns out of the CSV, and
+  # re-encoding THAT would silently drop the sensor channels it names.
   rec <- c(list(step = step,
                 nautilus_version = tryCatch(as.character(utils::packageVersion("nautilus")),
                                             error = function(e) NA_character_),
                 time = Sys.time()),
-           list(...))
+           rapply(list(...), .toUTF8, classes = "character", how = "replace"))
   meta$processing <- c(meta$processing %||% list(), list(rec))
   meta
 }
