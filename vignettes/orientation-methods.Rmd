@@ -247,7 +247,7 @@ sd(atan2(Gb[, 2], Gb[, 3]) * r2d)                 # roll SD with the faulty axis
 #> 20.81
 ```
 
-The static magnitude reads 1.0093 g. The default tolerance is `accel.scale.tol = 0.2`, so this
+The static magnitude reads 1.0093 g. The default warning threshold is `accel.scale.warning = 0.2`, so this
 fault is **not flagged** - and it would not be flagged at 0.1, or 0.05, or 0.02 either. Yet the
 roll series is visibly wrong: its standard deviation is inflated from 18.0 to 20.8 degrees, with
 a mean absolute error of 2.4 degrees and a maximum of 5.2 degrees.

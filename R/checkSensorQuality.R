@@ -191,7 +191,16 @@ checkSensorQuality <- function(data,
       if (return.data) { results[[i]] <- x; names(results)[i] <- id }; next
     }
     if (!data.table::is.data.table(x)) x <- data.table::as.data.table(x)
-    data.table::setorderv(x, cols = datetime.col)
+    # `setorderv()` and `:=` mutate BY REFERENCE. On a list input that means reordering and overwriting the
+    # CALLER's own object - so a report-only run would silently reorder the user's data (breaking the
+    # documented "passes through unchanged" promise) and an apply run would write the repairs into their
+    # input as well as the output. Copy before any edit, lazily: an already-sorted deployment with nothing
+    # to repair (the common case) costs nothing, so a large high-rate tag is not duplicated for free.
+    copied <- FALSE
+    if (is.unsorted(x[[datetime.col]], na.rm = TRUE)) {
+      x <- data.table::copy(x); copied <- TRUE
+      data.table::setorderv(x, cols = datetime.col)
+    }
 
     # preserve non-internal attributes across the data.table edits (the metadata rides on these)
     discard_attrs <- c("row.names", "class", ".internal.selfref", "names")
@@ -205,7 +214,10 @@ checkSensorQuality <- function(data,
       if (res$anomalies) {
         tag_issues <- rbind(tag_issues, .qualityIssue(id, ch, res, interpolate))
         if (make_plots) panels[[length(panels) + 1L]] <- .qualityChannelPanel(x, ch, datetime.col, res)
-        if (apply) x[, (ch) := res$repaired]
+        if (apply) {
+          if (!copied) { x <- data.table::copy(x); copied <- TRUE }
+          x[, (ch) := res$repaired]
+        }
       }
       if (lvl >= 2L) .log_detail(lvl, .qualityChannelLine(ch, res))
     }

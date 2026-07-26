@@ -44,6 +44,11 @@ test_that("apply = FALSE reports only; apply = TRUE drops flagged channels + rec
   r1 <- .run(list(A = x), apply = TRUE)
   expect_false(any(c("gx", "gy", "gz") %in% names(r1$curated_data$A)))      # dropped
   expect_setequal(nautilus:::.getMeta(r1$curated_data$A)$sensors$excluded, c("gx", "gy", "gz"))
+
+  # the exclusion belongs to the RETURNED data only. data.table `:=` deletes by reference, so without an
+  # explicit copy this would delete the columns from the caller's own object - destroying sensor data the
+  # function only promised to withhold. `x` must survive an apply = TRUE run untouched.
+  expect_true(all(c("gx", "gy", "gz") %in% names(x)))
 })
 
 test_that("the issues table has the canonical schema", {
@@ -65,21 +70,60 @@ test_that("accepts a character vector of .rds file paths", {
   expect_true("A" %in% res$issues$id)
 })
 
-test_that("accel.scale runs by default and catches a unit error, without ever dropping a channel", {
+test_that("accel.scale runs by default and grades a unit error as an error", {
   # unit/scale mistakes are the single most likely user error when building a tag by hand, so
   # accel.scale must fire without being asked for. (The full default set is asserted below.)
-  # acceleration left in m/s^2 and never converted to g
+  # acceleration left in m/s^2 and never converted to g: a ~9.8 g static magnitude is not a blemish,
+  # it is a channel that cannot support orientation or dynamic acceleration at all.
   x <- .mkint("A")
   x[, `:=`(ax = ax * 9.80665, ay = ay * 9.80665, az = az * 9.80665)]
-  res <- .run(list(A = x), apply = TRUE)                    # DEFAULT checks - no `checks =` argument
+  res <- suppressWarnings(.run(list(A = x), apply = TRUE))   # DEFAULT checks - no `checks =` argument
   hit <- res$issues[res$issues$check == "accel.scale", ]
   expect_equal(nrow(hit), 1L)
-  expect_equal(hit$severity, "warning")                     # advisory, never an error
-  expect_gt(hit$metric, 9)                                  # ~9.8 g, not ~1 g
+  expect_equal(hit$severity, "error")                       # deviation 8.8 g >> accel.scale.error
+  expect_gt(hit$metric, 9)                                  # the REPORTED metric is the magnitude, ~9.8 g
 
-  # warning severity means `apply` leaves the data completely intact
-  expect_true(all(c("ax", "ay", "az") %in% names(res$curated_data$A)))
+  # error severity + apply = TRUE means the accelerometer is excluded, and recorded as such
+  expect_false(any(c("ax", "ay", "az") %in% names(res$curated_data$A)))
+  expect_true(all(c("ax", "ay", "az") %in% nautilus:::.getMeta(res$curated_data$A)$sensors$excluded))
+
+  # ...and an error-severity finding warns loudly whether or not apply intervened. `.run` swallows
+  # warnings, so this one calls the function directly.
+  expect_warning(invisible(capture.output(checkSensorIntegrity(list(A = x), apply = FALSE, verbose = FALSE))),
+                 "integrity", ignore.case = TRUE)
+})
+
+test_that("the SUMMARY names the error-severity deployments, independently of the warning", {
+  # R keeps only the FIRST 50 warnings of a top-level call, so a batch that emits many warnings before
+  # this one would DISCARD it. The console block is the guarantee that survives that; a run must never
+  # depend on the warning alone to reveal a compromised channel.
+  x <- .mkint("A")
+  x[, `:=`(ax = ax * 9.80665, ay = ay * 9.80665, az = az * 9.80665)]
+  # cli writes its alerts through the condition system, so BOTH streams have to be captured here
+  out <- character(0)
+  invisible(capture.output(out <- capture.output(
+    suppressWarnings(checkSensorIntegrity(list(A = x), apply = FALSE, verbose = 1)),
+    type = "message")))
+  expect_true(any(grepl("error", out, fixed = TRUE)))
+  expect_true(any(grepl("A: accel", out, fixed = TRUE)))   # the deployment is NAMED, not just counted
+})
+
+test_that("accel.scale grades a modest scale error as a warning that apply leaves alone", {
+  # a 30% gain error sits between accel.scale.warning (0.20) and accel.scale.error (0.50): worth
+  # reporting, not worth discarding the accelerometer over. This is the case the graded model exists
+  # to separate from the one above.
+  x <- .mkint("A")
+  x[, `:=`(ax = ax * 1.30, ay = ay * 1.30, az = az * 1.30)]
+  res <- .run(list(A = x), apply = TRUE)
+  hit <- res$issues[res$issues$check == "accel.scale", ]
+  expect_equal(hit$severity, "warning")
+  expect_true(all(c("ax", "ay", "az") %in% names(res$curated_data$A)))   # default apply.severity = "error"
   expect_equal(nrow(res$curated_data$A), nrow(x))
+
+  # a cautious run CAN act on warnings, without changing how the finding was classified
+  res2 <- .run(list(A = x), apply = TRUE, apply.severity = "warning")
+  expect_equal(res2$issues$severity[res2$issues$check == "accel.scale"], "warning")
+  expect_false(any(c("ax", "ay", "az") %in% names(res2$curated_data$A)))
 })
 
 test_that("saturation runs by default, covers the IMU only, and never drops a channel", {
@@ -228,17 +272,42 @@ test_that("gyro.bias needs an absolutely meaningful offset, not just a relativel
 
 # --- new internal helpers -----------------------------------------------------------------------------
 
-test_that("integrityControl returns validated defaults and rejects bad fields", {
+test_that("integrityControl exposes classification thresholds only, and validates them", {
   d <- integrityControl()
   expect_s3_class(d, "nautilus_integrity")
-  expect_equal(d$paddle.min.freq, 3.5); expect_equal(d$paddle.prominence, 30)
-  expect_equal(d$gyro.bias.min, 0.02); expect_equal(d$mag.cv, 0.4)
-  expect_error(integrityControl(dup.cor = 1.5), "dup.cor", ignore.case = TRUE)
-  expect_error(integrityControl(paddle.max.freq.frac = 2), "max.freq.frac", ignore.case = TRUE)
-  expect_error(integrityControl(paddle.prominence = 0.5), "prominence", ignore.case = TRUE)
-  # a named list is coerced; an unknown field is rejected
-  expect_s3_class(nautilus:::.as_control(list(mag.cv = 0.5), integrityControl, "nautilus_integrity", "control"), "nautilus_integrity")
-  expect_error(nautilus:::.as_control(list(bogus = 1), integrityControl, "nautilus_integrity", "control"), "unknown", ignore.case = TRUE)
+  expect_equal(d$saturation.warning, 0.01); expect_equal(d$saturation.error, 0.20)
+  expect_equal(d$accel.scale.warning, 0.20); expect_equal(d$accel.scale.error, 0.50)
+  expect_equal(d$mag.plausibility.warning, 0.40); expect_equal(d$paddle.warning, 30)
+  # low-level algorithm constants are private, NOT part of the public control object
+  expect_null(d$paddle.min.freq); expect_null(d$gyro.bias.min); expect_null(d$paddle.harmonic.guard)
+  expect_equal(nautilus:::.integrityMethod()$paddle.min.freq, 3.5)
+  expect_equal(nautilus:::.integrityMethod()$gyro.bias.min, 0.02)
+  expect_error(integrityControl(duplication.error = 1.5), "duplication.error", ignore.case = TRUE)
+  expect_error(integrityControl(paddle.warning = 0.5), "paddle.warning", ignore.case = TRUE)
+  # an error threshold below its warning threshold would make the warning unreachable
+  expect_error(integrityControl(saturation.error = 0.005), "saturation.error", ignore.case = TRUE)
+  expect_error(integrityControl(accel.scale.error = 0.1), "accel.scale.error", ignore.case = TRUE)
+  # a named list is coerced; an unknown field (including a removed one) is rejected
+  expect_s3_class(nautilus:::.as_control(list(mag.plausibility.warning = 0.5), integrityControl,
+                                        "nautilus_integrity", "control"), "nautilus_integrity")
+  expect_error(nautilus:::.as_control(list(mag.cv = 0.5), integrityControl, "nautilus_integrity", "control"),
+               "unknown", ignore.case = TRUE)
+})
+
+test_that(".integrityGrade escalates with the metric and honours absent thresholds", {
+  g <- nautilus:::.integrityGrade
+  # graded check: below warning -> pass, between -> warning, above error -> error
+  expect_true(is.na(g(0.005, warning = 0.01, error = 0.20)))
+  expect_equal(g(0.0105, warning = 0.01, error = 0.20), "warning")
+  expect_equal(g(0.987, warning = 0.01, error = 0.20), "error")
+  # a warning-only check can never reach error, however extreme the metric
+  expect_equal(g(10, warning = 0.4), "warning")
+  # non-finite metrics abstain rather than grading
+  expect_true(is.na(g(NA_real_, warning = 0.01, error = 0.2)))
+  expect_true(is.na(g(NaN, warning = 0.01)))
+  # ranks order the severities so apply.severity can be compared as a floor
+  expect_true(nautilus:::.severityRank("error") > nautilus:::.severityRank("warning"))
+  expect_true(nautilus:::.severityRank("warning") > nautilus:::.severityRank("info"))
 })
 
 test_that(".welchPSD returns a compact one-sided PSD that locates a known peak", {

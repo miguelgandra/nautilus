@@ -20,6 +20,24 @@
   d
 }
 
+test_that("the caller's data.table is never modified by reference, with or without apply", {
+  # `setorderv()` and `:=` mutate in place. On a list input that reaches the CALLER's own object, so a
+  # report-only run would silently reorder the user's rows (against the documented "passes through
+  # unchanged" promise) and an apply run would write the repairs into their input as well as the output.
+  x <- .mk(spike_at = 30L)
+  before <- x$depth[30]
+  out <- .repair(list(A01 = x), .depth())
+  expect_true(out$curated_data$A01$depth[30] != before)   # the repair landed in the RETURNED data
+  expect_identical(x$depth[30], before)                   # ...and only there
+
+  # an unsorted input is sorted for the OUTPUT without reordering the caller
+  y <- .mk(); data.table::setorderv(y, "datetime", order = -1L)
+  first <- y$datetime[1]
+  out2 <- .run(list(B01 = y), .depth())
+  expect_identical(y$datetime[1], first)
+  expect_false(is.unsorted(out2$curated_data$B01$datetime))
+})
+
 test_that("the result carries both curated_data and an issues table with the canonical schema", {
   out <- .run(as.data.frame(.mk()), .depth())
   expect_named(out, c("curated_data", "issues"))

@@ -18,15 +18,35 @@
 #' analysis sees them.
 #'
 #' @details
-#' The checks form two tiers. Two **error**-severity checks are trustworthy enough to drop a channel (with
-#' `apply = TRUE`); the rest are **advisory** (`warning`/`info`) - reported but never dropped. Four checks
-#' run by default (`duplication`, `dead`, and the advisory `accel.scale` and `saturation`); the remaining
-#' advisory checks are opt-in via `checks`.
-#' Every threshold below lives in \code{\link{integrityControl}}, and the reported `metric` is noted in
-#' parentheses.
+#' \strong{Severity is graded from the measurement, not fixed by the check.} Each check computes a metric,
+#' and that metric is classified `"info"` / `"warning"` / `"error"` against the thresholds in
+#' \code{\link{integrityControl}}, named `<check>.<severity>`. So the same check reports different grades
+#' for different magnitudes: an accelerometer clipping on 1% of samples is a `"warning"` worth a look,
+#' while one clipping on 99% is an `"error"` - it has lost the dynamic range that orientation, dynamic
+#' acceleration and tail-beat detection all depend on. This is what separates a minor blemish from a
+#' compromised channel, which a per-check severity cannot do.
+#'
+#' \strong{Not every check can be graded to `"error"`.} An automatic error verdict is only defensible when
+#' the metric is sharply bimodal - when a broken channel is orders of magnitude away from a healthy one.
+#' Calibrated on a 52-deployment whale-shark fleet (462 channels): the clipped fraction is bimodal, with
+#' the worst healthy channel at 1.05% and the one faulty channel at 98.7% (a 94-fold gap, nothing in
+#' between), and the static-acceleration magnitude likewise (worst healthy deviation 0.11 g, the faulty
+#' tag 3.10 g). Both therefore offer an error grade. The magnetometer field CV, by contrast, is continuous
+#' across the same fleet (0.155-0.460, no break), so `mag.plausibility` exposes a warning threshold only -
+#' any error cut-off would be false precision. `dead` and `duplication` are degenerate by definition (a
+#' constant or copied channel carries no information at all) and are always `"error"`.
+#'
+#' \strong{Classification is separate from action.} A grade describes the finding; `apply` and
+#' `apply.severity` decide what happens. Nothing is modified unless `apply = TRUE`, and findings at or
+#' above `apply.severity` then have their channels excluded. Error-severity findings are ALWAYS warned
+#' about, whether or not `apply` acted, so a compromised channel cannot pass through unmentioned.
+#'
+#' Four checks run by default (`duplication`, `dead`, `accel.scale`, `saturation`); the rest are opt-in via
+#' `checks`. Every threshold lives in \code{\link{integrityControl}}; the reported `metric` is noted in
+#' parentheses below.
 #'
 #' \strong{duplication} (error). A gyroscope or magnetometer triplet whose three axes are each a near-exact
-#' copy of the accelerometer (per-axis \code{|r| > dup.cor} on all three). Distinct sensor families cannot
+#' copy of the accelerometer (per-axis \code{|r| > duplication.error} on all three). Distinct sensor families cannot
 #' track each other this closely unless one is literally a copy - the signature of a firmware bug that
 #' duplicates the accelerometer into an absent channel. The channel carries no real information and should
 #' be excluded. (metric: the minimum per-axis \code{|r|}.)
@@ -34,8 +54,9 @@
 #' \strong{dead} (error). A channel exactly constant over the whole deployment - the sensor never produced
 #' a signal. Depth is exempt (a never-submerged tag legitimately reads a constant). (metric: 0.)
 #'
-#' \strong{saturation} (warning). A channel pinned at its exact minimum or maximum for a sustained fraction
-#' of samples (\code{> saturation.frac}): the signal is clipping against the sensor's dynamic-range rail,
+#' \strong{saturation} (warning / error). A channel pinned at its exact minimum or maximum for a sustained
+#' fraction of samples (\code{> saturation.warning}, escalating to an error above \code{saturation.error}):
+#' the signal is clipping against the sensor's dynamic-range rail,
 #' so the true values beyond it are lost. Typically a mis-set measurement range or an over-driven (e.g.
 #' mis-scaled) channel. Like every check here it covers the accelerometer, gyroscope and magnetometer
 #' only - depth and temperature are screened for physical-range faults by \code{\link{checkSensorQuality}}
@@ -44,14 +65,15 @@
 #'
 #' \strong{mag.plausibility} (warning). The geomagnetic field magnitude \code{|B|} is orientation-invariant,
 #' so after provisional hard-iron centring it should stay near-constant. A high robust coefficient of
-#' variation (\code{> mag.cv}) points to a mis-scaled or soft-iron-distorted magnetometer, or a corrupt
+#' variation (\code{> mag.plausibility.warning}) points to a mis-scaled or soft-iron-distorted magnetometer, or a corrupt
 #' channel (a magnetometer duplicated from the accelerometer tracks motion and fails here too). The check
 #' abstains when the animal did not rotate through enough orientations to trust the centring. (metric: the
 #' robust CV.)
 #'
-#' \strong{accel.scale} (warning). Checks whether the overall accelerometer magnitude is consistent with
+#' \strong{accel.scale} (warning / error). Checks whether the overall accelerometer magnitude is consistent with
 #' gravity. The static (gravity) component is taken as a low-pass of the three axes, and its magnitude
-#' should sit near 1 g across the record; the check flags \code{|median - 1| > accel.scale.tol}. It needs
+#' should sit near 1 g across the record; the check grades the deviation \code{|median - 1|} against
+#' \code{accel.scale.warning} and \code{accel.scale.error}. It needs
 #' no quiescent periods - the low-pass averages the animal's own motion away - so it applies equally to a
 #' continuously active animal. It detects uniform scaling errors, for example acceleration left in m/s^2
 #' and never converted to g, but may not detect errors affecting only individual axes: on a near-level
@@ -61,7 +83,7 @@
 #'
 #' \strong{gyro.bias} (info). Over a long record the animal's rotations average out, so each gyroscope axis
 #' should have a near-zero median. A persistent offset that is both a large fraction of the rotational
-#' scale (\code{> gyro.bias.frac}) and absolutely meaningful (\code{> gyro.bias.min}) is a sensor bias.
+#' scale (\code{> gyro.bias.info}) and absolutely meaningful (against an internal floor) is a sensor bias.
 #' Gyroscope bias is not explicitly corrected. The default orientation algorithm in
 #' \code{\link{processTagData}} (\code{"tilt_compass"}) does not use the gyroscope, so gyroscope bias does
 #' not affect it. The \code{"madgwick"} algorithm does use the gyroscope; small biases are largely absorbed
@@ -77,7 +99,7 @@
 #' paddle effect - and a hit is worth confirming against the spectrum panel. (metric: the peak prominence,
 #' peak / median band power.)
 #'
-#' \strong{dropout} (info). A channel missing (NA) for more than \code{dropout.frac} of the deployment, so
+#' \strong{dropout} (info). A channel missing (NA) for more than \code{dropout.info} of the deployment, so
 #' effectively absent. (metric: the missing fraction.)
 #'
 #' \strong{Diagnostic report.} When `plot` or `plot.file` is set, the function draws an overview page
@@ -96,18 +118,22 @@
 #'   deployment) - plus two advisory checks that earn their place by catching real hardware faults at no
 #'   measurable cost: `"accel.scale"` (a static acceleration magnitude far from 1 g, which catches unit
 #'   and scaling mistakes) and `"saturation"` (a channel pinned at a range limit, which catches a railed
-#'   axis, a clipping gyroscope and sentinel values). Both are warning-severity, so `apply` never drops
-#'   anything because of them. The remaining checks are opt-in and advisory (`"warning"`/`"info"`, never
-#'   dropped by `apply`): `"mag.plausibility"` (an unstable magnetometer field magnitude), `"gyro.bias"`
+#'   axis, a clipping gyroscope and sentinel values). Both are GRADED, so either can report a warning or an
+#'   error depending on the magnitude measured. The remaining checks are opt-in: `"mag.plausibility"` (an unstable magnetometer field magnitude), `"gyro.bias"`
 #'   (a persistent gyroscope offset), `"paddle.contamination"` (a narrow-band magnetometer peak
 #'   suggesting an undocumented paddle wheel) and `"dropout"` (a channel missing for most of the
 #'   deployment).
 #' @param control An \code{\link{integrityControl}} object (or a named list of its fields) bundling the
 #'   per-check detection thresholds. Defaults to `integrityControl()` (values calibrated on real
 #'   whale-shark deployments).
-#' @param apply Logical. If `FALSE` (default), the function only reports findings (the data passes through
-#'   unchanged). If `TRUE`, channels flagged at `"error"` severity are dropped from the returned data and
-#'   recorded in the tag metadata (`meta$sensors$excluded`); the per-channel reasons remain in `issues`.
+#' @param apply Logical. Whether to act on the findings. If `FALSE` (default) the function only reports
+#'   and the data passes through unchanged. If `TRUE`, the channels of every finding at or above
+#'   `apply.severity` are dropped from the returned data and recorded in the tag metadata
+#'   (`meta$sensors$excluded`); the per-channel reasons remain in `issues`.
+#' @param apply.severity The severity from which `apply` intervenes: `"error"` (default - only findings
+#'   graded error) or `"warning"` (also drop warning-level findings, for a cautious run). Kept separate
+#'   from `apply` so the diagnostic classification and the action stay independent concepts.
+#'   Ignored when `apply = FALSE`.
 #' @param id.col,datetime.col Column names for the animal ID and datetime. Defaults `"ID"`/`"datetime"`.
 #' @param plot Logical. If `TRUE`, draw the diagnostic report (overview page + one page per flagged
 #'   deployment) to the active graphics device. Default `FALSE`.
@@ -160,6 +186,7 @@ checkSensorIntegrity <- function(data,
                                  checks = c("duplication", "dead", "accel.scale", "saturation"),
                                  control = integrityControl(),
                                  apply = FALSE,
+                                 apply.severity = c("error", "warning"),
                                  id.col = "ID",
                                  datetime.col = "datetime",
                                  plot = FALSE,
@@ -176,6 +203,7 @@ checkSensorIntegrity <- function(data,
   .assert_flag(return.data, "return.data")
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   checks <- match.arg(checks, .integrityChecks(), several.ok = TRUE)
+  apply.severity <- match.arg(apply.severity)
   control <- .as_control(control, integrityControl, "nautilus_integrity", "control")
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")
   .assert_dir(output.dir, "output.dir")
@@ -197,7 +225,8 @@ checkSensorIntegrity <- function(data,
   .log_header(lvl, "checkSensorIntegrity", "Validating sensor-channel integrity",
               bullets = sprintf("Input: %d tag%s", r$n, if (r$n != 1) "s" else ""),
               arrow = c(sprintf("Checks: %s", paste(checks, collapse = " \u00b7 ")),
-                        sprintf("Mode: %s", if (apply) "report + drop flagged channels" else "report only")))
+                        sprintf("Mode: %s", if (apply) sprintf("report + drop channels graded %s or worse", apply.severity)
+                                            else "report only")))
 
   # ONE multi-page landscape report (an overview page, then one page per flagged individual), drawn to
   # the active device and/or a PDF via the shared device helper. cairo (when available) renders the
@@ -210,6 +239,7 @@ checkSensorIntegrity <- function(data,
   summary_records <- if (make_plots) vector("list", r$n) else NULL     # one overview-table row per tag
   payloads        <- list()                                            # a small draw payload per flagged tag
   n_flagged <- 0L
+  error_items <- character(0)   # one bullet per deployment with an error-severity finding (warned at the end)
 
   for (i in seq_len(r$n)) {
     x <- r$get(i)
@@ -224,9 +254,17 @@ checkSensorIntegrity <- function(data,
     if (nrow(iss)) iss$id <- id
     all_issues[[i]] <- iss
 
-    # error-severity channels are the only ones recommended for exclusion (warnings/info are advisory)
-    err_tokens <- unique(iss$channel[iss$severity == "error"])
+    # findings AT OR ABOVE apply.severity are the ones eligible for exclusion; error-severity findings are
+    # tracked separately because they are always warned about, whether or not `apply` acted on them.
+    act_sel    <- .severityRank(iss$severity) >= .severityRank(apply.severity)
+    act_sel[is.na(act_sel)] <- FALSE
+    err_tokens <- unique(iss$channel[act_sel])
     err_chans  <- if (length(err_tokens)) intersect(.expandSensorTokens(paste(err_tokens, collapse = ",")), names(x)) else character(0)
+    if (any(iss$severity == "error")) {
+      err_fams <- .channelsToFamilies(intersect(.expandSensorTokens(paste(unique(iss$channel[iss$severity == "error"]), collapse = ",")), names(x)))
+      error_items <- c(error_items, sprintf("%s: %s (%s)", id, paste(err_fams, collapse = ", "),
+                                            paste(unique(iss$check[iss$severity == "error"]), collapse = ", ")))
+    }
     has_findings <- nrow(iss) > 0
     if (has_findings) n_flagged <- n_flagged + 1L
 
@@ -242,7 +280,8 @@ checkSensorIntegrity <- function(data,
                 if (apply) "  (dropped)" else "  (review; apply = TRUE to drop)")
     } else if (has_findings) {
       nadv <- nrow(iss)
-      .log_skip(lvl, id, "  ", nadv, " advisory finding", if (nadv != 1) "s", " (warning/info; not excluded)")
+      .log_skip(lvl, id, "  ", nadv, " advisory finding", if (nadv != 1) "s",
+                sprintf(" (below %s; not excluded)", apply.severity))
     } else {
       .log_ok(lvl, id, "  all channels pass")
     }
@@ -256,8 +295,12 @@ checkSensorIntegrity <- function(data,
         payloads[[length(payloads) + 1L]] <- .integrityPayload(x, id, iss, fs, control)
     }
 
-    # ---- apply (drop error-severity channels) + record provenance ----
+    # ---- apply (drop the channels graded at or above apply.severity) + record provenance ----
+    # `:=` deletes by reference, so on a list input that would delete the columns from the CALLER's own
+    # object - silently destroying sensor data the function only ever promised to withhold from its
+    # RETURN value. Copy first: the exclusion belongs to the curated output, not to the user's input.
     if (apply && length(err_chans)) {
+      x <- data.table::copy(x)
       x[, (err_chans) := NULL]
       if (!is.null(meta)) meta$sensors$excluded <- unique(c(meta$sensors$excluded, err_chans))
     }
@@ -275,6 +318,16 @@ checkSensorIntegrity <- function(data,
   issues <- do.call(rbind, all_issues)
   if (is.null(issues)) issues <- .emptyIntegrityIssues()
   rownames(issues) <- NULL
+
+  # An error-severity finding means a channel cannot support quantitative use. It is warned about ALWAYS -
+  # whether or not `apply` excluded it - because the alternative is a compromised channel flowing into
+  # orientation, dynamic acceleration and tail-beat estimation with nothing but a console line to show it.
+  .warn_grouped(
+    "{length(error_items)} deployment{?s} {?has/have} a sensor channel with a serious integrity problem.",
+    items = error_items,
+    hints = c(if (apply) "Their channels were EXCLUDED from the returned data (see {.code meta$sensors$excluded})."
+              else "Nothing was modified: re-run with {.code apply = TRUE} to exclude them, or exclude these deployments from analyses that use the affected sensors.",
+              "A channel graded {.val error} is not suitable for quantitative analyses - orientation, dynamic acceleration and tail-beat estimates all depend on it."))
 
   # ---- draw the report: overview page (all tags), then one page per flagged (warning/error) tag ----
   if (make_plots) {
@@ -294,6 +347,18 @@ checkSensorIntegrity <- function(data,
     n_err <- sum(issues$severity == "error")
     .log_done(lvl, n_flagged, " of ", r$n, " deployment", if (r$n != 1) "s", " flagged",
               if (n_err) sprintf(" (%d error-severity finding%s)", n_err, if (n_err != 1) "s" else "") else "")
+    # Name the compromised deployments on the console as well as in the warning. R keeps only the FIRST 50
+    # warnings of a top-level call, and reading a large batch of tags can easily emit that many on its own
+    # (encoding notices from stored channel labels, for one) - which would silently discard the very
+    # warning this redesign exists to guarantee. A console block cannot be truncated that way.
+    if (length(error_items)) {
+      .log_attention(lvl, "severity ", cli::style_bold("error"), " - not suitable for quantitative analyses:")
+      # forced to level 2 so the affected deployments are NAMED even on a normal-verbosity run: these lines
+      # are the actionable part of the block, not an optional diagnostic.
+      for (it in error_items) .log_subdetail(max(lvl, 2L), it)
+      .log_arrow(lvl, if (apply) "excluded from the returned data" else
+                      "nothing modified - re-run with apply = TRUE to exclude them")
+    }
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
   }
@@ -354,7 +419,7 @@ checkSensorIntegrity <- function(data,
       if (sum(ok) < 10L || stats::sd(a[ok]) == 0 || stats::sd(b[ok]) == 0) return(NA_real_)
       abs(stats::cor(a[ok], b[ok]))
     }, numeric(1))
-    if (all(is.finite(corrs)) && all(corrs > ctx$control$dup.cor)) {
+    if (all(is.finite(corrs)) && all(corrs > ctx$control$duplication.error)) {
       rows <- rbind(rows, .integrityIssue(fam, "duplication", "error", round(min(corrs), 4),
                     sprintf("%s is a near-exact copy of the accelerometer (r %.4f) - likely firmware accel-duplication", fam, min(corrs))))
     }
@@ -394,9 +459,12 @@ checkSensorIntegrity <- function(data,
     v <- x[[ch]]; v <- v[is.finite(v)]
     if (length(v) < 50L) next
     frac <- max(mean(v == max(v)), mean(v == min(v)))
-    if (frac > ctx$control$saturation.frac)
-      rows <- rbind(rows, .integrityIssue(ch, "saturation", "warning", round(frac, 4),
-                    sprintf("%s is pinned at its range limit for %.1f%% of samples (clipping)", ch, 100 * frac)))
+    sev <- .integrityGrade(frac, warning = ctx$control$saturation.warning,
+                                 error   = ctx$control$saturation.error)
+    if (!is.na(sev))
+      rows <- rbind(rows, .integrityIssue(ch, "saturation", sev, round(frac, 4),
+                    sprintf("%s is pinned at its range limit for %.1f%% of samples (clipping)%s", ch, 100 * frac,
+                            if (identical(sev, "error")) " - the channel has lost the dynamic range quantitative use requires" else "")))
   }
   rows
 }
@@ -421,7 +489,9 @@ checkSensorIntegrity <- function(data,
   B <- sqrt((x[[m[1]]][ok] - off[1])^2 + (x[[m[2]]][ok] - off[2])^2 + (x[[m[3]]][ok] - off[3])^2)
   med <- stats::median(B)
   cv <- if (is.finite(med) && med > 0) stats::mad(B) / med else NA_real_
-  if (is.finite(cv) && cv > ctx$control$mag.cv)
+  # warning only: across a 52-deployment fleet this metric is continuous (0.155-0.460, no break), so an
+  # automatic error grade would be false precision - see the Details section of checkSensorIntegrity().
+  if (!is.na(.integrityGrade(cv, warning = ctx$control$mag.plausibility.warning)))
     rows <- rbind(rows, .integrityIssue("mag", "mag.plausibility", "warning", round(cv, 3),
                   sprintf("magnetometer field |B| is unstable (robust CV %.2f) - possible mis-scaling or a corrupt channel", cv)))
   rows
@@ -439,9 +509,15 @@ checkSensorIntegrity <- function(data,
   sd <- .staticDynamicAccel(x[[a[1]]], x[[a[2]]], x[[a[3]]], win)
   g <- sqrt(sd$static$x^2 + sd$static$y^2 + sd$static$z^2)
   med <- stats::median(g, na.rm = TRUE)
-  if (is.finite(med) && abs(med - 1) > ctx$control$accel.scale.tol)
-    rows <- rbind(rows, .integrityIssue("accel", "accel.scale", "warning", round(med, 3),
-                  sprintf("static acceleration magnitude is %.2f g (expected ~1 g) - possible scaling/unit error", med)))
+  # graded on the DEVIATION from 1 g (the metric reported stays the magnitude itself, which is what a
+  # user needs to see): a small departure is an imperfect calibration, a large one a unit/scale error.
+  sev <- .integrityGrade(abs(med - 1), warning = ctx$control$accel.scale.warning,
+                                       error   = ctx$control$accel.scale.error)
+  if (!is.na(sev))
+    rows <- rbind(rows, .integrityIssue("accel", "accel.scale", sev, round(med, 3),
+                  sprintf("static acceleration magnitude is %.2f g (expected ~1 g) - %s", med,
+                          if (identical(sev, "error")) "a scaling or unit error (e.g. left in m/s^2), not a calibration offset"
+                          else "possible scaling/calibration error")))
   rows
 }
 
@@ -457,7 +533,7 @@ checkSensorIntegrity <- function(data,
   scale <- max(vapply(g, function(c) stats::mad(x[[c]], na.rm = TRUE), numeric(1)), na.rm = TRUE)
   if (is.finite(scale) && scale > 0) {
     rel <- max(abs(meds)) / scale
-    if (is.finite(rel) && rel > ctx$control$gyro.bias.frac && max(abs(meds)) > ctx$control$gyro.bias.min) {
+    if (is.finite(rel) && rel > ctx$control$gyro.bias.info && max(abs(meds)) > .integrityMethod()$gyro.bias.min) {
       k <- which.max(abs(meds))
       rows <- rbind(rows, .integrityIssue("gyro", "gyro.bias", "info", round(max(abs(meds)), 4),
                     sprintf("gyroscope has a persistent offset (%s bias %.3g, %.0f%% of the signal scale)", g[k], meds[k], 100 * rel)))
@@ -479,7 +555,8 @@ checkSensorIntegrity <- function(data,
   cols <- intersect(ctx$fams$mag, names(x))
   if (!length(cols) || !is.finite(ctx$fs) || ctx$fs <= 0 || isTRUE(ctx$paddle_wheel)) return(rows)
   cc  <- ctx$control
-  hi  <- cc$paddle.max.freq.frac * (ctx$fs / 2)              # ceiling below Nyquist (reject aliasing)
+  mp  <- .integrityMethod()                                  # internal search-band parameters
+  hi  <- mp$paddle.max.freq.frac * (ctx$fs / 2)              # ceiling below Nyquist (reject aliasing)
   best <- list(axis = NA_character_, freq = NA_real_, prom = 0, floor = NA_real_)
   for (ch in cols) {
     pg <- ctx$psd[[ch]]                                       # reuse the precomputed Welch PSD
@@ -489,7 +566,7 @@ checkSensorIntegrity <- function(data,
     # floor is set above its harmonics so the body oscillation is never counted as paddle contamination.
     lo   <- pg$freq >= 0.1 & pg$freq <= 2
     f_tb <- if (any(lo)) pg$freq[lo][which.max(pg$power[lo])] else NA_real_
-    floor <- max(cc$paddle.min.freq, if (is.finite(f_tb)) cc$paddle.harmonic.guard * f_tb else 0)
+    floor <- max(mp$paddle.min.freq, if (is.finite(f_tb)) mp$paddle.harmonic.guard * f_tb else 0)
     band <- pg$freq >= floor & pg$freq <= hi
     if (sum(band) < 5L) next
     p <- pg$power[band]; f <- pg$freq[band]
@@ -498,7 +575,7 @@ checkSensorIntegrity <- function(data,
     prom <- max(p) / med
     if (prom > best$prom) best <- list(axis = ch, freq = f[which.max(p)], prom = prom, floor = floor)
   }
-  if (is.finite(best$prom) && best$prom > cc$paddle.prominence)
+  if (!is.na(.integrityGrade(best$prom, warning = cc$paddle.warning)))
     rows <- rbind(rows, .integrityIssue(best$axis, "paddle.contamination", "warning", round(best$prom, 1),
                   sprintf("narrow-band peak on %s at %.2f Hz (prominence %.0fx, above the %.1f Hz tail-beat band) - possible undocumented paddle-wheel contamination",
                           best$axis, best$freq, best$prom, best$floor)))
@@ -513,7 +590,7 @@ checkSensorIntegrity <- function(data,
   if (nrow(x) < 10L) return(rows)
   for (ch in intersect(c(unlist(unname(ctx$fams)), "depth", "temp"), names(x))) {
     frac <- mean(is.na(x[[ch]]))
-    if (frac > ctx$control$dropout.frac)
+    if (frac > ctx$control$dropout.info)
       rows <- rbind(rows, .integrityIssue(ch, "dropout", "info", round(frac, 3),
                     sprintf("%s is missing (NA) for %.0f%% of the deployment", ch, 100 * frac)))
   }
@@ -528,6 +605,32 @@ checkSensorIntegrity <- function(data,
 #' Empty findings table with the canonical schema.
 #' @keywords internal
 #' @noRd
+#' Grade a measured metric into a severity, from ordered thresholds.
+#'
+#' The single place severity is decided, and the reason it is a property of the MEASUREMENT rather than of
+#' the check type: the same check yields `"warning"` or `"error"` depending on how large its metric is.
+#' Thresholds are exclusive (`>`), checked from the most severe down, and a `NULL` threshold means the
+#' check does not offer that grade - so a continuous metric with no defensible error cut-off simply passes
+#' `error = NULL` and can never be graded one.
+#' @param metric The measured value. @param info,warning,error Thresholds, or NULL where not offered.
+#' @return `"error"`, `"warning"`, `"info"`, or `NA_character_` for "no finding".
+#' @keywords internal
+#' @noRd
+.integrityGrade <- function(metric, info = NULL, warning = NULL, error = NULL) {
+  if (!is.finite(metric)) return(NA_character_)
+  if (!is.null(error)   && metric > error)   return("error")
+  if (!is.null(warning) && metric > warning) return("warning")
+  if (!is.null(info)    && metric > info)    return("info")
+  NA_character_
+}
+
+
+#' Severity rank, for comparing a finding against an `apply.severity` floor.
+#' @keywords internal
+#' @noRd
+.severityRank <- function(x) match(x, c("info", "warning", "error"))
+
+
 .emptyIntegrityIssues <- function() {
   data.frame(id = character(0), channel = character(0), check = character(0),
              severity = character(0), metric = numeric(0), message = character(0), stringsAsFactors = FALSE)
@@ -661,8 +764,9 @@ checkSensorIntegrity <- function(data,
         floor <- NA_real_; hi <- NA_real_; pk_f <- NA_real_; pk_p <- NA_real_
         if (!is.null(pg)) {
           lo <- pg$freq >= 0.1 & pg$freq <= 2; f_tb <- if (any(lo)) pg$freq[lo][which.max(pg$power[lo])] else NA_real_
-          floor <- max(control$paddle.min.freq, if (is.finite(f_tb)) control$paddle.harmonic.guard * f_tb else 0)
-          hi <- control$paddle.max.freq.frac * (fs / 2)
+          mp <- .integrityMethod()
+          floor <- max(mp$paddle.min.freq, if (is.finite(f_tb)) mp$paddle.harmonic.guard * f_tb else 0)
+          hi <- mp$paddle.max.freq.frac * (fs / 2)
           band <- pg$freq >= floor & pg$freq <= hi
           if (any(band)) { pk <- which(band)[which.max(pg$power[band])]; pk_f <- pg$freq[pk]; pk_p <- pg$power[pk] }
         }

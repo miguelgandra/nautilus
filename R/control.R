@@ -485,64 +485,96 @@ ocrControl <- function(model = "cam",
 #' place. The defaults are calibrated against real whale-shark deployments; adjust them for other species
 #' or tag systems.
 #'
-#' @param dup.cor Duplication (error): a gyroscope or magnetometer triplet is flagged as a copy of the
-#'   accelerometer when the per-axis \code{|r|} exceeds this on all three axes. Default 0.999.
-#' @param saturation.frac Saturation (warning): a channel is flagged when the fraction of samples pinned
-#'   at its exact minimum or maximum (clipping) exceeds this. Default 0.01.
-#' @param mag.cv Magnetometer plausibility (warning): flagged when the robust coefficient of variation of
-#'   the hard-iron-centred field magnitude \code{|B|} exceeds this (a stable field is near-constant).
-#'   Default 0.4.
-#' @param accel.scale.tol Accelerometer scale (warning): flagged when the median static-acceleration
-#'   magnitude departs from 1 g by more than this (g). Default 0.2.
-#' @param gyro.bias.frac,gyro.bias.min Gyroscope bias (info): flagged when the largest per-axis median
-#'   offset exceeds BOTH `gyro.bias.frac` as a fraction of the rotational signal scale (robust MAD) AND
-#'   `gyro.bias.min` in absolute terms (rad/s). The absolute floor stops a negligible offset from being
-#'   flagged merely because the animal barely rotated (a tiny MAD inflates the relative measure).
-#'   Defaults 0.3 and 0.02.
-#' @param paddle.min.freq,paddle.harmonic.guard,paddle.prominence,paddle.max.freq.frac Paddle-wheel
-#'   contamination (warning): the magnetometer spectrum is scanned for a narrow-band peak in the band from
-#'   \code{max(paddle.min.freq, paddle.harmonic.guard * f_tailbeat)} Hz up to
-#'   \code{paddle.max.freq.frac * Nyquist} Hz, where \code{f_tailbeat} is the record's dominant low
-#'   frequency. The floor keeps the search clear of the tail-beat fundamental and its harmonics (the main
-#'   source of false positives - a swimming animal's body oscillation modulates the magnetometer); the
-#'   ceiling avoids aliasing artefacts near Nyquist. A peak is flagged when its prominence (peak / median
-#'   band power) exceeds \code{paddle.prominence}. Defaults 3.5 Hz, 6, 30, 0.85.
-#' @param dropout.frac Dropout (info): a channel is flagged when it is missing (NA) for more than this
-#'   fraction of the deployment. Default 0.5.
+#' Every field is a CLASSIFICATION THRESHOLD: the value of a check's metric at which the finding is
+#' graded \code{"info"}, \code{"warning"} or \code{"error"}, named \code{<check>.<severity>} so the
+#' grade a number produces is readable from its name. Severity is therefore a property of the MEASUREMENT,
+#' not of the check type: 1% clipping and 99% clipping are the same check but different grades. Not every
+#' check supports every grade - a metric has to be sharply bimodal for an automatic \code{"error"} to be
+#' defensible (see \code{\link{checkSensorIntegrity}} Details), so continuous metrics expose a warning
+#' threshold only. Parameters governing HOW a metric is computed (spectral search bands, robustness
+#' floors) are deliberately internal: they are implementation details rather than scientific choices, and
+#' keeping them private leaves the algorithms free to improve without an API change.
+#'
+#' @param duplication.error Duplication: a gyroscope or magnetometer triplet is a copy of the
+#'   accelerometer when the per-axis \code{|r|} exceeds this on all three axes. Default 0.999. (A copied
+#'   channel carries no independent information, so this is always an error.)
+#' @param saturation.warning,saturation.error Saturation: the fraction of samples pinned at the channel's
+#'   exact minimum or maximum (clipping). Above \code{saturation.warning} the channel is flagged for
+#'   review; above \code{saturation.error} it has lost the dynamic range that quantitative use requires.
+#'   Defaults 0.01 and 0.20.
+#' @param accel.scale.warning,accel.scale.error Accelerometer scale: departure of the median
+#'   static-acceleration magnitude from 1 g (in g). A small departure suggests an imperfect calibration
+#'   (warning); a large one is a scaling or unit error - e.g. acceleration left in m/s^2 - rather than a
+#'   calibration offset (error). Defaults 0.20 and 0.50.
+#' @param mag.plausibility.warning Magnetometer plausibility: the robust coefficient of variation of the
+#'   hard-iron-centred field magnitude \code{|B|} (a stable field is near-constant). Default 0.4. Warning
+#'   only - across a 52-deployment fleet this metric is continuous, with no break separating a degraded
+#'   magnetometer from the tail of normal variation, so no automatic error grade is defensible.
+#' @param gyro.bias.info Gyroscope bias: the largest per-axis median offset, as a fraction of the
+#'   rotational signal scale. Default 0.3. Info only.
+#' @param paddle.warning Paddle-wheel contamination: the prominence (peak / median band power) of a
+#'   narrow-band peak in the magnetometer spectrum. Default 30. Warning only.
+#' @param dropout.info Dropout: the fraction of the deployment for which a channel is missing (NA).
+#'   Default 0.5. Info only.
 #' @return A validated `nautilus_integrity` object for the `control` argument of
 #'   \code{\link{checkSensorIntegrity}}.
 #' @seealso \code{\link{checkSensorIntegrity}}
 #' @examples
-#' integrityControl(mag.cv = 0.5, paddle.prominence = 50)
+#' integrityControl(saturation.error = 0.1)          # stricter: 10% clipping is already an error
+#' integrityControl(mag.plausibility.warning = 0.5)  # more tolerant of an unstable field
 #' @export
-integrityControl <- function(dup.cor               = 0.999,
-                             saturation.frac       = 0.01,
-                             mag.cv                = 0.4,
-                             accel.scale.tol       = 0.2,
-                             gyro.bias.frac        = 0.3,
-                             gyro.bias.min         = 0.02,
-                             paddle.min.freq       = 3.5,
-                             paddle.harmonic.guard = 6,
-                             paddle.prominence     = 30,
-                             paddle.max.freq.frac  = 0.85,
-                             dropout.frac          = 0.5) {
-  .assert_number(dup.cor, "dup.cor", min = 0, max = 1)
-  .assert_number(saturation.frac, "saturation.frac", min = 0, max = 1)
-  .assert_number(mag.cv, "mag.cv", min = 0)
-  .assert_number(accel.scale.tol, "accel.scale.tol", min = 0)
-  .assert_number(gyro.bias.frac, "gyro.bias.frac", min = 0)
-  .assert_number(gyro.bias.min, "gyro.bias.min", min = 0)
-  .assert_number(paddle.min.freq, "paddle.min.freq", min = 0)
-  .assert_number(paddle.harmonic.guard, "paddle.harmonic.guard", min = 1)
-  .assert_number(paddle.prominence, "paddle.prominence", min = 1)
-  .assert_number(paddle.max.freq.frac, "paddle.max.freq.frac", min = 0, max = 1)
-  .assert_number(dropout.frac, "dropout.frac", min = 0, max = 1)
-  structure(list(dup.cor = dup.cor, saturation.frac = saturation.frac, mag.cv = mag.cv,
-                 accel.scale.tol = accel.scale.tol, gyro.bias.frac = gyro.bias.frac, gyro.bias.min = gyro.bias.min,
-                 paddle.min.freq = paddle.min.freq, paddle.harmonic.guard = paddle.harmonic.guard,
-                 paddle.prominence = paddle.prominence, paddle.max.freq.frac = paddle.max.freq.frac,
-                 dropout.frac = dropout.frac),
+integrityControl <- function(duplication.error        = 0.999,
+                             saturation.warning       = 0.01,
+                             saturation.error         = 0.20,
+                             accel.scale.warning      = 0.20,
+                             accel.scale.error        = 0.50,
+                             mag.plausibility.warning = 0.40,
+                             gyro.bias.info           = 0.30,
+                             paddle.warning           = 30,
+                             dropout.info             = 0.50) {
+  .assert_number(duplication.error, "duplication.error", min = 0, max = 1)
+  .assert_number(saturation.warning, "saturation.warning", min = 0, max = 1)
+  .assert_number(saturation.error, "saturation.error", min = 0, max = 1)
+  .assert_number(accel.scale.warning, "accel.scale.warning", min = 0)
+  .assert_number(accel.scale.error, "accel.scale.error", min = 0)
+  .assert_number(mag.plausibility.warning, "mag.plausibility.warning", min = 0)
+  .assert_number(gyro.bias.info, "gyro.bias.info", min = 0)
+  .assert_number(paddle.warning, "paddle.warning", min = 1)
+  .assert_number(dropout.info, "dropout.info", min = 0, max = 1)
+  # an error threshold that sits below its warning threshold would make the warning unreachable, and the
+  # grade a value receives would stop being monotone in the metric - reject it rather than silently reorder
+  if (saturation.error < saturation.warning)
+    .abort("{.arg saturation.error} ({saturation.error}) must be >= {.arg saturation.warning} ({saturation.warning}).")
+  if (accel.scale.error < accel.scale.warning)
+    .abort("{.arg accel.scale.error} ({accel.scale.error}) must be >= {.arg accel.scale.warning} ({accel.scale.warning}).")
+  structure(list(duplication.error = duplication.error,
+                 saturation.warning = saturation.warning, saturation.error = saturation.error,
+                 accel.scale.warning = accel.scale.warning, accel.scale.error = accel.scale.error,
+                 mag.plausibility.warning = mag.plausibility.warning,
+                 gyro.bias.info = gyro.bias.info, paddle.warning = paddle.warning,
+                 dropout.info = dropout.info),
             class = "nautilus_integrity")
+}
+
+
+#' Internal method parameters for the integrity checks (NOT user-facing).
+#'
+#' These govern HOW a metric is computed, not how it is interpreted: the paddle spectral search band and
+#' the gyro-bias absolute floor. They are implementation details of the detectors - deliberately kept out
+#' of `integrityControl()` so the algorithms can be improved without an API change - whereas everything a
+#' user should reasonably tune (the metric -> severity thresholds) is public there.
+#'   \itemize{
+#'     \item `gyro.bias.min` - absolute floor (rad/s) a median offset must also clear, so a negligible
+#'       offset is not flagged merely because the animal barely rotated (a tiny MAD inflates the ratio).
+#'     \item `paddle.min.freq`, `paddle.harmonic.guard` - the search floor is
+#'       `max(paddle.min.freq, paddle.harmonic.guard * f_tailbeat)` Hz, keeping it clear of the tail-beat
+#'       fundamental and its harmonics (the main source of false positives).
+#'     \item `paddle.max.freq.frac` - ceiling as a fraction of Nyquist, avoiding aliasing artefacts.
+#'   }
+#' @keywords internal
+#' @noRd
+.integrityMethod <- function() {
+  list(gyro.bias.min = 0.02, paddle.min.freq = 3.5, paddle.harmonic.guard = 6, paddle.max.freq.frac = 0.85)
 }
 
 

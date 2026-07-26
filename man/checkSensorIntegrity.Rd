@@ -9,6 +9,7 @@ checkSensorIntegrity(
   checks = c("duplication", "dead", "accel.scale", "saturation"),
   control = integrityControl(),
   apply = FALSE,
+  apply.severity = c("error", "warning"),
   id.col = "ID",
   datetime.col = "datetime",
   plot = FALSE,
@@ -32,9 +33,8 @@ the firmware accel-duplication signature) and \code{"dead"} (a channel constant 
 deployment) - plus two advisory checks that earn their place by catching real hardware faults at no
 measurable cost: \code{"accel.scale"} (a static acceleration magnitude far from 1 g, which catches unit
 and scaling mistakes) and \code{"saturation"} (a channel pinned at a range limit, which catches a railed
-axis, a clipping gyroscope and sentinel values). Both are warning-severity, so \code{apply} never drops
-anything because of them. The remaining checks are opt-in and advisory (\code{"warning"}/\code{"info"}, never
-dropped by \code{apply}): \code{"mag.plausibility"} (an unstable magnetometer field magnitude), \code{"gyro.bias"}
+axis, a clipping gyroscope and sentinel values). Both are GRADED, so either can report a warning or an
+error depending on the magnitude measured. The remaining checks are opt-in: \code{"mag.plausibility"} (an unstable magnetometer field magnitude), \code{"gyro.bias"}
 (a persistent gyroscope offset), \code{"paddle.contamination"} (a narrow-band magnetometer peak
 suggesting an undocumented paddle wheel) and \code{"dropout"} (a channel missing for most of the
 deployment).}
@@ -43,9 +43,15 @@ deployment).}
 per-check detection thresholds. Defaults to \code{integrityControl()} (values calibrated on real
 whale-shark deployments).}
 
-\item{apply}{Logical. If \code{FALSE} (default), the function only reports findings (the data passes through
-unchanged). If \code{TRUE}, channels flagged at \code{"error"} severity are dropped from the returned data and
-recorded in the tag metadata (\code{meta$sensors$excluded}); the per-channel reasons remain in \code{issues}.}
+\item{apply}{Logical. Whether to act on the findings. If \code{FALSE} (default) the function only reports
+and the data passes through unchanged. If \code{TRUE}, the channels of every finding at or above
+\code{apply.severity} are dropped from the returned data and recorded in the tag metadata
+(\code{meta$sensors$excluded}); the per-channel reasons remain in \code{issues}.}
+
+\item{apply.severity}{The severity from which \code{apply} intervenes: \code{"error"} (default - only findings
+graded error) or \code{"warning"} (also drop warning-level findings, for a cautious run). Kept separate
+from \code{apply} so the diagnostic classification and the action stay independent concepts.
+Ignored when \code{apply = FALSE}.}
 
 \item{id.col, datetime.col}{Column names for the animal ID and datetime. Defaults \code{"ID"}/\code{"datetime"}.}
 
@@ -101,15 +107,35 @@ undocumented cases. Run it after \link{regularizeTimeSeries} and before \link{ch
 analysis sees them.
 }
 \details{
-The checks form two tiers. Two \strong{error}-severity checks are trustworthy enough to drop a channel (with
-\code{apply = TRUE}); the rest are \strong{advisory} (\code{warning}/\code{info}) - reported but never dropped. Four checks
-run by default (\code{duplication}, \code{dead}, and the advisory \code{accel.scale} and \code{saturation}); the remaining
-advisory checks are opt-in via \code{checks}.
-Every threshold below lives in \code{\link{integrityControl}}, and the reported \code{metric} is noted in
-parentheses.
+\strong{Severity is graded from the measurement, not fixed by the check.} Each check computes a metric,
+and that metric is classified \code{"info"} / \code{"warning"} / \code{"error"} against the thresholds in
+\code{\link{integrityControl}}, named \verb{<check>.<severity>}. So the same check reports different grades
+for different magnitudes: an accelerometer clipping on 1\% of samples is a \code{"warning"} worth a look,
+while one clipping on 99\% is an \code{"error"} - it has lost the dynamic range that orientation, dynamic
+acceleration and tail-beat detection all depend on. This is what separates a minor blemish from a
+compromised channel, which a per-check severity cannot do.
+
+\strong{Not every check can be graded to \code{"error"}.} An automatic error verdict is only defensible when
+the metric is sharply bimodal - when a broken channel is orders of magnitude away from a healthy one.
+Calibrated on a 52-deployment whale-shark fleet (462 channels): the clipped fraction is bimodal, with
+the worst healthy channel at 1.05\% and the one faulty channel at 98.7\% (a 94-fold gap, nothing in
+between), and the static-acceleration magnitude likewise (worst healthy deviation 0.11 g, the faulty
+tag 3.10 g). Both therefore offer an error grade. The magnetometer field CV, by contrast, is continuous
+across the same fleet (0.155-0.460, no break), so \code{mag.plausibility} exposes a warning threshold only -
+any error cut-off would be false precision. \code{dead} and \code{duplication} are degenerate by definition (a
+constant or copied channel carries no information at all) and are always \code{"error"}.
+
+\strong{Classification is separate from action.} A grade describes the finding; \code{apply} and
+\code{apply.severity} decide what happens. Nothing is modified unless \code{apply = TRUE}, and findings at or
+above \code{apply.severity} then have their channels excluded. Error-severity findings are ALWAYS warned
+about, whether or not \code{apply} acted, so a compromised channel cannot pass through unmentioned.
+
+Four checks run by default (\code{duplication}, \code{dead}, \code{accel.scale}, \code{saturation}); the rest are opt-in via
+\code{checks}. Every threshold lives in \code{\link{integrityControl}}; the reported \code{metric} is noted in
+parentheses below.
 
 \strong{duplication} (error). A gyroscope or magnetometer triplet whose three axes are each a near-exact
-copy of the accelerometer (per-axis \code{|r| > dup.cor} on all three). Distinct sensor families cannot
+copy of the accelerometer (per-axis \code{|r| > duplication.error} on all three). Distinct sensor families cannot
 track each other this closely unless one is literally a copy - the signature of a firmware bug that
 duplicates the accelerometer into an absent channel. The channel carries no real information and should
 be excluded. (metric: the minimum per-axis \code{|r|}.)
@@ -117,8 +143,9 @@ be excluded. (metric: the minimum per-axis \code{|r|}.)
 \strong{dead} (error). A channel exactly constant over the whole deployment - the sensor never produced
 a signal. Depth is exempt (a never-submerged tag legitimately reads a constant). (metric: 0.)
 
-\strong{saturation} (warning). A channel pinned at its exact minimum or maximum for a sustained fraction
-of samples (\code{> saturation.frac}): the signal is clipping against the sensor's dynamic-range rail,
+\strong{saturation} (warning / error). A channel pinned at its exact minimum or maximum for a sustained
+fraction of samples (\code{> saturation.warning}, escalating to an error above \code{saturation.error}):
+the signal is clipping against the sensor's dynamic-range rail,
 so the true values beyond it are lost. Typically a mis-set measurement range or an over-driven (e.g.
 mis-scaled) channel. Like every check here it covers the accelerometer, gyroscope and magnetometer
 only - depth and temperature are screened for physical-range faults by \code{\link{checkSensorQuality}}
@@ -127,14 +154,15 @@ instead, which is the right place for them (a depth channel resting at the surfa
 
 \strong{mag.plausibility} (warning). The geomagnetic field magnitude \code{|B|} is orientation-invariant,
 so after provisional hard-iron centring it should stay near-constant. A high robust coefficient of
-variation (\code{> mag.cv}) points to a mis-scaled or soft-iron-distorted magnetometer, or a corrupt
+variation (\code{> mag.plausibility.warning}) points to a mis-scaled or soft-iron-distorted magnetometer, or a corrupt
 channel (a magnetometer duplicated from the accelerometer tracks motion and fails here too). The check
 abstains when the animal did not rotate through enough orientations to trust the centring. (metric: the
 robust CV.)
 
-\strong{accel.scale} (warning). Checks whether the overall accelerometer magnitude is consistent with
+\strong{accel.scale} (warning / error). Checks whether the overall accelerometer magnitude is consistent with
 gravity. The static (gravity) component is taken as a low-pass of the three axes, and its magnitude
-should sit near 1 g across the record; the check flags \code{|median - 1| > accel.scale.tol}. It needs
+should sit near 1 g across the record; the check grades the deviation \code{|median - 1|} against
+\code{accel.scale.warning} and \code{accel.scale.error}. It needs
 no quiescent periods - the low-pass averages the animal's own motion away - so it applies equally to a
 continuously active animal. It detects uniform scaling errors, for example acceleration left in m/s^2
 and never converted to g, but may not detect errors affecting only individual axes: on a near-level
@@ -144,7 +172,7 @@ axes in addition to this summary metric. (metric: the median static magnitude, g
 
 \strong{gyro.bias} (info). Over a long record the animal's rotations average out, so each gyroscope axis
 should have a near-zero median. A persistent offset that is both a large fraction of the rotational
-scale (\code{> gyro.bias.frac}) and absolutely meaningful (\code{> gyro.bias.min}) is a sensor bias.
+scale (\code{> gyro.bias.info}) and absolutely meaningful (against an internal floor) is a sensor bias.
 Gyroscope bias is not explicitly corrected. The default orientation algorithm in
 \code{\link{processTagData}} (\code{"tilt_compass"}) does not use the gyroscope, so gyroscope bias does
 not affect it. The \code{"madgwick"} algorithm does use the gyroscope; small biases are largely absorbed
@@ -160,7 +188,7 @@ fires only when the deployment is not already marked as carrying a paddle wheel 
 paddle effect - and a hit is worth confirming against the spectrum panel. (metric: the peak prominence,
 peak / median band power.)
 
-\strong{dropout} (info). A channel missing (NA) for more than \code{dropout.frac} of the deployment, so
+\strong{dropout} (info). A channel missing (NA) for more than \code{dropout.info} of the deployment, so
 effectively absent. (metric: the missing fraction.)
 
 \strong{Diagnostic report.} When \code{plot} or \code{plot.file} is set, the function draws an overview page
