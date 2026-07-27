@@ -192,17 +192,39 @@ Output includes:
 \itemize{
 \item Roll (degrees): Rotational movement of the animal around its longitudinal (x) axis.
 \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
-\item Heading (degrees): The compass heading, corrected for magnetic declination from the deployment
-coordinates using global geomagnetic models (this correction requires a location: if neither the
-deployment metadata nor the data supply usable coordinates, processing stops with an error).
-Heading represents the orientation of the tag rather than a direct measurement of animal heading.
-Its accuracy therefore depends on how well the tag is aligned with the animal, and note that
-\strong{no mounting correction reaches heading}: heading is computed from the raw pitch and roll,
-and the pitch/roll mounting offsets described below are subtracted afterwards, without heading
-being recomputed. \code{\link{applyAxisMapping}} resolves the sensor-axis orientation it can
-determine, but where the axis mapping was derived from the accelerometer alone the magnetometer
-is left in its raw chip frame; and residual mounting rotation around the vertical axis is never
-estimated. Treat heading as the least well constrained of the orientation outputs.
+\item Heading (degrees): The compass heading. Where a deployment location is available (from the
+metadata, else the first usable coordinates in the data), the magnetic declination for that
+position and date is obtained from a global geomagnetic model and added, giving a GEOGRAPHIC
+heading (relative to true north). Where no location is available the declination cannot be
+computed, and the heading is left MAGNETIC (relative to magnetic north) rather than discarded.
+Which of the two you have is recorded in \code{meta$deployment$heading_reference}
+(\code{"geographic"} or \code{"magnetic"}), and a magnetic heading is reported in a warning.
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{    \\strong\{A magnetic heading is still valid for relative orientation.\} It differs from a
+    geographic one by a CONSTANT offset - the declination, about -7.6 degrees in the Azores and
+    roughly -8 to +12 worldwide with the sign varying by region. Any measure built from angle
+    DIFFERENCES or from the length of a resultant vector is therefore unaffected, because the
+    offset cancels exactly: turning angle and turning rate, angular velocity, circular variance /
+    standard deviation / mean resultant length, heading autocorrelation, net and cumulative
+    heading change, and circling or u-turn detection all give identical answers either way.
+
+    What a magnetic heading must NOT be used for is any ABSOLUTE claim about direction, where the
+    offset rotates the result instead of cancelling: a circular mean or median heading, a
+    dead-reckoned track (\link{reconstructTrack} - roughly 132 m of displacement per km travelled
+    at a 7.6 degree offset), comparison against GPS or Argos fixes, or any figure whose north
+    orientation is read off the page. Functions computing those check
+    \code{heading_reference} and warn; the rotation-invariant ones stay silent, so a warning
+    means the distinction genuinely affects what you asked for.
+    Heading represents the orientation of the tag rather than a direct measurement of animal heading.
+    Its accuracy therefore depends on how well the tag is aligned with the animal, and note that
+    \\strong\{no mounting correction reaches heading\}: heading is computed from the raw pitch and roll,
+    and the pitch/roll mounting offsets described below are subtracted afterwards, without heading
+    being recomputed. \code{\link{applyAxisMapping}} resolves the sensor-axis orientation it can
+    determine, but where the axis mapping was derived from the accelerometer alone the magnetometer
+    is left in its raw chip frame; and residual mounting rotation around the vertical axis is never
+    estimated. Treat heading as the least well constrained of the orientation outputs.
+}\if{html}{\out{</div>}}
+
 \item Turning Angle (degrees): The change in heading between consecutive time points, representing the animal's turning behaviour. Calculated as the minimum angular difference between consecutive headings, constrained between -180 and 180 degrees.
 }
 The mounting corrections assume the tag is approximately aligned with the animal, and the two have

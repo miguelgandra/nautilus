@@ -174,6 +174,7 @@ reconstructTrack <- function(data,
 
   n_ok <- 0L
   untrusted_ids <- character(0); partial_ids <- character(0)   # heading-calibration trust of the input (see below)
+  magnetic_ids  <- character(0)   # heading referenced to MAGNETIC north (an axis independent of calibration)
   pb <- .log_progress_start(lvl, r$n, "Reconstructing", min.level = 1L, max.level = 1L)   # NORMAL only (detailed streams)
   for (i in seq_len(r$n)) {
     .log_progress_step(pb)
@@ -188,6 +189,19 @@ reconstructTrack <- function(data,
     trust <- .headingTrust(.getMeta(x))
     if (identical(trust, "untrusted"))    untrusted_ids <- c(untrusted_ids, who)
     else if (identical(trust, "partial")) partial_ids   <- c(partial_ids, who)
+
+    # Reference frame is a SEPARATE axis from calibration quality: a perfectly calibrated magnetometer
+    # still reads magnetic north. Dead reckoning projects the heading onto true north/east
+    # (d_e = v*sin(heading), d_n = v*cos(heading)), so a magnetic heading rotates the entire track
+    # rigidly about the deployment point - about 132 m of displacement per km travelled at the -7.6 deg
+    # declination of the Azores. The path SHAPE is right; its bearing is not.
+    #
+    # Reachability: a heading is only left magnetic when NO position was available, and this function
+    # already refuses a deployment without coordinates. The case this catches is the sequel - process
+    # without a position, notice, add it to the metadata, then reconstruct. The track now builds and the
+    # heading is still magnetic, which is exactly when the error would pass unnoticed.
+    # "unknown" (a tag processed before the frame was recorded) is left alone rather than guessed at.
+    if (identical(.headingReference(.getMeta(x)), "magnetic")) magnetic_ids <- c(magnetic_ids, who)
 
     res <- tryCatch(.reconstructTrackOne(x, control, datetime.col, lvl, who, make_plots),
                     error = function(e) { .log_skip(lvl, conditionMessage(e)); NULL })
@@ -219,6 +233,11 @@ reconstructTrack <- function(data,
       "{length(untrusted_ids)} pseudo-track{?s} dead-reckoned from an UNCALIBRATED magnetometer: {.val {utils::head(untrusted_ids, 8)}}.",
       "!" = "The heading carries the tag's hard-iron offset; absolute bearings and the reckoned path will drift badly.",
       "i" = "Calibrate first ({.fn calibrateMagnetometer}, ideally with {.arg calibration.data}); see {.code meta$mag_calibration$status}."))
+  if (length(magnetic_ids))
+    cli::cli_warn(c(
+      "{length(magnetic_ids)} pseudo-track{?s} dead-reckoned from a MAGNETIC heading: {.val {utils::head(magnetic_ids, 8)}}.",
+      "!" = "No declination was applied, so the whole track is rotated relative to true north - the shape is right, the bearing is not.",
+      "i" = "Set the deployment position and re-run {.fn processTagData}; the frame is recorded in {.code meta$deployment$heading_reference}."))
   if (length(partial_ids) && lvl >= 1L)
     cli::cli_inform(c("i" = "{length(partial_ids)} track{?s} built from a partial (diagonal/low-confidence) magnetometer calibration: {.val {utils::head(partial_ids, 8)}} - headings are usable but not fully corrected."))
 

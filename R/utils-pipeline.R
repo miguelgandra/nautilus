@@ -217,3 +217,38 @@
       sprintf("%s not present", paste(absent, collapse = ", ")))
   paste(parts, collapse = "; ")
 }
+
+
+#' Which metrics of a heading are meaningful only in a GEOGRAPHIC frame?
+#'
+#' A magnetic heading differs from a geographic one by a constant offset (the magnetic declination:
+#' about -7.6 degrees in the Azores, roughly -8 to +12 worldwide with the sign varying). That offset
+#' cancels exactly in anything built from angle DIFFERENCES or from the length of a resultant vector -
+#' turning rate, angular velocity, circular variance / sd / mrl, heading autocorrelation, u-turn and
+#' circling detection - so those are valid on a magnetic heading and must NOT warn. It does not cancel
+#' where a single absolute direction is reported: a circular mean or median rotates with it.
+#'
+#' The point of naming the DIRECTIONAL metrics rather than flagging the tag is noise: a deployment with
+#' a magnetic heading is perfectly usable for the rotation-invariant majority, and a warning that fires
+#' regardless of what was asked for is one users learn to ignore.
+#' @keywords internal
+#' @noRd
+.directionalHeadingMetrics <- function() c("mean", "median")
+
+#' Warn once when an ABSOLUTE heading statistic was computed from a magnetic-referenced heading.
+#'
+#' Silent unless the frame is recorded as "magnetic" AND a directional metric was actually requested.
+#' "unknown" (a tag processed before the frame was recorded) is left alone rather than guessed at.
+#' @keywords internal
+#' @noRd
+.warnMagneticHeading <- function(ids, metrics, what) {
+  ids <- unique(ids[!is.na(ids)])
+  hit <- intersect(metrics, .directionalHeadingMetrics())
+  if (!length(ids) || !length(hit)) return(invisible(NULL))
+  cli::cli_warn(c(
+    "{what} computed from a MAGNETIC heading for {length(ids)} deployment{?s}: {.val {utils::head(ids, 8)}}.",
+    "!" = "{.val {hit}} report an absolute direction, so they are rotated by the uncorrected magnetic declination.",
+    "i" = "Rotation-invariant measures (turning rate, circular variance, heading change) are unaffected - a constant offset cancels.",
+    "i" = "Set the deployment position and re-run {.fn processTagData}; see {.code meta$deployment$heading_reference}."))
+  invisible(NULL)
+}

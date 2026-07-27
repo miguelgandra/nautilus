@@ -39,7 +39,8 @@
     id           = NA_character_,
     deployment   = list(lon = NA_real_, lat = NA_real_, datetime = as.POSIXct(NA),
                         popup_lon = NA_real_, popup_lat = NA_real_, popup_datetime = as.POSIXct(NA),
-                        magnetic_declination = NA_real_, attachment_site = NA_character_),
+                        magnetic_declination = NA_real_, heading_reference = NA_character_,
+                        attachment_site = NA_character_),
     tag          = list(model = NA_character_, type = NA_character_, package_id = NA, logger_id = NA_character_,
                         paddle_wheel = NA, axis_config = NA_character_),
     biometrics   = list(),                                 # passive animal traits (sex, length, species, ...); roles ACT, traits RIDE
@@ -129,6 +130,31 @@
     provenance     = list(method = NA_character_, source = NA_character_, perp_source = NA_character_)
   )
 }
+
+#' The reference frame of the stored `heading` column: "geographic" or "magnetic".
+#'
+#' Calibration quality and reference frame are INDEPENDENT properties of a heading: a perfectly
+#' calibrated magnetometer still reads magnetic north, and converting to true north needs the magnetic
+#' declination at the deployment position. `.headingTrust()` answers "how well was the magnetometer
+#' calibrated"; this answers "north relative to what", and neither implies the other.
+#'
+#' The distinction matters because a magnetic heading differs from a geographic one by a CONSTANT offset
+#' (-7.6 degrees in the Azores; roughly -8 to +12 worldwide, sign varying). Analyses built on angle
+#' DIFFERENCES - turning rate, angular velocity, circular variance - are unaffected, because the offset
+#' cancels. Analyses making an ABSOLUTE claim about direction - dead reckoning, comparison with GPS
+#' fixes, a circular mean heading - are rotated by it, systematically and without averaging out.
+#'
+#' Returns "unknown" for a tag processed before this field existed, so callers can tell "not recorded"
+#' apart from "recorded as magnetic" and decline to guess.
+#' @return "geographic" | "magnetic" | "unknown".
+#' @keywords internal
+#' @noRd
+.headingReference <- function(meta) {
+  v <- meta$deployment$heading_reference
+  if (is.null(v) || length(v) != 1L || is.na(v)) return("unknown")
+  as.character(v)
+}
+
 
 #' Coarse heading-trust level derived from the calibration status - the shared branch for downstream
 #' trajectory functions (so each does not re-implement the mapping).

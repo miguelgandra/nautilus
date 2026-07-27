@@ -167,11 +167,17 @@ diveMetrics <- function(data,
                                              if (length(variables) != 1) "s" else "")))
 
   rows <- list(); n_dep <- 0L; n_missing <- 0L
+  magnetic_heading_ids <- character(0)   # heading referenced to magnetic north (see the guard below)
   pb <- .log_progress_start(lvl, src$n, "Reducing")
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
     x <- data.table::as.data.table(src$get(i))
     id <- as.character(.getMeta(x)$id %||% src$ids[i])
+    # a per-dive MEAN ANGLE of heading reports an absolute direction, so it rotates with an uncorrected
+    # declination; the mean resultant length reported beside it does not. Collected here, warned about
+    # once below, and only when a mean angle of heading was actually requested.
+    if (identical(.headingReference(.getMeta(x)), "magnetic"))
+      magnetic_heading_ids <- c(magnetic_heading_ids, id)
     if (!all(c("dive_id", "dive_phase", datetime.col, depth.col) %in% names(x))) {
       n_missing <- n_missing + 1L; next
     }
@@ -180,6 +186,9 @@ diveMetrics <- function(data,
     if (!is.null(r) && nrow(r)) { rows[[length(rows) + 1L]] <- r; n_dep <- n_dep + 1L }
   }
   .log_progress_done(pb)
+
+  if ("heading" %in% circular.variables)
+    .warnMagneticHeading(magnetic_heading_ids, intersect(statistics, "mean"), "Per-dive mean heading")
 
   if (n_missing > 0)
     cli::cli_warn(c("{n_missing} deployment{?s} lack{?s/} the {.field dive_id} column and {?was/were} skipped.",

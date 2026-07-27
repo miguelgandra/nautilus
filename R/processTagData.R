@@ -150,9 +150,29 @@
 #' \itemize{
 #'   \item Roll (degrees): Rotational movement of the animal around its longitudinal (x) axis.
 #'   \item Pitch (degrees): Rotational movement of the animal around its lateral (y) axis.
-#'   \item Heading (degrees): The compass heading, corrected for magnetic declination from the deployment
-#'         coordinates using global geomagnetic models (this correction requires a location: if neither the
-#'         deployment metadata nor the data supply usable coordinates, processing stops with an error).
+#'   \item Heading (degrees): The compass heading. Where a deployment location is available (from the
+#'         metadata, else the first usable coordinates in the data), the magnetic declination for that
+#'         position and date is obtained from a global geomagnetic model and added, giving a GEOGRAPHIC
+#'         heading (relative to true north). Where no location is available the declination cannot be
+#'         computed, and the heading is left MAGNETIC (relative to magnetic north) rather than discarded.
+#'         Which of the two you have is recorded in \code{meta$deployment$heading_reference}
+#'         (\code{"geographic"} or \code{"magnetic"}), and a magnetic heading is reported in a warning.
+#'
+#'         \strong{A magnetic heading is still valid for relative orientation.} It differs from a
+#'         geographic one by a CONSTANT offset - the declination, about -7.6 degrees in the Azores and
+#'         roughly -8 to +12 worldwide with the sign varying by region. Any measure built from angle
+#'         DIFFERENCES or from the length of a resultant vector is therefore unaffected, because the
+#'         offset cancels exactly: turning angle and turning rate, angular velocity, circular variance /
+#'         standard deviation / mean resultant length, heading autocorrelation, net and cumulative
+#'         heading change, and circling or u-turn detection all give identical answers either way.
+#'
+#'         What a magnetic heading must NOT be used for is any ABSOLUTE claim about direction, where the
+#'         offset rotates the result instead of cancelling: a circular mean or median heading, a
+#'         dead-reckoned track (\link{reconstructTrack} - roughly 132 m of displacement per km travelled
+#'         at a 7.6 degree offset), comparison against GPS or Argos fixes, or any figure whose north
+#'         orientation is read off the page. Functions computing those check
+#'         \code{heading_reference} and warn; the rotation-invariant ones stay silent, so a warning
+#'         means the distinction genuinely affects what you asked for.
 #'         Heading represents the orientation of the tag rather than a direct measurement of animal heading.
 #'         Its accuracy therefore depends on how well the tag is aligned with the animal, and note that
 #'         \strong{no mounting correction reaches heading}: heading is computed from the raw pitch and roll,
@@ -392,6 +412,7 @@ processTagData <- function(data,
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+  nodecl_ids  <- character(0)   # heading kept as MAGNETIC (no position -> no declination available)
 
   for (i in seq_along(data)) {
 
@@ -985,26 +1006,34 @@ processTagData <- function(data,
       } else {
         # fallback: use the first available row with valid longitude and latitude
         valid_idx <- which(!is.na(individual_data$lon) & !is.na(individual_data$lat))[1]
-        if (!is.na(valid_idx)) {
-          deploy_info <- data.frame(datetime=individual_data$datetime[valid_idx],
-                                    lon = individual_data$lon[valid_idx],
-                                    lat = individual_data$lat[valid_idx])
-        } else {
-          .abort("No valid location found to estimate magnetic declination.")
-        }
+        deploy_info <- if (!is.na(valid_idx))
+          data.frame(datetime = individual_data$datetime[valid_idx],
+                     lon = individual_data$lon[valid_idx],
+                     lat = individual_data$lat[valid_idx]) else NULL
       }
 
-      # get magnetic declination value (in degrees)
-      declination_deg <- oce::magneticField(longitude=deploy_info$lon, latitude=deploy_info$lat, time=deploy_info$datetime)$declination
-      declination_deg <- round(declination_deg, 2)
-
-      # apply magnetic declination correction to convert from magnetic north to geographic north
-      individual_data[, heading := (heading + declination_deg) %% 360]
+      if (is.null(deploy_info)) {
+        # No position, so declination is not computable. Keep the MAGNETIC heading rather than aborting
+        # or discarding it: relative measures (turning rate, angular velocity, circular variance) are
+        # unaffected by the constant offset, so the column is still useful. What must not happen is a
+        # magnetic heading being read as geographic, so the frame is recorded explicitly and the
+        # deployment is named in a warning that fires at any verbosity.
+        heading_ref <- "magnetic"
+        declination_deg <- NULL
+        nodecl_ids <- c(nodecl_ids, as.character(id))
+      } else {
+        declination_deg <- round(oce::magneticField(longitude = deploy_info$lon, latitude = deploy_info$lat,
+                                                    time = deploy_info$datetime)$declination, 2)
+        # magnetic north -> geographic north
+        individual_data[, heading := (heading + declination_deg) %% 360]
+        heading_ref <- "geographic"
+      }
 
     }else{
 
-      # skip declination correction
+      # no heading at all: neither a declination nor a reference frame applies
       declination_deg <- NULL
+      heading_ref <- NA_character_
 
     }
 
@@ -1506,6 +1535,7 @@ processTagData <- function(data,
       meta$sensors$heading_denoise_window  <- heading_denoise_used           # paddle-wheel de-noise applied
       meta$sensors$paddle_contaminated     <- if (!is.null(paddle_state)) isTRUE(paddle_state$present) else NA
       meta$deployment$magnetic_declination <- declination_deg %||% NA_real_
+      meta$deployment$heading_reference     <- heading_ref
       meta$mag_calibration <- mag_state                                      # the single source of truth for calibration state
       meta <- .appendProcessing(meta, "processTagData",
                                 orientation_algorithm   = orientation.algorithm,
@@ -1517,6 +1547,7 @@ processTagData <- function(data,
                                 hard_iron_offset_uT     = hard_iron_offset_mag,
                                 calibration_source      = calibration_source,
                                 magnetic_declination    = declination_deg %||% NA_real_,
+                                heading_reference       = heading_ref,
                                 heading_denoise_window  = heading_denoise_used,
                                 paddle_freq_hz          = if (!is.null(paddle_state)) paddle_state$freq else NA_real_,
                                 static_window           = static.window,
@@ -1655,6 +1686,16 @@ processTagData <- function(data,
   ##############################################################################
 
   # final summary
+  # A magnetic heading looks exactly like a geographic one - same column, same units, same range - so the
+  # only thing standing between it and a silently rotated track is this warning plus the recorded
+  # `heading_reference`. Name the deployments at any verbosity.
+  .warn_grouped(
+    "{length(nodecl_ids)} deployment{?s} {?has/have} a MAGNETIC heading: no position was available to compute the magnetic declination.",
+    items = nodecl_ids,
+    hints = c("Relative measures (turning rate, angular velocity, circular variance) are unaffected - a constant offset cancels.",
+              "Absolute ones (dead reckoning, comparison with GPS fixes, mean heading) are rotated by it: -8 to +12 degrees depending on region.",
+              "Set the deployment position in the metadata to obtain geographic headings; the frame is recorded in {.code meta$deployment$heading_reference}."))
+
   # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
   # large batch is how a cohort quietly shrinks between pipeline steps.
   .warn_grouped(

@@ -752,3 +752,103 @@ test_that("depth reporting never shows negative zero when the surface dips a few
   p <- suppressWarnings(processTagData(list(A01 = tag), downsample.to = NULL, verbose = FALSE))[[1]]
   expect_lt(min(p$depth, na.rm = TRUE), 0)
 })
+
+
+# ---- heading reference frame: magnetic vs geographic ------------------------------------------------
+
+test_that("a deployment with no position keeps a MAGNETIC heading instead of aborting", {
+  # Calibration quality and reference frame are independent properties. Without a position the magnetic
+  # declination is not computable, but the heading itself is still valid - just referenced to magnetic
+  # north. Discarding it would lose every rotation-invariant analysis (turning rate, angular velocity,
+  # circular variance) for no gain; aborting would lose the whole batch.
+  set.seed(1); n <- 3000
+  mk <- function(id, with_pos) {
+    t0 <- as.POSIXct("2020-08-22 12:00:00", tz = "UTC")
+    d <- data.table::data.table(
+      ID = id, datetime = t0 + seq_len(n) / 10,
+      ax = stats::rnorm(n, 0, .2), ay = stats::rnorm(n, 0, .2), az = 1 + stats::rnorm(n, 0, .2),
+      gx = stats::rnorm(n, 0, .05), gy = stats::rnorm(n, 0, .05), gz = stats::rnorm(n, 0, .05),
+      mx = 25 + stats::rnorm(n), my = stats::rnorm(n), mz = 40 + stats::rnorm(n),
+      depth = pmax(0, 20 + 15 * sin(seq_len(n) / 200)), temp = 18 + stats::rnorm(n, 0, .05))
+    m <- nautilus:::.newNautilusMeta(); m$id <- id
+    if (with_pos) { m$deployment$lon <- -25.19; m$deployment$lat <- 37.05; m$deployment$datetime <- t0 }
+    nautilus:::new_nautilus_tag(d, m)
+  }
+  tags <- list(WITH_POS = mk("WITH_POS", TRUE), NO_POS = mk("NO_POS", FALSE))
+
+  res <- suppressWarnings(suppressMessages(
+    processTagData(tags, verbose = 0, return.data = TRUE)))
+
+  # both survive - the positionless one is not dropped
+  expect_setequal(names(res), c("WITH_POS", "NO_POS"))
+
+  # ...and each records WHICH north its heading refers to
+  m_geo <- nautilus:::.getMeta(res$WITH_POS); m_mag <- nautilus:::.getMeta(res$NO_POS)
+  expect_equal(nautilus:::.headingReference(m_geo), "geographic")
+  expect_equal(nautilus:::.headingReference(m_mag), "magnetic")
+
+  # the declination is recorded only where one was applied; the two fields do not contradict
+  expect_false(is.na(m_geo$deployment$magnetic_declination))
+  expect_true(is.na(m_mag$deployment$magnetic_declination))
+
+  # the heading column is PRESENT and populated in both - the point of keeping it
+  expect_true(any(!is.na(res$NO_POS$heading)))
+  expect_true(any(!is.na(res$WITH_POS$heading)))
+})
+
+test_that("the magnetic-heading warning names the deployment at any verbosity", {
+  # a magnetic heading is indistinguishable from a geographic one by inspection - same column, same
+  # units, same range - so the warning is the only thing standing between it and a rotated track
+  set.seed(2); n <- 2000
+  t0 <- as.POSIXct("2020-08-22 12:00:00", tz = "UTC")
+  d <- data.table::data.table(
+    ID = "NOPOS", datetime = t0 + seq_len(n) / 10,
+    ax = stats::rnorm(n, 0, .2), ay = stats::rnorm(n, 0, .2), az = 1 + stats::rnorm(n, 0, .2),
+    mx = 25 + stats::rnorm(n), my = stats::rnorm(n), mz = 40 + stats::rnorm(n),
+    depth = pmax(0, 20 + 10 * sin(seq_len(n) / 150)))
+  m <- nautilus:::.newNautilusMeta(); m$id <- "NOPOS"
+  tg <- nautilus:::new_nautilus_tag(d, m)
+  # expect_warning() consumes only the MATCHING warning, so the fixture's other expected warnings (no
+  # axis mapping, uncalibrated magnetometer) would leak into the suite's warning count. Collect them
+  # all and assert on the one under test.
+  w <- character(0)
+  withCallingHandlers(
+    invisible(capture.output(suppressMessages(processTagData(list(NOPOS = tg), verbose = 0)))),
+    warning = function(e) { w <<- c(w, conditionMessage(e)); invokeRestart("muffleWarning") })
+  expect_true(any(grepl("MAGNETIC", w)))
+  expect_true(any(grepl("NOPOS", w[grepl("MAGNETIC", w)])))
+})
+
+test_that(".headingReference distinguishes not-recorded from recorded", {
+  # a tag processed before the field existed must read "unknown", so a caller can decline to guess
+  # rather than silently assuming geographic
+  m <- nautilus:::.newNautilusMeta()
+  expect_equal(nautilus:::.headingReference(m), "unknown")
+  m$deployment$heading_reference <- "magnetic"
+  expect_equal(nautilus:::.headingReference(m), "magnetic")
+  m$deployment$heading_reference <- "geographic"
+  expect_equal(nautilus:::.headingReference(m), "geographic")
+  expect_equal(nautilus:::.headingReference(list()), "unknown")
+})
+
+test_that("the magnetic-heading guard fires only for DIRECTIONAL metrics", {
+  # The whole point of keeping magnetic headings is that most heading analyses are rotation-invariant.
+  # A guard that fired on every magnetic-heading deployment regardless of what was computed would be
+  # noise, and noise is how a real warning gets ignored. It must track WHAT IS COMPUTED.
+  g <- nautilus:::.warnMagneticHeading
+  quiet <- function(...) { w <- character(0)
+    withCallingHandlers(g(...), warning = function(e) { w <<- c(w, conditionMessage(e)); invokeRestart("muffleWarning") })
+    w }
+
+  # rotation-invariant metrics on a magnetic tag: a constant offset cancels, so nothing is wrong
+  expect_length(quiet("PIN_07", c("sd", "rate", "mrl", "range", "iqr"), "x"), 0L)
+  # an absolute statistic on the same tag: the offset rotates the answer
+  expect_length(quiet("PIN_07", c("sd", "mean", "rate"), "x"), 1L)
+  expect_length(quiet(c("A", "B"), "median", "x"), 1L)
+  # nothing to warn about when no deployment is magnetic, whatever was requested
+  expect_length(quiet(character(0), "mean", "x"), 0L)
+  expect_length(quiet(NA_character_, "mean", "x"), 0L)
+
+  # the directional set is exactly the two statistics that report a direction
+  expect_setequal(nautilus:::.directionalHeadingMetrics(), c("mean", "median"))
+})

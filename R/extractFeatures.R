@@ -241,6 +241,18 @@ extractFeatures <- function(data,
   saved <- vector("list", length = n_animals)
   ids <- character(n_animals)
 
+  # Was an ABSOLUTE heading statistic actually requested? A magnetic heading is perfectly valid for the
+  # rotation-invariant majority (turning rate, circular variance/sd/mrl, heading change, circling), so
+  # the guard below tracks WHAT IS COMPUTED rather than what data happens to be held - a warning that
+  # fired on every magnetic-heading deployment regardless of the metric would be one users learn to
+  # ignore. Only a circular mean/median of heading reports a direction that the declination rotates.
+  .grid_for_guard <- if (exists("parameter_grid", inherits = FALSE)) parameter_grid else NULL
+  heading_directional <- if (!is.null(.grid_for_guard))
+    unique(.grid_for_guard$metric[.grid_for_guard$variable %in% "heading" &
+                                  .grid_for_guard$metric %in% .directionalHeadingMetrics()])
+  else character(0)
+  magnetic_heading_ids <- character(0)
+
   # Process each dataset
   for (i in 1:length(data)) {
 
@@ -250,10 +262,14 @@ extractFeatures <- function(data,
       individual_data <- readRDS(file_path)
       id <- unique(individual_data[[id.col]])[1]
       if (is.null(id)) id <- tools::file_path_sans_ext(basename(file_path))
+      if (identical(.headingReference(.getMeta(individual_data)), "magnetic"))
+        magnetic_heading_ids <- c(magnetic_heading_ids, as.character(id))
     } else {
       individual_data <- data[[i]]
       id <- unique(individual_data[[id.col]])[1]
       if (is.null(id) || id == "") id <- names(data)[i]
+      if (identical(.headingReference(.getMeta(individual_data)), "magnetic"))
+        magnetic_heading_ids <- c(magnetic_heading_ids, as.character(id))
     }
 
     if (return.data) names(data_processed)[i] <- id
@@ -632,6 +648,10 @@ extractFeatures <- function(data,
   ##############################################################################
   # Finalization ###############################################################
   ##############################################################################
+
+  # Silent unless BOTH conditions hold: a deployment whose heading is magnetic, and a directional
+  # statistic of that heading actually among the requested metrics.
+  .warnMagneticHeading(magnetic_heading_ids, heading_directional, "Circular heading statistics")
 
   # print time taken
   end.time <- Sys.time()
