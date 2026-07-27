@@ -244,6 +244,11 @@ filterLocations <- function(data,
   saved    <- vector("list", r$n)
   payloads <- if (make_plots) vector("list", r$n) else NULL
   n_touched <- 0L; total_removed <- 0L
+  # The SUMMARY separates three different denominators that a single "across N datasets" used to blur:
+  # how much was actually SCREENED, how much was SKIPPED for having no fixes, and how much was TOUCHED
+  # by a removal. Most datasets that are screened lose nothing, so the removal count belongs to its own
+  # (smaller) set, not to the input count.
+  n_skipped <- 0L; n_screened <- 0L; total_fixes <- 0L
   # per-criterion tallies for the SUMMARY breakdown (why fixes were discarded, not just how many)
   total_sat <- 0L; total_dist <- 0L; total_speed <- 0L
 
@@ -262,6 +267,7 @@ filterLocations <- function(data,
       # plain hyphen, not an em dash: this line must survive a non-UTF-8 device, where a raw \u2014
       # would print as an escape (cli only auto-degrades its OWN symbols)
       if (lvl >= 1L) cli::cli_text("{cli::symbol$bullet} skipped - no position fixes")
+      n_skipped <- n_skipped + 1L
       .log_gap(lvl)
       if (make_plots) payloads[[i]] <- NULL
       if (return.data) { results[[i]] <- x }
@@ -272,6 +278,7 @@ filterLocations <- function(data,
     pos <- pos[order(pos$datetime), , drop = FALSE]
     pos$time_num <- as.numeric(pos$datetime)
     n_fix <- nrow(pos)
+    n_screened <- n_screened + 1L; total_fixes <- total_fixes + n_fix
 
     # only the automatically-acquired fixes may be removed; User fixes are trusted anchors
     removable <- pos$type %in% c("FastGPS", "Argos") & !is.na(pos$lon) & !is.na(pos$lat)
@@ -395,12 +402,26 @@ filterLocations <- function(data,
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .log_done(lvl, total_removed, " fix", if (total_removed != 1) "es", " removed across ",
-              r$n, " dataset", if (r$n != 1) "s")
-    # why they were removed, one line per ENABLED check (a disabled check has no row, not a zero row)
-    if (do_sat)   .log_subdetail(lvl, sprintf("Satellites (< %d): %d", min.satellites, total_sat))
-    if (do_dist)  .log_subdetail(lvl, sprintf("Distance (> %g km): %d", max.distance.km, total_dist))
-    if (do_speed) .log_subdetail(lvl, sprintf("Speed (> %g km/h): %d", max.speed.kmh, total_speed))
+    .log_done(lvl, "Screened ", .formatNumber(total_fixes), " fix", if (total_fixes != 1) "es",
+              " from ", n_screened, " dataset", if (n_screened != 1) "s")
+    # a run where nothing was skipped gets no row, rather than a "0 datasets skipped" one
+    if (n_skipped)
+      .log_done(lvl, n_skipped, " dataset", if (n_skipped != 1) "s", " skipped (no position fixes)")
+    if (total_removed) {
+      # the colon introduces the per-criterion breakdown below, which only renders at the detailed
+      # level - so it is only added when something actually follows it
+      .log_done(lvl, .formatNumber(total_removed), " fix", if (total_removed != 1) "es",
+                " removed from ", n_touched, " dataset", if (n_touched != 1) "s",
+                if (lvl >= 2L) ":" else "")
+      # why they were removed, one line per ENABLED check (a disabled check has no row, not a zero row)
+      if (do_sat)   .log_subdetail(lvl, sprintf("Satellites (< %d): %d", min.satellites, total_sat))
+      if (do_dist)  .log_subdetail(lvl, sprintf("Distance (> %g km): %d", max.distance.km, total_dist))
+      if (do_speed) .log_subdetail(lvl, sprintf("Speed (> %g km/h): %d", max.speed.kmh, total_speed))
+    } else if (n_screened) {
+      # nothing removed: the per-criterion breakdown would be a column of zeros. Skipped entirely when
+      # nothing was screened either - "0 fixes from 0 datasets" already says it.
+      .log_done(lvl, "No fixes removed")
+    }
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)

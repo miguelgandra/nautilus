@@ -182,6 +182,49 @@ test_that("the summary breaks removals down by criterion, and only for ENABLED c
   expect_false(grepl("Distance (", txt, fixed = TRUE))
 })
 
+test_that("the summary keeps its three denominators distinct", {
+  # The bug this locks: one line used to read "N fixes removed across <all inputs> datasets", conflating
+  # three different sets. A cohort where most tags carry no fixes, and most of the rest lose nothing, is
+  # the normal case - so screened / skipped / touched-by-a-removal must each report their OWN count.
+  dirty <- make_tag(fx(c(0, 2, 4), "FastGPS", c(0, 0.01, 0.02), c(0, 0.01, 0.02),
+                       quality = c("6", "2", "7")), id = "dirty")           # 3 fixes, 1 removed
+  clean <- make_tag(fx(c(0, 2, 4), "FastGPS", c(0, 0.01, 0.02), c(0, 0.01, 0.02),
+                       quality = c("6", "6", "7")), id = "clean")           # 3 fixes, none removed
+  t0 <- as.POSIXct("2020-01-01", tz = "UTC")                                # no fixes at all -> skipped
+  m <- nautilus:::.newNautilusMeta(); m$id <- "bare"
+  bare <- nautilus:::new_nautilus_tag(
+    data.table::data.table(ID = "bare", datetime = seq(t0, by = "1 min", length.out = 10), depth = 0), m)
+
+  txt <- paste(cli::cli_fmt(suppressWarnings(filterLocations(
+    list(dirty = dirty, clean = clean, bare = bare), min.satellites = 4, verbose = "detailed"))),
+    collapse = "\n")
+
+  expect_match(txt, "Screened 6 fixes from 2 datasets")     # the 2 WITH fixes, not all 3
+  expect_match(txt, "1 dataset skipped \\(no position fixes\\)")
+  expect_match(txt, "removed from 1 dataset")               # only the 1 that actually lost a fix
+  expect_false(grepl("from 3 datasets", txt, fixed = TRUE)) # the old conflated denominator is gone
+})
+
+test_that("the summary omits rows that would carry no information", {
+  # a clean run states the outcome without a zero-filled breakdown; a run with nothing skipped gets no
+  # skip row (the same "no zero rows" rule the per-criterion breakdown already follows)
+  clean <- make_tag(fx(c(0, 2, 4), "FastGPS", c(0, 0.01, 0.02), c(0, 0.01, 0.02),
+                       quality = c("6", "6", "7")), id = "clean")
+  txt <- paste(cli::cli_fmt(suppressWarnings(filterLocations(
+    list(clean = clean), min.satellites = 4, verbose = "detailed"))), collapse = "\n")
+  expect_match(txt, "No fixes removed")
+  expect_false(grepl("skipped (no position fixes)", txt, fixed = TRUE))
+  expect_false(grepl("Satellites (< 4)", txt, fixed = TRUE))   # no breakdown when nothing was removed
+
+  # at NORMAL verbosity the breakdown does not render, so the line must not end in a dangling colon
+  dirty <- make_tag(fx(c(0, 2, 4), "FastGPS", c(0, 0.01, 0.02), c(0, 0.01, 0.02),
+                       quality = c("6", "2", "7")), id = "dirty")
+  txt1 <- paste(cli::cli_fmt(suppressWarnings(filterLocations(
+    list(dirty = dirty), min.satellites = 4, verbose = "normal"))), collapse = "\n")
+  expect_match(txt1, "removed from 1 dataset")
+  expect_false(grepl("dataset:", txt1, fixed = TRUE))
+})
+
 test_that("a deployment with no fixes reports a plain skip, not a warning marker", {
   # a bare tag carrying sensor rows but no position record at all (as in the skip test above)
   t0 <- as.POSIXct("2020-01-01", tz = "UTC")
