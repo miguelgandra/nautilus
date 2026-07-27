@@ -959,3 +959,57 @@ test_that("the validation panel's surge correlation matches the reported surge_c
   expect_equal(panel_r, res$confidence$surge_corr, tolerance = 0.05)  # panel r == reported surge_corr
   expect_lt(panel_r, -0.5)                                            # ... and both strong (not collapsed)
 })
+
+
+# ---- missing sensor channels: skip the deployment, never the batch ----------------------------------
+
+test_that("a deployment whose accelerometer was excluded is skipped, not fatal to the batch", {
+  # checkSensorIntegrity() legitimately drops channels (PIN_07 lost ax/ay/az to a railed Y axis). The
+  # documented contract at the top of the per-tag loop is that one bad dataset never aborts the batch -
+  # but the load/validate preamble used to sit ABOVE the tryCatch, so it did exactly that.
+  ok1 <- .dive_tag(diag(3), id = "OK1")
+  ok2 <- .dive_tag(diag(3), id = "OK2")
+  bad <- data.table::copy(ok1); bad[, c("ax", "ay", "az") := NULL]
+  bad[, ID := "NOACC"]
+  m <- nautilus:::.newNautilusMeta(); m$id <- "NOACC"; m$sensors$excluded <- c("ax", "ay", "az")
+  bad <- nautilus:::new_nautilus_tag(bad, m)
+
+  res <- suppressWarnings(suppressMessages(
+    checkTagMapping(list(OK1 = ok1, NOACC = bad, OK2 = ok2), verbose = 0)))
+
+  # the two healthy deployments still resolved...
+  expect_setequal(names(res), c("OK1", "OK2"))
+  # ...and the result carries NO holes: a NULL element with an NA name used to make the whole object
+  # unrecognisable to .asAxisMappingSet(), so ONE skipped tag aborted the NEXT pipeline step for all
+  expect_false(any(vapply(res, is.null, logical(1))))
+  expect_false(any(is.na(names(res))))
+
+  # the skip is announced even at verbose = 0 - a silent skip is how a cohort quietly shrinks
+  expect_warning(checkTagMapping(list(OK1 = ok1, NOACC = bad), verbose = 0), "skipped")
+})
+
+test_that("the mapping set from a batch containing a skip is accepted downstream", {
+  # the regression that matters: checkTagMapping's output must remain a valid input to applyAxisMapping
+  ok1 <- .dive_tag(diag(3), id = "OK1")
+  ok2 <- .dive_tag(diag(3), id = "OK2")
+  bad <- data.table::copy(ok1); bad[, c("ax", "ay", "az") := NULL]; bad[, ID := "NOACC"]
+  m <- nautilus:::.newNautilusMeta(); m$id <- "NOACC"; m$sensors$excluded <- c("ax", "ay", "az")
+  bad <- nautilus:::new_nautilus_tag(bad, m)
+  tags <- list(OK1 = ok1, NOACC = bad, OK2 = ok2)
+
+  res <- suppressWarnings(suppressMessages(checkTagMapping(tags, verbose = 0)))
+  expect_no_error(suppressWarnings(suppressMessages(
+    applyAxisMapping(tags, mapping = res, verbose = 0))))
+})
+
+test_that(".explainMissingColumns separates a QC exclusion from an absent channel", {
+  # the message a user sees should say WHY the channel is gone: meta$sensors$excluded records the
+  # deliberate removals, and was previously written by two functions but read by none
+  m <- nautilus:::.newNautilusMeta(); m$sensors$excluded <- c("ax", "ay", "az")
+  expect_match(nautilus:::.explainMissingColumns(c("ax", "ay", "az"), m), "excluded by an earlier QC step")
+  expect_match(nautilus:::.explainMissingColumns("depth", m), "not present")
+  # a mixed case names both, and a tag with no provenance still gets a sensible message
+  both <- nautilus:::.explainMissingColumns(c("ax", "depth"), m)
+  expect_match(both, "QC step"); expect_match(both, "not present")
+  expect_match(nautilus:::.explainMissingColumns("ax", NULL), "not present")
+})

@@ -184,3 +184,27 @@
 #######################################################################################################
 #######################################################################################################
 #######################################################################################################
+
+
+#' Explain WHY required columns are absent, distinguishing a QC exclusion from a malformed input.
+#'
+#' `checkSensorIntegrity()` and `importTagData()` both legitimately drop channels - the first when a
+#' channel fails an integrity check, the second per the `exclude_sensors` metadata column - and record
+#' what they dropped in `meta$sensors$excluded`. Until now nothing downstream consulted that record, so
+#' a deliberately curated deployment was indistinguishable from a corrupt one: both produced a bare
+#' "missing required column(s)". Reading the provenance turns an accusation into an explanation, and
+#' tells the user whether to investigate the file or accept the exclusion.
+#' @return A single human-readable clause naming the missing channels and, where known, their origin.
+#' @keywords internal
+#' @noRd
+.explainMissingColumns <- function(missing, meta = NULL) {
+  excluded <- meta$sensors$excluded %||% character(0)
+  by_qc <- intersect(missing, excluded)
+  absent <- setdiff(missing, excluded)
+  parts <- c(
+    if (length(by_qc))
+      sprintf("%s excluded by an earlier QC step", paste(.channelsToFamilies(by_qc), collapse = ", ")),
+    if (length(absent))
+      sprintf("%s not present", paste(absent, collapse = ", ")))
+  paste(parts, collapse = "; ")
+}

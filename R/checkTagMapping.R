@@ -271,9 +271,12 @@ checkTagMapping <- function(data,
   # define required columns and validate each in-memory dataset up front
   required_cols <- c(id.col, datetime.col, depth.col, ax.col, ay.col, az.col)
   if (!is_filepaths) {
+    # Channel presence is NOT gated here: a deployment whose channels were curated away by
+    # checkSensorIntegrity() is set aside inside the loop, so the rest of the cohort still runs. Only
+    # the datetime CLASS is checked up front, and only for deployments that carry the column - it is a
+    # structural contract on the input rather than a property of any one sensor.
     for (nm in names(data)) {
-      .assert_columns(data[[nm]], required_cols, sprintf("data[['%s']]", nm))
-      if (!inherits(data[[nm]][[datetime.col]], "POSIXct")) {
+      if (datetime.col %in% names(data[[nm]]) && !inherits(data[[nm]][[datetime.col]], "POSIXct")) {
         .abort("{.arg datetime.col} ({.val {datetime.col}}) must be a POSIXct column in {.val {nm}}.")
       }
     }
@@ -327,10 +330,16 @@ checkTagMapping <- function(data,
 
   # initialize list to store results, plus per-tag summary records (one per input, for the run summary)
   # and the failed-tag tracker (per-tag fault tolerance keeps one bad tag from aborting the batch)
-  results_list <- list()
+  # Pre-sized like the other per-tag accumulators. It used to be `list()`, which auto-extended on the
+  # first successful write: a deployment skipped or failed BEFORE a later success left a NULL element
+  # with an NA name, and .asAxisMappingSet() then rejected the whole object ("not a recognised mapping
+  # object") - so one skipped tag aborted applyAxisMapping()/reviewTagMapping() for the entire cohort.
+  # Pre-sizing plus the compaction at the return keeps the result dense and correctly named.
+  results_list <- vector("list", n_animals)
   summary_records <- vector("list", n_animals)
   panel_payloads  <- vector("list", n_animals)
   failed_ids <- character(0)
+  skipped_ids <- character(0)          # deployments set aside for missing/unusable input (not failures)
 
   # header
   .log_header(lvl, "checkTagMapping", "Inferring IMU axis orientation",
@@ -357,26 +366,59 @@ checkTagMapping <- function(data,
       file_path <- data[i]
       id <- tools::file_path_sans_ext(basename(file_path))
 
-      # load current file
-      individual_data <- readRDS(file_path)
-
-      # perform checks specific to loaded RDS files
-      missing_cols <- setdiff(required_cols, names(individual_data))
-      if (length(missing_cols) > 0) .abort("Missing required column(s) in {.file {basename(file_path)}}: {.val {missing_cols}}.")
-      if (!inherits(individual_data[[datetime.col]], "POSIXct")) .abort("The datetime column in {.file {basename(file_path)}} must be of class {.cls POSIXct}.")
+      # Load + validate as ONE fallible unit. This block sits ABOVE the per-tag tryCatch below, so an
+      # abort here would kill the whole batch - which is exactly what the documented contract ("a single
+      # bad dataset is recorded as failed and skipped, never aborting the whole batch") promises it will
+      # not do. A corrupt file, a missing channel or a bad datetime class is a property of ONE
+      # deployment; the other 51 must still be processed.
+      individual_data <- tryCatch(readRDS(file_path), error = function(e) e)
+      skip_reason <- NULL
+      if (inherits(individual_data, "error")) {
+        skip_reason <- sprintf("unreadable file (%s)", conditionMessage(individual_data))
+      } else {
+        missing_cols <- setdiff(required_cols, names(individual_data))
+        if (length(missing_cols) > 0) {
+          nm <- tryCatch(attr(individual_data, "nautilus", exact = TRUE), error = function(e) NULL)
+          skip_reason <- .explainMissingColumns(missing_cols, nm)
+        } else if (!inherits(individual_data[[datetime.col]], "POSIXct")) {
+          skip_reason <- sprintf("the %s column is not POSIXct", datetime.col)
+        }
+      }
+      if (!is.null(skip_reason)) {
+        .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
+        summary_records[[i]] <- list(id = id, status = "skipped", n_resolved = 0L,
+                                     gyro = NA_character_, mag = NA_character_,
+                                     model = NA_character_, package_id = NA_character_,
+                                     message = skip_reason)
+        skipped_ids <- c(skipped_ids, id)
+        .log_gap(lvl)
+        next
+      }
       if (is.null(attr(individual_data, "nautilus.version"))) {
         message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
-      }
-
-      # add ID if not present
-      if (!id.col %in% names(individual_data)) {
-        id <- unique(individual_data[[id.col]])[1]
       }
 
     } else {
       # data is already in memory (list of data frames/tables)
       id <- names(data)[i]
       individual_data <- data[[i]]
+      # the in-memory branch is gated the same way as the file branch (see above): a deployment whose
+      # channels were curated away is skipped, not fatal
+      if (!is.null(individual_data) && NROW(individual_data)) {
+        missing_cols <- setdiff(required_cols, names(individual_data))
+        if (length(missing_cols) > 0) {
+          nm <- tryCatch(attr(individual_data, "nautilus", exact = TRUE), error = function(e) NULL)
+          skip_reason <- .explainMissingColumns(missing_cols, nm)
+          .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
+          summary_records[[i]] <- list(id = id, status = "skipped", n_resolved = 0L,
+                                       gyro = NA_character_, mag = NA_character_,
+                                       model = NA_character_, package_id = NA_character_,
+                                       message = skip_reason)
+          skipped_ids <- c(skipped_ids, id)
+          .log_gap(lvl)
+          next
+        }
+      }
     }
 
     # capture deployment metadata (if present): attachment site for the sway-sign cross-check, and
@@ -1245,6 +1287,14 @@ checkTagMapping <- function(data,
     })
   }
 
+  # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
+  # 52-tag batch is how a cohort quietly shrinks between pipeline steps.
+  .warn_grouped(
+    "{length(skipped_ids)} deployment{?s} {?was/were} skipped: axis mapping needs the accelerometer.",
+    items = skipped_ids,
+    hints = c("Their axis mapping is UNRESOLVED - they carry no entry in the returned mapping set.",
+              "This is expected when {.fn checkSensorIntegrity} excluded a channel; see {.code meta$sensors$excluded}."))
+
   # ORDERING-GUARD warning (fires at any verbosity): un-trimmed records let post-detachment / off-animal
   # data bias the axis-mapping inference. Emitted once with the affected ids.
   if (length(untrimmed_ids)) {
@@ -1301,6 +1351,11 @@ checkTagMapping <- function(data,
       grDevices::dev.set(caller_dev); draw_all(TRUE)
     }
   }
+
+  # drop the slots of skipped/failed tags, so the returned object is a dense, fully-named set of
+  # mappings rather than one carrying NULL holes for the deployments that produced nothing
+  keep <- !vapply(results_list, is.null, logical(1))
+  results_list <- results_list[keep]
 
   # return results, tagged with the producer so applyAxisMapping() can route + attribute it
   attr(results_list, "nautilus.mapping.producer") <- "checkTagMapping"
