@@ -2,7 +2,7 @@
 % Please edit documentation in R/extractFeatures.R
 \name{extractFeatures}
 \alias{extractFeatures}
-\title{Extract Features from Sensor Data Using Sliding or Aggregated Windows (Enhanced)}
+\title{Extract windowed features from sensor data}
 \usage{
 extractFeatures(
   data,
@@ -16,13 +16,14 @@ extractFeatures(
   aggregate = FALSE,
   downsample.to = NULL,
   response.col = NULL,
-  response.aggregation = "majority",
+  response.aggregation = c("majority", "any"),
   circular.variables = c("heading", "roll"),
   return.data = TRUE,
   output.dir = NULL,
   output.suffix = NULL,
   compress = TRUE,
-  n.cores = 1
+  n.cores = 1,
+  verbose = "normal"
 )
 }
 \arguments{
@@ -47,7 +48,10 @@ If \code{window_seconds} is not provided, uses the global \code{window.size} par
 
 \item{aggregate}{Logical. If TRUE, uses non-overlapping windows for initial feature extraction.}
 
-\item{downsample.to}{NULL or numeric (seconds). If specified, aggregates features into non-overlapping windows.}
+\item{downsample.to}{Target output rate in Hz (e.g. \code{1} for one feature row per second), or \code{NULL}
+(default) to leave the feature rows at their native rate. This is a FREQUENCY, matching
+\link{processTagData}: the row interval is \code{1/downsample.to} seconds. Feature columns are
+aggregated within each output bin by arithmetic mean.}
 
 \item{response.col}{(Optional) A character string specifying the column containing response labels.}
 
@@ -70,40 +74,100 @@ to tag a processing run or avoid clashes. Only used when \code{output.dir} is se
 (default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
 
 \item{n.cores}{Number of processor cores for parallel computation.}
+
+\item{verbose}{Controls console output: \code{FALSE}/\code{0} (quiet - warnings and errors only), \code{TRUE}/\code{1}
+(\code{"normal"}: header, one line per deployment, and a summary), or \code{2}/\code{"detailed"} (adds a progress
+bar over the feature grid and per-deployment diagnostics). Defaults to \code{"normal"}.}
 }
 \value{
-If \code{return.data = TRUE}, a list of data frames with calculated features; if
-\code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
+If \code{return.data = TRUE}, a named list with one \code{data.table} per deployment: the identifier
+and datetime columns followed by one \verb{<variable>_<metric>} column per grid row, with rows carrying
+any \code{NA} removed (see \emph{Rows} in Details). Each table carries an \code{extractFeatures} entry in its
+processing history recording the grid, window and row count. If \code{return.data = FALSE}, a character
+vector of the written \code{.rds} file paths instead.
 }
 \description{
-This function calculates specified metrics (e.g., mean, standard deviation, circular statistics,
-and complex ecological features) for selected variables over a sliding window.
-It can either retain the temporal resolution of the dataset or aggregate data into distinct,
-non-overlapping windows. Enhanced version includes complex movement and behavioral features.
+Summarises selected variables over rolling time windows, producing one column per
+variable-and-metric pair - the feature matrix used for behavioural classification and machine
+learning. Windows either slide sample by sample (retaining the input's temporal resolution) or
+tile the record without overlap (\code{aggregate = TRUE}).
 }
 \details{
-Enhanced version supports all original metrics plus complex ecological features:
+\strong{Windows.} \code{window.size} is a duration in SECONDS, converted per deployment to a whole number
+of samples using that deployment's own sampling rate - so the same call gives comparable features
+across records sampled at different rates, but the number of samples per window (and hence the
+variance of every metric) differs between them. Sliding windows are CENTRED, so roughly half a window
+at each end of a record has no complete span and yields \code{NA}. Those rows are then removed (see
+\emph{Rows}), which means the leading and trailing half-window of every deployment is systematically
+absent from the output. With \code{aggregate = TRUE} the record is tiled into non-overlapping windows
+instead, and each output row is timestamped at the START of its window.
 
-Complex Features (when enhanced.features = TRUE):
+\strong{Which metrics apply to which variables.} Variables named in \code{circular.variables} are angles
+in degrees and are summarised with circular statistics; everything else is treated linearly. The two
+sets are NOT interchangeable, and requesting a linear-only metric for a circular variable is an
+error rather than a silent miscalculation:
 \itemize{
-\item "net_heading_change": Net change in heading over centered window
-\item "cumulative_heading_change": Cumulative sum of absolute heading changes
-\item "circular_variance_heading": Circular variance of heading values
-\item "oscillation_regularity": Regularity of oscillatory patterns
-\item "movement_predictability": Predictability using ratio of SD to mean
-\item "movement_consistency": Consistency using SD metrics
-\item "movement_smoothness": Smoothness using rate of change
-\item "movement_jerk": Windowed RMS of the input signal's rate of change (its "jerk" when the input is an acceleration channel); distinct from the core rotation-invariant \code{jerk} channel from \code{\link{processTagData}}
-\item "posture_stability": Stability from pitch/roll SD metrics
-\item "turning_rate_variability": Variability in turning rates
-\item "activity_index": Combined activity from multiple rates
-\item "rolling_autocorrelation": Rolling autocorrelation
-\item "zero_crossing_rate": Rate of zero crossings
-\item "circling_behavior": Detection of circling patterns
-\item "feeding_posture_index": Index for feeding posture detection
-\item "depth_change_rate": Rate of depth changes
-\item "depth_change_consistency": Consistency of depth changes
+\item \strong{linear}: \code{mean}, \code{median}, \code{sd}, \code{range}, \code{min}, \code{max}, \code{iqr}, \code{mad}, \code{sum}, \code{rate},
+\code{energy}, \code{skewness}, \code{kurtosis}, \code{entropy}
+\item \strong{circular}: \code{mean}, \code{median}, \code{sd}, \code{range}, \code{iqr}, \code{mrl}, \code{rate}
 }
+A circular \code{mean} or \code{median} reports an absolute direction and is therefore affected by whether the
+heading is referenced to magnetic or geographic north; the remaining circular metrics are built from
+angle differences and are unaffected. See \code{\link{processTagData}} for that distinction.
+
+\strong{Output schema.} One row per retained window and one column per grid row, named
+\verb{<variable>_<metric>} (for example \code{depth_mean}, \code{heading_mrl}). The identifier and datetime columns
+come first. When \code{parameter.grid} supplies per-row \code{window_seconds}, the window is appended to the
+name so that the same metric at several scales stays distinguishable.
+
+\strong{Rows.} Any row still carrying an \code{NA} in any feature column is DROPPED before the table is
+returned. This keeps the matrix usable by learners that cannot accept missing values, but it is not a
+neutral operation: the loss is concentrated at the record edges (above) and at any gap in the input,
+so it is systematic rather than random. The number of rows lost is reported per deployment and
+summarised in a warning. A deployment shorter than the widest requested window loses every row.
+
+\strong{Surface substitution.} Where \code{depth == 0}, the distribution-shape metrics are replaced with
+their neutral values - \code{skewness = 0}, \code{kurtosis = 3}, \code{entropy = 0} - rather than left as the
+undefined results a constant or near-constant signal produces. This is a deliberate assumption
+(a stationary tag at the surface is not a distribution worth describing), not a computation.
+
+\strong{Enhanced features} (\code{enhanced.features = TRUE}, requires the \pkg{zoo} package). These are
+composite descriptors rather than standard summary statistics, and most are specific to a variable:
+\itemize{
+\item \code{net_heading_change} - absolute angular difference between the window's leading and lagging
+halves (degrees). Heading only.
+\item \code{cumulative_heading_change} - sum of absolute wrap-corrected step changes (degrees). Heading only.
+\item \code{circular_variance_heading} - \code{1 - R}, where \code{R} is the mean resultant length (0 = perfectly
+directed, 1 = uniformly scattered). Heading only.
+\item \code{turning_rate_variability} - coefficient of variation of the absolute turning rate. Heading only.
+\item \code{circling_behavior} - net rotation accumulated over the window (degrees); large values indicate
+sustained circling. Heading only.
+\item \code{uturn_flag} - 1 where the heading reverses by more than 120 degrees within the window, else 0.
+Heading only. The 120-degree cut-off is fixed, not a parameter.
+\item \code{heading_autocorr_avg} - mean autocorrelation over lags 1-5 of the UNWRAPPED heading, so the
+result does not depend on the animal's absolute bearing. Heading only.
+\item \code{oscillation_regularity} - coefficient of variation of the interval between peaks within the
+window; low values indicate metronomic oscillation. \strong{Requires at least three peaks
+inside a single window}: if the window is shorter than about three cycles of the signal the
+result is \code{NA} throughout, and the deployment can lose every row.
+\item \code{movement_jerk} - windowed RMS of the input's first difference (its jerk when the input is an
+acceleration channel). Distinct from the rotation-invariant \code{jerk} channel produced by
+\code{\link{processTagData}}, which is computed at native rate before downsampling.
+\item \code{movement_smoothness} - windowed RMS of the input's SECOND difference. Note the sense: a
+HIGHER value means a LESS smooth signal.
+\item \code{movement_predictability} - rolling coefficient of variation (\verb{sd / |mean|}). Note the sense:
+a HIGHER value means MORE variable, i.e. LESS predictable.
+\item \code{movement_consistency} - rolling coefficient of variation of the rolling mean.
+\item \code{posture_stability} - \verb{1 / (1 + rolling sd)} of the supplied posture variable; approaches 1
+for a steadily-held posture.
+\item \code{activity_index} - summed rate of change across the supplied activity variable.
+\item \code{rolling_autocorrelation} - lag-1 autocorrelation within the window.
+\item \code{zero_crossing_rate} - proportion of consecutive samples that change sign.
+\item \code{depth_change_rate}, \code{depth_change_consistency} - mean absolute rate of depth change, and its
+coefficient of variation. Depth only.
+}
+The \code{movement_smoothness} and \code{movement_predictability} names describe the inverse of what they
+measure; they are kept for compatibility and the sense is stated above rather than silently assumed.
 }
 \examples{
 # Minimal single deployment: one numeric sensor column sampled at 1 Hz. Pass a
@@ -116,4 +180,8 @@ df <- data.frame(
 # 5 s sliding-window mean and SD of VeDBA
 extractFeatures(list(shark01 = df), variables = "vedba",
                 metrics = c("mean", "sd"), window.size = 5)
+}
+\seealso{
+\code{\link{processTagData}} for the derived channels most of these features summarise,
+\code{\link{detectDives}} and \code{\link{diveMetrics}} for dive-resolved descriptors.
 }

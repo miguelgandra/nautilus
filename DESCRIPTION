@@ -34,7 +34,6 @@ Suggests:
 	pROC,
 	moments,
 	entropy,
-	circular,
 	tesseract,
 	magick,
 	geosphere,

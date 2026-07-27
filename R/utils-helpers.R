@@ -1102,3 +1102,22 @@ NULL
   if (length(t) < 2L) return(0)
   as.numeric(max(t) - min(t))
 }
+
+#' Unwrap a wrapped angle (degrees) into a continuous series.
+#'
+#' A heading in [0, 360) jumps by ~360 whenever it crosses the branch cut, so any LINEAR operation on it
+#' - a correlation, a regression slope, a linear standard deviation - depends on where that cut happens
+#' to fall relative to the data rather than on the animal's behaviour. Unwrapping accumulates the
+#' shortest step between consecutive samples instead, giving a continuous angle on which linear
+#' operations mean what they appear to mean. NA-tolerant: gaps are carried, not filled.
+#' @keywords internal
+#' @noRd
+.unwrapDegrees <- function(x) {
+  if (!length(x)) return(x)
+  r <- x * pi / 180
+  d <- diff(r)
+  d <- ((d + pi) %% (2 * pi)) - pi          # shortest signed step between consecutive angles
+  out <- cumsum(c(r[1], d)) * 180 / pi
+  out[is.na(x)] <- NA_real_
+  out
+}

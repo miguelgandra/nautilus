@@ -174,7 +174,7 @@ test_that("jerk is computed as the native-rate norm of d(accel)/dt and aggregate
 test_that("movement_jerk uses a single first difference (not the old triple difference)", {
   # a linear ramp has a CONSTANT first difference (= 1), so RMS-jerk is ~1 under the corrected single-diff.
   # The former triple-diff would difference that constant twice more to zero, giving ~0 - this locks the fix.
-  mj <- nautilus:::movement_jerk(as.numeric(1:100), window = 10)
+  mj <- nautilus:::.movement_jerk(as.numeric(1:100), window = 10)
   expect_equal(median(mj, na.rm = TRUE), 1, tolerance = 1e-6)
   expect_equal(sum(is.na(mj)), 1L)                # single diff loses exactly one leading sample
 })
