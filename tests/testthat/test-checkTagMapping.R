@@ -1013,3 +1013,48 @@ test_that(".explainMissingColumns separates a QC exclusion from an absent channe
   expect_match(both, "QC step"); expect_match(both, "not present")
   expect_match(nautilus:::.explainMissingColumns("ax", NULL), "not present")
 })
+
+
+# ---- verbose structure: skipped tags get a block; the summary aggregates config validation ----------
+
+test_that("a skipped deployment gets its own delimited block, like every other one", {
+  # the skip line used to float between the neighbouring deployment blocks, so the reader had to infer
+  # WHICH tag it referred to from its position. Every other early exit already sits below the header.
+  ok  <- .dive_tag(diag(3), id = "OK1")
+  bad <- data.table::copy(ok); bad[, c("ax", "ay", "az") := NULL]; bad[, ID := "NOACC"]
+  m <- nautilus:::.newNautilusMeta(); m$id <- "NOACC"; m$sensors$excluded <- c("ax", "ay", "az")
+  bad <- nautilus:::new_nautilus_tag(bad, m)
+
+  out <- character(0)
+  invisible(capture.output(out <- capture.output(
+    suppressWarnings(checkTagMapping(list(OK1 = ok, NOACC = bad), verbose = 1)), type = "message")))
+  txt <- paste(out, collapse = "\n")
+
+  expect_match(txt, "NOACC \\(2/2\\)")                       # its own header, numbered like the rest
+  expect_match(txt, "excluded by an earlier QC step")        # the reason, inside that block
+})
+
+test_that("the summary aggregates the documented-config verdicts, and only when configs are given", {
+  cfg <- list("CATS Camera" = data.frame(from = c("ax", "ay", "az"), to = c("ax", "ay", "az"),
+                                         stringsAsFactors = FALSE))
+  mk <- function(id, seed) {
+    tg <- .dive_tag(diag(3), id = id, seed = seed)
+    m <- nautilus:::.getMeta(tg); m$tag$axis_config <- "CATS Camera"
+    nautilus:::.restoreMeta(tg, m)
+  }
+  tags <- list(A = mk("A", 11), B = mk("B", 12))
+
+  grab <- function(...) {
+    o <- character(0)
+    invisible(capture.output(o <- capture.output(suppressWarnings(checkTagMapping(...)), type = "message")))
+    paste(o, collapse = "\n")
+  }
+  with_cfg <- grab(tags, configs = cfg, verbose = 1)
+  expect_match(with_cfg, "configuration validation")
+  expect_match(with_cfg, "confirmed:")
+  expect_match(with_cfg, "no documented config:")
+
+  # without `configs` nothing is validated, so the block would be a column of zeros - it is omitted,
+  # the same "no rows that carry no information" rule the rest of the package follows
+  expect_false(grepl("configuration validation", grab(tags, verbose = 1), fixed = TRUE))
+})

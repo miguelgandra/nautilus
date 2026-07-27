@@ -385,6 +385,9 @@ checkTagMapping <- function(data,
         }
       }
       if (!is.null(skip_reason)) {
+        # a skipped deployment still gets its own delimited block, like every other one: the reason must
+        # be attributable to a tag at a glance, not inferred from position between neighbouring blocks
+        .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals), min_level = 1L)
         .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
         summary_records[[i]] <- list(id = id, status = "skipped", n_resolved = 0L,
                                      gyro = NA_character_, mag = NA_character_,
@@ -409,6 +412,7 @@ checkTagMapping <- function(data,
         if (length(missing_cols) > 0) {
           nm <- tryCatch(attr(individual_data, "nautilus", exact = TRUE), error = function(e) NULL)
           skip_reason <- .explainMissingColumns(missing_cols, nm)
+          .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals), min_level = 1L)   # own block, as above
           .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
           summary_records[[i]] <- list(id = id, status = "skipped", n_resolved = 0L,
                                        gyro = NA_character_, mag = NA_character_,
@@ -1276,7 +1280,10 @@ checkTagMapping <- function(data,
       model = tag_model, package_id = package_id, axes = axes_resolved, remap = remap_state,
       tailbeat = tb_corroborated, static_secs = static_secs, diving_pct = diving_pct,
       surge_corr = confidence$surge_corr, mag_resid = families$mag$inclination_residual,
-      site = attach_site)
+      site = attach_site,
+      # the documented-config verdict was already computed for this tag's console block; carrying it
+      # here is what lets the SUMMARY aggregate it without a second pass over anything
+      prior = frame_state$prior$status %||% NA_character_)
 
     }, error = function(e) {
       failed_ids <<- c(failed_ids, id)
@@ -1321,11 +1328,45 @@ checkTagMapping <- function(data,
     .log_done(lvl, n_eval, " of ", n_animals, " tag", if (n_animals != 1) "s", " evaluated",
               if (n_fail > 0) paste0(" (", n_fail, " failed)") else "")
     tick <- cli::col_green(cli::symbol$tick); warn <- cli::col_yellow("!"); crss <- cli::col_red(cli::symbol$cross)
-    cli::cli_text("  {tick} fully resolved:     {n_full}")
-    cli::cli_text("  {warn} partially resolved: {n_part}")
-    cli::cli_text("  {crss} unresolved:         {n_unres}")
-    if (n_skip > 0) cli::cli_text("  {crss} skipped (no usable data): {n_skip}")
-    if (n_fail > 0) cli::cli_text("  {crss} failed:                  {n_fail}")
+    info <- cli::col_blue(cli::symbol$info)
+    # Counts right-aligned under a common label width, so the block scans as a column of numbers rather
+    # than a ragged list. cli_verbatim, NOT cli_text: cli_text normalises runs of whitespace for prose
+    # wrapping, which silently collapses the padding and returns the column to a ragged list. Verbatim
+    # also means no glue, so a label containing braces would be safe; the symbols carry their own colour.
+    row <- function(sym, label, n, w)
+      cli::cli_verbatim(paste0("  ", sym, " ", sprintf("%-*s %3d", w, paste0(label, ":"), n)))
+    w1 <- 19L
+    row(tick, "fully resolved", n_full, w1)
+    row(warn, "partially resolved", n_part, w1)
+    row(crss, "unresolved", n_unres, w1)
+    if (n_skip > 0) row(crss, "skipped", n_skip, w1)
+    if (n_fail > 0) row(crss, "failed", n_fail, w1)
+
+    # ---- documented-configuration validation -------------------------------------------------------
+    # Only when `configs` was supplied: without one every tag is "absent" and the block would be a
+    # column of zeros under a single meaningless total. The tally covers the EVALUATED tags (skipped and
+    # failed ones never reached the comparison), so it sums to the headline count above it.
+    if (!is.null(configs)) {
+      pri <- vapply(recs, function(r) as.character(r$prior %||% NA_character_), character(1))
+      pri <- pri[!is.na(pri)]
+      if (length(pri)) {
+        n_conf <- sum(pri == "confirmed"); n_cons <- sum(pri == "consistent")
+        n_cfl  <- sum(pri == "conflict")
+        # "reflection" (left-handed raw frame) and "unverifiable" (dropped/partial axes) both mean the
+        # search could not judge the documented config; they differ only in cause, which the
+        # per-deployment block already gives. One row here keeps the summary scannable.
+        n_unv  <- sum(pri %in% c("reflection", "unverifiable"))
+        n_none <- sum(pri == "absent")
+        cli::cli_text("")
+        cli::cli_verbatim("  configuration validation")
+        w2 <- 21L
+        row(tick, "confirmed", n_conf, w2)
+        row(warn, "consistent", n_cons, w2)
+        row(crss, "conflict", n_cfl, w2)
+        row(warn, "unverifiable", n_unv, w2)
+        row(info, "no documented config", n_none, w2)
+      }
+    }
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
   }
