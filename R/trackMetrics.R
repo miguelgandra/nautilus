@@ -153,10 +153,15 @@ trackMetrics <- function(data,
 .trackMetricsIndividual <- function(x, id, lon.col, lat.col, datetime.col, metrics, control) {
   if (is.null(x) || nrow(x) == 0) return(NULL)
   need <- c(lon.col, lat.col, datetime.col)
+  # A track without positions yields no path metrics - the same outcome as one with too few fixes
+  # (below), which this helper already signals by returning NULL. Returning NULL here too keeps ONE
+  # unusable track from aborting the whole cohort; the caller counts and reports the omission.
   missing_cols <- need[!need %in% names(x)]
-  if (length(missing_cols))
-    .abort(c("Track {.val {id}} is missing required column{?s} {.val {missing_cols}}.",
-             "i" = "Set {.arg lon.col}/{.arg lat.col} (found: {.val {intersect(c('pseudo_lon','pseudo_lat','lon','lat'), names(x))}})."))
+  if (length(missing_cols)) {
+    cli::cli_warn(c("Track {.val {id}} is missing required column{?s} {.val {missing_cols}} - no metrics computed.",
+                    "i" = "Set {.arg lon.col}/{.arg lat.col} (found: {.val {intersect(c('pseudo_lon','pseudo_lat','lon','lat'), names(x))}})."))
+    return(NULL)
+  }
 
   clean <- x[!is.na(get(lon.col)) & !is.na(get(lat.col))]
   if (nrow(clean) < control$min.points) return(NULL)

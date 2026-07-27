@@ -308,6 +308,8 @@ filterDeploymentData <- function(data,
   n_filtered <- 0L; n_discarded <- 0L; n_custom <- 0L; n_auto <- 0L   # n_custom/n_auto: realized method mix
 
   # iterate over each element in 'data'
+  skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+
   for (i in seq_along(data)) {
 
 
@@ -322,10 +324,21 @@ filterDeploymentData <- function(data,
       # load current file
       individual_data <- readRDS(file_path)
 
-      # perform checks specific to loaded RDS files
+      # Depth genuinely IS required here - the attachment window is inferred from it, and there is no
+      # honest partial answer. But that makes the deployment unanalysable, not the batch: set it aside
+      # with the reason and keep going.
       missing_cols <- setdiff(required_cols, names(individual_data))
-      if (length(missing_cols) > 0) .abort("Missing required column(s) in {.file {basename(file_path)}}: {.val {missing_cols}}.")
-      if (!inherits(individual_data[[datetime.col]], "POSIXct")) .abort("Column {.val {datetime.col}} in {.file {basename(file_path)}} must be of class {.cls POSIXct}.")
+      skip_reason <- if (length(missing_cols) > 0)
+        .explainMissingColumns(missing_cols, tryCatch(attr(individual_data, "nautilus", exact = TRUE),
+                                                      error = function(e) NULL))
+      else if (!inherits(individual_data[[datetime.col]], "POSIXct")) "the datetime column is not POSIXct"
+      if (!is.null(skip_reason)) {
+        .log_skip(lvl, tools::file_path_sans_ext(basename(file_path)), "  ", skip_reason,
+                  " ", cli::symbol$bullet, " skipped")
+        skipped_ids <- c(skipped_ids, tools::file_path_sans_ext(basename(file_path)))
+        .log_gap(lvl)
+        next
+      }
       if (is.null(attr(individual_data, "nautilus.version"))) {
         cli::cli_warn(c("{.file {basename(file_path)}} was likely not processed via {.fn importTagData}.",
                         "i" = "Run it through {.fn importTagData} first to ensure correct formatting."))
@@ -805,6 +818,14 @@ filterDeploymentData <- function(data,
 
   # final run summary: its own block (its own rule), conceptually distinct from per-individual output,
   # with the information split across lines for scannability.
+  # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
+  # large batch is how a cohort quietly shrinks between pipeline steps.
+  .warn_grouped(
+    "{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
+    items = skipped_ids,
+    hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
+              "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
+
   if (lvl >= 1L) {
     .log_summary(lvl)
     # realized custom/automatic split shown only when custom windows were supplied

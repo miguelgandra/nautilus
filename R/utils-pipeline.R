@@ -176,7 +176,16 @@
 #' @keywords internal
 #' @noRd
 .collectOutput <- function(results, saved, return.data, ids) {
-  if (isTRUE(return.data)) return(stats::setNames(results, ids))
+  if (isTRUE(return.data)) {
+    # Drop the slots of deployments that produced nothing. Every batch function pre-sizes `results` to
+    # the input count and `next`s past a deployment it cannot process, so without this the caller gets
+    # NULL elements named after tags that were skipped - which breaks anything that maps over the
+    # result, and (in the axis-mapping subsystem) made the whole object unrecognisable downstream.
+    # This also makes the two branches agree: the `saved` branch below has always compacted, because
+    # unlist() drops NULLs.
+    keep <- !vapply(results, is.null, logical(1))
+    return(stats::setNames(results, ids)[keep])
+  }
   invisible(unlist(saved, use.names = FALSE))
 }
 

@@ -135,7 +135,7 @@ test_that("file-path input regularizes without the required_cols bug (regression
   expect_true(all(c("depth", "temp") %in% names(out$A01)))
 })
 
-test_that("file-path input aborts when a required column is missing", {
+test_that("file-path input skips a deployment missing a required column, without aborting", {
   d <- .mkdt(c("depth"))
   d[["datetime"]] <- NULL                                 # drop the datetime column
   dir <- file.path(tempdir(), paste0("rts_bad_", as.integer(runif(1, 1, 1e7))))
@@ -144,7 +144,19 @@ test_that("file-path input aborts when a required column is missing", {
   f <- file.path(dir, "A01.rds")
   saveRDS(d, f)
 
-  expect_error(.rts(f), "Missing required column")
+  # A file missing a required column no longer aborts: it is ONE unusable deployment, and killing the
+  # batch discarded every deployment already processed. It is skipped and absent from the result, and
+  # a healthy deployment alongside it still comes through.
+  good <- .mkdt(c("depth")); good[, ID := "A02"]
+  saveRDS(good, file.path(dir, "A02.rds"))
+  out <- .rts(sort(list.files(dir, full.names = TRUE)))
+  expect_length(out, 1L)
+  expect_false(is.null(out$A02))
+
+  # the skip is announced at any verbosity - `.rts` swallows warnings, so assert on a direct call
+  expect_warning(
+    invisible(capture.output(regularizeTimeSeries(f, return.data = TRUE, verbose = FALSE))),
+    "skipped")
 })
 
 # --- two-level triage report (redesign) ------------------------------------------------------------

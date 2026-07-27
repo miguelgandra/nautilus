@@ -313,7 +313,8 @@ processTagData <- function(data,
   # if data is already in memory (not file paths), validate each dataset up front
   if (!is_filepaths) {
     for (nm in names(data)) {
-      .assert_columns(data[[nm]], required_cols, sprintf("data[['%s']]", nm))
+      # channel presence is checked per deployment inside the loop (a curated deployment is skipped,
+      # not fatal); only the datetime CLASS is a structural contract worth failing up front
       if (!inherits(data[[nm]]$datetime, "POSIXct")) {
         .abort("The {.field datetime} column must be POSIXct in {.val {nm}}.")
       }
@@ -390,6 +391,8 @@ processTagData <- function(data,
   uncalibrated_ids <- character(0)               # requested magnetometer that received ZERO correction (raw heading)
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
+  skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+
   for (i in seq_along(data)) {
 
     ############################################################################
@@ -402,10 +405,21 @@ processTagData <- function(data,
       # load current file
       individual_data <- readRDS(file_path)
 
-      # perform checks specific to loaded RDS files
+      # A channel curated away by checkSensorIntegrity() (or by the exclude_sensors metadata column)
+      # is a property of ONE deployment. Set it aside and carry on: aborting here discarded every
+      # deployment already processed in the batch.
       missing_cols <- setdiff(required_cols, names(individual_data))
-      if (length(missing_cols) > 0) .abort("Missing required column(s) in {.file {basename(file_path)}}: {.val {missing_cols}}.")
-      if (!inherits(individual_data$datetime, "POSIXct")) .abort("The datetime column in {.file {basename(file_path)}} must be of class {.cls POSIXct}.")
+      skip_reason <- if (length(missing_cols) > 0)
+        .explainMissingColumns(missing_cols, tryCatch(attr(individual_data, "nautilus", exact = TRUE),
+                                                      error = function(e) NULL))
+      else if (!inherits(individual_data$datetime, "POSIXct")) "the datetime column is not POSIXct"
+      if (!is.null(skip_reason)) {
+        .log_skip(lvl, tools::file_path_sans_ext(basename(file_path)), "  ", skip_reason,
+                  " ", cli::symbol$bullet, " skipped")
+        skipped_ids <- c(skipped_ids, tools::file_path_sans_ext(basename(file_path)))
+        .log_gap(lvl)
+        next
+      }
       if (is.null(attr(individual_data, "nautilus.version"))) {
         cli::cli_warn(c("File {.file {basename(file_path)}} was likely not processed via {.fn importTagData}.",
                         "i" = "Run it through {.fn importTagData} first to ensure correct formatting."))
@@ -1641,6 +1655,14 @@ processTagData <- function(data,
   ##############################################################################
 
   # final summary
+  # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
+  # large batch is how a cohort quietly shrinks between pipeline steps.
+  .warn_grouped(
+    "{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
+    items = skipped_ids,
+    hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
+              "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
+
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")

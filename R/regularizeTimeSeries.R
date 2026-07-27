@@ -216,6 +216,8 @@ regularizeTimeSeries <- function(data,
   required_cols <- c(id.col, datetime.col)
 
   # iterate over each animal
+  skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+
   for (i in seq_along(data)) {
 
     ############################################################################
@@ -228,10 +230,21 @@ regularizeTimeSeries <- function(data,
       # load current file
       individual_data <- readRDS(file_path)
 
-      # perform checks specific to loaded RDS files
+      # This function only ever required an ID and a datetime (it interpolates whatever sensor channels
+      # it finds - see the intersect() at the resampling step), so a missing column here is a structural
+      # problem with ONE file, not a reason to abandon the batch.
       missing_cols <- setdiff(required_cols, names(individual_data))
-      if (length(missing_cols) > 0) .abort("Missing required column(s) in {.file {basename(file_path)}}: {.val {missing_cols}}.")
-      if (!inherits(individual_data[[datetime.col]], "POSIXct")) .abort("The datetime column in {.file {basename(file_path)}} must be of class {.cls POSIXct}.")
+      skip_reason <- if (length(missing_cols) > 0)
+        .explainMissingColumns(missing_cols, tryCatch(attr(individual_data, "nautilus", exact = TRUE),
+                                                      error = function(e) NULL))
+      else if (!inherits(individual_data[[datetime.col]], "POSIXct")) "the datetime column is not POSIXct"
+      if (!is.null(skip_reason)) {
+        .log_skip(lvl, tools::file_path_sans_ext(basename(file_path)), "  ", skip_reason,
+                  " ", cli::symbol$bullet, " skipped")
+        skipped_ids <- c(skipped_ids, tools::file_path_sans_ext(basename(file_path)))
+        .log_gap(lvl)
+        next
+      }
       if (is.null(attr(individual_data, "nautilus.version"))) {
         message(paste0("Warning: File '", basename(file_path), "' was likely not processed via importTagData(). It is strongly recommended to run it through importTagData() to ensure proper formatting."))
       }
@@ -606,6 +619,14 @@ regularizeTimeSeries <- function(data,
   ##############################################################################
 
   # final summary + console triage table (level >= 1)
+  # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
+  # large batch is how a cohort quietly shrinks between pipeline steps.
+  .warn_grouped(
+    "{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
+    items = skipped_ids,
+    hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
+              "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
+
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " regularized")

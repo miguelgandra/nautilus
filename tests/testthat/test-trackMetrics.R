@@ -70,9 +70,16 @@ test_that("raw lon/lat are used when there is no pseudo-track, and explicit name
   # a custom column name is honoured
   d <- .track(seq(0, 0.2, length.out = 20), rep(0, 20), lon.name = "x", lat.name = "y")
   expect_no_error(trackMetrics(list(d), lon.col = "x", lat.col = "y", verbose = FALSE))
-  # a track with none of the known columns errors clearly
+  # A track with none of the known columns yields no metrics and says so, rather than aborting: it is
+  # the same outcome as a track with too few fixes, which this function already reported by returning
+  # nothing for that track. One unusable track must not cost the whole cohort.
   bad <- data.table::data.table(ID = "A", datetime = as.POSIXct("2020-01-01", tz = "UTC") + 1:10)
-  expect_error(trackMetrics(list(bad), verbose = FALSE), "missing required column", ignore.case = TRUE)
+  expect_warning(trackMetrics(list(bad), verbose = FALSE), "missing required column", ignore.case = TRUE)
+
+  # the cohort survives: a usable track alongside an unusable one still produces its metrics
+  ok <- .track(seq(0, 0.2, length.out = 20), rep(0, 20))
+  res <- suppressWarnings(trackMetrics(list(A = bad, B = ok), verbose = FALSE))
+  expect_true(NROW(res) >= 1L)
 })
 
 # ---- plumbing: control, skipping, input shapes ----------------------------------------

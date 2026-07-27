@@ -295,9 +295,7 @@ calculateTailBeats <- function(data,
   if (!is_filepaths) {
     for (nm in names(data)) {
       .assert_columns(data[[nm]], c(id.col, datetime.col), sprintf("data[['%s']]", nm))
-      if (!any(motion.col %in% names(data[[nm]]))) {
-        .abort("{.val {nm}}: none of the motion columns {.val {motion.col}} are present.")
-      }
+      # motion-column presence is handled per deployment by the skip path in the loop (see above)
       if (!inherits(data[[nm]][[datetime.col]], "POSIXct")) {
         .abort("{.arg datetime.col} ({.val {datetime.col}}) must be a POSIXct column in {.val {nm}}.")
       }
@@ -537,7 +535,10 @@ calculateTailBeats <- function(data,
 
       # perform checks specific to loaded RDS files
       .assert_columns(individual_data, c(id.col, datetime.col), sprintf("file '%s'", basename(file_path)))
-      if (!any(motion.col %in% names(individual_data))) .abort("None of the motion columns ({.val {motion.col}}) are present in {.file {basename(file_path)}}.")
+      # A deployment with no motion column is NOT an error: .selectMotionAxis() already returns
+      # axis = NA for it, and the skip path below emits the full NA schema, records the reason in the
+      # audit trail and still saves. Aborting here only pre-empted that graceful path - and took the
+      # rest of the batch with it.
       if (!inherits(individual_data[[datetime.col]], "POSIXct")) .abort("The datetime column in {.file {basename(file_path)}} must be of class {.cls POSIXct}.")
       if (is.null(attr(individual_data, "nautilus.version"))) {
         cli::cli_warn(c("File {.file {basename(file_path)}} was likely not processed via {.fn importTagData}.",

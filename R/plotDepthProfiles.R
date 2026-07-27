@@ -136,12 +136,14 @@ plotDepthProfiles <- function(data,
                                 src$n, if (src$n != 1) "s" else "", color.by))
 
   deployments <- list()
-  n_no_color <- 0L; n_no_coord <- 0L
+  n_no_color <- 0L; n_no_coord <- 0L; n_no_depth <- 0L
   pb <- .log_progress_start(lvl, src$n, "Loading")                  # live bar at detailed verbosity (lvl >= 2)
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
     tag <- src$get(i)
-    .validateColumns(tag, c(datetime.col, depth.col), where = if (src$is_filepaths) basename(src$paths[i]) else NULL)
+    # a deployment with no depth channel simply gets no panel: one unplottable tag must not cost the
+    # whole figure (the omission is counted and reported below)
+    if (length(setdiff(c(datetime.col, depth.col), names(tag)))) { n_no_depth <- n_no_depth + 1L; next }
     meta <- .getMeta(tag)
     d <- .downsampleForPlot(tag, id.col, datetime.col, downsample)
     if (nrow(d) == 0) next
@@ -226,6 +228,8 @@ plotDepthProfiles <- function(data,
 
   if (lvl >= 1L) {
     .log_summary(lvl)
+    if (n_no_depth > 0) .log_skip(lvl, sprintf("no depth channel (no panel drawn): %d deployment%s",
+                                                n_no_depth, if (n_no_depth != 1) "s" else ""))
     if (n_no_color > 0) .log_detail(lvl, sprintf("no '%s' data (plotted unmapped): %d/%d", color.by, n_no_color, length(deployments)))
     if (shade.diel && n_no_coord > 0) .log_detail(lvl, sprintf("no coordinates (diel shading skipped): %d/%d", n_no_coord, length(deployments)))
     .log_done(lvl, length(deployments), " depth profile", if (length(deployments) != 1) "s", " plotted")
