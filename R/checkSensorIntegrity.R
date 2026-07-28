@@ -55,7 +55,12 @@
 #' be excluded. (metric: the minimum per-axis \code{|r|}.)
 #'
 #' \strong{dead} (error). A channel exactly constant over the whole deployment - the sensor never produced
-#' a signal. Depth is exempt (a never-submerged tag legitimately reads a constant). (metric: 0.)
+#' a signal. Depth is exempt (a never-submerged tag legitimately reads a constant). Covers the IMU
+#' triplets, temperature, and the imported paddle channels \code{paddle_speed} / \code{paddle_freq}: a
+#' paddle column holding one fixed value is a dead, jammed or absent paddle wheel rather than a
+#' measurement, and left in place it would count as that many genuine speed samples in any pooled
+#' distribution. The message names which of those it is, from the tag's documented `paddle_wheel` flag;
+#' the grade does not change, because the consequence for the data is the same either way. (metric: 0.)
 #'
 #' \strong{saturation} (warning / error). A channel pinned at its exact minimum or maximum for a sustained
 #' fraction of samples (\code{> saturation.warning}, escalating to an error above \code{saturation.error}):
@@ -478,13 +483,30 @@ checkSensorIntegrity <- function(data,
 #' @noRd
 .icheckDead <- function(x, ctx) {
   rows <- .emptyIntegrityIssues()
-  cand <- intersect(c(unlist(unname(ctx$fams)), "temp"), names(x))
+  # The paddle channels are screened here and NOT by adding them to `ctx$fams`. `.icheckSaturation`
+  # (:503) and `.icheckDropout` (:719) build their candidate sets from the same object, and a paddle
+  # column is legitimately sparse - CATS logs Velocity at 1 Hz onto a 20 Hz grid and
+  # regularizeTimeSeries leaves sub-rate channels uninterpolated, so a HEALTHY paddle is ~95% NA
+  # (measured on PIN_CAM_41: 88,710 finite values in 1,773,823 rows). Widening the shared families
+  # would make `dropout` fire on every working paddle wheel. This check is safe because it filters to
+  # the finite values before testing them.
+  paddle <- c("paddle_speed", "paddle_freq")
+  cand <- intersect(c(unlist(unname(ctx$fams)), "temp", paddle), names(x))
   for (ch in cand) {
     v <- x[[ch]]; v <- v[is.finite(v)]
     if (length(v) < 10L) next
     if (diff(range(v)) < 1e-9) {
-      rows <- rbind(rows, .integrityIssue(ch, "dead", "error", 0,
-                    sprintf("%s is constant over the whole deployment (dead/stuck sensor)", ch)))
+      msg <- if (ch %in% paddle) {
+        # the two cases differ in cause, not in consequence: either way the column is a placeholder
+        # rather than a measurement, and left in place it would count as that many genuine speed
+        # samples in any pooled statistic
+        sprintf("%s holds one fixed value (%g) for the whole deployment - %s", ch, v[1],
+                if (isTRUE(ctx$paddle_wheel)) "a dead or jammed paddle wheel, not a measurement"
+                else "no paddle wheel is recorded for this tag, so this is a constant placeholder")
+      } else {
+        sprintf("%s is constant over the whole deployment (dead/stuck sensor)", ch)
+      }
+      rows <- rbind(rows, .integrityIssue(ch, "dead", "error", 0, msg))
     }
   }
   rows

@@ -220,6 +220,61 @@ test_that("mag.plausibility flags an unstable |B| (well-covered), passes a stabl
   expect_equal(nrow(.iss(poor, "mag.plausibility")), 0L)
 })
 
+test_that("dead covers the paddle channels, and names the cause from the documented flag", {
+  # a constant paddle column is a verdict on the INPUT - it reads the same whatever processTagData was
+  # asked to compute - so it belongs to the QC stage. `dead` already had the exact predicate; it simply
+  # was not looking at these columns.
+  mk_paddle <- function(id, const, paddle_wheel) {
+    d <- .mkint(id)
+    d[, paddle_speed := const]
+    m <- nautilus:::.newNautilusMeta(); m$id <- id; m$tag$paddle_wheel <- paddle_wheel
+    nautilus:::new_nautilus_tag(d, m)
+  }
+  dead_doc <- .iss(mk_paddle("A", 0, TRUE), "dead")
+  expect_true("paddle_speed" %in% dead_doc$channel)
+  expect_equal(dead_doc$severity[dead_doc$channel == "paddle_speed"], "error")
+  expect_match(dead_doc$message[dead_doc$channel == "paddle_speed"], "dead or jammed paddle wheel")
+
+  # same grade when no paddle is documented - the consequence for the data is identical; only the
+  # cause named in the message differs
+  dead_undoc <- .iss(mk_paddle("B", 0, FALSE), "dead")
+  expect_equal(dead_undoc$severity[dead_undoc$channel == "paddle_speed"], "error")
+  expect_match(dead_undoc$message[dead_undoc$channel == "paddle_speed"], "no paddle wheel is recorded")
+
+  # a varying paddle passes
+  live <- .mkint("C"); live[, paddle_speed := seq_len(.N) / .N]
+  m <- nautilus:::.newNautilusMeta(); m$id <- "C"; m$tag$paddle_wheel <- TRUE
+  expect_equal(nrow(.iss(nautilus:::new_nautilus_tag(live, m), "dead")), 0L)
+})
+
+test_that("a legitimately sparse paddle channel is not flagged by dropout or saturation", {
+  # CATS logs Velocity at 1 Hz onto a 20 Hz grid and regularizeTimeSeries leaves sub-rate channels
+  # uninterpolated, so a HEALTHY paddle is ~95% NA. This is why `dead` got its own candidate set rather
+  # than the paddle being added to ctx$fams, which dropout and saturation also build from.
+  d <- .mkint("A", n = 2000)
+  d[, paddle_speed := NA_real_]
+  idx <- seq(1L, nrow(d), by = 20L)
+  data.table::set(d, i = idx, j = "paddle_speed", value = seq_along(idx) / length(idx))
+  m <- nautilus:::.newNautilusMeta(); m$id <- "A"; m$tag$paddle_wheel <- TRUE
+  tg <- nautilus:::new_nautilus_tag(d, m)
+
+  expect_equal(nrow(.iss(tg, "dead")), 0L)          # sparse but varying -> not dead
+  drop <- .iss(tg, "dropout")
+  expect_false("paddle_speed" %in% drop$channel)     # 95% NA, and correctly ignored
+  sat <- .iss(tg, "saturation")
+  expect_false("paddle_speed" %in% sat$channel)
+})
+
+test_that("apply drops a dead paddle channel, so processTagData never sees it", {
+  d <- .mkint("A"); d[, paddle_speed := 0]
+  m <- nautilus:::.newNautilusMeta(); m$id <- "A"; m$tag$paddle_wheel <- TRUE
+  tg <- nautilus:::new_nautilus_tag(d, m)
+  out <- .run(list(x = tg), checks = "dead", apply = TRUE, return.data = TRUE)
+  cd <- out$curated_data[[1]]
+  expect_false("paddle_speed" %in% names(cd))
+  expect_true("paddle_speed" %in% tagMetadata(cd)$sensors$excluded)
+})
+
 # ---- mag.break -------------------------------------------------------------------------------
 # A long, coarse fixture: the check summarises 10-minute windows and needs >= 30 of them, so 8 h at
 # 1 Hz. `field(i)` sets the magnitude of the field vector at sample i, which is what the check reads.
