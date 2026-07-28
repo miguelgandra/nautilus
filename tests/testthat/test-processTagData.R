@@ -315,6 +315,84 @@ test_that("PIN_10 regression: a 45.04-degree mount is now corrected, not flagged
   expect_equal(rec$mount_roll_max, 60)
 })
 
+# ---- verbose structure: every deployment gets its own block, skipped or not ---------------------
+# cli writes through the condition system, so the console text has to be captured from the MESSAGE
+# stream - and the output IS the assertion here, so nothing may be suppressed around it.
+
+.console <- function(expr) {
+  o <- character(0)
+  invisible(capture.output(o <- capture.output(suppressWarnings(expr), type = "message")))
+  paste(o, collapse = "\n")
+}
+
+.mk_tagged <- function(id, excluded = character(0), mutate = identity) {
+  d <- mutate(.mk(id = id, secs = 120, rate = 10))
+  m <- nautilus:::.newNautilusMeta(); m$id <- id; m$sensors$excluded <- excluded
+  nautilus:::new_nautilus_tag(d, m)
+}
+
+test_that("a deployment skipped for a curated-away channel gets its own delimited block", {
+  # the skip line used to print BEFORE the header, so it floated between the neighbouring blocks and
+  # which tag it referred to had to be inferred from its position on screen
+  ok  <- .mk_tagged("OK1")
+  bad <- .mk_tagged("NOACC", excluded = c("ax", "ay", "az"),
+                    mutate = function(d) { d[, c("ax", "ay", "az") := NULL]; d })
+
+  txt <- .console(processTagData(list(OK1 = ok, NOACC = bad), downsample.to = NULL, verbose = 1))
+  expect_match(txt, "NOACC \\(2/2\\)")                     # its own header, numbered like the rest
+  expect_match(txt, "excluded by an earlier QC step")      # the reason, inside that block
+  # the reason must come AFTER its header, not before it
+  expect_lt(regexpr("NOACC \\(2/2\\)", txt), regexpr("excluded by an earlier QC step", txt))
+})
+
+test_that("an empty slot is reported instead of vanishing silently", {
+  # this path used to `next` with no block, no reason and no entry in skipped_ids, so the deployment
+  # disappeared from both the console and the end-of-run summary
+  ok <- .mk_tagged("OK1")
+  txt <- .console(processTagData(list(OK1 = ok, GONE = ok[0]), downsample.to = NULL, verbose = 1))
+  expect_match(txt, "GONE \\(2/2\\)")
+  expect_match(txt, "no data")
+
+  # collect EVERY warning: this call also emits the axis-mapping ordering guard, and tryCatch(warning=)
+  # would return on that one and never see the skip
+  w <- character(0)
+  invisible(capture.output(suppressMessages(withCallingHandlers(
+    processTagData(list(OK1 = ok, GONE = ok[0]), downsample.to = NULL, verbose = FALSE),
+    warning = function(cnd) { w <<- c(w, conditionMessage(cnd)); invokeRestart("muffleWarning") }))))
+  expect_true(any(grepl("skipped for missing or unusable input", w)))
+  expect_true(any(grepl("GONE", w)))
+})
+
+test_that("the sub-1 Hz guard cannot fire through the current rate estimator (documented)", {
+  # The guard was an .abort() that would have killed the whole batch; it is now a per-deployment skip
+  # for consistency. But it is unreachable as written, and that is worth locking down rather than
+  # leaving as a test that cannot be built: the estimator is
+  #     nrow / (number of distinct whole seconds present)
+  # and every row falls in exactly one second, so n_distinct <= nrow and the ratio is ALWAYS >= 1.
+  rate <- function(n, spacing) {
+    dt <- as.POSIXct("2020-01-01", tz = "UTC") + (seq_len(n) - 1L) * spacing
+    n / length(unique(lubridate::floor_date(dt, "sec")))
+  }
+  for (sp in c(0.05, 1, 4, 60, 3600)) expect_gte(rate(30L, sp), 1)
+
+  # THE REAL CONSEQUENCE, and it is not a formatting issue: a genuinely slow record does not report a
+  # fractional rate, it reports 1 Hz. A one-sample-per-minute series is treated as 1 Hz, so every
+  # seconds -> samples window is 60x too short in real time. Locked here so the assumption is visible;
+  # fixing it means changing the estimator (a span-based rate), which is a separate decision.
+  expect_equal(round(rate(30L, 60)), 1)              # 1/60 Hz in reality
+  expect_equal(round(rate(30L, 3600)), 1)            # 1/3600 Hz in reality
+})
+
+test_that(".deploymentLabel falls back from ID to source name to slot index", {
+  f <- nautilus:::.deploymentLabel
+  d <- data.table::data.table(ID = "PIN_99", x = 1)
+  expect_equal(f(d, "/tmp/whatever.rds", 3L), "PIN_99")          # the ID wins
+  expect_equal(f(d[0], "/tmp/PIN_07.rds", 3L), "PIN_07")         # empty -> the file name
+  expect_equal(f(NULL, "/tmp/PIN_07.rds", 3L), "PIN_07")
+  expect_equal(f(NULL, NA_character_, 3L), "slot 3")             # nothing at all -> the index
+  expect_equal(f(data.table::data.table(x = 1), NULL, 5L), "slot 5")   # no ID column
+})
+
 test_that("a single data.frame input is accepted (split by ID)", {
   out <- .run(as.data.frame(.mk()), orientation.algorithm = "tilt_compass", downsample.to = NULL)
   expect_named(out, "A01")

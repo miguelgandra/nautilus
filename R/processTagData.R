@@ -439,9 +439,12 @@ processTagData <- function(data,
                                                       error = function(e) NULL))
       else if (!inherits(individual_data$datetime, "POSIXct")) "the datetime column is not POSIXct"
       if (!is.null(skip_reason)) {
-        .log_skip(lvl, tools::file_path_sans_ext(basename(file_path)), "  ", skip_reason,
-                  " ", cli::symbol$bullet, " skipped")
-        skipped_ids <- c(skipped_ids, tools::file_path_sans_ext(basename(file_path)))
+        lab <- .deploymentLabel(individual_data, file_path, i)
+        # a skipped deployment gets its own delimited block, like every other one: the reason must be
+        # attributable to a tag at a glance, not inferred from its position between neighbouring blocks
+        .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
+        .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
+        skipped_ids <- c(skipped_ids, lab)
         .log_gap(lvl)
         next
       }
@@ -456,10 +459,39 @@ processTagData <- function(data,
 
       # access the individual dataset
       individual_data <- data[[i]]
+      file_path <- NA_character_
+
+      # the in-memory branch is gated exactly like the file branch above: a deployment whose channels
+      # were curated away is skipped, not fatal, and the two entry points must not disagree about what
+      # counts as usable input
+      if (!is.null(individual_data) && NROW(individual_data)) {
+        missing_cols <- setdiff(required_cols, names(individual_data))
+        skip_reason <- if (length(missing_cols) > 0)
+          .explainMissingColumns(missing_cols, tryCatch(attr(individual_data, "nautilus", exact = TRUE),
+                                                        error = function(e) NULL))
+        else if (!inherits(individual_data$datetime, "POSIXct")) "the datetime column is not POSIXct"
+        if (!is.null(skip_reason)) {
+          lab <- .deploymentLabel(individual_data, names(data)[i], i)
+          .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
+          .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
+          skipped_ids <- c(skipped_ids, lab)
+          .log_gap(lvl)
+          next
+        }
+      }
     }
 
-    # skip NULL or empty elements before any logging or ID access
-    if (is.null(individual_data) || length(individual_data) == 0) next
+    # An empty or NULL slot used to `next` SILENTLY - no block, no reason, and no entry in
+    # `skipped_ids`, so the deployment vanished from both the console and the end-of-run summary.
+    # It gets the same block and the same accounting as any other skip.
+    if (is.null(individual_data) || length(individual_data) == 0 || NROW(individual_data) == 0) {
+      lab <- .deploymentLabel(individual_data, if (is_filepaths) file_path else names(data)[i], i)
+      .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
+      .log_skip(lvl, "no data ", cli::symbol$bullet, " skipped")
+      skipped_ids <- c(skipped_ids, lab)
+      .log_gap(lvl)
+      next
+    }
 
     # get ID
     id <- unique(individual_data$ID)[1]
@@ -492,9 +524,17 @@ processTagData <- function(data,
     # calculate sampling frequency (rounded to whole Hz; the windowing below assumes >= 1 Hz)
     sampling_freq <- nrow(individual_data) / length(unique(lubridate::floor_date(individual_data$datetime, "sec")))
     sampling_freq <- round(sampling_freq)
+    # A sampling rate below 1 Hz is a property of ONE deployment, so it sets that deployment aside
+    # instead of aborting: this used to kill the whole batch, discarding every tag already processed -
+    # the same defect class fixed across the pipeline in 6295c62 / f20c71c. `ids[i]` is reset to NA so
+    # the slot is dropped by the `keep <- !is.na(ids)` filter and no NULL hole reaches the caller.
     if (!is.finite(sampling_freq) || sampling_freq < 1) {
-      .abort(c("Estimated sampling frequency for {.val {id}} is below 1 Hz ({sampling_freq} Hz).",
-               "i" = "{.fn processTagData} requires at least 1 Hz; check the timestamps or regularize the series first."))
+      .log_skip(lvl, sprintf("sampling rate below 1 Hz (%s Hz) %s skipped",
+                             format(sampling_freq), cli::symbol$bullet))
+      skipped_ids <- c(skipped_ids, as.character(id))
+      ids[i] <- NA_character_
+      .log_gap(lvl)
+      next
     }
     # seconds -> whole-sample window, floored at 1 (guards fractional static / smoothing windows)
     win <- function(seconds) max(1L, as.integer(round(seconds * sampling_freq)))

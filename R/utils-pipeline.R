@@ -206,6 +206,32 @@
 #' @return A single human-readable clause naming the missing channels and, where known, their origin.
 #' @keywords internal
 #' @noRd
+#' A display label for a deployment whose data may be unusable.
+#'
+#' Every deployment gets its own delimited console block, including the ones that are skipped - so a
+#' label has to be resolvable BEFORE the data is known to be valid, and the usual
+#' `unique(x$ID)[1]` is not available when the object is empty, NULL, or missing its ID column.
+#' Falls back through: the ID column -> the file name (or list name) -> the slot index.
+#'
+#' @param x The deployment data (may be NULL or empty).
+#' @param source A file path or list name for this slot (may be NA/NULL).
+#' @param i The slot index, used as the last resort so a label is never empty.
+#' @return A single character label.
+#' @keywords internal
+#' @noRd
+.deploymentLabel <- function(x, source = NULL, i = NA_integer_) {
+  id <- tryCatch({
+    v <- if (!is.null(x) && NROW(x) && "ID" %in% names(x)) unique(x$ID) else NULL
+    v <- v[!is.na(v)]
+    if (length(v)) as.character(v[1]) else NULL
+  }, error = function(e) NULL)
+  if (!is.null(id) && nzchar(id)) return(id)
+  if (!is.null(source) && length(source) == 1L && !is.na(source) && nzchar(source))
+    return(tools::file_path_sans_ext(basename(source)))
+  sprintf("slot %s", i)
+}
+
+
 .explainMissingColumns <- function(missing, meta = NULL) {
   excluded <- meta$sensors$excluded %||% character(0)
   by_qc <- intersect(missing, excluded)
