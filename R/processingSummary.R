@@ -22,14 +22,18 @@
 #'
 #' @return A `nautilus_processing_summary` (a `data.frame` subclass), one row per deployment, with typed
 #'   columns: `id`, `tag_model`, `algorithm` (orientation estimator), `median_pitch` / `median_roll`
-#'   (deg), `pitch_offset` / `pitch_r2` / `roll_offset` (the applied mounting-offset corrections),
+#'   (deg), `pitch_offset` / `pitch_r2` / `roll_offset` (the applied mounting-offset corrections;
+#'   `roll_offset` is NA when the estimate exceeded `mount.roll.max` and was therefore not subtracted -
+#'   the estimate itself is kept in the processing record as `roll_offset_estimate_deg`),
 #'   `coreg_corr` (accelerometer<->gyroscope co-registration correlation from \code{\link{applyAxisMapping}};
 #'   NA without a gyroscope), `hard_iron_uT`, `heading_conf` (stored magnetometer heading confidence
 #'   `"high"`/`"medium"`/`"low"` from \code{\link{calibrateMagnetometer}}; NA if none stored), `mag_radcv`
 #'   (calibrated-radius CV) and `mag_dip_resid` (IGRF dip residual, deg), `declination` (deg),
 #'   `drift_status`, `drift_offset_m` (max |offset| applied), `drift_residual_m`, `drift_anchors`,
 #'   `hz_in` / `hz_out` (sampling rates), `n_in` / `n_out` (row counts), and `flag` (comma-separated
-#'   orientation anomalies: `"pitch"`, `"roll"`, or `""`). A tag not processed by
+#'   orientation anomalies: `"pitch"` (unusual median pitch), `"mount"` (unusual estimated mounting roll,
+#'   whether or not it was corrected), `"roll"` (roll left over after the correction), or `""`).
+#'   A tag not processed by
 #'   \code{\link{processTagData}} yields a row of `NA`s.
 #' @seealso \code{\link{processTagData}}, \code{\link{summarizeTagData}}, \code{\link{processingHistory}}
 #' @examples
@@ -92,6 +96,9 @@ processingSummary <- function(data, id.col = "ID") {
   }
   off   <- if (!is.null(dd)) dd$outcome$offset_range_m else NULL
   flags <- c(if (isTRUE(pr$pitch_anomaly_detected)) "pitch",
+             # an unusual MOUNT (reported on the estimate, corrected or not) is a different finding
+             # from a roll RESIDUAL the correction failed to remove - keep them distinguishable
+             if (isTRUE(pr$roll_mount_unusual))     "mount",
              if (isTRUE(pr$roll_anomaly_detected))  "roll")
   data.frame(
     id               = chr(meta$id %||% fallback_id),

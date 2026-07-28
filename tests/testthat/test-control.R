@@ -50,10 +50,17 @@ test_that("orientationControl carries the offset corrections, fit gate + warning
   expect_equal(o$pitch.offset.min.r2, 0.1)                    # relocated from calibrationControl()
   expect_equal(o$madgwick.beta, 0.02)                         # relocated from processTagData()
   expect_equal(o$warning.threshold, 45)                       # relocated from processTagData()
+  # the roll apply-gate is a SEPARATE knob from the reporting threshold, and deliberately wider:
+  # a steeply rolled clamp should be corrected AND reported, not left uncorrected for being unusual
+  expect_equal(o$mount.roll.max, 60)
+  expect_gt(o$mount.roll.max, o$warning.threshold)
   expect_false(orientationControl(correct.roll = FALSE)$correct.roll)
+  expect_equal(orientationControl(mount.roll.max = 30)$mount.roll.max, 30)
   expect_error(orientationControl(correct.pitch = NA), "orientation\\$correct.pitch")
   expect_error(orientationControl(pitch.offset.min.r2 = 2), "pitch.offset.min.r2")   # must be in [0, 1]
   expect_error(orientationControl(madgwick.beta = -1), "madgwick.beta")
+  expect_error(orientationControl(mount.roll.max = -1), "mount.roll.max")
+  expect_error(orientationControl(mount.roll.max = 200), "mount.roll.max")           # must be in [0, 180]
 })
 
 test_that(".as_control accepts an object, a named list, or NULL", {

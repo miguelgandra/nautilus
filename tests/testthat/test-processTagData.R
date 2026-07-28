@@ -228,6 +228,93 @@ test_that("correct.roll.offset removes a constant mounting roll bias", {
   expect_true(is.na(.proc_rec(off)$roll_offset_deg))
 })
 
+
+# ---- mounting-roll gate vs reporting threshold ------------------------------------------------
+# These two used to share one 45-degree constant, so an offset just past it lost its correction AND
+# was reported as an anomaly - with the anomaly's number being the uncorrected mount, not a residual.
+# `.run` suppresses warnings, so a runner that COLLECTS them is required: the warning IS the assertion.
+
+.mk_rolled <- function(deg, secs = 120, rate = 10) {
+  d <- .mk(secs = secs, rate = rate)
+  phi <- deg * pi / 180
+  set.seed(7)
+  d[, ay := sin(phi) + rnorm(.N, 0, 0.02)]
+  d[, az := cos(phi) + rnorm(.N, 0, 0.02)]
+  d
+}
+
+.run_warn <- function(d, ...) {
+  w <- character(0); res <- NULL
+  invisible(capture.output(suppressMessages(withCallingHandlers(
+    res <- processTagData(d, verbose = FALSE, ...),
+    warning = function(cond) { w <<- c(w, conditionMessage(cond)); invokeRestart("muffleWarning") }))))
+  list(res = res, warnings = w)
+}
+
+test_that("a mount between warning.threshold and mount.roll.max is corrected AND reported", {
+  # 50 deg: over the 45-deg reporting threshold, under the 60-deg apply gate
+  out <- .run_warn(list(A01 = .mk_rolled(50)), orientation.algorithm = "tilt_compass",
+                   downsample.to = NULL)
+  rec <- .proc_rec(out$res$A01)
+
+  expect_true(rec$roll_mount_unusual)                       # the mount is reported...
+  expect_equal(rec$roll_offset_status, "applied")           # ...and still corrected
+  expect_equal(rec$roll_offset_deg, 50, tolerance = 5)      # the applied offset is recorded
+  expect_lt(abs(median(out$res$A01$roll, na.rm = TRUE)), 5) # so roll is centred near zero
+  expect_false(rec$roll_anomaly_detected)                   # no residual anomaly
+
+  expect_true(any(grepl("Unusual mounting roll", out$warnings)))
+  expect_true(any(grepl("corrected", out$warnings)))
+  # the OLD behaviour would have refused the correction and warned about a -50 deg "roll anomaly"
+  expect_false(any(grepl("Roll residual after correction", out$warnings)))
+})
+
+test_that("a mount beyond mount.roll.max is refused, reported once, and keeps its estimate", {
+  out <- .run_warn(list(A01 = .mk_rolled(70)), orientation.algorithm = "tilt_compass",
+                   downsample.to = NULL)
+  rec <- .proc_rec(out$res$A01)
+
+  expect_equal(rec$roll_offset_status, "rejected_over_max")
+  expect_true(is.na(rec$roll_offset_deg))                            # nothing was subtracted...
+  expect_equal(rec$roll_offset_estimate_deg, 70, tolerance = 5)      # ...but the estimate survives
+  expect_true(rec$roll_mount_unusual)
+  expect_gt(abs(median(out$res$A01$roll, na.rm = TRUE)), 60)         # roll keeps the mount
+
+  expect_true(any(grepl("Unusual mounting roll", out$warnings)))
+  expect_true(any(grepl("NOT corrected", out$warnings)))
+  # exactly ONE roll warning: the residual here IS the mount, already named above
+  expect_false(any(grepl("Roll residual after correction", out$warnings)))
+  expect_equal(sum(grepl("mounting roll|Roll residual", out$warnings)), 1L)
+})
+
+test_that("an ordinary mount is corrected silently, and mount.roll.max is honoured", {
+  out <- .run_warn(list(A01 = .mk_rolled(20)), orientation.algorithm = "tilt_compass",
+                   downsample.to = NULL)
+  rec <- .proc_rec(out$res$A01)
+  expect_equal(rec$roll_offset_status, "applied")
+  expect_false(rec$roll_mount_unusual)
+  expect_false(any(grepl("mounting roll|Roll residual", out$warnings)))
+
+  # tightening the gate below the mount flips the same data to refused
+  tight <- .run_warn(list(A01 = .mk_rolled(20)), orientation.algorithm = "tilt_compass",
+                     downsample.to = NULL, orientation = orientationControl(mount.roll.max = 10))
+  expect_equal(.proc_rec(tight$res$A01)$roll_offset_status, "rejected_over_max")
+  expect_true(is.na(.proc_rec(tight$res$A01)$roll_offset_deg))
+})
+
+test_that("PIN_10 regression: a 45.04-degree mount is now corrected, not flagged as an anomaly", {
+  # the real case this change exists for - PIN_08 (-43.40) was corrected and PIN_10 (-45.04) was not,
+  # 1.64 degrees apart, because the apply gate and the alarm shared the same 45-degree constant
+  out <- .run_warn(list(A01 = .mk_rolled(-45.04)), orientation.algorithm = "tilt_compass",
+                   downsample.to = NULL)
+  rec <- .proc_rec(out$res$A01)
+  expect_equal(rec$roll_offset_status, "applied")
+  expect_lt(abs(median(out$res$A01$roll, na.rm = TRUE)), 5)
+  expect_false(rec$roll_anomaly_detected)
+  expect_true(rec$roll_mount_unusual)                       # still surfaced, just not as an anomaly
+  expect_equal(rec$mount_roll_max, 60)
+})
+
 test_that("a single data.frame input is accepted (split by ID)", {
   out <- .run(as.data.frame(.mk()), orientation.algorithm = "tilt_compass", downsample.to = NULL)
   expect_named(out, "A01")

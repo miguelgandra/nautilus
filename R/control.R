@@ -206,9 +206,20 @@ magCalibrationControl <- function(method = c("ellipsoid", "diagonal"),
 #' @param pitch.offset.min.r2 Minimum R^2 of the pitch-vs-vertical-velocity fit required to apply the
 #'   `correct.pitch` mounting-offset correction. Below it the "offset" is really just the mean pitch, so
 #'   subtracting it would strip genuine posture signal and the correction is skipped. Default 0.1.
-#' @param warning.threshold Numeric. Threshold (degrees) above which a median |pitch| or |roll| raises an
-#'   orientation-anomaly warning. It also caps the mounting-offset corrections: an implausibly large
-#'   estimated offset (magnitude at or above this) is reported but not applied. Default 45.
+#' @param mount.roll.max Numeric. Largest mounting ROLL offset (degrees) that `correct.roll` will still
+#'   subtract. This is a plausibility gate, not an alarm: beyond it the estimate is more likely to mean
+#'   the body frame is wrong than that the tag was clamped very far round, so the offset is recorded but
+#'   left uncorrected. Default 60. It is deliberately WIDER than `warning.threshold` - a steeply rolled
+#'   clamp is a real mounting geometry (a left- vs right-side attachment is mirror-imaged), and such a
+#'   deployment should be corrected AND flagged, not left uncorrected because it is unusual. Set it lower
+#'   to be stricter about what gets absorbed into the mount. Roll only: a large pitch offset means the tag
+#'   points along the body rather than across it, which is not a normal mounting geometry, so the pitch
+#'   correction stays capped by `warning.threshold`.
+#' @param warning.threshold Numeric. Threshold (degrees) above which an orientation warning is raised, for
+#'   three independent checks: an unusual median |pitch|, an unusual estimated mounting |roll| (raised
+#'   whether or not the correction was applied), and a leftover median |roll| after the correction. It also
+#'   caps the `correct.pitch` mounting-offset correction. Default 45. Lower it (e.g. 35) to hear about
+#'   moderately rolled mounts as well; it does not change what gets corrected, only what is reported.
 #' @param heading.denoise How to suppress paddle-wheel magnetometer contamination before computing heading.
 #'   A spinning paddle magnet adds a large, high-frequency oscillation to the field; because it is additive
 #'   in the field-vector domain and averages to zero over a rotation, a centred (zero-phase) running mean
@@ -227,7 +238,7 @@ magCalibrationControl <- function(method = c("ellipsoid", "diagonal"),
 #' orientationControl(heading.denoise = "manual", heading.denoise.window = 2)
 #' @export
 orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, correct.roll = TRUE,
-                               pitch.offset.min.r2 = 0.1, warning.threshold = 45,
+                               pitch.offset.min.r2 = 0.1, mount.roll.max = 60, warning.threshold = 45,
                                heading.denoise = c("auto", "manual", "off"),
                                heading.denoise.window = 3) {
   heading.denoise <- match.arg(heading.denoise)
@@ -235,10 +246,12 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
   .assert_flag(correct.pitch, "orientation$correct.pitch")
   .assert_flag(correct.roll, "orientation$correct.roll")
   .assert_number(pitch.offset.min.r2, "orientation$pitch.offset.min.r2", min = 0, max = 1)
+  .assert_number(mount.roll.max, "orientation$mount.roll.max", min = 0, max = 180)
   .assert_number(warning.threshold, "orientation$warning.threshold", min = 0)
   .assert_number(heading.denoise.window, "orientation$heading.denoise.window", min = 0)
   structure(list(madgwick.beta = madgwick.beta, correct.pitch = correct.pitch, correct.roll = correct.roll,
-                 pitch.offset.min.r2 = pitch.offset.min.r2, warning.threshold = warning.threshold,
+                 pitch.offset.min.r2 = pitch.offset.min.r2, mount.roll.max = mount.roll.max,
+                 warning.threshold = warning.threshold,
                  heading.denoise = heading.denoise, heading.denoise.window = heading.denoise.window),
             class = "nautilus_orientation")
 }

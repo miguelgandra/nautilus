@@ -47,9 +47,12 @@ of Madgwick's gradient-descent AHRS filter (requires gyroscope data).
 \item{orientation}{A control object from \code{\link{orientationControl}} grouping the specialised
 orientation-estimation knobs: the Madgwick filter gain \code{madgwick.beta} (used only when
 \code{orientation.algorithm = "madgwick"}), the mounting-offset corrections \code{correct.pitch} /
-\code{correct.roll}, the pitch-offset fit gate \code{pitch.offset.min.r2}, and the anomaly \code{warning.threshold}
-(degrees, above which a median |pitch|/|roll| is flagged and an implausibly large offset is not
-applied). Defaults to all on. Pass a named list to override some, e.g.
+\code{correct.roll}, the pitch-offset fit gate \code{pitch.offset.min.r2}, the roll-offset plausibility gate
+\code{mount.roll.max} (degrees; the largest mounting roll still corrected), and the reporting
+\code{warning.threshold} (degrees, above which an unusual median pitch, an unusual estimated mounting
+roll, or a roll left over after correction is flagged). The two are deliberately separate: a steeply
+rolled clamp is corrected AND reported, rather than left uncorrected because it is unusual.
+Defaults to all on. Pass a named list to override some, e.g.
 \code{orientation = orientationControl(correct.roll = FALSE)}. The pitch-offset correction is adapted from
 Kawatsu et al. (2010); the roll offset is the median roll over the most level half of the record
 (mirror-imaged for left/right attachment sites, captured empirically).}

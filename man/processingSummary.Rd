@@ -16,14 +16,18 @@ split by deployment. Default \code{"ID"}.}
 \value{
 A \code{nautilus_processing_summary} (a \code{data.frame} subclass), one row per deployment, with typed
 columns: \code{id}, \code{tag_model}, \code{algorithm} (orientation estimator), \code{median_pitch} / \code{median_roll}
-(deg), \code{pitch_offset} / \code{pitch_r2} / \code{roll_offset} (the applied mounting-offset corrections),
+(deg), \code{pitch_offset} / \code{pitch_r2} / \code{roll_offset} (the applied mounting-offset corrections;
+\code{roll_offset} is NA when the estimate exceeded \code{mount.roll.max} and was therefore not subtracted -
+the estimate itself is kept in the processing record as \code{roll_offset_estimate_deg}),
 \code{coreg_corr} (accelerometer<->gyroscope co-registration correlation from \code{\link{applyAxisMapping}};
 NA without a gyroscope), \code{hard_iron_uT}, \code{heading_conf} (stored magnetometer heading confidence
 \code{"high"}/\code{"medium"}/\code{"low"} from \code{\link{calibrateMagnetometer}}; NA if none stored), \code{mag_radcv}
 (calibrated-radius CV) and \code{mag_dip_resid} (IGRF dip residual, deg), \code{declination} (deg),
 \code{drift_status}, \code{drift_offset_m} (max |offset| applied), \code{drift_residual_m}, \code{drift_anchors},
 \code{hz_in} / \code{hz_out} (sampling rates), \code{n_in} / \code{n_out} (row counts), and \code{flag} (comma-separated
-orientation anomalies: \code{"pitch"}, \code{"roll"}, or \code{""}). A tag not processed by
+orientation anomalies: \code{"pitch"} (unusual median pitch), \code{"mount"} (unusual estimated mounting roll,
+whether or not it was corrected), \code{"roll"} (roll left over after the correction), or \code{""}).
+A tag not processed by
 \code{\link{processTagData}} yields a row of \code{NA}s.
 }
 \description{

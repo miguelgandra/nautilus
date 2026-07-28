@@ -9,6 +9,7 @@ orientationControl(
   correct.pitch = TRUE,
   correct.roll = TRUE,
   pitch.offset.min.r2 = 0.1,
+  mount.roll.max = 60,
   warning.threshold = 45,
   heading.denoise = c("auto", "manual", "off"),
   heading.denoise.window = 3
@@ -26,9 +27,21 @@ trust trade-off); used only when \code{orientation.algorithm = "madgwick"}. Defa
 \code{correct.pitch} mounting-offset correction. Below it the "offset" is really just the mean pitch, so
 subtracting it would strip genuine posture signal and the correction is skipped. Default 0.1.}
 
-\item{warning.threshold}{Numeric. Threshold (degrees) above which a median |pitch| or |roll| raises an
-orientation-anomaly warning. It also caps the mounting-offset corrections: an implausibly large
-estimated offset (magnitude at or above this) is reported but not applied. Default 45.}
+\item{mount.roll.max}{Numeric. Largest mounting ROLL offset (degrees) that \code{correct.roll} will still
+subtract. This is a plausibility gate, not an alarm: beyond it the estimate is more likely to mean
+the body frame is wrong than that the tag was clamped very far round, so the offset is recorded but
+left uncorrected. Default 60. It is deliberately WIDER than \code{warning.threshold} - a steeply rolled
+clamp is a real mounting geometry (a left- vs right-side attachment is mirror-imaged), and such a
+deployment should be corrected AND flagged, not left uncorrected because it is unusual. Set it lower
+to be stricter about what gets absorbed into the mount. Roll only: a large pitch offset means the tag
+points along the body rather than across it, which is not a normal mounting geometry, so the pitch
+correction stays capped by \code{warning.threshold}.}
+
+\item{warning.threshold}{Numeric. Threshold (degrees) above which an orientation warning is raised, for
+three independent checks: an unusual median |pitch|, an unusual estimated mounting |roll| (raised
+whether or not the correction was applied), and a leftover median |roll| after the correction. It also
+caps the \code{correct.pitch} mounting-offset correction. Default 45. Lower it (e.g. 35) to hear about
+moderately rolled mounts as well; it does not change what gets corrected, only what is reported.}
 
 \item{heading.denoise}{How to suppress paddle-wheel magnetometer contamination before computing heading.
 A spinning paddle magnet adds a large, high-frequency oscillation to the field; because it is additive

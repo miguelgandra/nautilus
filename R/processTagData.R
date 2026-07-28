@@ -51,9 +51,12 @@
 #' @param orientation A control object from \code{\link{orientationControl}} grouping the specialised
 #'   orientation-estimation knobs: the Madgwick filter gain `madgwick.beta` (used only when
 #'   `orientation.algorithm = "madgwick"`), the mounting-offset corrections `correct.pitch` /
-#'   `correct.roll`, the pitch-offset fit gate `pitch.offset.min.r2`, and the anomaly `warning.threshold`
-#'   (degrees, above which a median |pitch|/|roll| is flagged and an implausibly large offset is not
-#'   applied). Defaults to all on. Pass a named list to override some, e.g.
+#'   `correct.roll`, the pitch-offset fit gate `pitch.offset.min.r2`, the roll-offset plausibility gate
+#'   `mount.roll.max` (degrees; the largest mounting roll still corrected), and the reporting
+#'   `warning.threshold` (degrees, above which an unusual median pitch, an unusual estimated mounting
+#'   roll, or a roll left over after correction is flagged). The two are deliberately separate: a steeply
+#'   rolled clamp is corrected AND reported, rather than left uncorrected because it is unusual.
+#'   Defaults to all on. Pass a named list to override some, e.g.
 #'   `orientation = orientationControl(correct.roll = FALSE)`. The pitch-offset correction is adapted from
 #'   Kawatsu et al. (2010); the roll offset is the median roll over the most level half of the record
 #'   (mirror-imaged for left/right attachment sites, captured empirically).
@@ -267,6 +270,7 @@ processTagData <- function(data,
   correct.pitch.offset          <- orientation$correct.pitch
   correct.roll.offset           <- orientation$correct.roll
   pitch.offset.min.r2           <- orientation$pitch.offset.min.r2
+  mount.roll.max                <- orientation$mount.roll.max %||% 60
   orientation.warning.threshold <- orientation$warning.threshold
   heading.denoise               <- orientation$heading.denoise %||% "auto"
   heading.denoise.window        <- orientation$heading.denoise.window %||% 3
@@ -1113,6 +1117,17 @@ processTagData <- function(data,
     # tags this bias depends on the attachment site (a left vs right pectoral mount is mirror-imaged),
     # which the empirical median captures automatically.
 
+    # Two SEPARATE questions, deliberately not sharing a threshold (they used to, and the shared
+    # constant made a mount just past it lose its correction AND get reported as an anomaly - the
+    # reported number then being the uncorrected mount rather than a residual):
+    #   1. is this offset plausible enough to SUBTRACT?  -> mount.roll.max (wide; a steeply rolled
+    #      clamp is a real geometry, so correct it)
+    #   2. is this mount UNUSUAL enough to mention?      -> orientation.warning.threshold (narrow;
+    #      raised on the ESTIMATE, so it fires whether or not the correction was applied)
+    roll_offset_estimate <- NA_real_     # what was measured (NA = not estimable / not requested)
+    roll_applied         <- FALSE        # was it actually subtracted
+    roll_offset_status   <- if (correct.roll.offset) "not_estimable" else "not_requested"
+
     if (correct.roll.offset) {
 
       if (all(is.na(individual_data$roll))) {
@@ -1126,22 +1141,27 @@ processTagData <- function(data,
 
         # the more level half of the record (smallest |vertical velocity|)
         horiz_cut <- stats::median(abs(individual_data$vv_smooth), na.rm = TRUE)
-        roll_offset_deg <- stats::median(individual_data[abs(vv_smooth) <= horiz_cut & !is.na(roll), roll], na.rm = TRUE)
+        roll_offset_estimate <- stats::median(individual_data[abs(vv_smooth) <= horiz_cut & !is.na(roll), roll], na.rm = TRUE)
         # diagnostic: the PRE-correction level-swimming roll + the computed median (kept even if the gate rejects)
         roll_level_samp <- if (collect_diag) individual_data[abs(vv_smooth) <= horiz_cut & !is.na(roll), roll] else NULL
-        roll_median_all <- roll_offset_deg
 
-        # only apply if finite and below the warning threshold
-        roll_applied <- is.finite(roll_offset_deg) && abs(roll_offset_deg) < orientation.warning.threshold
+        roll_applied <- is.finite(roll_offset_estimate) && abs(roll_offset_estimate) < mount.roll.max
         if (roll_applied) {
           # subtract the offset and re-wrap roll into [-180, 180]
-          individual_data[, roll := ((roll - roll_offset_deg + 180) %% 360) - 180]
-          off_roll <- sprintf("roll %+.2f\u00b0", .noNegZero(roll_offset_deg, 2))
+          individual_data[, roll := ((roll - roll_offset_estimate + 180) %% 360) - 180]
+          roll_offset_deg    <- roll_offset_estimate
+          roll_offset_status <- "applied"
+          off_roll <- sprintf("roll %+.2f\u00b0", .noNegZero(roll_offset_estimate, 2))
         } else {
-          roll_offset_deg <- NULL
+          roll_offset_deg    <- NULL       # nothing was subtracted; the estimate is kept separately
+          roll_offset_status <- if (is.finite(roll_offset_estimate)) "rejected_over_max" else "not_estimable"
+          off_roll <- if (is.finite(roll_offset_estimate))
+            sprintf("roll offset skipped (%+.1f\u00b0 exceeds mount.roll.max %.0f\u00b0)",
+                    roll_offset_estimate, mount.roll.max)
+          else "roll offset skipped (not estimable)"
         }
         if (collect_diag)
-          roll_diag <- .captureRollDiag(roll_level_samp, roll_median_all, roll_applied, orientation.warning.threshold)
+          roll_diag <- .captureRollDiag(roll_level_samp, roll_offset_estimate, roll_applied, mount.roll.max)
 
         # clean up temporary column
         individual_data[, vv_smooth := NULL]
@@ -1170,25 +1190,44 @@ processTagData <- function(data,
 
     pitch_anomaly_detected <- FALSE
     roll_anomaly_detected <- FALSE
+    roll_mount_unusual <- FALSE
     median_pitch <- NA_real_; median_roll <- NA_real_
 
     # only check if pitch contain non-NA values
     if (!all(is.na(individual_data$pitch))) {
       median_pitch <- median(individual_data$pitch, na.rm = TRUE)
       if (abs(median_pitch) > orientation.warning.threshold) {
-        .log_skip(lvl, "potential pitch anomaly: median = ", round(median_pitch, 1), "\u00B0")
+        .log_skip(lvl, "potential pitch anomaly: median = ", round(median_pitch, 1), "\u00b0")
         pitch_anomaly_detected <- TRUE
         warning(sprintf("%s - Potential pitch anomaly detected (%.2f\u00b0)", id, median_pitch), call. = FALSE)
       }
     }
 
-    # only check if roll contain non-NA values
+    # UNUSUAL MOUNT: judged on the ESTIMATED offset, so it reports the same quantity whether or not
+    # the correction was applied. (The old check ran on the median roll AFTER correction, which is
+    # ~0 by construction whenever the correction succeeds - so it could only ever fire on a
+    # deployment whose correction had been refused, and then reported the mount as if it were a
+    # residual.)
+    if (is.finite(roll_offset_estimate) && abs(roll_offset_estimate) > orientation.warning.threshold) {
+      roll_mount_unusual <- TRUE
+      .log_skip(lvl, "unusual mounting roll: ", round(roll_offset_estimate, 1), "\u00b0 (",
+                if (roll_applied) "corrected" else "NOT corrected", ")")
+      warning(sprintf("%s - Unusual mounting roll (%.2f\u00b0, %s)", id, roll_offset_estimate,
+                      if (roll_applied) "corrected"
+                      else sprintf("NOT corrected - exceeds mount.roll.max = %g\u00b0", mount.roll.max)),
+              call. = FALSE)
+    }
+
+    # RESIDUAL ANOMALY: roll left over after the correction, i.e. the correction did not take.
+    # Skipped when the offset was estimated but refused, because there the residual IS the mount and
+    # the notice above has already reported that number - warning twice about one thing is noise.
     if (!all(is.na(individual_data$roll))) {
       median_roll <- median(individual_data$roll, na.rm = TRUE)
-      if (abs(median_roll) > orientation.warning.threshold) {
-        .log_skip(lvl, "potential roll anomaly: median = ", round(median_roll, 1), "\u00b0")
+      residual_is_the_mount <- is.finite(roll_offset_estimate) && !roll_applied
+      if (abs(median_roll) > orientation.warning.threshold && !residual_is_the_mount) {
+        .log_skip(lvl, "roll residual after correction: median = ", round(median_roll, 1), "\u00b0")
         roll_anomaly_detected <- TRUE
-        warning(sprintf("%s - Potential roll anomaly detected (%.2f\u00b0)", id, median_roll), call. = FALSE)
+        warning(sprintf("%s - Roll residual after correction (%.2f\u00b0)", id, median_roll), call. = FALSE)
       }
     }
 
@@ -1558,11 +1597,15 @@ processTagData <- function(data,
                                 pitch_offset_deg        = pitch_offset_deg %||% NA_real_,
                                 pitch_offset_r2         = pitch_offset_r2 %||% NA_real_,
                                 roll_offset_deg         = roll_offset_deg %||% NA_real_,
+                                roll_offset_estimate_deg = roll_offset_estimate,
+                                roll_offset_status      = roll_offset_status,
                                 median_pitch_deg        = median_pitch,
                                 median_roll_deg         = median_roll,
                                 orientation_warning_threshold = orientation.warning.threshold,
+                                mount_roll_max          = mount.roll.max,
                                 pitch_offset_min_r2     = pitch.offset.min.r2,
                                 pitch_anomaly_detected  = pitch_anomaly_detected,
+                                roll_mount_unusual      = roll_mount_unusual,
                                 roll_anomaly_detected   = roll_anomaly_detected,
                                 attachment_site         = meta$deployment$attachment_site %||% NA_character_,
                                 downsample_to           = downsample.to %||% NA_real_,

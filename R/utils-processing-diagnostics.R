@@ -209,9 +209,12 @@
   graphics::grid(col = "grey88")
   graphics::plot(h, add = TRUE, col = "grey85", border = "grey60")           # bars over the fill + grid
   graphics::abline(v = r$median_deg, col = if (isTRUE(r$applied)) "#2e7d32" else "#c62828", lwd = 2)
-  graphics::abline(v = c(-r$threshold_deg, r$threshold_deg), col = "grey70", lty = 3)   # anomaly threshold
+  # the dotted lines are the APPLY gate (mount.roll.max) - i.e. the boundary that decided the
+  # green/red colouring above - not the reporting threshold, which is a separate, narrower knob
+  graphics::abline(v = c(-r$threshold_deg, r$threshold_deg), col = "grey70", lty = 3)
   graphics::mtext("Roll mounting-offset", side = 3, line = 1.6, adj = 0, font = 2, cex = 1.0)
-  graphics::mtext(sprintf("offset %+.2f deg - %s", r$median_deg, if (isTRUE(r$applied)) "applied" else "gated"),
+  graphics::mtext(sprintf("offset %+.2f deg - %s (gate +/-%g deg)", r$median_deg,
+                          if (isTRUE(r$applied)) "applied" else "not applied", r$threshold_deg),
                   side = 3, line = 0.5, adj = 0, cex = 0.75, col = if (isTRUE(r$applied)) "#2e7d32" else "#c62828")
   graphics::box()                                                            # frame, matching the other panels
   invisible()
