@@ -11,6 +11,7 @@ integrityControl(
   accel.scale.warning = 0.2,
   accel.scale.error = 0.5,
   mag.plausibility.warning = 0.4,
+  mag.break.warning = 0.96,
   gyro.bias.info = 0.3,
   paddle.warning = 30,
   dropout.info = 0.5
@@ -35,6 +36,17 @@ calibration offset (error). Defaults 0.20 and 0.50.}
 hard-iron-centred field magnitude \code{|B|} (a stable field is near-constant). Default 0.4. Warning
 only - across a 52-deployment fleet this metric is continuous, with no break separating a degraded
 magnetometer from the tail of normal variation, so no automatic error grade is defensible.}
+
+\item{mag.break.warning}{Magnetometer break: the rank SEPARATION between the field magnitude before
+and after the best candidate break - the Mann-Whitney probability of superiority between the two
+segments' window medians, in [0.5, 1]. 1 means the two levels do not overlap at all; 0.5 means they
+are indistinguishable. Default 0.96. Warning only, and deliberately a separation rather than a step
+SIZE: on the same 52-deployment fleet a best-split difference in median \code{|m|} does not separate a
+real break from a healthy record, because a contaminated magnetometer's \code{|m|} varies with heading,
+so an animal that keeps turning swings it between levels all deployment and any unbalanced swing
+produces a large median gap (13 deployments outranked the one known true positive). Separation asks
+instead whether the level changed and did NOT come back, which is what a contamination event does.
+Raise it towards 1 to flag only near-perfect separations.}
 
 \item{gyro.bias.info}{Gyroscope bias: the largest per-axis median offset, as a fraction of the
 rotational signal scale. Default 0.3. Info only.}
@@ -68,6 +80,7 @@ keeping them private leaves the algorithms free to improve without an API change
 \examples{
 integrityControl(saturation.error = 0.1)          # stricter: 10\% clipping is already an error
 integrityControl(mag.plausibility.warning = 0.5)  # more tolerant of an unstable field
+integrityControl(mag.break.warning = 0.99)        # only near-perfect separation counts as a break
 }
 \seealso{
 \code{\link{checkSensorIntegrity}}

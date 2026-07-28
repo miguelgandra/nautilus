@@ -43,6 +43,15 @@ test_that("magCalibrationControl validates the fit method + thresholds", {
   expect_error(magCalibrationControl(radcv.max = -1), "radcv.max")
 })
 
+test_that("integrityControl carries the mag.break separation threshold and bounds it to [0.5, 1]", {
+  ic <- integrityControl()
+  expect_equal(ic$mag.break.warning, 0.96)
+  expect_equal(integrityControl(mag.break.warning = 0.99)$mag.break.warning, 0.99)
+  # the metric is a probability of superiority, so anything outside [0.5, 1] is meaningless
+  expect_error(integrityControl(mag.break.warning = 0.2), "mag.break.warning")
+  expect_error(integrityControl(mag.break.warning = 1.5), "mag.break.warning")
+})
+
 test_that("orientationControl carries the offset corrections, fit gate + warning threshold", {
   o <- orientationControl()
   expect_s3_class(o, "nautilus_orientation")

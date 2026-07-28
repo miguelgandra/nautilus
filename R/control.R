@@ -523,6 +523,16 @@ ocrControl <- function(model = "cam",
 #'   hard-iron-centred field magnitude \code{|B|} (a stable field is near-constant). Default 0.4. Warning
 #'   only - across a 52-deployment fleet this metric is continuous, with no break separating a degraded
 #'   magnetometer from the tail of normal variation, so no automatic error grade is defensible.
+#' @param mag.break.warning Magnetometer break: the rank SEPARATION between the field magnitude before
+#'   and after the best candidate break - the Mann-Whitney probability of superiority between the two
+#'   segments' window medians, in \[0.5, 1\]. 1 means the two levels do not overlap at all; 0.5 means they
+#'   are indistinguishable. Default 0.96. Warning only, and deliberately a separation rather than a step
+#'   SIZE: on the same 52-deployment fleet a best-split difference in median \code{|m|} does not separate a
+#'   real break from a healthy record, because a contaminated magnetometer's \code{|m|} varies with heading,
+#'   so an animal that keeps turning swings it between levels all deployment and any unbalanced swing
+#'   produces a large median gap (13 deployments outranked the one known true positive). Separation asks
+#'   instead whether the level changed and did NOT come back, which is what a contamination event does.
+#'   Raise it towards 1 to flag only near-perfect separations.
 #' @param gyro.bias.info Gyroscope bias: the largest per-axis median offset, as a fraction of the
 #'   rotational signal scale. Default 0.3. Info only.
 #' @param paddle.warning Paddle-wheel contamination: the prominence (peak / median band power) of a
@@ -535,6 +545,7 @@ ocrControl <- function(model = "cam",
 #' @examples
 #' integrityControl(saturation.error = 0.1)          # stricter: 10% clipping is already an error
 #' integrityControl(mag.plausibility.warning = 0.5)  # more tolerant of an unstable field
+#' integrityControl(mag.break.warning = 0.99)        # only near-perfect separation counts as a break
 #' @export
 integrityControl <- function(duplication.error        = 0.999,
                              saturation.warning       = 0.01,
@@ -542,6 +553,7 @@ integrityControl <- function(duplication.error        = 0.999,
                              accel.scale.warning      = 0.20,
                              accel.scale.error        = 0.50,
                              mag.plausibility.warning = 0.40,
+                             mag.break.warning        = 0.96,
                              gyro.bias.info           = 0.30,
                              paddle.warning           = 30,
                              dropout.info             = 0.50) {
@@ -551,6 +563,7 @@ integrityControl <- function(duplication.error        = 0.999,
   .assert_number(accel.scale.warning, "accel.scale.warning", min = 0)
   .assert_number(accel.scale.error, "accel.scale.error", min = 0)
   .assert_number(mag.plausibility.warning, "mag.plausibility.warning", min = 0)
+  .assert_number(mag.break.warning, "mag.break.warning", min = 0.5, max = 1)
   .assert_number(gyro.bias.info, "gyro.bias.info", min = 0)
   .assert_number(paddle.warning, "paddle.warning", min = 1)
   .assert_number(dropout.info, "dropout.info", min = 0, max = 1)
@@ -564,6 +577,7 @@ integrityControl <- function(duplication.error        = 0.999,
                  saturation.warning = saturation.warning, saturation.error = saturation.error,
                  accel.scale.warning = accel.scale.warning, accel.scale.error = accel.scale.error,
                  mag.plausibility.warning = mag.plausibility.warning,
+                 mag.break.warning = mag.break.warning,
                  gyro.bias.info = gyro.bias.info, paddle.warning = paddle.warning,
                  dropout.info = dropout.info),
             class = "nautilus_integrity")
@@ -583,11 +597,21 @@ integrityControl <- function(duplication.error        = 0.999,
 #'       `max(paddle.min.freq, paddle.harmonic.guard * f_tailbeat)` Hz, keeping it clear of the tail-beat
 #'       fundamental and its harmonics (the main source of false positives).
 #'     \item `paddle.max.freq.frac` - ceiling as a fraction of Nyquist, avoiding aliasing artefacts.
+#'     \item `mag.break.window` - window DURATION (s) the field magnitude is summarised over. A duration
+#'       rather than a count, so the statistic means the same thing on a 5 h and a 50 h record.
+#'     \item `mag.break.min.frac` - each side of a candidate break must be at least this fraction of the
+#'       record. This is what "persistent" means operationally, and it sets the blind spot: a break in
+#'       the first or last `mag.break.min.frac` of a record cannot be seen.
+#'     \item `mag.break.min.windows` - fewer windows than this and the check abstains rather than guess.
+#'     \item `mag.break.min.rel` - the step must also be at least this fraction of the field magnitude,
+#'       so perfect rank separation across a negligible shift (a stable sensor drifting) is not flagged.
 #'   }
 #' @keywords internal
 #' @noRd
 .integrityMethod <- function() {
-  list(gyro.bias.min = 0.02, paddle.min.freq = 3.5, paddle.harmonic.guard = 6, paddle.max.freq.frac = 0.85)
+  list(gyro.bias.min = 0.02, paddle.min.freq = 3.5, paddle.harmonic.guard = 6, paddle.max.freq.frac = 0.85,
+       mag.break.window = 600, mag.break.min.frac = 0.15, mag.break.min.windows = 30L,
+       mag.break.min.rel = 0.05)
 }
 
 

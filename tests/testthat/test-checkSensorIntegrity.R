@@ -220,6 +220,89 @@ test_that("mag.plausibility flags an unstable |B| (well-covered), passes a stabl
   expect_equal(nrow(.iss(poor, "mag.plausibility")), 0L)
 })
 
+# ---- mag.break -------------------------------------------------------------------------------
+# A long, coarse fixture: the check summarises 10-minute windows and needs >= 30 of them, so 8 h at
+# 1 Hz. `field(i)` sets the magnitude of the field vector at sample i, which is what the check reads.
+.mkbreak <- function(id, field, n = 8 * 3600, fs = 1) {
+  set.seed(4); t0 <- as.POSIXct("2022-01-01", tz = "UTC")
+  th <- seq(0, 80 * pi, length.out = n); phi <- seq(0.2, pi - 0.2, length.out = n)
+  f <- field(seq_len(n))
+  data.table::data.table(ID = id, datetime = t0 + (0:(n - 1)) / fs,
+    ax = rnorm(n, 0, .2), ay = rnorm(n, 0, .2), az = 1 + rnorm(n, 0, .2),
+    gx = rnorm(n, 0, .1), gy = rnorm(n, 0, .1), gz = rnorm(n, 0, .1),
+    mx = f * sin(phi) * cos(th) + rnorm(n, 0, .3), my = f * sin(phi) * sin(th) + rnorm(n, 0, .3),
+    mz = f * cos(phi) + rnorm(n, 0, .3),
+    depth = abs(20 * sin((0:(n - 1)) / 300)), temp = 18 + rnorm(n, 0, .05)) -> d
+  m <- nautilus:::.newNautilusMeta(); m$id <- id
+  nautilus:::new_nautilus_tag(d, m)
+}
+
+test_that("mag.break flags a persistent step and passes a stationary field", {
+  flat <- .mkbreak("flat", function(i) rep(45, length(i)))
+  expect_equal(nrow(.iss(flat, "mag.break")), 0L)
+
+  step <- .mkbreak("step", function(i) ifelse(i < length(i) * 0.55, 55, 44))
+  hit <- .iss(step, "mag.break")
+  expect_equal(hit$check, "mag.break")
+  expect_equal(hit$severity, "warning")          # never error: the fleet metric is not bimodal
+  expect_equal(hit$channel, "mag")
+  expect_gt(hit$metric, 0.96)
+  expect_match(hit$message, "does not return")
+})
+
+test_that("mag.break is NOT fooled by a field that swings between the same two levels", {
+  # THE false-positive case, and the reason the metric is rank separation rather than step size: a
+  # contaminated magnetometer's |m| varies with heading, so an animal that keeps turning oscillates
+  # between levels all deployment. The median gap is as large as the genuine step above; the
+  # separation is not, because the level keeps coming back.
+  osc <- .mkbreak("osc", function(i) ifelse((i %/% 2400) %% 2 == 0, 55, 44))
+  expect_equal(nrow(.iss(osc, "mag.break")), 0L)
+
+  # and the naive statistic really would have fired here - the two records span the same two levels
+  sc_osc  <- nautilus:::.magBreakScan(osc, nautilus:::.imuFamilies()$mag)
+  sc_step <- nautilus:::.magBreakScan(.mkbreak("s", function(i) ifelse(i < length(i) * 0.55, 55, 44)),
+                                      nautilus:::.imuFamilies()$mag)
+  expect_gt(sc_osc$step, 5)                      # a large median gap...
+  expect_lt(sc_osc$auc, 0.9)                     # ...but poor separation
+  expect_gt(sc_step$auc, 0.96)                   # whereas the true step separates
+})
+
+test_that("mag.break abstains on a record too short to show persistence, rather than guessing", {
+  short <- .mkbreak("short", function(i) ifelse(i < length(i) * 0.55, 55, 44), n = 2 * 3600)
+  expect_null(nautilus:::.magBreakScan(short, nautilus:::.imuFamilies()$mag))
+  expect_equal(nrow(.iss(short, "mag.break")), 0L)
+})
+
+test_that("mag.break ignores a perfectly-separated but negligible step", {
+  # a stable sensor drifting by 1% separates cleanly but is not a change of magnetic environment
+  tiny <- .mkbreak("tiny", function(i) ifelse(i < length(i) * 0.55, 45.0, 44.6))
+  sc <- nautilus:::.magBreakScan(tiny, nautilus:::.imuFamilies()$mag)
+  expect_gt(sc$auc, 0.96)                        # the separation gate alone would pass it
+  expect_lt(sc$rel, 0.05)                        # the effect-size gate is what stops it
+  expect_equal(nrow(.iss(tiny, "mag.break")), 0L)
+})
+
+test_that("mag.break is opt-in, and apply never drops the magnetometer for it", {
+  step <- .mkbreak("step", function(i) ifelse(i < length(i) * 0.55, 55, 44))
+  expect_equal(nrow(.iss(step, c("duplication", "dead"))), 0L)   # not in the default set
+
+  # the finding describes the RECORD (one calibration cannot span it), not a bad channel: the
+  # magnetometer is fine and the pre-break data is fully usable, so excluding it would destroy far
+  # more than it protects. Even at apply.severity = "warning" the channel must survive.
+  out <- .run(list(x = step), checks = "mag.break", apply = TRUE, apply.severity = "warning",
+              return.data = TRUE)
+  cd <- out$curated_data[[1]]
+  expect_true(all(c("mx", "my", "mz") %in% names(cd)))
+  expect_false(any(c("mx", "my", "mz") %in% tagMetadata(cd)$sensors$excluded))
+  expect_equal(nrow(out$issues[out$issues$check == "mag.break", ]), 1L)   # still reported
+
+  # a genuine channel fault in the same run is still acted on - the exemption is per-check
+  bad <- .mkbreak("bad", function(i) rep(45, length(i)))
+  data.table::setDT(bad)[, temp := 20]                                   # dead channel (error)
+  o2 <- .run(list(x = bad), checks = c("dead", "mag.break"), apply = TRUE, return.data = TRUE)
+  expect_false("temp" %in% names(o2$curated_data[[1]]))
+})
+
 test_that("accel.scale flags a wrong-unit accelerometer (~1 g expected)", {
   expect_equal(nrow(.iss(.mkp("clean"), "accel.scale")), 0L)
   hit <- .iss(.mkp("ms2", function(d) { d[, `:=`(ax = ax * 9.81, ay = ay * 9.81, az = az * 9.81)]; d }), "accel.scale")

@@ -40,6 +40,9 @@
 #' `apply.severity` decide what happens. Nothing is modified unless `apply = TRUE`, and findings at or
 #' above `apply.severity` then have their channels excluded. Error-severity findings are ALWAYS warned
 #' about, whether or not `apply` acted, so a compromised channel cannot pass through unmentioned.
+#' One exception, by design: `mag.break` describes the RECORD (one calibration cannot span it) rather
+#' than the trustworthiness of a channel, so `apply` never drops anything on its account at any
+#' `apply.severity` - the magnetometer is fine and the data before the break is fully usable.
 #'
 #' Four checks run by default (`duplication`, `dead`, `accel.scale`, `saturation`); the rest are opt-in via
 #' `checks`. Every threshold lives in \code{\link{integrityControl}}; the reported `metric` is noted in
@@ -69,6 +72,33 @@
 #' channel (a magnetometer duplicated from the accelerometer tracks motion and fails here too). The check
 #' abstains when the animal did not rotate through enough orientations to trust the centring. (metric: the
 #' robust CV.)
+#'
+#' \strong{mag.break} (warning). A persistent step in the magnetometer's field magnitude partway through
+#' the deployment: the local magnetic environment changed - contamination attaching or shedding - so a
+#' single calibration cannot serve the whole record. Detection only; nothing is corrected or segmented,
+#' and the finding never excludes a channel. The message names the time of the break, so the record can
+#' be split, re-calibrated per segment, or the affected part excluded by hand.
+#'
+#' The metric is a rank SEPARATION, not a step size, and that distinction is what makes the check usable.
+#' A contaminated magnetometer's \code{|m|} varies with heading, so an animal that keeps turning swings it
+#' between levels for the whole deployment; any unbalanced swing then produces a large difference between
+#' the two halves' medians. Calibrated on a 52-deployment fleet, 13 deployments outranked the one known
+#' true positive on step size. What actually marks a break is that the level changes and \emph{does not
+#' come back}, so the metric is the Mann-Whitney probability of superiority between the two segments'
+#' window medians (1 = the levels never overlap, 0.5 = indistinguishable). Being rank-based it is
+#' unit-free and independent of the noise amplitude, and a repeatedly-oscillating record scores near 0.5
+#' however large its swings - the worst oscillator in the fleet scores 0.74, stable to within 0.01 across
+#' window counts. At the default 0.96 the check flags 3 of the 39 deployments long enough to evaluate,
+#' with the next-ranked at 0.94.
+#'
+#' Warning only: below the flagged group the metric runs continuously from 0.94 down to 0.59, so an
+#' automatic error grade would be false precision - the same reasoning applied to \code{mag.plausibility}.
+#'
+#' Two limits are structural rather than incidental. Each side of a break must be at least 15\% of the
+#' record for it to count as persistent, so \strong{a break in the first or last 15\% cannot be seen}; and
+#' a record yielding fewer than 30 ten-minute windows (about 5 h) makes the check \strong{abstain} rather
+#' than guess - 13 of the 52 fleet deployments abstain on that rule. (metric: the separation, in
+#' \[0.5, 1\].)
 #'
 #' \strong{accel.scale} (warning / error). Checks whether the overall accelerometer magnitude is consistent with
 #' gravity. The static (gravity) component is taken as a low-pass of the three axes, and its magnitude
@@ -119,10 +149,12 @@
 #'   measurable cost: `"accel.scale"` (a static acceleration magnitude far from 1 g, which catches unit
 #'   and scaling mistakes) and `"saturation"` (a channel pinned at a range limit, which catches a railed
 #'   axis, a clipping gyroscope and sentinel values). Both are GRADED, so either can report a warning or an
-#'   error depending on the magnitude measured. The remaining checks are opt-in: `"mag.plausibility"` (an unstable magnetometer field magnitude), `"gyro.bias"`
-#'   (a persistent gyroscope offset), `"paddle.contamination"` (a narrow-band magnetometer peak
-#'   suggesting an undocumented paddle wheel) and `"dropout"` (a channel missing for most of the
-#'   deployment).
+#'   error depending on the magnitude measured. The remaining checks are opt-in: `"mag.plausibility"` (an
+#'   unstable magnetometer field magnitude), `"mag.break"` (a persistent mid-deployment step in the
+#'   magnetometer field, i.e. the magnetic environment changed and one calibration no longer covers the
+#'   record), `"gyro.bias"` (a persistent gyroscope offset), `"paddle.contamination"` (a narrow-band
+#'   magnetometer peak suggesting an undocumented paddle wheel) and `"dropout"` (a channel missing for
+#'   most of the deployment).
 #' @param control An \code{\link{integrityControl}} object (or a named list of its fields) bundling the
 #'   per-check detection thresholds. Defaults to `integrityControl()` (values calibrated on real
 #'   whale-shark deployments).
@@ -258,6 +290,11 @@ checkSensorIntegrity <- function(data,
     # tracked separately because they are always warned about, whether or not `apply` acted on them.
     act_sel    <- .severityRank(iss$severity) >= .severityRank(apply.severity)
     act_sel[is.na(act_sel)] <- FALSE
+    # ADVISORY checks describe the RECORD, not the trustworthiness of a channel, so `apply` must never
+    # drop anything on their account. `mag.break` says one calibration cannot span the record - the
+    # magnetometer itself is fine and the data before the break is fully usable, so excluding it would
+    # destroy far more than it protects. (Severity still grades the finding; only the ACTION is barred.)
+    act_sel <- act_sel & !(iss$check %in% .integrityAdvisoryChecks())
     err_tokens <- unique(iss$channel[act_sel])
     err_chans  <- if (length(err_tokens)) intersect(.expandSensorTokens(paste(err_tokens, collapse = ",")), names(x)) else character(0)
     if (any(iss$severity == "error")) {
@@ -376,7 +413,14 @@ checkSensorIntegrity <- function(data,
 #' @keywords internal
 #' @noRd
 .integrityChecks <- function() c("duplication", "dead", "saturation", "mag.plausibility",
-                                 "accel.scale", "gyro.bias", "paddle.contamination", "dropout")
+                                 "mag.break", "accel.scale", "gyro.bias", "paddle.contamination",
+                                 "dropout")
+
+#' Checks whose findings describe the RECORD rather than a channel's trustworthiness, and which `apply`
+#' therefore never acts on. They are still graded and reported; only the exclusion is barred.
+#' @keywords internal
+#' @noRd
+.integrityAdvisoryChecks <- function() c("mag.break")
 
 #' The sensor families (channel triplets) used across the integrity checks.
 #' @keywords internal
@@ -396,7 +440,8 @@ checkSensorIntegrity <- function(data,
     ctx$psd <- stats::setNames(lapply(magcols, function(ch) tryCatch(.welchPSD(x[[ch]], fs), error = function(e) NULL)), magcols)
   }
   engine <- list(duplication = .icheckDuplication, dead = .icheckDead, saturation = .icheckSaturation,
-                 mag.plausibility = .icheckMagPlausibility, accel.scale = .icheckAccelScale,
+                 mag.plausibility = .icheckMagPlausibility, mag.break = .icheckMagBreak,
+                 accel.scale = .icheckAccelScale,
                  gyro.bias = .icheckGyroBias, paddle.contamination = .icheckPaddle, dropout = .icheckDropout)
   rows <- lapply(intersect(names(engine), checks), function(ck) engine[[ck]](x, ctx))
   out <- do.call(rbind, rows)
@@ -495,6 +540,89 @@ checkSensorIntegrity <- function(data,
     rows <- rbind(rows, .integrityIssue("mag", "mag.plausibility", "warning", round(cv, 3),
                   sprintf("magnetometer field |B| is unstable (robust CV %.2f) - possible mis-scaling or a corrupt channel", cv)))
   rows
+}
+
+#' Magnetometer break (warning): a persistent step in the field magnitude mid-deployment, i.e. the local
+#' magnetic environment changed - contamination attaching or shedding - so ONE calibration cannot serve
+#' the whole record. Detection only; nothing is corrected or segmented.
+#'
+#' THE METRIC IS RANK SEPARATION, NOT STEP SIZE, and that choice is the whole check. Calibrated on a
+#' 52-deployment fleet: a best-split difference in median |m| does NOT separate a real break from a
+#' healthy record, because a badly contaminated magnetometer's |m| depends strongly on heading, so an
+#' animal that keeps changing heading swings |m| between levels all deployment and any unbalanced swing
+#' produces a large median gap. Thirteen deployments outranked the one known true positive on that
+#' statistic. What distinguishes a break is that the level changes and does NOT come back. So the metric
+#' is the Mann-Whitney probability of superiority (AUC) between the two segments' window medians:
+#' 1.0 = the two levels do not overlap at all, 0.5 = indistinguishable. It is rank-based, hence unit-free
+#' and independent of the noise amplitude, and an oscillating series scores near 0.5 however large its
+#' swings (the worst oscillator in the fleet scores 0.74, stable to +/-0.01 across window counts).
+#'
+#' Deliberately computed on RAW |m|, not the hard-iron-corrected field the `mag.plausibility` check uses:
+#' a whole-record centre fitted across a step lands between the two states and absorbs part of it (on the
+#' known true positive that reduced an ~11 uT change to 1.3 uT). For the same reason the per-segment
+#' centres are not compared - a whale shark does not rotate through enough headings in half a deployment
+#' to fit them, and the known true positive fails the coverage gate on both sides.
+#' @keywords internal
+#' @noRd
+.icheckMagBreak <- function(x, ctx) {
+  rows <- .emptyIntegrityIssues()
+  sc <- .magBreakScan(x, ctx$fams$mag)
+  if (is.null(sc)) return(rows)
+  # a step must also be big enough to matter: perfect separation across a negligible shift is a
+  # stable sensor drifting, not a change of magnetic environment
+  if (!is.finite(sc$rel) || sc$rel < .integrityMethod()$mag.break.min.rel) return(rows)
+  # warning only: across the fleet this metric is continuous below the flagged group (0.94 down to
+  # 0.59, no break), so an automatic error grade would be false precision - the same reasoning that
+  # leaves mag.plausibility warning-only. See the Details section of checkSensorIntegrity().
+  if (!is.na(.integrityGrade(sc$auc, warning = ctx$control$mag.break.warning))) {
+    when <- format(sc$break_time, "%Y-%m-%d %H:%M")
+    rows <- rbind(rows, .integrityIssue("mag", "mag.break", "warning", round(sc$auc, 3),
+                  sprintf(paste0("magnetometer field steps %.1f %s (%.0f%%) around %s UTC and does not return ",
+                                 "(separation %.2f) - the local magnetic environment changed, so one ",
+                                 "calibration cannot serve the whole record"),
+                          sc$step, "\u00b5T", 100 * sc$rel, when, sc$auc)))
+  }
+  rows
+}
+
+#' Shared scan behind the `mag.break` check AND its diagnostic panel, so the number reported and the
+#' picture drawn can never disagree. Returns NULL when the record cannot support the test (no
+#' magnetometer, no datetime, too few windows) - abstaining rather than guessing.
+#' @keywords internal
+#' @noRd
+.magBreakScan <- function(x, magcols) {
+  if (!all(magcols %in% names(x)) || !"datetime" %in% names(x)) return(NULL)
+  mp <- .integrityMethod()
+  ok <- is.finite(x[[magcols[1]]]) & is.finite(x[[magcols[2]]]) & is.finite(x[[magcols[3]]]) & !is.na(x$datetime)
+  if (sum(ok) < 500L) return(NULL)
+  tt <- as.numeric(x$datetime[ok])
+  B  <- sqrt(x[[magcols[1]]][ok]^2 + x[[magcols[2]]][ok]^2 + x[[magcols[3]]][ok]^2)
+  # fixed window DURATION, not a fixed count, so the statistic means the same thing on a 5 h and a
+  # 50 h record (with a fixed count the window length - and hence the median's noise - scales with
+  # the deployment, and the threshold would silently mean something different for each)
+  w   <- floor((tt - min(tt)) / mp$mag.break.window)
+  agg <- stats::aggregate(list(b = B, t = tt), by = list(w = w), FUN = stats::median)
+  agg <- agg[as.vector(table(w)) >= 10L, , drop = FALSE]
+  agg <- agg[order(agg$w), , drop = FALSE]
+  n <- nrow(agg)
+  # abstain on a record too short to show persistence on BOTH sides of a break
+  if (n < mp$mag.break.min.windows) return(NULL)
+  v  <- agg$b
+  lo <- max(2L, ceiling(mp$mag.break.min.frac * n)); hi <- n - lo
+  if (hi <= lo) return(NULL)
+  best <- NULL
+  for (k in lo:hi) {
+    r <- rank(c(v[seq_len(k)], v[(k + 1L):n])); na <- k; nb <- n - k
+    p <- (sum(r[seq_len(na)]) - na * (na + 1) / 2) / (na * nb)
+    s <- max(p, 1 - p)
+    if (is.null(best) || s > best$s) best <- list(k = k, s = s)
+  }
+  mA <- stats::median(v[seq_len(best$k)]); mB <- stats::median(v[(best$k + 1L):n])
+  fld <- stats::median(v)
+  list(t = as.POSIXct(agg$t, origin = "1970-01-01", tz = "UTC"), b = v, k = best$k, auc = best$s,
+       step = abs(mA - mB), rel = if (is.finite(fld) && fld > 0) abs(mA - mB) / fld else NA_real_,
+       level_a = mA, level_b = mB,
+       break_time = as.POSIXct(agg$t[best$k], origin = "1970-01-01", tz = "UTC"))
 }
 
 #' Accelerometer scale (warning): the static (gravity) acceleration magnitude should be ~1 g. A
@@ -649,7 +777,8 @@ checkSensorIntegrity <- function(data,
 #' @noRd
 .integrityCheckLine <- function(check, iss) {
   hit <- iss[iss$check == check, , drop = FALSE]
-  label <- switch(check, mag.plausibility = "mag plausibility", accel.scale = "accel scale",
+  label <- switch(check, mag.plausibility = "mag plausibility", mag.break = "mag break",
+                  accel.scale = "accel scale",
                   gyro.bias = "gyro bias", paddle.contamination = "paddle", check)
   if (!nrow(hit)) return(sprintf("%s: none", label))
   switch(check,
@@ -657,6 +786,7 @@ checkSensorIntegrity <- function(data,
     dead             = paste0("dead: ", paste(.channelsToFamilies(hit$channel), collapse = ", ")),
     saturation       = paste0("saturation: ", paste(sprintf("%s (%.1f%%)", hit$channel, 100 * hit$metric), collapse = ", ")),
     mag.plausibility = sprintf("mag plausibility: |B| CV %.2f", hit$metric[1]),
+    mag.break        = sprintf("mag break: separation %.2f", hit$metric[1]),
     accel.scale      = sprintf("accel scale: %.2f g", hit$metric[1]),
     gyro.bias        = sprintf("gyro bias: %.3g (%s)", hit$metric[1], hit$channel[1]),
     paddle.contamination = sprintf("paddle: %s peak (prominence %.0fx)", hit$channel[1], hit$metric[1]),
@@ -677,6 +807,8 @@ checkSensorIntegrity <- function(data,
     hint = "The channel is pinned at its dynamic-range rail (dashed) for long stretches; values beyond the rail are lost (clipping)."),
   mag.plausibility = list(label = "Mag", title = "Magnetometer field |B|",
     hint = "The geomagnetic field is orientation-invariant, so |B| should stay near-constant (dashed median); a drifting or spiky trace flags mis-scaling or a corrupt channel."),
+  mag.break = list(label = "mBrk", title = "Magnetometer field over time",
+    hint = "Window medians of raw |m|. A healthy record is noisy but stationary; a step that persists to the end (and never returns) means the local magnetic environment changed, so one calibration cannot serve the whole record."),
   accel.scale = list(label = "aScl", title = "Static acceleration magnitude",
     hint = "Static (gravity) acceleration should centre on 1 g (green); a shifted distribution indicates a scaling or unit error."),
   gyro.bias = list(label = "gBias", title = "Gyroscope offset",
@@ -721,7 +853,7 @@ checkSensorIntegrity <- function(data,
 #' @noRd
 .integrityPayload <- function(x, id, iss, fs, control) {
   fams <- .imuFamilies(); idx <- seq_len(nrow(x))
-  order_ck <- c("duplication", "dead", "saturation", "mag.plausibility", "accel.scale", "gyro.bias", "paddle.contamination", "dropout")
+  order_ck <- c("duplication", "dead", "saturation", "mag.plausibility", "mag.break", "accel.scale", "gyro.bias", "paddle.contamination", "dropout")
   panels <- list()
   for (ck in intersect(order_ck, unique(iss$check))) {
     h <- iss[iss$check == ck, , drop = FALSE]; sev <- h$severity[1]
@@ -742,6 +874,14 @@ checkSensorIntegrity <- function(data,
         off <- tryCatch(.hardIronOffset(x[[m[1]]][ok], x[[m[2]]][ok], x[[m[3]]][ok])$offset, error = function(e) c(0, 0, 0))
         B <- sqrt((x[[m[1]]] - off[1])^2 + (x[[m[2]]] - off[2])^2 + (x[[m[3]]] - off[3])^2)
         list(check = ck, sev = sev, B = .decimateForPlot(idx, B, 3000L), med = stats::median(B, na.rm = TRUE), cv = h$metric[1])
+      },
+      # recomputed through the SAME helper the check used, so the panel cannot show a different
+      # break from the one that was reported
+      mag.break = {
+        sc <- .magBreakScan(x, fams$mag)
+        if (is.null(sc)) NULL else list(check = ck, sev = sev, t = sc$t, b = sc$b, k = sc$k,
+                                        auc = sc$auc, step = sc$step, rel = sc$rel,
+                                        level_a = sc$level_a, level_b = sc$level_b)
       },
       accel.scale = {
         a <- fams$accel; win <- if (is.finite(fs) && fs > 0) max(1L, round(2 * fs)) else 21L
@@ -816,7 +956,8 @@ checkSensorIntegrity <- function(data,
 #' @noRd
 .ipanelDraw <- function(pan, uni) switch(pan$check,
   duplication = .ipanelCorr(pan, uni), dead = .ipanelDead(pan, uni), saturation = .ipanelSaturation(pan, uni),
-  mag.plausibility = .ipanelMagB(pan, uni), accel.scale = .ipanelAccelScale(pan, uni),
+  mag.plausibility = .ipanelMagB(pan, uni), mag.break = .ipanelMagBreak(pan, uni),
+  accel.scale = .ipanelAccelScale(pan, uni),
   gyro.bias = .ipanelGyroBias(pan, uni), paddle.contamination = .ipanelSpectrum(pan, uni),
   dropout = .ipanelDropout(pan, uni))
 
@@ -891,6 +1032,28 @@ checkSensorIntegrity <- function(data,
                  cex.main = 0.95, cex.axis = 0.8, cex.lab = 0.9, las = 1)
   graphics::abline(h = pan$med, col = "red3", lty = 2, lwd = 1.5)
   graphics::legend("topright", legend = "median", col = "red3", lty = 2, bty = "n", cex = 0.75)
+  .panelHint(meta$hint); if (!is.na(st$col)) graphics::box(col = st$col, lwd = 2)
+}
+
+#' @keywords internal
+#' @noRd
+.ipanelMagBreak <- function(pan, uni) {
+  meta <- .integrityCheckMeta()$mag.break; st <- .isevStatus(pan$sev, uni)
+  op <- graphics::par(mar = c(4.4, 4, 2.6, 1)); on.exit(graphics::par(op), add = TRUE)
+  hrs <- as.numeric(difftime(pan$t, min(pan$t), units = "hours"))
+  graphics::plot(hrs, pan$b, type = "l", col = "grey30", xlab = "Hours into deployment",
+                 ylab = "median |m| per window", cex.main = 0.95, cex.axis = 0.8, cex.lab = 0.9, las = 1,
+                 main = paste0(st$pre, meta$title, sprintf(" (separation %.2f)", pan$auc)))
+  # the two levels, and where they part: this is what makes a step distinguishable by eye from the
+  # repeated swings a contaminated magnetometer shows on a heading-changing animal
+  graphics::segments(hrs[1], pan$level_a, hrs[pan$k], pan$level_a, col = "#2e7d32", lwd = 2)
+  graphics::segments(hrs[pan$k], pan$level_b, hrs[length(hrs)], pan$level_b, col = "#c62828", lwd = 2)
+  graphics::abline(v = hrs[pan$k], col = "grey45", lty = 2, lwd = 1.5)
+  graphics::legend("topright", bty = "n", cex = 0.7, lty = c(1, 1, 2), lwd = c(2, 2, 1.5),
+                   col = c("#2e7d32", "#c62828", "grey45"),
+                   legend = c(sprintf("before (%.1f)", pan$level_a),
+                              sprintf("after (%.1f)", pan$level_b),
+                              sprintf("break (%.0f%% step)", 100 * pan$rel)))
   .panelHint(meta$hint); if (!is.na(st$col)) graphics::box(col = st$col, lwd = 2)
 }
 
