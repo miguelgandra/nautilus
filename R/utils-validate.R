@@ -36,15 +36,33 @@
 #' `items` are data-derived and are inserted VERBATIM: braces are escaped so an ID containing `{` cannot be
 #' mistaken for a glue expression. Nothing is emitted when `items` is empty, so callers can pass a filtered
 #' vector without guarding first.
+#'
+#' `style` picks the layout, and the right choice follows the SHAPE OF THE ITEMS, not the caller's taste:
+#'   * `"bullets"` (default) - a header then one bullet per item. Right when an item is a sentence, e.g.
+#'     `"PIN_10: 42.3% of estimates at a band edge"` or `"PIN_07: mag, accel (dead, saturation)"`.
+#'   * `"inline"` - the items comma-joined onto one wrapped continuation line, no header. Right when an
+#'     item is an id plus a short parenthetical, e.g. `"PIN_10 (-45.0 deg)"`, where a bullet per line
+#'     costs a screen and buys nothing. Reads as:
+#'         3 deployments have an unusual mounting roll.
+#'         PIN_10 (-45.0 deg), PIN_11 (-43.2 deg), PIN_12 (-39.8 deg)
+#' Joining sentence-shaped items inline would produce an unreadable run, which is why the default stays
+#' `"bullets"` and only id-shaped callers opt in.
 #' @keywords internal
 #' @noRd
 .warn_grouped <- function(headline, items, hints = NULL, items.header = "Affected deployments:",
-                          .envir = parent.frame()) {
+                          style = c("bullets", "inline"), .envir = parent.frame()) {
   if (!length(items)) return(invisible(NULL))
+  style <- match.arg(style)
   items <- gsub("}", "}}", gsub("{", "{{", items, fixed = TRUE), fixed = TRUE)
+  body <- if (identical(style, "inline")) {
+    # one blank-name element: cli wraps it as a continuation of the headline block, with no bullet glyph
+    stats::setNames(paste(items, collapse = ", "), "")
+  } else {
+    stats::setNames(c(items.header, items), c("", rep("*", length(items))))
+  }
   cli::cli_warn(c(headline,
                   if (length(hints)) stats::setNames(hints, rep("i", length(hints))),
-                  stats::setNames(c(items.header, items), c("", rep("*", length(items))))),
+                  body),
                 .envir = .envir)
   invisible(NULL)
 }

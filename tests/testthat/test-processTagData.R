@@ -132,7 +132,7 @@ test_that("a genuinely unobservable field (a single heading held) is left raw + 
   expect_equal(mc$status, "uncalibrated_raw")
   expect_false(isTRUE(mc$applied))
   expect_equal(nautilus:::.headingTrust(list(mag_calibration = mc)), "untrusted")
-  expect_true(any(grepl("NO magnetometer calibration", ws)))          # loud, default-level warning
+  expect_true(any(grepl("no magnetometer calibration", ws)))          # loud, default-level warning
 })
 
 test_that("tilt_compass run produces the expected motion/orientation metrics", {
@@ -263,10 +263,10 @@ test_that("a mount between warning.threshold and mount.roll.max is corrected AND
   expect_lt(abs(median(out$res$A01$roll, na.rm = TRUE)), 5) # so roll is centred near zero
   expect_false(rec$roll_anomaly_detected)                   # no residual anomaly
 
-  expect_true(any(grepl("Unusual mounting roll", out$warnings)))
+  expect_true(any(grepl("unusual mounting roll", out$warnings)))
   expect_true(any(grepl("corrected", out$warnings)))
   # the OLD behaviour would have refused the correction and warned about a -50 deg "roll anomaly"
-  expect_false(any(grepl("Roll residual after correction", out$warnings)))
+  expect_false(any(grepl("roll residual after correction", out$warnings)))
 })
 
 test_that("a mount beyond mount.roll.max is refused, reported once, and keeps its estimate", {
@@ -280,10 +280,10 @@ test_that("a mount beyond mount.roll.max is refused, reported once, and keeps it
   expect_true(rec$roll_mount_unusual)
   expect_gt(abs(median(out$res$A01$roll, na.rm = TRUE)), 60)         # roll keeps the mount
 
-  expect_true(any(grepl("Unusual mounting roll", out$warnings)))
+  expect_true(any(grepl("unusual mounting roll", out$warnings)))
   expect_true(any(grepl("NOT corrected", out$warnings)))
   # exactly ONE roll warning: the residual here IS the mount, already named above
-  expect_false(any(grepl("Roll residual after correction", out$warnings)))
+  expect_false(any(grepl("roll residual after correction", out$warnings)))
   expect_equal(sum(grepl("mounting roll|Roll residual", out$warnings)), 1L)
 })
 
@@ -391,6 +391,66 @@ test_that(".deploymentLabel falls back from ID to source name to slot index", {
   expect_equal(f(NULL, "/tmp/PIN_07.rds", 3L), "PIN_07")
   expect_equal(f(NULL, NA_character_, 3L), "slot 3")             # nothing at all -> the index
   expect_equal(f(data.table::data.table(x = 1), NULL, 5L), "slot 5")   # no ID column
+})
+
+# ---- end-of-run warnings: one per finding TYPE, ids inline -------------------------------------
+
+test_that("orientation findings raise ONE warning per type, not one per deployment", {
+  # the whole point: 3 rolled mounts used to be 3 warnings, and R replaces the entire warning surface
+  # with "There were N warnings" once 11 accumulate - so the per-deployment form lost everything it
+  # raised on a large batch
+  tags <- list(A = .mk_rolled(50), B = .mk_rolled(52), C = .mk_rolled(54))
+  names(tags) <- c("A", "B", "C")
+  for (i in seq_along(tags)) tags[[i]][, ID := names(tags)[i]]
+
+  out <- .run_warn(tags, orientation.algorithm = "tilt_compass", downsample.to = NULL)
+  roll <- grep("unusual mounting roll", out$warnings, value = TRUE)
+  expect_length(roll, 1L)                                  # ONE warning, not three
+  expect_match(roll, "3 deployments")
+  for (id in c("A", "B", "C")) expect_match(roll, id)      # every id named, none truncated
+  expect_match(roll, "A \\(")                              # id carries its value inline
+})
+
+test_that("the affected ids are listed inline, not as a bulleted section", {
+  tags <- list(A = .mk_rolled(50), B = .mk_rolled(52))
+  for (i in seq_along(tags)) tags[[i]][, ID := names(tags)[i]]
+  out <- .run_warn(tags, orientation.algorithm = "tilt_compass", downsample.to = NULL)
+  roll <- grep("unusual mounting roll", out$warnings, value = TRUE)
+  expect_false(grepl("Affected deployments:", roll))
+  expect_match(roll, "A \\([-0-9.]+.*\\), B \\([-0-9.]+")   # comma-joined on one run
+})
+
+test_that("a corrected and an uncorrected mount are separate findings", {
+  # they need different responses from the reader, so the state is in the headline and the item stays
+  # a bare id + value
+  tags <- list(OK = .mk_rolled(50), BAD = .mk_rolled(70))   # 70 exceeds the default mount.roll.max 60
+  for (i in seq_along(tags)) tags[[i]][, ID := names(tags)[i]]
+  out <- .run_warn(tags, orientation.algorithm = "tilt_compass", downsample.to = NULL)
+  expect_length(grep("NOT corrected", out$warnings), 1L)
+  expect_length(grep("roll, corrected", out$warnings), 1L)
+  expect_match(grep("NOT corrected", out$warnings, value = TRUE), "BAD")
+  expect_match(grep("roll, corrected", out$warnings, value = TRUE), "OK")
+})
+
+test_that("the cohort warnings no longer truncate the id list at 8", {
+  # the four cli_warn sites used utils::head(ids, 8), which silently cut the list with no indication
+  ids <- sprintf("D%02d", 1:12)
+  tags <- stats::setNames(lapply(ids, function(i) { d <- .mk_tagged(i); d }), ids)
+  out <- .run_warn(tags, orientation.algorithm = "tilt_compass", downsample.to = NULL)
+  ax <- grep("without an applied axis mapping", out$warnings, value = TRUE)
+  expect_length(ax, 1L)
+  expect_match(ax, "12 deployments")
+  for (i in ids) expect_match(ax, i)                        # all 12, including the 9th onward
+})
+
+test_that("no end-of-run warning repeats a multi-paragraph explanation", {
+  ok  <- .mk_tagged("OK1")
+  gone <- .mk_tagged("GONE")
+  out <- .run_warn(list(OK1 = ok, GONE = gone[0]), downsample.to = NULL)
+  for (w in out$warnings) {
+    # a two-line shape: headline + one id run. Nothing carrying prose about mechanism or remedy.
+    expect_false(grepl("dead-reckoned tracks will drift|pooled statistic|is idempotent", w))
+  }
 })
 
 test_that("a single data.frame input is accepted (split by ID)", {
@@ -712,7 +772,7 @@ test_that("a CONSTANT imported paddle channel is dropped to NA and warned about 
   expect_equal(sum(is.finite(out[["DEAD_01"]]$paddle_speed)), 0)   # dropped
   expect_gt(sum(is.finite(out[["GOOD_01"]]$paddle_speed)), 0)      # a real channel is untouched
 
-  paddle_w <- w[grepl("CONSTANT imported paddle", w)]
+  paddle_w <- w[grepl("constant paddle channel", w)]
   expect_length(paddle_w, 1L)                                      # consolidated, not one per deployment
   expect_match(paddle_w, "DEAD_01")
   expect_false(grepl("GOOD_01", paddle_w))                         # only the offender is named
@@ -980,8 +1040,8 @@ test_that("the magnetic-heading warning names the deployment at any verbosity", 
   withCallingHandlers(
     invisible(capture.output(suppressMessages(processTagData(list(NOPOS = tg), verbose = 0)))),
     warning = function(e) { w <<- c(w, conditionMessage(e)); invokeRestart("muffleWarning") })
-  expect_true(any(grepl("MAGNETIC", w)))
-  expect_true(any(grepl("NOPOS", w[grepl("MAGNETIC", w)])))
+  expect_true(any(grepl("magnetic heading", w)))
+  expect_true(any(grepl("NOPOS", w[grepl("magnetic heading", w)])))
 })
 
 test_that(".headingReference distinguishes not-recorded from recorded", {

@@ -251,6 +251,51 @@ so short vertical excursions keep their true amplitude.
 An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 }
 }
+\section{End-of-run warnings}{
+
+Findings are aggregated by TYPE, not by deployment: each raises at most one warning naming the count
+and then listing the affected deployments inline with the value that differs, e.g.
+\preformatted{  3 deployments have an unusual mounting roll, corrected (offset).
+  PIN_10 (-45.0 deg), PIN_11 (-43.2 deg), PIN_12 (-39.8 deg)}
+The warning states what happened and to which deployments; what it means and what to do about it are
+below. The per-deployment verbose block (\code{verbose = "detailed"}) reports each finding where it
+occurred, with the thresholds that produced it.
+
+\describe{
+\item{potential pitch anomaly}{Median pitch exceeds \code{orientation$warning.threshold}. Either the
+tag is mounted far from the body axis or the axis mapping is wrong; check
+\code{\link{checkTagMapping}} before using any posture metric.}
+\item{unusual mounting roll, corrected / NOT corrected}{The estimated mounting roll exceeds
+\code{orientation$warning.threshold}. "Corrected" means it was below \code{orientation$mount.roll.max}
+and has been subtracted - the orientation is usable and the value is reported so an unusual mount is
+not silent. "NOT corrected" means it exceeded that gate and was left in place, so roll and heading
+are rotated by roughly that amount.}
+\item{roll residual after correction}{A correction was applied but the median roll is still large,
+i.e. the correction did not take. Usually an axis-mapping problem rather than a mounting one.}
+\item{no magnetometer calibration}{Neither a trusted stored fit nor a coverage-passing inline estimate
+was available, so the heading carries the tag's uncorrected hard-iron offset - the dominant source
+of dead-reckoning drift. Supply a fit via \code{calibrateMagnetometer(calibration.data=)} or collect
+more rotation coverage. Recorded as \code{"uncalibrated_raw"} in \code{meta$mag_calibration$status}.}
+\item{magnetic heading}{No deployment position was available, so the declination could not be applied
+and the heading refers to MAGNETIC north. Relative measures (turning rate, angular velocity,
+circular variance) are unaffected because a constant offset cancels; absolute ones (dead reckoning,
+comparison with GPS, mean heading) are rotated by -8 to +12 degrees depending on region. The frame
+is recorded in \code{meta$deployment$heading_reference}.}
+\item{processed without an applied axis mapping}{Orientation assumes body-frame IMU axes. Run
+\code{\link{applyAxisMapping}} first unless the data is already in the body frame.}
+\item{constant paddle channel, now set to NA}{The imported paddle column held one fixed value for the
+whole deployment - a dead or absent paddle wheel, not a measurement. Left in place it would count as
+that many genuine speed samples in any pooled statistic. Supply a \code{paddle.calibration} row so
+speed can be estimated from the magnetometer, or exclude these deployments from speed analyses.}
+\item{already processed and re-run}{The input already carried a \code{processTagData} step. Re-running
+is idempotent - calibration and downsampling are skipped, metrics recomputed - but it usually means
+an already-processed folder was supplied by mistake.}
+\item{skipped for missing or unusable input}{The deployment has no entry in the returned data and was
+not written to \code{output.dir}. A channel removed by \code{\link{checkSensorIntegrity}} is recorded
+in \code{meta$sensors$excluded}.}
+}
+}
+
 \examples{
 \dontrun{
 # Axis-map the imported data into the body frame first, then reconstruct

@@ -207,6 +207,49 @@
 #'   An optional secondary smoothing step can be applied to the resulting velocity time series (see \code{speed.smoothing}).
 #' }
 #'
+#' @section End-of-run warnings:
+#' Findings are aggregated by TYPE, not by deployment: each raises at most one warning naming the count
+#' and then listing the affected deployments inline with the value that differs, e.g.
+#' \preformatted{  3 deployments have an unusual mounting roll, corrected (offset).
+#'   PIN_10 (-45.0 deg), PIN_11 (-43.2 deg), PIN_12 (-39.8 deg)}
+#' The warning states what happened and to which deployments; what it means and what to do about it are
+#' below. The per-deployment verbose block (\code{verbose = "detailed"}) reports each finding where it
+#' occurred, with the thresholds that produced it.
+#'
+#' \describe{
+#'   \item{potential pitch anomaly}{Median pitch exceeds \code{orientation$warning.threshold}. Either the
+#'     tag is mounted far from the body axis or the axis mapping is wrong; check
+#'     \code{\link{checkTagMapping}} before using any posture metric.}
+#'   \item{unusual mounting roll, corrected / NOT corrected}{The estimated mounting roll exceeds
+#'     \code{orientation$warning.threshold}. "Corrected" means it was below \code{orientation$mount.roll.max}
+#'     and has been subtracted - the orientation is usable and the value is reported so an unusual mount is
+#'     not silent. "NOT corrected" means it exceeded that gate and was left in place, so roll and heading
+#'     are rotated by roughly that amount.}
+#'   \item{roll residual after correction}{A correction was applied but the median roll is still large,
+#'     i.e. the correction did not take. Usually an axis-mapping problem rather than a mounting one.}
+#'   \item{no magnetometer calibration}{Neither a trusted stored fit nor a coverage-passing inline estimate
+#'     was available, so the heading carries the tag's uncorrected hard-iron offset - the dominant source
+#'     of dead-reckoning drift. Supply a fit via \code{calibrateMagnetometer(calibration.data=)} or collect
+#'     more rotation coverage. Recorded as \code{"uncalibrated_raw"} in \code{meta$mag_calibration$status}.}
+#'   \item{magnetic heading}{No deployment position was available, so the declination could not be applied
+#'     and the heading refers to MAGNETIC north. Relative measures (turning rate, angular velocity,
+#'     circular variance) are unaffected because a constant offset cancels; absolute ones (dead reckoning,
+#'     comparison with GPS, mean heading) are rotated by -8 to +12 degrees depending on region. The frame
+#'     is recorded in \code{meta$deployment$heading_reference}.}
+#'   \item{processed without an applied axis mapping}{Orientation assumes body-frame IMU axes. Run
+#'     \code{\link{applyAxisMapping}} first unless the data is already in the body frame.}
+#'   \item{constant paddle channel, now set to NA}{The imported paddle column held one fixed value for the
+#'     whole deployment - a dead or absent paddle wheel, not a measurement. Left in place it would count as
+#'     that many genuine speed samples in any pooled statistic. Supply a \code{paddle.calibration} row so
+#'     speed can be estimated from the magnetometer, or exclude these deployments from speed analyses.}
+#'   \item{already processed and re-run}{The input already carried a \code{processTagData} step. Re-running
+#'     is idempotent - calibration and downsampling are skipped, metrics recomputed - but it usually means
+#'     an already-processed folder was supplied by mistake.}
+#'   \item{skipped for missing or unusable input}{The deployment has no entry in the returned data and was
+#'     not written to \code{output.dir}. A channel removed by \code{\link{checkSensorIntegrity}} is recorded
+#'     in \code{meta$sensors$excluded}.}
+#' }
+#'
 #' @return If \code{return.data = TRUE}, a list where each element contains the processed sensor data for
 #' an individual (named by ID); if \code{return.data = FALSE}, a character vector of the written \code{.rds}
 #' file paths. Files are written to disk whenever \code{output.dir} is set.
@@ -417,6 +460,15 @@ processTagData <- function(data,
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
   nodecl_ids  <- character(0)   # heading kept as MAGNETIC (no position -> no declination available)
+  # Orientation findings are ACCUMULATED and warned once per finding type at the end, never once per
+  # deployment. Warning inside the loop scaled with the cohort: 10 rolled mounts meant 10 warnings, and
+  # R replaces the whole warning surface with "There were N warnings (use warnings() to see them)" as
+  # soon as 11 accumulate - so on a large batch the per-deployment form lost every message it raised.
+  # Each item is "<id> (<value>)", so the group reads as one line of ids at any cohort size.
+  pitch_anom_items   <- character(0)   # median pitch beyond the warning threshold
+  roll_mount_items   <- character(0)   # unusual mounting roll, offset APPLIED
+  roll_uncorr_items  <- character(0)   # unusual mounting roll, offset NOT applied (exceeds mount.roll.max)
+  roll_resid_items   <- character(0)   # roll left over after a correction that did not take
 
   for (i in seq_along(data)) {
 
@@ -1239,7 +1291,7 @@ processTagData <- function(data,
       if (abs(median_pitch) > orientation.warning.threshold) {
         .log_skip(lvl, "potential pitch anomaly: median = ", round(median_pitch, 1), "\u00b0")
         pitch_anomaly_detected <- TRUE
-        warning(sprintf("%s - Potential pitch anomaly detected (%.2f\u00b0)", id, median_pitch), call. = FALSE)
+        pitch_anom_items <- c(pitch_anom_items, sprintf("%s (%.1f\u00b0)", id, median_pitch))
       }
     }
 
@@ -1252,10 +1304,12 @@ processTagData <- function(data,
       roll_mount_unusual <- TRUE
       .log_skip(lvl, "unusual mounting roll: ", round(roll_offset_estimate, 1), "\u00b0 (",
                 if (roll_applied) "corrected" else "NOT corrected", ")")
-      warning(sprintf("%s - Unusual mounting roll (%.2f\u00b0, %s)", id, roll_offset_estimate,
-                      if (roll_applied) "corrected"
-                      else sprintf("NOT corrected - exceeds mount.roll.max = %g\u00b0", mount.roll.max)),
-              call. = FALSE)
+      # split by what was DONE, not by degree: a corrected mount leaves a usable orientation and an
+      # uncorrected one does not, so they need different responses from the reader. Putting that in the
+      # headline keeps each item a bare id and value.
+      item <- sprintf("%s (%.1f\u00b0)", id, roll_offset_estimate)
+      if (roll_applied) roll_mount_items  <- c(roll_mount_items, item)
+      else              roll_uncorr_items <- c(roll_uncorr_items, item)
     }
 
     # RESIDUAL ANOMALY: roll left over after the correction, i.e. the correction did not take.
@@ -1267,7 +1321,7 @@ processTagData <- function(data,
       if (abs(median_roll) > orientation.warning.threshold && !residual_is_the_mount) {
         .log_skip(lvl, "roll residual after correction: median = ", round(median_roll, 1), "\u00b0")
         roll_anomaly_detected <- TRUE
-        warning(sprintf("%s - Roll residual after correction (%.2f\u00b0)", id, median_roll), call. = FALSE)
+        roll_resid_items <- c(roll_resid_items, sprintf("%s (%.1f\u00b0)", id, median_roll))
       }
     }
 
@@ -1721,40 +1775,26 @@ processTagData <- function(data,
 
   # ORDERING-GUARD warning (fires at any verbosity): computed orientation is only valid on axis-mapped
   # data. Emitted once with the affected ids rather than once per deployment.
-  if (length(unoriented_ids)) {
-    cli::cli_warn(c(
-      "{length(unoriented_ids)} tag{?s} processed without an applied axis mapping: {.val {utils::head(unoriented_ids, 8)}}.",
-      "i" = "Orientation (pitch/roll/heading) assumes body-frame IMU axes - run {.fn applyAxisMapping} first, unless the data is already in the body frame."))
-  }
+  .warn_grouped("{length(unoriented_ids)} deployment{?s} {?was/were} processed without an applied axis mapping.",
+                items = unoriented_ids, style = "inline")
 
   # zero-correction warning: a requested magnetometer received NO hard/soft-iron correction (neither a
   # trusted stored fit nor a coverage-passing inline estimate). Heading is then computed from a raw field
   # still carrying the tag's hard-iron offset - the dominant source of dead-reckoning drift. Loud by default.
-  if (length(uncalibrated_ids)) {
-    cli::cli_warn(c(
-      "{length(uncalibrated_ids)} deployment{?s} got NO magnetometer calibration (raw field): {.val {utils::head(uncalibrated_ids, 8)}}.",
-      "!" = "Heading carries the uncorrected hard-iron offset; dead-reckoned tracks will drift.",
-      "i" = "Provide a dedicated calibration via {.code calibrateMagnetometer(calibration.data=)}, or collect more rotation coverage. Status recorded as {.val uncalibrated_raw} in {.code meta$mag_calibration$status}."))
-  }
+  .warn_grouped("{length(uncalibrated_ids)} deployment{?s} {?has/have} no magnetometer calibration.",
+                items = uncalibrated_ids, style = "inline")
 
   # one consolidated notice for every deployment whose imported paddle channel turned out to be constant.
   # Warned rather than logged because dropping an imported channel changes the data, and consolidated
   # rather than per-deployment so a large batch does not drown in identical messages.
-  if (length(dead_paddle_ids)) {
-    cli::cli_warn(c(
-      "{length(dead_paddle_ids)} deployment{?s} had a CONSTANT imported paddle channel, now set to {.val NA}: {.val {utils::head(dead_paddle_ids, 8)}}.",
-      "!" = "A channel holding one fixed value is a dead or absent paddle wheel, not a measurement; left in place it would count as that many genuine speed samples in any pooled statistic.",
-      "i" = "These deployments simply have no paddle speed. Supply a {.arg paddle.calibration} row so it can be estimated from the magnetometer, or exclude them from speed analyses."))
-  }
+  .warn_grouped("{length(dead_paddle_ids)} deployment{?s} had a constant paddle channel, now set to NA.",
+                items = dead_paddle_ids, style = "inline")
 
   # one consolidated notice for every deployment that had already been through processTagData - the common
   # cause is pointing the function at an already-processed output folder. Re-running is idempotent, so this
   # is a warning, not an error, but it is almost always a mistake worth catching in a batch run.
-  if (length(reprocessed_ids)) {
-    cli::cli_warn(c(
-      "{length(reprocessed_ids)} dataset{?s} had already been processed and {?was/were} re-run: {.val {utils::head(reprocessed_ids, 8)}}.",
-      "i" = "Re-running {.fn processTagData} is idempotent (calibration and downsampling are skipped, metrics recomputed), but this usually means an already-processed folder was supplied by mistake."))
-  }
+  .warn_grouped("{length(reprocessed_ids)} deployment{?s} had already been processed and {?was/were} re-run.",
+                items = reprocessed_ids, style = "inline")
 
   # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering
   # failure must never discard the (expensive) processed data - warn and return it, don't abort the run.
@@ -1772,20 +1812,30 @@ processTagData <- function(data,
   # A magnetic heading looks exactly like a geographic one - same column, same units, same range - so the
   # only thing standing between it and a silently rotated track is this warning plus the recorded
   # `heading_reference`. Name the deployments at any verbosity.
-  .warn_grouped(
-    "{length(nodecl_ids)} deployment{?s} {?has/have} a MAGNETIC heading: no position was available to compute the magnetic declination.",
-    items = nodecl_ids,
-    hints = c("Relative measures (turning rate, angular velocity, circular variance) are unaffected - a constant offset cancels.",
-              "Absolute ones (dead reckoning, comparison with GPS fixes, mean heading) are rotated by it: -8 to +12 degrees depending on region.",
-              "Set the deployment position in the metadata to obtain geographic headings; the frame is recorded in {.code meta$deployment$heading_reference}."))
+  # ---- end-of-run warnings: ONE per finding type, never one per deployment -------------------------
+  # Every group has the same two-line shape - a headline that says what happened and how many, then the
+  # affected ids inline with the value that differs. The explanations that used to be repeated here for
+  # every group live in the per-deployment verbose block (which states them where they happened) and in
+  # the Diagnostics section of this function's documentation.
+  .warn_grouped("{length(pitch_anom_items)} deployment{?s} show{?s/} a potential pitch anomaly (median pitch).",
+                items = pitch_anom_items, style = "inline")
+
+  .warn_grouped("{length(roll_uncorr_items)} deployment{?s} {?has/have} an unusual mounting roll, NOT corrected (offset).",
+                items = roll_uncorr_items, style = "inline")
+
+  .warn_grouped("{length(roll_mount_items)} deployment{?s} {?has/have} an unusual mounting roll, corrected (offset).",
+                items = roll_mount_items, style = "inline")
+
+  .warn_grouped("{length(roll_resid_items)} deployment{?s} {?has/have} a roll residual after correction (median roll).",
+                items = roll_resid_items, style = "inline")
+
+  .warn_grouped("{length(nodecl_ids)} deployment{?s} {?has/have} a magnetic heading (no position for the declination).",
+                items = nodecl_ids, style = "inline")
 
   # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
   # large batch is how a cohort quietly shrinks between pipeline steps.
-  .warn_grouped(
-    "{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
-    items = skipped_ids,
-    hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
-              "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
+  .warn_grouped("{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
+                items = skipped_ids, style = "inline")
 
   if (lvl >= 1L) {
     .log_summary(lvl)

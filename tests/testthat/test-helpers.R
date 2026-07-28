@@ -3,6 +3,38 @@
 # and provide a regression net for the upcoming correctness fixes elsewhere.
 
 # ---------------------------------------------------------------------------
+# .warn_grouped
+
+test_that(".warn_grouped renders bullets by default and an inline run on request", {
+  grab <- function(...) {
+    w <- character(0)
+    withCallingHandlers(nautilus:::.warn_grouped(...),
+      warning = function(c) { w <<- c(w, conditionMessage(c)); invokeRestart("muffleWarning") })
+    paste(w, collapse = "\n")
+  }
+  items <- c("PIN_10 (-45.0)", "PIN_11 (-43.2)")
+
+  b <- grab("{length(items)} deployment{?s} rolled.", items = items)
+  expect_match(b, "Affected deployments:")
+  expect_match(b, "PIN_10")
+
+  # inline: no header, ids comma-joined onto one run. The right shape when an item is an id plus a
+  # short parenthetical; bullets stay the DEFAULT because a sentence-shaped item (as
+  # calculateTailBeats and checkSensorIntegrity pass) cannot be joined readably.
+  i <- grab("{length(items)} deployment{?s} rolled.", items = items, style = "inline")
+  expect_false(grepl("Affected deployments:", i))
+  expect_match(i, "PIN_10 \\(-45\\.0\\), PIN_11 \\(-43\\.2\\)")
+
+  expect_null(nautilus:::.warn_grouped("x", items = character(0), style = "inline"))
+  expect_error(nautilus:::.warn_grouped("x", items = "a", style = "bogus"))
+  # an id containing a brace must survive VERBATIM: items are brace-escaped, so it cannot be mistaken
+  # for a glue expression (the headline, by contrast, is deliberately interpolated)
+  br <- grab("one odd id.", items = "PIN_{1} (2)", style = "inline")
+  expect_match(br, "PIN_{1} (2)", fixed = TRUE)
+})
+
+
+# ---------------------------------------------------------------------------
 # .convertUnits
 # ---------------------------------------------------------------------------
 test_that(".convertUnits handles acceleration conversions", {
