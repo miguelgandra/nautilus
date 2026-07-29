@@ -58,6 +58,71 @@ deployment.
 
 <br/>
 
+## Organising a project
+
+nautilus does not enforce a specific project layout, but `importTagData()` expects the
+raw files from each deployment to be organised in a consistent way: each deployment
+should have its own folder, with files grouped by tag or data source. The structure
+below is the one used throughout the tutorials.
+
+The `data/` folder name is not required; it is simply used here as the recommended
+import root.
+
+```
+my-study/
+├── deployments.csv          # deployment metadata table
+├── data/
+│   ├── PIN_01/              # one folder per deployment ID
+│   │   ├── CMD/             # multi-sensor tag files
+│   │   │   ├── xxxxx-Multisensor22Splash52.csv
+│   │   │   └── ...
+│   │   └── SPOT/            # satellite tag files
+│   │       ├── xxxxx-Locations.csv
+│   │       └── ...
+│   ├── PIN_02/
+│   │   ├── CMD/
+│   │   │   ├── xxxxx-CameraCMD134Spot98.csv
+│   │   │   └── ...
+│   │   └── MiniPAT/
+│   │       ├── xxxxx-Locations.csv
+│   │       └── ...
+│   └── ...
+└── video/                   # optional: onboard footage
+    └── PIN_02/
+        ├── video_001.mp4
+        └── ...
+```
+
+Each deployment folder must be named after the deployment ID used in your metadata
+table. This allows nautilus to associate raw files with the corresponding deployment
+information.
+
+Inside each deployment folder, create one subfolder for each available data source.
+The names shown above (CMD, SPOT, MiniPAT, etc.) are examples only and can be adapted
+to your own file organisation: the multi-sensor folder is read from
+`sensor.subdirectory` (default `"CMD"`), and a co-deployed satellite tag folder is
+detected automatically, or named explicitly with `wc.subdirectory`.
+
+Deployments do not need to contain the same data sources. For example, one deployment
+may include a multi-sensor tag and satellite tag, while another may contain only the
+multi-sensor data.
+
+Onboard video sits under its own root, passed separately to `getVideoMetadata()`, since
+footage is usually much larger than the sensor records and often kept on another drive.
+
+The deployment table is the main metadata file linking your raw files to deployment
+information. It should contain one row per deployment and can use your existing column
+names. Use `metadataColumns()` to map your columns to the roles expected by nautilus;
+biological attributes such as `size` are passed through its `traits` argument rather
+than mapped to a role.
+
+| ID | tag_model | attach_time | lon | lat | size | deployment_type |
+|----|-----------|-------------|-----|-----|------|-----------------|
+| PIN_01 | CATS | 2022-10-13 13:50 | -28.6 | 38.5 | 10 | towed |
+| PIN_02 | CATS | 2022-10-14 09:12 | -28.5 | 38.6 | 9.5 | towed |
+
+<br/>
+
 ## What nautilus does
 
 ### 1 &middot; Prepare and import
