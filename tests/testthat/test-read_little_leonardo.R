@@ -117,6 +117,91 @@ test_that("no video ancillary is produced when the camera never recorded or the 
   expect_true(all(c("depth", "temp") %in% names(none$data)))
 })
 
+# ---------------------------------------------------------------------------------------------------
+# Channels the export declares but this reader does not read.
+#
+# Little Leonardo sells more sensor suites than the one deployment this reader was written against: the
+# model name encodes them ("3M" = tri-axial compass, "P" = propeller swim-speed sensor). The MATLAB
+# importer in Cade et al. (2021) reads a compass from columns 4-6 of the SAME acceleration file, and an
+# optional Speed column from the depth file, so both layouts demonstrably exist. Reading them would mean
+# guessing their units, which the magnetometer calibration and the paddle-speed calibration cannot do
+# safely - so the reader names them as unread instead of dropping them silently.
+# ---------------------------------------------------------------------------------------------------
+
+# a fixture with arbitrary extra columns in either file
+.ll_wide_fixture <- function(dir = tempfile(), accel_header = " X  ,Y   ,Z   ", n_accel = 3L,
+                             dt_header = "Depth , Temp,  Video ", n_dt = 3L, n_sec = 5L, hz = 10L) {
+  dir.create(dir, showWarnings = FALSE, recursive = TRUE)
+  n <- n_sec * hz
+  set.seed(11)
+  acc_rows <- vapply(seq_len(n), function(i)
+    paste0(paste(round(stats::rnorm(n_accel), 2), collapse = ","), ","), character(1))
+  .write_crlf(c("ACCELERATION DATA ", "", sprintf(" %d msec/point", 1000L / hz),
+                "RECORD TIME   0h 1m", "START DATE   0000/00/00", "START TIME    00:00:00", "",
+                accel_header, acc_rows), file.path(dir, "LLW_A.txt"))
+  dt_rows <- vapply(seq_len(n_sec), function(i)
+    paste(round(c(i, 20 + i, stats::runif(max(0L, n_dt - 2L), 0.5, 2)), 2), collapse = ","), character(1))
+  .write_crlf(c("Depth, Temp, and Other Data ", "", "RECORD TIME   0 hours 1 minutes",
+                "START DATE   0000/00/00", "START TIME    00:00:00", "", dt_header, dt_rows),
+              file.path(dir, "LLW_DT.txt"))
+  dir
+}
+
+test_that(".llColumnNames counts channels from the header, not from fread's column count", {
+  # the acceleration file's trailing comma gives fread a 4th, all-NA column: counting columns would
+  # report a phantom extra channel on every healthy file, so the guard must read the header instead
+  expect_identical(nautilus:::.llColumnNames(" X  ,Y   ,Z   "), c("X", "Y", "Z"))
+  expect_identical(nautilus:::.llColumnNames("Depth , Temp,  Video "), c("Depth", "Temp", "Video"))
+  expect_identical(nautilus:::.llColumnNames(character(0)), character(0))
+  expect_identical(nautilus:::.llColumnNames(NA_character_), character(0))
+})
+
+test_that("a healthy deployment reports nothing unread (the trailing comma must not trip the guard)", {
+  r <- nautilus:::read_little_leonardo(.ll_fixture()$dir, start = .t0())
+  expect_length(r$unread_columns, 0L)
+  r2 <- nautilus:::read_little_leonardo(.ll_fixture(with_video = FALSE)$dir, start = .t0())
+  expect_length(r2$unread_columns, 0L)
+})
+
+test_that("compass columns in the acceleration file are named as unread, not silently dropped", {
+  d <- .ll_wide_fixture(accel_header = " X  ,Y   ,Z   ,MX  ,MY  ,MZ  ", n_accel = 6L)
+  r <- nautilus:::read_little_leonardo(d, start = .t0())
+  # the channels that ARE read stay correct
+  expect_true(all(c("ax", "ay", "az") %in% names(r$data)))
+  expect_false(any(c("mx", "my", "mz") %in% names(r$data)))   # not mapped on a positional guess
+  # and the ones that are not read are named, per file
+  expect_length(r$unread_columns, 1L)
+  expect_match(r$unread_columns, "LLW_A\\.txt")
+  expect_match(r$unread_columns, "MX, MY, MZ")
+})
+
+test_that("a non-video third column in the depth file is not encoded as camera coverage", {
+  # the dangerous case a column COUNT cannot catch: Depth,Temp,Speed is exactly as wide as
+  # Depth,Temp,Video, so only the header name distinguishes a propeller trace from a camera flag
+  d <- .ll_wide_fixture(dt_header = "Depth , Temp,  Speed ", n_dt = 3L)
+  r <- nautilus:::read_little_leonardo(d, start = .t0())
+  expect_null(r$ancillary$video)                              # no fabricated camera coverage
+  expect_true(all(c("depth", "temp") %in% names(r$data)))     # depth/temp still read
+  expect_length(r$unread_columns, 1L)
+  expect_match(r$unread_columns, "LLW_DT\\.txt: Speed")
+})
+
+test_that("extra depth-file columns beyond the third are named as unread", {
+  d <- .ll_wide_fixture(dt_header = "Depth , Temp,  Video , Speed ", n_dt = 4L)
+  r <- nautilus:::read_little_leonardo(d, start = .t0())
+  expect_match(r$unread_columns, "LLW_DT\\.txt: Speed")
+  expect_false(grepl("Video", r$unread_columns))              # the video flag IS read, so not listed
+})
+
+test_that("both files' unread channels are reported together, one entry each", {
+  d <- .ll_wide_fixture(accel_header = " X  ,Y   ,Z   ,MX  ,MY  ,MZ  ", n_accel = 6L,
+                        dt_header = "Depth , Temp,  Speed ", n_dt = 3L)
+  r <- nautilus:::read_little_leonardo(d, start = .t0())
+  expect_length(r$unread_columns, 2L)
+  expect_true(any(grepl("_A\\.txt", r$unread_columns)))
+  expect_true(any(grepl("_DT\\.txt", r$unread_columns)))
+})
+
 test_that("read_little_leonardo refuses to guess a clock, and reports why", {
   f <- .ll_fixture()
   expect_match(nautilus:::read_little_leonardo(f$dir, start = NULL)$reason, "no recording start time")
@@ -186,6 +271,32 @@ test_that("importTagData(format = 'little_leonardo') imports a LL deployment end
   expect_equal(as.numeric(m$span$first_datetime), as.numeric(.t0()))
   # the audit trail names the operation the user invoked, not the internal assembler
   expect_identical(vapply(m$processing, function(p) p$step, character(1)), "importTagData")
+})
+
+test_that("importTagData surfaces unread channels: warning when quiet, tally when verbose", {
+  # a deployment whose logger declares a compass and a propeller channel this reader does not read.
+  # The import must SUCCEED (the channels that were read are correct) but must not pass silently.
+  root <- tempfile(); dir.create(root)
+  .ll_wide_fixture(dir = file.path(root, "LLTEST"),
+                   accel_header = " X  ,Y   ,Z   ,MX  ,MY  ,MZ  ", n_accel = 6L,
+                   dt_header = "Depth , Temp,  Speed ", n_dt = 3L)
+  args <- list(data.folders = file.path(root, "LLTEST"), format = "little_leonardo",
+               metadata = .ll_md(), columns = .ll_cols(), return.data = TRUE)
+
+  # verbose = 0 ("quiet"): the deferred, catchable base-R warning channel
+  w <- testthat::capture_warnings(tags <- do.call(importTagData, c(args, list(verbose = "quiet"))))
+  expect_true(any(grepl("Unread channels", w)))
+  expect_true(any(grepl("MX, MY, MZ", w)))
+  expect_true(any(grepl("Speed", w)))
+  # the import still succeeded, with the channels it could read
+  expect_s3_class(tags[["LLTEST"]], "nautilus_tag")
+  expect_setequal(nautilus:::.getMeta(tags[["LLTEST"]])$sensors$present,
+                  c("ax", "ay", "az", "depth", "temp"))
+
+  # verbose >= 1: cli-only, echoed in the SUMMARY tally, and no base-R warning (the documented split)
+  out <- testthat::capture_messages(
+    expect_warning(do.call(importTagData, c(args, list(verbose = 2))), NA))
+  expect_true(any(grepl("unread channels", out, ignore.case = TRUE)))
 })
 
 test_that("importTagData carries the LL video flag through to meta$ancillary$video", {

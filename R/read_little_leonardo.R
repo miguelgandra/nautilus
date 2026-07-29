@@ -49,6 +49,21 @@
   as.integer(hit[length(hit)])   # skip up to AND including the column-header line
 }
 
+#' Split a Little Leonardo column-header line into trimmed channel names
+#'
+#' The header row - not `ncol()` - is what says how many channels a file really carries. Data rows in the
+#' acceleration file end in a trailing comma, so `fread()` returns one more (all-NA) column than there are
+#' channels; counting columns would therefore report an extra channel on every healthy file. The header
+#' has no trailing field, so splitting it gives the true count and, more usefully, the names.
+#' @return Character vector of non-empty column names (possibly length 0).
+#' @keywords internal
+#' @noRd
+.llColumnNames <- function(line) {
+  if (!length(line) || is.na(line[1])) return(character(0))
+  nm <- trimws(strsplit(line[1], ",", fixed = TRUE)[[1]])
+  nm[nzchar(nm)]
+}
+
 #' Locate a deployment's Little Leonardo files
 #' @return A list with `accel` and `depth` paths (NA when absent).
 #' @keywords internal
@@ -125,7 +140,9 @@
 #' @param verbose Unused; present for reader-contract symmetry with read_cats().
 #' @return The reader contract: `data` (canonical frame, or NULL), `reason`, `assembly`, `mapping`,
 #'   `selected_cols`, `calibration_info`, `temp_status`, `excluded`, `tz_mismatch`, `tz_note`,
-#'   `unit_notes`, and `ancillary` - a named list of primary-tag ancillary streams parsed in-band, or
+#'   `unit_notes`, `unread_columns` (channels the files declare but this reader does not read - one
+#'   entry per file, `"<file>: <names>"`; the caller reports them), and
+#'   `ancillary` - a named list of primary-tag ancillary streams parsed in-band, or
 #'   `NULL`. Currently this carries `video` (the DT file's per-second camera-on flag, transition-encoded
 #'   into `meta$ancillary$video` with the same shape as the WC wet/dry stream) when a video column is
 #'   present and the camera recorded at all.
@@ -143,7 +160,8 @@ read_little_leonardo <- function(folder,
   fail <- function(reason, assembly = NULL) {
     list(data = NULL, reason = reason, assembly = assembly, mapping = NULL, selected_cols = NULL,
          calibration_info = NULL, temp_status = "none", excluded = character(0),
-         tz_mismatch = FALSE, tz_note = NULL, unit_notes = character(0))
+         tz_mismatch = FALSE, tz_note = NULL, unit_notes = character(0),
+         unread_columns = character(0))
   }
 
   files <- .llDiscover(folder, sensor.subdirectory)
@@ -166,12 +184,19 @@ read_little_leonardo <- function(folder,
   # ---- acceleration (X/Y/Z, in g), skipping the header block ---------------------------------------
   skip_a <- .llSkip(head_lines, "^\\s*X\\s*,")
   if (is.na(skip_a)) return(fail(sprintf("unrecognised header in %s: no 'X , Y , Z' column row", basename(files$accel))))
+  accel_names <- .llColumnNames(head_lines[skip_a])
   acc <- tryCatch(data.table::fread(files$accel, skip = skip_a, header = FALSE, fill = TRUE,
                                     showProgress = FALSE),
                   error = function(e) NULL)
   if (is.null(acc) || !nrow(acc) || ncol(acc) < 3L) return(fail(sprintf("could not parse %s", basename(files$accel))))
   acc <- acc[, 1:3]                                   # a trailing comma yields a 4th, empty column
   data.table::setnames(acc, c("ax", "ay", "az"))
+
+  # Channels beyond X/Y/Z are NOT read. Some Little Leonardo models ("3M" in the model name) write the
+  # tri-axial compass into columns 4-6 of this same file. Reading them would mean guessing their units,
+  # which the downstream magnetometer calibration cannot do safely, so they are reported as unread rather
+  # than silently dropped (the caller renders this) or silently mapped.
+  a_unread <- if (length(accel_names) > 3L) accel_names[-(1:3)] else character(0)
 
   n <- nrow(acc)
   dt <- acc
@@ -184,10 +209,17 @@ read_little_leonardo <- function(folder,
   # DT file carries one row per second of the same recording.
   n_dt <- 0L
   video_anc <- NULL                                   # video-coverage ancillary (meta$ancillary$video), if any
+  d_unread <- character(0)
   if (!is.na(files$depth)) {
     dhead <- tryCatch(readLines(files$depth, n = 10L, warn = FALSE), error = function(e) character(0))
     skip_d <- .llSkip(dhead, "^\\s*Depth\\s*,")
     if (!is.na(skip_d)) {
+      depth_names <- .llColumnNames(dhead[skip_d])
+      # The third column is a camera flag ONLY when the header says so. A propeller ("P" in the model
+      # name) logger puts its own channel here, and a column count cannot tell the two apart - both are
+      # three wide. Encoding a speed trace as camera-on coverage would fabricate a result, so the name
+      # decides, and anything unrecognised is left unread and reported.
+      third_is_video <- length(depth_names) >= 3L && grepl("video", depth_names[3L], ignore.case = TRUE)
       dtemp <- tryCatch(data.table::fread(files$depth, skip = skip_d, header = FALSE, fill = TRUE,
                                           showProgress = FALSE),
                         error = function(e) NULL)
@@ -195,7 +227,9 @@ read_little_leonardo <- function(folder,
         n_dt <- nrow(dtemp)
         keep <- min(ncol(dtemp), 3L)
         dtemp <- dtemp[, seq_len(keep), with = FALSE]
-        data.table::setnames(dtemp, c("depth", "temp", "video")[seq_len(keep)])
+        data.table::setnames(dtemp, c("depth", "temp", if (third_is_video) "video" else "col3")[seq_len(keep)])
+        if (length(depth_names) >= 3L && !third_is_video) d_unread <- c(d_unread, depth_names[3L])
+        if (length(depth_names) > 3L) d_unread <- c(d_unread, depth_names[-(1:3)])
         idx <- ((seq_len(n) - 1L) %/% as.integer(round(hz))) + 1L
         idx[idx > n_dt] <- n_dt                       # a short DT file holds the last value
         dt[, depth := dtemp$depth[idx]]
@@ -237,10 +271,18 @@ read_little_leonardo <- function(folder,
                    n_files = sum(!is.na(c(files$accel, files$depth))), n_excluded = 0L,
                    duplicates_removed = 0L, reason = NULL)
 
+  # channels the file declares but this reader does not yet read, named per file so the caller can say
+  # exactly what was left behind (see `unread_columns` in the return contract)
+  unread_columns <- c(
+    if (length(a_unread)) sprintf("%s: %s", basename(files$accel), paste(a_unread, collapse = ", ")),
+    if (length(d_unread)) sprintf("%s: %s", basename(files$depth), paste(d_unread, collapse = ", "))
+  )
+
   list(data = dt, reason = NULL, assembly = assembly, mapping = NULL,
        selected_cols = c("X", "Y", "Z", if (!is.na(files$depth)) c("Depth", "Temp")),
        calibration_info = NULL, temp_status = "none", excluded = excluded_channels,
        tz_mismatch = FALSE, tz_note = NULL,
        ancillary = if (!is.null(video_anc)) list(video = video_anc) else NULL,
+       unread_columns = unread_columns,
        unit_notes = sprintf("timestamps synthesised from data_start + %g Hz (header)", hz))
 }

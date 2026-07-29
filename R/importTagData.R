@@ -272,6 +272,7 @@ importTagData <- function(data.folders,
   failed_ids <- character(0); tz_issue_ids <- character(0)
   temp_discard_ids <- character(0); temp_override_ids <- character(0)
   align_skip_ids <- character(0); align_skip_reasons <- character(0)   # clock alignment abstentions
+  unread_ids <- character(0); unread_desc <- character(0)              # channels a reader declined to read
   ids_str <- function(ids) { ids <- unique(ids); if (length(ids)) paste0(" (", paste(ids, collapse = ", "), ")") else "" }
   # consolidate every collector into one ordered set of issue lines (read at call time, so the closure
   # always sees the final counts). Used for both the cli tally and the deferred warnings.
@@ -289,6 +290,15 @@ importTagData <- function(data.folders,
       for (rs in names(by_reason))
         out <- c(out, sprintf("Clock alignment: %d not applied - %s%s",
                               length(by_reason[[rs]]), rs, ids_str(by_reason[[rs]])))
+    }
+    # grouped BY THE COLUMNS LEFT UNREAD, for the same reason: a run where two tag models each declare a
+    # different extra channel needs to name both, not report "2 deployments had unread columns".
+    if (length(unread_ids)) {
+      by_cols <- split(unread_ids, unread_desc)
+      for (cl in names(by_cols))
+        out <- c(out, sprintf("Unread channels: %d deployment%s with columns this reader does not read - %s%s",
+                              length(by_cols[[cl]]), if (length(by_cols[[cl]]) != 1) "s" else "",
+                              cl, ids_str(by_cols[[cl]])))
     }
     out
   }
@@ -794,10 +804,21 @@ importTagData <- function(data.folders,
     if (identical(temp_status, "blacklisted_only")) temp_discard_ids  <- c(temp_discard_ids, id)
     else if (identical(temp_status, "override"))    temp_override_ids <- c(temp_override_ids, id)
     if (isTRUE(res$tz_mismatch)) tz_issue_ids <- c(tz_issue_ids, id)
+    # Columns the raw files declare but the reader does not read (e.g. a Little Leonardo compass or
+    # propeller channel). Not a fault in the data and not a reason to refuse the import - the channels
+    # that WERE read are correct - but it must not pass silently, or a user loses a sensor without
+    # being told. Same three-tier route as the issues above: inline, tally, deferred warning.
+    if (length(res$unread_columns)) {
+      unread_ids  <- c(unread_ids, id)
+      unread_desc <- c(unread_desc, paste(res$unread_columns, collapse = "; "))
+    }
 
     if (lvl >= 2L && length(excluded_channels)) {
       .log_skip(lvl, "excluded sensors (metadata): ",
                 paste(.channelsToFamilies(excluded_channels), collapse = ", "))
+    }
+    if (lvl >= 2L && length(res$unread_columns)) {
+      .log_skip(lvl, "unread channels: ", paste(res$unread_columns, collapse = "; "))
     }
 
     # tag attributes (model / type / package): the most fundamental dataset attributes, shown first in
