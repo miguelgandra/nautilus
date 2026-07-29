@@ -841,6 +841,85 @@
   list(peaks = peaks, troughs = troughs)
 }
 
+#' Biased autocorrelation up to `lag.max`, via the FFT.
+#'
+#' `stats::acf` computes the sum directly, which is O(n * lag.max) per call. Estimating a rate on a
+#' rolling window over a multi-million-sample record makes that the dominant cost, so the same quantity
+#' is taken through the Wiener-Khinchin route instead: O(n log n), and identical to `stats::acf`'s
+#' default to floating-point tolerance.
+#'
+#' The estimator is the BIASED one (each lag divided by `n`, not by `n - k`), matching `stats::acf`.
+#' That is the right choice here rather than a defect to correct: the implied triangular taper damps
+#' long lags, where few sample pairs contribute, and so suppresses the spurious high-lag maxima that an
+#' unbiased estimator produces on a short window.
+#' @param y Numeric vector, already demeaned and free of non-finite values.
+#' @param lag.max Largest lag to return.
+#' @return Numeric vector of length `lag.max + 1`, starting at lag 0 (which is 1).
+#' @keywords internal
+#' @noRd
+.acfBiased <- function(y, lag.max) {
+  n <- length(y)
+  lag.max <- as.integer(min(lag.max, n - 1L))
+  if (n < 2L || lag.max < 1L) return(NA_real_)
+  nfft <- as.integer(2^ceiling(log2(2 * n)))
+  f <- stats::fft(c(y, rep(0, nfft - n)))
+  r <- Re(stats::fft(f * Conj(f), inverse = TRUE)) / nfft
+  if (!is.finite(r[1]) || r[1] <= 0) return(NA_real_)
+  r[seq_len(lag.max + 1L)] / r[1]
+}
+
+#' Greedy minimum-distance peak suppression (a refractory period).
+#'
+#' Walks the candidate peaks in descending height and, for each survivor, discards every other candidate
+#' within `dist` samples of it. This is the standard rule (`scipy.signal.find_peaks(distance=)`): the
+#' tallest peak in any refractory window wins, so a small maximum riding on the flank of a large one is
+#' removed rather than competing with it.
+#'
+#' `dist` may vary per peak, which is what lets the refractory period follow a rate that changes through
+#' the record. The suppression radius is read from the SURVIVING peak, so a peak's own neighbourhood is
+#' defined by the rate measured where it sits.
+#' @param v The signal the peaks index into (heights are read from it).
+#' @param peaks Integer indices of candidate peaks, strictly increasing.
+#' @param dist Refractory distance in samples: one value, or one per element of `peaks`.
+#' @return The retained subset of `peaks`, still strictly increasing.
+#' @keywords internal
+#' @noRd
+.thinRefractory <- function(v, peaks, dist) {
+  np <- length(peaks)
+  if (np < 2L) return(peaks)
+  if (length(dist) == 1L) dist <- rep(dist, np)
+  keep <- rep(TRUE, np)
+  accepted <- rep(FALSE, np)
+  # tallest first, so a survivor always outranks everything it suppresses
+  for (i in order(v[peaks], decreasing = TRUE)) {
+    if (!keep[i]) next
+    accepted[i] <- TRUE
+    d <- dist[i]
+    if (!is.finite(d) || d <= 1) next
+    # Walk outward only as far as the refractory window reaches, rather than locating its edges by
+    # binary search on the whole peak vector: the window holds a couple of peaks, so this is linear in
+    # the record where the search was closer to quadratic (80k peaks: 11.1 s -> well under 1 s).
+    #
+    # Strictly inside the window: a peak at exactly `d` away already satisfies the minimum spacing and
+    # survives, matching find_peaks(distance=), which requires separation >= distance rather than > it.
+    #
+    # An already-ACCEPTED peak is never revoked. With a per-peak `dist` the radii are asymmetric, so a
+    # shorter peak whose window is wide can reach back to a taller one whose narrower window never
+    # reached it -- and would delete it, contradicting "the tallest peak in any refractory window wins".
+    j <- i - 1L
+    while (j >= 1L && peaks[i] - peaks[j] < d) {
+      if (!accepted[j]) keep[j] <- FALSE
+      j <- j - 1L
+    }
+    j <- i + 1L
+    while (j <= np && peaks[j] - peaks[i] < d) {
+      if (!accepted[j]) keep[j] <- FALSE
+      j <- j + 1L
+    }
+  }
+  peaks[keep]
+}
+
 
 # ------------------
 # Depth zero-offset drift correction (depthDriftControl "surface" method)

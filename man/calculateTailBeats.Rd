@@ -20,6 +20,7 @@ calculateTailBeats(
   smooth.window = 10,
   max.interp.gap = 10,
   ridge.prominence = 2,
+  min.periodicity = 0.15,
   plot = FALSE,
   plot.file = NULL,
   plot.wavelet = TRUE,
@@ -97,6 +98,14 @@ background typical of these records, one pinned near \code{min.freq.Hz}). Set \c
 and recover the unguarded behaviour. See Details for how the background is estimated and why a peak
 sitting exactly on a band edge cannot be established.}
 
+\item{min.periodicity}{Numeric (default 0.15). Peak-detection method only. The minimum
+autocorrelation the band-passed signal must show at its dominant lag before a tail-beat frequency is
+reported; below it the sample is \code{NA}. This is the peak-domain counterpart of
+\code{ridge.prominence}: it asks whether the waveform repeats at all, not how large it is. Keep it
+low -- on validated whale-shark records a floor of 0.3 discards roughly a quarter of stretches that
+demonstrably contain an oscillation. Set \code{0} to report a frequency everywhere a period can be
+fitted.}
+
 \item{plot}{Logical. If \code{TRUE}, draw the diagnostic plots to the active graphics device. Default \code{FALSE}.}
 
 \item{plot.file}{Character. Path to a single multi-page PDF in which to save the diagnostic plots
@@ -140,8 +149,9 @@ otherwise \code{NA} (see Details).
 \code{tbf_agree} (whether the two agree within 10\\%).
 }
 \code{tbf_agree} reads as a certificate, not an error flag: where the two backends agree they are
-almost never both wrong, but where they disagree nothing identifies which one to distrust, so
-\code{FALSE} means unresolved rather than bad.
+rarely both wrong, but where they disagree nothing identifies which one to distrust, so \code{FALSE}
+means unresolved rather than bad. The certificate has one known blind spot -- both backends fix a
+dominant periodicity first, so neither can vouch for the other against a harmonic error (see Details).
 For list/file inputs, returns a named list of modified data tables. Run-level QC (method, axis used,
 median TBF and amplitude, percent swimming) is recorded in the metadata audit trail. If
 \code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
@@ -193,21 +203,53 @@ Disable it with \code{bandpass.filter = FALSE}.
 \strong{Peak detection} (\code{method = "peaks"}). Individual beats are located as successive
 peak/trough pairs in the band-passed signal. Each beat contributes a frequency (from the peak-to-peak
 interval) and an amplitude (the peak-to-trough excursion); every beat whose interval falls in
-\code{[min.freq.Hz, max.freq.Hz]} is kept, and the values are mapped onto a per-row series. Detection
-sensitivity (the minimum swing that counts as a peak) is data-driven and not user-tunable, so that the
-frequency estimate does not depend on any behavioural threshold. Whether a beat counts as active
-swimming is a separate step (see Swimming vs gliding), not part of detection.
+\code{[min.freq.Hz, max.freq.Hz]} is kept, and the values are mapped onto a per-row series. Whether a
+beat counts as active swimming is a separate step (see Swimming vs gliding), not part of detection.
+
+Candidate maxima are found with a permissive, data-driven amplitude threshold, and are then thinned by
+a \emph{refractory period}: within 0.6 of the locally-measured beat period only the tallest maximum
+survives. This is what separates a beat from the harmonic shoulder or flank ripple that accompanies it
+-- an animal cannot beat its tail twice in one period, so maxima too close together are one beat, not
+two. The period is measured independently of the peak picking, from a rolling autocorrelation of the
+band-passed signal, because peak picking cannot establish its own rate: iterating a refractory period
+from the raw peak intervals converges on double the true rate when seeded from below and half of it
+when seeded from above. Detection is therefore data-driven and not user-tunable, so that the frequency
+estimate does not depend on any behavioural threshold; the one exposed control, \code{min.periodicity},
+governs only when to \emph{withhold} an estimate, not which frequency to report.
+
+An amplitude threshold cannot do this job, and raising one is not an alternative. Tested across
+whale-shark deployments, the amplitude threshold that recovers a low-amplitude record halves the
+frequency of a clean high-amplitude one: the false maxima are those too close together, not those too
+small, so the invariant is timing rather than size. Where the autocorrelation shows no repeating
+waveform at all (strength below \code{min.periodicity}), the frequency is withheld as \code{NA} rather
+than forced, mirroring the wavelet's \code{ridge.prominence}.
 
 \strong{Wavelet transform} (\code{method = "wavelet"}). A Morlet continuous wavelet transform
 (Torrence & Compo 1998) is computed over \code{[min.freq.Hz, max.freq.Hz]}, and the strongest scale at
 each sample gives the dominant frequency, refined below the scale grid by a parabolic fit, together
 with its absolute amplitude. \code{max.interp.gap} linearly fills short gaps. Estimates whose wavelet
 support reaches a record end are masked (cone of influence). Long records are transformed in blocks
-with guard bands, so the result does not depend on how the record is divided. Being a frequency-domain
-method, it fails differently from peak detection: it is unbiased by harmonics, on which peak detection
-can report a multiple of the true frequency, but it can be captured by a strong out-of-band or
-low-frequency component, which peak detection shrugs off. Agreement between the two is therefore
-informative.
+with guard bands, so the result does not depend on how the record is divided.
+
+\strong{How independent are the two backends?} Less than fully, and the claim is worth stating
+precisely. Both now begin by establishing a dominant periodicity -- peak detection from a rolling
+autocorrelation, the wavelet from a scale-space ridge -- so a signal that misleads both about the
+fundamental (a dominant second harmonic, say) will mislead them together, and their agreement cannot
+certify against that. Downstream of that step they remain genuinely different: the autocorrelation is
+sensitive to amplitude modulation and to broadband noise in ways the wavelet ridge is not, while the
+ridge can be captured by a strong out-of-band or low-frequency component that the time-domain method
+shrugs off. Agreement is therefore still informative, but it is evidence about contamination within
+the band rather than a guarantee against harmonic error -- for which the separate harmonic flag and
+band-edge check are the relevant instruments.
+
+The two part company in a specific, recognisable situation: a record carrying a slow high-amplitude
+component alongside a faster beat. Autocorrelation asks which waveform repeats and finds the slow one;
+a spectral peak asks where the power is concentrated and finds the faster one. On one whale-shark
+deployment this described 60\\% of the record, and there the peak backend reported roughly a third
+lower than the wavelet; over the remaining 40\\%, where the two questions have the same answer, both
+backends were unbiased to within 0.03 octaves. A low \code{tbf_agree} on a deployment is therefore
+worth reading as a question about what the animal was doing, not only as instrument noise -- and
+raising \code{min.periodicity} will withhold exactly the ambiguous stretches, at the cost of coverage.
 
 \strong{Swimming vs gliding.} This is deliberately \emph{not} inferred from the signal by default.
 The function estimates the dominant in-band oscillation everywhere it can; deciding whether that

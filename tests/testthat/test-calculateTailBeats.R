@@ -831,3 +831,183 @@ test_that("a clean single-axis batch raises none of the grouped axis warnings", 
   w <- .tb_warnings(list(A01 = .sway(freq = 1.0, fs = 20, dur = 200)))
   expect_false(any(grepl("disagree|2f harmonic|band limits", w)))
 })
+
+
+#######################################################################################################
+# The refractory period: peak detection no longer counts a harmonic shoulder as a beat ################
+#######################################################################################################
+#
+# Regression locks for a SILENT bias, not a crash. The old detector accepted any maximum whose swing
+# exceeded 0.5 x MAD, so a second harmonic or a flank ripple split one beat into two and the reported
+# frequency came out close to double. Measured on 215 ground-truthed 120-s windows from 10 whale-shark
+# deployments: median bias +0.68 octaves (1.6x), worst deployment +2.18 octaves (4.5x). Every test below
+# fails against that old detector.
+
+# A fundamental with a second harmonic riding on it -- the shape a fish's surge axis actually has,
+# because a tail stroke drives the body forward once per HALF cycle.
+.harmonic <- function(f = 0.3, ratio = 0.5, fs = 20, dur = 900, noise = 0.02, seed = 7) {
+  set.seed(seed)
+  t <- seq(0, dur, by = 1 / fs)
+  sin(2 * pi * f * t) + ratio * sin(2 * pi * 2 * f * t + 0.7) + stats::rnorm(length(t), 0, noise)
+}
+
+.peaksFreq <- function(x, fs = 20, min.freq = 0.1, max.freq = 2.5, ...) {
+  r <- nautilus:::.tailBeatsPeaks(x, fs, min.freq, max.freq,
+                                  filter.low = min.freq * 0.9, filter.high = max.freq * 1.1, ...)
+  stats::median(r$tbf_hz, na.rm = TRUE)
+}
+
+test_that("a second harmonic no longer doubles the reported frequency", {
+  skip_if_not_installed("signal")
+  # the old detector marked the harmonic shoulder as a beat and returned ~0.6 Hz here
+  expect_equal(.peaksFreq(.harmonic(f = 0.3, ratio = 0.5)), 0.3, tolerance = 0.06)
+  expect_equal(.peaksFreq(.harmonic(f = 0.2, ratio = 0.5)), 0.2, tolerance = 0.04)
+})
+
+test_that("the fix does not halve a genuinely fast beat", {
+  skip_if_not_installed("signal")
+  # PIN_CAM_18/PIN_CAM_30 in the whale-shark archive beat at ~0.55 Hz and the OLD detector was already
+  # right about them. Any amplitude-threshold fix breaks these (a 2.5 x MAD threshold reports -1.4
+  # octaves on PIN_CAM_18); the refractory rule must not.
+  set.seed(11)
+  fs <- 20; t <- seq(0, 900, by = 1 / fs)
+  x <- sin(2 * pi * 0.55 * t) + stats::rnorm(length(t), 0, 0.05)
+  expect_equal(.peaksFreq(x), 0.55, tolerance = 0.05)
+})
+
+test_that("the detector spans the band without bias at either end", {
+  skip_if_not_installed("signal")
+  set.seed(5)
+  for (f in c(0.15, 0.3, 0.8, 1.5)) {
+    fs <- 20; t <- seq(0, 900, by = 1 / fs)
+    x <- sin(2 * pi * f * t) + stats::rnorm(length(t), 0, 0.05)
+    expect_equal(.peaksFreq(x), f, tolerance = 0.1 * f,
+                 label = sprintf("recovered frequency at %.2f Hz", f))
+  }
+})
+
+test_that("a non-oscillating record is withheld as NA, never forced to a number", {
+  skip_if_not_installed("signal")
+  set.seed(3)
+  # broadband noise has no repeating waveform: the periodicity floor is what refuses it
+  x <- stats::rnorm(20 * 900, 0, 1)
+  r <- nautilus:::.tailBeatsPeaks(x, 20, 0.1, 2.5, filter.low = 0.09, filter.high = 2.75)
+  expect_gt(r$unresolved, 0.5)
+  expect_lt(mean(!is.na(r$tbf_hz)), 0.5)
+})
+
+test_that("min.periodicity = 0 disables the withholding, and is the only knob that does", {
+  skip_if_not_installed("signal")
+  set.seed(3)
+  x <- stats::rnorm(20 * 900, 0, 1)
+  r0 <- nautilus:::.tailBeatsPeaks(x, 20, 0.1, 2.5, filter.low = 0.09, filter.high = 2.75,
+                                   min.periodicity = 0)
+  expect_equal(r0$unresolved, 0)
+  # and it must NOT change the frequency reported on a signal that IS resolvable: the floor decides
+  # whether to answer, never what the answer is
+  y <- .harmonic(f = 0.3, ratio = 0.5)
+  expect_equal(.peaksFreq(y, min.periodicity = 0), .peaksFreq(y, min.periodicity = 0.15),
+               tolerance = 0.02)
+})
+
+test_that("every .tailBeatsPeaks return path carries the documented shape", {
+  skip_if_not_installed("signal")
+  nm <- c("tbf_hz", "tbf_amplitude", "bandpassed", "unresolved", "beats")
+  for (x in list(rep(NA_real_, 4000), rep(1, 4000), c(1, 2, 3), stats::rnorm(4000, 0, 1))) {
+    r <- suppressWarnings(nautilus:::.tailBeatsPeaks(x, 20, 0.1, 2.5, filter.low = 0.09,
+                                                     filter.high = 2.75))
+    expect_true(all(nm %in% names(r)))
+    expect_length(r$tbf_hz, length(x))
+    expect_length(r$tbf_amplitude, length(x))
+  }
+})
+
+test_that("min.periodicity is validated as an autocorrelation, not an open-ended number", {
+  expect_error(run_tb(.sway(fs = 20, dur = 200), min.periodicity = 1), "below 1")
+  expect_error(run_tb(.sway(fs = 20, dur = 200), min.periodicity = -0.1), "min.periodicity")
+})
+
+
+#######################################################################################################
+# The primitives the refractory rule is built on ######################################################
+#######################################################################################################
+
+test_that(".acfBiased reproduces stats::acf exactly", {
+  set.seed(3)
+  for (n in c(100, 257, 2400)) {
+    y <- stats::rnorm(n) + 2 * sin(2 * pi * seq_len(n) / 17)
+    y <- y - mean(y)
+    expect_equal(nautilus:::.acfBiased(y, 60),
+                 as.numeric(stats::acf(y, lag.max = 60, plot = FALSE, demean = FALSE)$acf),
+                 tolerance = 1e-10)
+  }
+})
+
+test_that(".thinRefractory keeps the tallest peak and honours a per-peak distance", {
+  v <- c(0, 5, 0, 3, 0, 4, 0)                    # peaks at 2, 4, 6 with heights 5, 3, 4
+  peaks <- c(2L, 4L, 6L)
+  expect_identical(nautilus:::.thinRefractory(v, peaks, 1), peaks)      # nothing within reach
+  # a peak exactly `dist` away already satisfies the minimum spacing, so it survives: the rule forbids
+  # peaks CLOSER than dist, matching find_peaks(distance=), which requires separation >= distance
+  expect_identical(nautilus:::.thinRefractory(v, peaks, 2), peaks)
+  # tallest-first ordering: 5 suppresses the 3 next to it, then 4 survives at a spacing of 4
+  expect_identical(nautilus:::.thinRefractory(v, peaks, 3), c(2L, 6L))
+  expect_identical(nautilus:::.thinRefractory(v, peaks, 4), c(2L, 6L))
+  expect_identical(nautilus:::.thinRefractory(v, peaks, 5), 2L)         # now it reaches both
+  # a per-peak distance is read from the surviving peak
+  expect_identical(nautilus:::.thinRefractory(v, peaks, c(5, 1, 1)), 2L)
+})
+
+test_that(".thinRefractory never revokes a peak it has already accepted", {
+  # With asymmetric per-peak radii a SHORTER peak's wide window can reach back to a TALLER peak whose
+  # own narrow window never reached it. Deleting the taller one there contradicts "the tallest peak in
+  # any refractory window wins", and it fired on every whale-shark deployment before this guard.
+  v <- c(0, 10, 0, 0, 0, 8, 0)                   # peaks at 2 (h = 10) and 6 (h = 8)
+  expect_identical(nautilus:::.thinRefractory(v, c(2L, 6L), c(2, 10)), c(2L, 6L))
+  # and the ordinary symmetric case is unchanged: the taller peak still wins outright
+  expect_identical(nautilus:::.thinRefractory(v, c(2L, 6L), c(10, 10)), 2L)
+})
+
+test_that(".thinRefractory never returns peaks closer than the refractory distance", {
+  set.seed(9)
+  v <- stats::rnorm(5000)
+  peaks <- sort(sample(seq_len(5000), 800))
+  for (d in c(5, 20, 100)) {
+    kept <- nautilus:::.thinRefractory(v, peaks, d)
+    expect_true(all(diff(kept) >= d), label = sprintf("minimum spacing at d = %d", d))
+    expect_true(all(kept %in% peaks))
+  }
+})
+
+test_that(".acfPeriodTrack recovers a known period and follows a change in it", {
+  fs <- 20
+  t1 <- seq(0, 600, by = 1 / fs); t2 <- seq(0, 600, by = 1 / fs)
+  set.seed(4)
+  x <- c(sin(2 * pi * 0.25 * t1), sin(2 * pi * 0.5 * t2)) + stats::rnorm(length(t1) + length(t2), 0, 0.05)
+  r <- nautilus:::.acfPeriodTrack(x, fs, 0.1, 2.5)
+  early <- stats::median(r$period[seq_len(length(t1) %/% 2)], na.rm = TRUE)
+  late  <- stats::median(r$period[(length(t1) + length(t2) %/% 2):length(x)], na.rm = TRUE)
+  expect_equal(fs / early, 0.25, tolerance = 0.02)      # 80 samples
+  expect_equal(fs / late,  0.50, tolerance = 0.04)      # 40 samples
+  expect_true(all(r$strength[is.finite(r$strength)] <= 1))
+})
+
+test_that(".acfPeriodTrack withholds a period rather than inventing one", {
+  set.seed(6)
+  r <- nautilus:::.acfPeriodTrack(stats::rnorm(20 * 600), 20, 0.1, 2.5)
+  expect_lt(stats::median(r$strength, na.rm = TRUE), 0.15)
+  # a record too short to hold two cycles of the slowest frequency cannot support any period
+  r2 <- nautilus:::.acfPeriodTrack(stats::rnorm(10), 20, 0.1, 2.5)
+  expect_true(all(is.na(r2$period)))
+})
+
+test_that("the peaks backend reports an unresolved share, as the wavelet backend does", {
+  skip_if_not_installed("signal")
+  set.seed(3)
+  d <- .sway(freq = 0.8, fs = 20, dur = 600)
+  out <- capture.output(suppressWarnings(suppressMessages(
+    calculateTailBeats(list(A01 = d), method = "peaks", motion.col = "sway",
+                       min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = "detailed"))))
+  hist <- processingHistory(run_tb(list(A01 = d), method = "peaks")$A01)
+  expect_match(hist$details[hist$step == "calculateTailBeats"], "pct_unresolved")
+})

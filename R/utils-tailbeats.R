@@ -9,6 +9,111 @@
 # beats and are returned as NA. Output is a per-row series plus a per-beat table.
 
 
+#' Rolling estimate of the dominant oscillation PERIOD, from the signal's own autocorrelation.
+#'
+#' Peak picking cannot establish its own rate. Deciding which time-domain maxima are beats requires
+#' knowing the beat period, which is the very thing being estimated, and the circularity is not benign:
+#' iterating a refractory period from the raw peak intervals converges to whichever attractor it started
+#' nearest (measured on this package's own whale-shark archive: seeding from below settles on double the
+#' true rate, from above on half). The rate therefore has to come from outside the peak-picking loop.
+#'
+#' Autocorrelation supplies it. It matches the whole repeating waveform rather than individual maxima, so
+#' a harmonic shoulder or a noise ripple cannot split it, and the biased estimator favours the fundamental
+#' over its harmonics. It is computed on a rolling window because gait is not stationary over a
+#' multi-hour deployment: a single whole-record period would be wrong wherever the animal changed pace.
+#'
+#' The returned `strength` -- the height of the winning autocorrelation peak -- is the peak-domain
+#' counterpart of the wavelet's `ridge.prominence`: it measures whether the waveform repeats at all,
+#' rather than how large it is. That distinction matters, because an amplitude criterion cannot do this
+#' job: any threshold defined relative to the local signal always admits the largest local maximum and so
+#' can never withhold an estimate, and an absolute one cannot be set once for a fleet.
+#'
+#' @param x Numeric signal, typically already band-passed. Non-finite values are tolerated.
+#' @param fs Sampling frequency (Hz).
+#' @param min.freq,max.freq Frequency range to search (Hz); bounds the lags considered.
+#' @param window.s Window length in seconds. The default gives ~12 cycles of the slowest frequency of
+#'   interest, enough for the autocorrelation to resolve it, and is capped at the record length.
+#' @param peak.ratio How much weaker the first autocorrelation peak may be than the strongest peak in
+#'   range and still be taken as the period. Governs which way a harmonic ambiguity resolves; see the
+#'   measured trade-off table in the body.
+#' @return A list of two per-sample vectors: `period` (samples per cycle) and `strength` (the winning
+#'   autocorrelation value, 0-1). Both are `NA` over stretches where no period could be established.
+#' @keywords internal
+#' @noRd
+.acfPeriodTrack <- function(x, fs, min.freq, max.freq, window.s = NULL, peak.ratio = 0.9) {
+  n <- length(x)
+  na_out <- list(period = rep(NA_real_, n), strength = rep(NA_real_, n))
+  if (!isTRUE(is.finite(fs)) || fs <= 0 || n < 4L) return(na_out)
+
+  if (is.null(window.s)) window.s <- 12 / min.freq
+  win <- as.integer(min(n, max(round(window.s * fs), 4L)))
+  lag_max <- as.integer(min(floor(fs / min.freq), win %/% 2L))   # >= 2 cycles must fit in the window
+  lag_min <- as.integer(max(1L, ceiling(fs / max.freq)))
+  if (lag_max <= lag_min) return(na_out)
+
+  hop <- max(1L, win %/% 4L)
+  starts <- if (n <= win) 1L else seq(1L, n - win + 1L, by = hop)
+  per <- rep(NA_real_, length(starts)); str <- rep(NA_real_, length(starts))
+
+  for (k in seq_along(starts)) {
+    seg <- x[starts[k]:min(n, starts[k] + win - 1L)]
+    ok <- is.finite(seg)
+    # a window that is mostly gap cannot support a rate; leave it unresolved rather than guess from
+    # the fragments, whose spacing no longer reflects the period
+    if (mean(ok) < 0.5) next
+    y <- seg - mean(seg[ok])
+    y[!ok] <- 0                                    # zero == the mean post-demean: the least-biasing fill
+    a <- .acfBiased(y, lag_max)
+    if (length(a) < lag_min + 2L || anyNA(a[1])) next
+    # skip the monotone decay away from lag 0, which is not a period
+    dmin <- which(diff(sign(diff(a))) > 0)
+    if (!length(dmin)) next
+    lag <- seq_along(a) - 1L
+    usable <- seq_along(a) > dmin[1] + 1L & lag >= lag_min & lag <= lag_max
+    if (!any(usable)) next
+
+    # THE FIRST significant autocorrelation peak, not the largest. An oscillation correlates with itself
+    # at every MULTIPLE of its period, so the lag range holds a whole comb of peaks, and the largest is
+    # not reliably the first: whenever the true period is not a whole number of samples, an exact
+    # multiple of it lands closer to an integer lag and wins. Measured on a clean 1.5 Hz tone at 20 Hz
+    # (period 13.33 samples), the global maximum sits at lag 40 -- three periods -- and the refractory
+    # built from it merges real beats into one, halving the reported frequency. Taking the first local
+    # maximum that reaches most of the best available value is the standard fundamental-period rule, and
+    # it returns lag 13. The threshold also decides the harmonic case in the right direction: at lag P
+    # a fundamental and its 2f align, while at P/2 the fundamental anti-correlates, so a[P] > a[P/2]
+    # unless the fundamental is nearly absent -- in which case reporting 2f is the honest answer anyway.
+    #
+    # `peak.ratio` sets how much weaker the first peak may be than the best in range and still win, so it
+    # trades the two directions of harmonic error against each other. Measured on a 0.5 Hz tone carrying a
+    # competing component, and on ten whale-shark deployments against a Welch reference:
+    #
+    #   peak.ratio   tolerates 2f up to   tolerates f/2 up to   pooled bias   worst deployment
+    #        0.70            3x                  0.5x              -0.00           -0.30
+    #        0.80            3x                  0.4x              -0.02           -0.30
+    #        0.90            5x                  0.3x              -0.03           -0.37
+    #
+    # 0.9 is kept as the default because over-estimation is this estimator's historical failure mode and
+    # the value most protected against it, and because the real-data spread across the three (0.03
+    # octaves, ~2%) is inside the reference's own uncertainty. A record whose beat competes with a strong
+    # SLOWER oscillation is the case for lowering it -- see the PIN_10 note in calculateTailBeats().
+    peak_at <- 1L + which(diff(sign(diff(a))) < 0)
+    peak_at <- peak_at[usable[peak_at]]
+    if (!length(peak_at)) next
+    best <- max(a[peak_at])
+    if (!is.finite(best) || best <= 0) next
+    w <- peak_at[a[peak_at] >= peak.ratio * best][1]
+    per[k] <- lag[w]; str[k] <- a[w]
+  }
+
+  if (length(starts) == 1L) return(list(period = rep(per, n), strength = rep(str, n)))
+  # nearest-centre assignment, NOT interpolation: interpolating across an unresolved window would
+  # manufacture a rate exactly where the signal declined to provide one
+  centres <- starts + (win - 1L) / 2
+  idx <- findInterval(seq_len(n), centres[-length(centres)] + diff(centres) / 2) + 1L
+  list(period = per[idx], strength = str[idx])
+}
+
+
 #' Detect tail beats by peak/trough analysis of a (band-passed) motion channel.
 #'
 #' @param motion Numeric motion vector (e.g. sway acceleration or yaw rate), one row per sample.
@@ -16,19 +121,22 @@
 #' @param min.freq,max.freq Accepted tail-beat frequency range (Hz); beats outside are discarded.
 #' @param filter.low,filter.high Band-pass edges (Hz).
 #' @param filter.order Butterworth order. @param bandpass Logical; band-pass before detection.
+#' @param min.periodicity Autocorrelation strength below which the signal is treated as carrying no
+#'   resolvable oscillation, and the frequency is withheld (`NA`) rather than forced.
 #' @return A list with per-row vectors `tbf_hz` and `tbf_amplitude`, the `bandpassed` signal (for
-#'   diagnostics), and a `beats` data.frame (peak index, `freq_hz`, `amplitude`).
+#'   diagnostics), a `beats` data.frame (peak index, `freq_hz`, `amplitude`), and `unresolved`, the
+#'   fraction of the record where no period could be established.
 #' @keywords internal
 #' @noRd
 .tailBeatsPeaks <- function(motion, fs, min.freq, max.freq, filter.low, filter.high,
-                            filter.order = 4, bandpass = TRUE) {
+                            filter.order = 4, bandpass = TRUE, min.periodicity = 0.15) {
 
   n <- length(motion)
   bp <- if (bandpass) .bandpassSegments(motion, fs, filter.low, filter.high, filter.order)
         else motion - mean(motion, na.rm = TRUE)
 
   out <- list(tbf_hz = rep(NA_real_, n), tbf_amplitude = rep(NA_real_, n),
-              bandpassed = bp,
+              bandpassed = bp, unresolved = NA_real_,
               beats = data.frame(peak = integer(0), freq_hz = numeric(0), amplitude = numeric(0)))
 
   # Detection sensitivity is data-driven, never the user's min.amplitude. Coupling the two silently
@@ -36,6 +144,11 @@
   # whereas this delta is a peak-to-trough swing, so a classification threshold set above the smaller
   # beats made the detector skip them and report half the true frequency. The frequency estimate must
   # not depend on an interpretation-layer knob.
+  #
+  # This delta is only a cheap CANDIDATE filter, deliberately left permissive. It is not what decides
+  # which maxima are beats -- the refractory period below does that. Raising it instead was tested and
+  # rejected: no single value serves a fleet, because the constant that rescues a low-amplitude record
+  # halves a clean high-amplitude one (see the refractory note).
   scale <- stats::mad(bp, na.rm = TRUE)
   if (!is.finite(scale) || scale == 0) scale <- stats::sd(bp, na.rm = TRUE)
   delta <- 0.5 * scale
@@ -43,6 +156,23 @@
 
   pk <- .peakdet(bp, delta)
   peaks <- pk$peaks; troughs <- pk$troughs
+  if (length(peaks) < 2L) return(out)
+
+  # THE REFRACTORY PERIOD. Candidate maxima closer together than 0.6 of the locally-measured beat period
+  # are not separate beats: they are the harmonic shoulder of one beat, or a ripple on its flank. Keeping
+  # only the tallest in each refractory window removes them, and does so without an amplitude threshold,
+  # which is what lets one rule serve a whole fleet. Validated on 215 ground-truthed 120-s windows from
+  # 10 whale-shark deployments: median bias fell from +0.68 to -0.01 octaves, and the WORST deployment
+  # from +2.18 to -0.04, while the two records the old detector already got right were preserved. The
+  # factor sits on a plateau (0.5-0.8 all give <= 0.10 octaves), so it is a constant, not a tuned knob.
+  rate <- .acfPeriodTrack(bp, fs, min.freq, max.freq)
+  resolved <- is.finite(rate$period) & is.finite(rate$strength) & rate$strength >= min.periodicity
+  out$unresolved <- 1 - mean(resolved)
+  if (!any(resolved)) return(out)
+
+  peaks <- peaks[resolved[peaks]]                  # no rate established here -> no beats claimed here
+  if (length(peaks) < 2L) return(out)
+  peaks <- .thinRefractory(bp, peaks, 0.6 * rate$period[peaks])
   if (length(peaks) < 2L) return(out)
 
   # one beat per consecutive peak pair: period = peak-to-peak, amplitude = peak minus the trough between
@@ -73,6 +203,11 @@
   covered[covered] <- seq_len(n)[covered] <= beat_end[iv[covered]]
   out$tbf_hz[covered]       <- beat_freq[iv[covered]]
   out$tbf_amplitude[covered] <- beat_amp[iv[covered]]
+  # A surviving beat can still SPAN an unresolved stretch, when the peaks either side of it were both
+  # resolved. Masking the rows as well as the peaks stops that interval reporting a frequency across a
+  # gap where the signal never established one.
+  out$tbf_hz[!resolved]        <- NA_real_
+  out$tbf_amplitude[!resolved] <- NA_real_
   out$beats <- data.frame(peak = beat_peak, freq_hz = beat_freq, amplitude = beat_amp)
   out
 }
@@ -387,13 +522,18 @@
 #' @noRd
 .runPeaks <- function(dt, animal_id, datetime.col, motion.col, fs, min.freq, max.freq,
                       bandpass, filter.low, filter.high, filter.order, min.amplitude, smooth.window,
-                      draw.devices = integer(0), lvl = 1L) {
+                      min.periodicity = 0.15, draw.devices = integer(0), lvl = 1L) {
 
   if (!data.table::is.data.table(dt)) dt <- data.table::as.data.table(dt)
 
   raw <- dt[[motion.col]]
   r <- .tailBeatsPeaks(raw, fs, min.freq, max.freq, filter.low, filter.high,
-                       filter.order, bandpass = bandpass)
+                       filter.order, bandpass = bandpass, min.periodicity = min.periodicity)
+
+  # Published as an attribute, exactly as the wavelet backend publishes its prominence-masked fraction:
+  # a per-deployment scalar, not per-sample data. This is what lets the driver report an unresolved
+  # share for either backend, rather than only when the wavelet happens to be the one that ran.
+  data.table::setattr(dt, "tb_unresolved", r$unresolved)
 
   # swimming/gliding is only classified against a caller-supplied reference; see .classifyActivity for
   # why it is not inferred from the signal alone. Shared with the wavelet method.
