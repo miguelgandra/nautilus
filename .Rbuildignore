@@ -24,3 +24,4 @@
 ^plots$
 \.Rcheck$
 ^\.git$
+^man/figures/nautilus-pipeline\.pdf$
