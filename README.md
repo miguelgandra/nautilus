@@ -49,7 +49,7 @@ which converges on a single call, `processTagData()`, returning one self-describ
 question, so you only run the parts you need.
 
 <p align="center">
-  <img src="man/figures/nautilus-pipeline-v2.png" width="820"
+  <img src="man/figures/nautilus-pipeline.png" width="820"
        alt="The nautilus workflow. Deployment metadata and raw tag data, optionally joined by a co-deployed satellite tag, flow through three core stages: 1, prepare and import; 2, clean and quality-control; 3, orient and calibrate. A parallel video track prepares onboard footage and feeds the orientation review. The core stages converge on processTagData(), which returns an analysis-ready nautilus_tag object and then branches into five optional analyses: summaries and figures, dive analysis, behaviour and kinematics, movement tracks, and video and annotation. A utilities strip provides metadata and audit-trail access throughout." />
 </p>
 

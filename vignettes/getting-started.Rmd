@@ -56,7 +56,7 @@ converges on a single call, `processTagData()`. That call returns the analysis-r
 goal.
 
 ```{r workflow-diagram, echo = FALSE, eval = TRUE, out.width = "100%", fig.alt = "The nautilus workflow. Deployment metadata and raw tag data, optionally joined by a co-deployed satellite tag, flow through three core stages: 1, prepare and import; 2, clean and quality-control; 3, orient and calibrate. A parallel video track prepares onboard footage and feeds the orientation review. The core stages converge on processTagData(), which returns an analysis-ready nautilus_tag object and then branches into five optional analyses: summaries and figures, dive analysis, behaviour and kinematics, movement tracks, and video and annotation."}
-knitr::include_graphics("nautilus-pipeline-v2.png")
+knitr::include_graphics("nautilus-pipeline.png")
 ```
 
 The solid path runs for every deployment. The branches are independent: run only the ones
