@@ -9,46 +9,32 @@
      Re-add on acceptance:
      [![CRAN status](https://www.r-pkg.org/badges/version/nautilus)](https://CRAN.R-project.org/package=nautilus) -->
 
-**nautilus** is an R package for processing and analysing high-resolution archival
-biologging data. It provides a reproducible workflow that transforms raw recordings from
-multi-sensor animal-borne tags into analysis-ready datasets for behavioural, ecological
-and movement analyses.
+**nautilus** is an R package for processing, quality-controlling and analysing
+high-resolution archival biologging data. It provides a reproducible workflow that
+transforms raw recordings from multi-sensor animal-borne tags into analysis-ready datasets
+for behavioural, ecological and movement analyses.
 
-Modern archival tags record several sensors at once, often tens or hundreds of times per
-second, and the distance between the raw file and the first ecological result is long:
-the record has to be trimmed to the time on the animal, screened for sensor faults, and
-corrected for how the tag happened to sit on the body before anything derived from it can
-be trusted. nautilus carries a deployment through that whole sequence in one place, and
-keeps a record of every decision it made along the way.
+Modern archival tags record multiple sensors simultaneously, often at tens or hundreds of
+samples per second. However, the path from raw recordings to ecological insight is long:
+data must be trimmed to the period when the tag was on the animal, screened for sensor
+issues, corrected for tag orientation, and prepared before derived metrics can be reliably
+interpreted. nautilus standardises this workflow in one place, while documenting the
+processing steps required to transform raw sensor streams into consistent and reproducible
+datasets.
 
-It reads depth, temperature, tri-axial acceleration, magnetometer and gyroscope data from
-**CATS** and **CEiiA** multi-sensor loggers and **Little Leonardo** archival loggers, and
-can take data from any other tag that is already in R. Positions and the wet/dry record
-from a co-deployed **Wildlife Computers** satellite tag can be folded in, and footage from
-onboard cameras can be aligned to the sensor record. It was developed around CATS Diary and
-Camera tags carried in towed **PILOT** packages
+The package imports depth, temperature, tri-axial acceleration, magnetometer and gyroscope
+data from **CATS**, **CEiiA** and **Little Leonardo** archival loggers, while remaining
+compatible with datasets already available in R. It can integrate positions and wet/dry
+records from co-deployed **Wildlife Computers** satellite tags, align onboard camera
+footage with sensor recordings, and combine multiple data sources into a unified workflow
+for downstream analyses. nautilus was originally developed around CATS Diary and Camera
+tags deployed in towed **PILOT** packages
 ([Fontes et al., 2022](https://doi.org/10.1186/s40317-022-00310-1)), but the workflow is
-general.
+designed to be applicable to a broad range of archival biologging datasets.
 
-<br/>
-
-## Who is this package for?
-
-nautilus is for researchers working with high-resolution archival biologging tags &mdash;
-CATS, Little Leonardo and similar devices &mdash; who need to get from a raw download to
-data they can analyse, without writing the intervening steps themselves.
-
-It is likely to be useful if you want to:
-
-- summarise and visualise a set of deployments consistently, and compare animals;
-- describe diving behaviour, swimming effort or activity budgets;
-- estimate body orientation and reconstruct fine-scale movement paths between satellite fixes;
-- build labelled datasets for behavioural classification, including from onboard video;
-- keep a defensible, reproducible record of how each dataset was processed.
-
-You do not need every sensor. Deployments with only an accelerometer and a depth sensor
-work fine; the analyses that need a magnetometer or a speed sensor simply become
-unavailable, and nautilus says so rather than guessing.
+The package is intended for researchers working with high-frequency biologging data,
+including ecologists, movement ecologists and behavioural scientists analysing
+animal-borne sensor records.
 
 > **Status.** nautilus is under active development ahead of its first release. The public
 > API is stabilising but may still change.
