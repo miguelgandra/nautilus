@@ -254,8 +254,11 @@ covers both styles.
 - **Function reference** &mdash; every exported function is documented with runnable
   examples; open help with `?processTagData` (or any other function name).
 - **Changelog** &mdash; see [`NEWS.md`](NEWS.md) for what is new in each version.
-- **Worked scripts** &mdash; the [`tutorials/`](tutorials/) directory holds end-to-end
-  example scripts used during development.
+- **Worked scripts** &mdash; the [`tutorials/`](tutorials/) directory holds two complete,
+  runnable examples: [*data processing*](tutorials/tutorial01%20-%20data%20processing.R),
+  which takes a set of deployments through the whole workflow, and
+  [*video re-encoding*](tutorials/tutorial02%20-%20video%20reencoding.R), which prepares
+  onboard footage for analysis.
 
 <br/>
 

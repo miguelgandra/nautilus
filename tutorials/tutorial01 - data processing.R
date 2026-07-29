@@ -3,62 +3,57 @@
 ## Tutorial 01: Processing Multi-Sensor Tag Data with the 'nautilus' R Package ################
 ###############################################################################################
 
-# Biologging tags are wonderful and messy. A whale shark carries one for a day or two, then the
-# tag pops off and is (hopefully) recovered, holding millions of rows of depth, acceleration,
-# magnetometer, gyroscope and often video - all in the raw form the hardware happened to record it.
-# This tutorial walks that raw pile through the full 'nautilus' pipeline and out the other side as
-# tidy, analysis-ready datasets you can actually do biology with: reconstructed body posture, dynamic
-# body acceleration, tail-beat frequency, dive profiles, and per-animal summaries.
+# A step-by-step walkthrough of the core 'nautilus' pipeline, from raw archival-tag CSVs to
+# analysis-ready, fully documented datasets. It follows the actual workflow of the PINTADO
+# whale-shark project, so it doubles as a real-world example. The pipeline covers:
 #
-# It follows the real workflow of the PINTADO whale-shark project, so besides being a walkthrough it
-# doubles as a worked example, with genuine deployment quirks (mis-set camera clocks, ambiguous tag
-# orientations, drifting pressure sensors) and how to handle them.
+#   1.  Prepare and quality-check the per-deployment metadata.
+#   2.  Import and standardize raw multi-sensor tag data (CATS / CEiiA tags).
+#   3.  Trim each record to the on-animal deployment period.
+#   4.  Regularize timestamps onto a uniform grid and interpolate short gaps.
+#   5.  Screen the sensor channels for structural faults and transient anomalies.
+#   6.  Resolve the IMU axis orientation (documented, inferred, and video-verified).
+#   7.  Derive orientation, kinematic and motion metrics (DBA, pitch/roll/heading, speed, ...),
+#       with depth-drift correction and optional downsampling.
+#   8.  Estimate tail-beat frequencies.
+#   9.  Produce per-deployment summaries and depth profiles.
 #
-# The pipeline, in nine acts:
+# Every stage returns 'nautilus_tag' objects: data.tables that also carry a consolidated metadata
+# record - deployment info, sensors, calibration, and an append-only processing audit trail.
+# Inspect any object with print() or summary(); read its metadata with tagMetadata(x) and its
+# processing history with processingHistory(x).
 #
-#   1. Prepare and quality-check the per-deployment metadata (who, where, which tag).
-#   2. Import and standardize the raw multi-sensor data (CATS / CEiiA tags).
-#   3. Trim each record down to the time the tag was actually on an animal.
-#   4. Put the samples on a clean, evenly-spaced time grid.
-#   5. Screen the sensor channels for faults and glitches.
-#   6. Work out how each tag was oriented and rotate its axes into the animal's own frame.
-#   7. Derive posture, kinematics and movement metrics (with speed and depth calibration).
-#   8. Estimate tail-beat frequency.
-#   9. Summarize and visualize the cohort.
-#
-# A few things to know before you start:
-#  - Every stage returns 'nautilus_tag' objects: data.tables that also carry a consolidated metadata
-#    record (deployment details, sensors, calibration, and an append-only processing log). Peek at any
-#    object with print() or summary(); read its metadata with tagMetadata(x) and its full history with
-#    processingHistory(x).
+# Notes:
+#  - Default parameters are tuned to whale-shark kinematics and to the CATS / CEiiA tags used here.
+#    For other species or tag systems, adjust the arguments accordingly.
+#  - All file paths below are project-specific - edit them to match your own directory layout.
 #  - The pipeline is disk-based: each stage reads the previous stage's files and writes its own
-#    (pass return.data = FALSE and an output.dir - a directory is what triggers the save), so even large
-#    datasets never all sit in memory at once. A stage run with return.data = FALSE returns the written
-#    file paths, which feed straight into the next stage's data argument.
-#  - nautilus is deliberately fail-fast about file paths: it aborts rather than silently creating
-#    folders, so make the output directories once, up front (STEP 0).
-#  - Defaults are tuned to whale-shark kinematics and to the CATS / CEiiA tags used here. For other
-#    species or tag systems, adjust the arguments - most steps below show the ones worth knowing about.
-#  - All file paths are placeholders; edit them to match your own layout.
+#    (return.data = FALSE, save.files = TRUE), so large datasets never all sit in memory at once.
+#    Output folders are NOT created automatically - nautilus is fail-fast about paths, so create
+#    "./data interim/...", "./plots" and "./outputs" before running.
 
 
 ################################################################################
 # Expected directory structure                                                 #
 ################################################################################
 
-# Organize the raw data as a root folder with one subfolder per tagged animal. Each animal's folder
-# holds a multi-sensor tag folder (the time-series CSV) and, optionally, a Wildlife Computers folder
-# with location files:
+# Organize the raw data as a root directory with one subdirectory per tagged animal. Each animal's
+# subdirectory holds:
+#
+#   1. A multi-sensor tag folder (default name "CMD", set via `sensor.subdirectory`) containing one
+#      CSV of time-series data (depth, accelerometer, gyroscope, magnetometer, ...).
+#   2. (Optional) A Wildlife Computers folder (MiniPAT / MK10 / SPOT) with the location files, for
+#      integrating positions. Auto-detected, or named via `wc.subdirectory`.
+#
+# Each animal-folder name must match the deployment "ID" in the metadata.
 #
 #   Root_Directory/
 #   |-- PIN_01/
-#   |   |-- CMD/   xxxxx-Multisensor22Splash52.csv     # depth, accel, gyro, mag, ...
-#   |   \-- SPOT/  xxxxx-Locations.csv, ...            # (optional) Argos / GPS positions
+#   |   |-- CMD/   xxxxx-Multisensor22Splash52.csv
+#   |   \-- SPOT/  xxxxx-Locations.csv, ...
 #   \-- PIN_02/
 #       |-- CMD/   xxxxx-CamaraCMD134Spot98.csv
 #       \-- MK10/  xxxxx-Locations.csv, ...
-#
-# Each animal-folder name must match the deployment "ID" in the metadata.
 
 
 ################################################################################
@@ -70,14 +65,8 @@ if (!require(readxl)) { install.packages("readxl"); library(readxl) }
 
 # Install 'nautilus' from GitHub once, then load it.
 # devtools::install_github("miguelgandra/nautilus")
+#pak::pkg_install("~/Desktop/ClaudeCode/nautilus-claude")
 library(nautilus)
-
-# Create the folders the pipeline writes to. dir.create() is a safe no-op if they already exist.
-output_dirs <- c(
-  "./plots", "./outputs", "./outputs/timestamps review", "./outputs/axis review",
-  file.path("./data interim", c("imported", "filtered", "regularized", "checked",
-                                "oriented", "processed", "tailbeats")))
-for (d in output_dirs) dir.create(d, recursive = TRUE, showWarnings = FALSE)
 
 
 ################################################################################
@@ -156,14 +145,16 @@ animal_metadata$attachment_site[animal_metadata$ID %in% c("PIN_CAM_02", "PIN_CAM
                                                           "PIN_CAM_26", "PIN_CAM_41")] <- "dorsal"
 animal_metadata$attachment_site[animal_metadata$ID %in% c("PIN_CAM_04", "PIN_CAM_22", "PIN_CAM_24",
                                                           "PIN_CAM_31", "PIN_CAM_32", "PIN_CAM_39")] <- "right_pectoral"
-animal_metadata$obs <- NULL   # done parsing the notes; drop them
+
+# done parsing the notes; drop them
+animal_metadata$obs <- NULL   
 
 
 ################################################################################
 # STEP 2. Quality-check the deployment metadata                                #
 ################################################################################
 
-# checkDeploymentMetadata() validates and cleans the metadata before any sensor data is read - catching
+# qcDeploymentMetadata() validates and cleans the metadata before any sensor data is read - catching
 # the small field-sheet slips that would otherwise quietly poison the analysis: a duplicate ID, an
 # impossible tagging coordinate, a recovery date before the deployment, two deployments overlapping on
 # the same physical tag. Fixing these here is far cheaper than discovering them after a long import.
@@ -196,15 +187,14 @@ deployments <- checkDeploymentMetadata(
     attachment_site   = "attachment_site",
     deployment_type   = "deployment_type",    # "towed" or "rigid"; selects the posture scorer
     # Passive biological traits: carried verbatim into each object's metadata (tagMetadata(x)$biometrics)
-    # so they're available later for grouping, filtering and plotting (e.g. plotTimeAtDepth(group.by = "sex")).
+    # so they're available later for grouping, filtering and plotting (e.g. plotTimeAtDepth(group = "sex")).
     # A corrected value can be re-stamped later with updateBiometrics() - no re-import needed.
     traits            = c("sex", "size")),
-  future.tolerance = 1,                  # allow a day of clock slop before flagging a "future" date
   verbose          = "detailed")
 
 # Read the verdict, fix anything flagged at the source, and re-run until it's clean.
-issues(deployments)                    # all issues
-issues(deployments, severity = "error")# just the blocking ones
+issues(deployments)                      # all issues
+issues(deployments, severity = "error")  # just the blocking ones
 
 
 ################################################################################
@@ -224,50 +214,50 @@ issues(deployments, severity = "error")# just the blocking ones
 #     sensor  = c("datetime","ax","ay","az","mx","my","mz","temp","depth"),
 #     units   = c("UTC","g","g","g","uT","uT","uT","C","m"))
 #
-# Passing the QC'd 'deployments' object as metadata does two things: it carries its own column
+# Passing the QC'd 'deployments' object as id.metadata does two things: it carries its own column
 # schema (so no columns argument is needed here), and it carries the QC verdict - if the metadata
 # failed STEP 2, the import refuses to start rather than wasting time on a long read. The data is
 # imported in its raw axis frame; rotating it into the animal's frame is a deliberate, separate step
 # (STEP 8).
 
-# Root folder with one subfolder per animal (edit to your path).
-data_root    <- "path/to/tag data"
+# Root folder with one subdirectory per tagged animal (edit to your path).
+data_root <- "/Users/Mig/Desktop/Whale Sharks/data"
 data_folders <- list.dirs(data_root, recursive = FALSE)
-data_folders <- data_folders[1:58]       # subset the deployments to process, if you like
+data_folders <- data_folders[1:58]   # subset the deployments to process, if needed
 
-data_list <- importTagData(data.folders       = data_folders,
-                           sensor.subdirectory = "CMD",        # the per-animal folder holding the tag CSV
-                           wc.subdirectory     = NULL,         # NULL = auto-detect the Wildlife Computers folder
-                           metadata         = deployments,
-                           import.mapping      = NULL,         # NULL = standard CATS / CEiiA layout
-                           import.calibration  = TRUE,         # also parse any sidecar calibration file, for provenance
-                           timezone            = "UTC",        # labels the timestamps; never shifts them
-                           return.data         = FALSE,
-                           output.dir       = "./data interim/imported",
-                           compress            = TRUE,
-                           verbose             = "detailed")
+importTagData(data.folders         = data_folders,
+              sensor.subdirectory  = "CMD",
+              wc.subdirectory      = NULL,      # NULL = auto-detect the Wildlife Computers folder
+              metadata          = deployments,
+              import.mapping       = NULL,      # NULL = standard CATS / CEiiA layout
+              import.calibration   = TRUE,
+              timezone             = "UTC",
+              alignment            = alignmentControl(method = "depth-xcorr"),
+              return.data          = FALSE,
+              output.dir           = "./data interim/01_imported",
+              compress             = TRUE,
+              verbose              = "detailed")
 
 
 ################################################################################
-# STEP 4. Trim to the on-animal period                                         #
+# STEP 4. Trim to the deployment period                                        #
 ################################################################################
 
-# A tag records everything - the boat ride out, the handling, and often days of bobbing at the surface
-# after the animal has shrugged it off. For the biology we only want the stretch when it was actually
-# riding a shark. Off-animal data isn't just clutter: it would bias the gravity and dive-based
-# reasoning that STEP 8 relies on, so it has to go first.
-#
-# filterDeploymentData() finds the on-animal window automatically, from changepoints in the depth mean
-# and variance (a tag on a diving animal looks very different from one sitting on deck). Where you
-# already know the exact times - say, from the field log or the video - you can supply them and skip
-# the guesswork. Leave a start or end as NA to pin one boundary and auto-detect the other.
+# filterDeploymentData() removes the pre-attachment and post-detachment data, keeping only the
+# on-animal period. It works two ways:
+#   - Automatic: binary segmentation of depth (and its variance) estimates the attachment and
+#     detachment times - useful when the exact deployment window is unknown.
+#   - Manual: pass a data.frame of known ID / start / end windows to `custom.deployment.times`;
+#     these override the automatic detection (leave start or end as NA to auto-detect just that end).
+# A diagnostic panel per deployment is written to a single multi-page PDF for review.
 
-# Known deployment windows (NA = let the algorithm find that boundary).
+# Known deployment windows (manual overrides; NA = let the algorithm find that boundary).
 deploy_list <- list(
   list(ID = "PIN_02",     start = as.POSIXct("2019-09-11 12:35:00", tz = "UTC"), end = as.POSIXct("2019-09-12 16:32:00", tz = "UTC")),
   list(ID = "PIN_09",     start = as.POSIXct("2020-08-22 15:20:00", tz = "UTC"), end = as.POSIXct("2020-08-23 00:49:03", tz = "UTC")),
   list(ID = "PIN_10",     start = as.POSIXct("2020-08-23 16:20:00", tz = "UTC"), end = NA),
   list(ID = "PIN_16",     start = as.POSIXct("2022-09-18 17:48:00", tz = "UTC"), end = as.POSIXct("2022-09-19 08:34:00", tz = "UTC")),
+  list(ID = "PIN_23",     start = as.POSIXct("2023-08-31 11:00:00", tz = "UTC"), end = NA),
   list(ID = "PIN_CAM_03", start = as.POSIXct("2019-09-10 11:53:03", tz = "UTC"), end = as.POSIXct("2019-09-10 12:25:37", tz = "UTC")),
   list(ID = "PIN_CAM_06", start = as.POSIXct("2019-09-10 15:47:37", tz = "UTC"), end = as.POSIXct("2019-09-10 16:21:34", tz = "UTC")),
   list(ID = "PIN_CAM_07", start = NA, end = as.POSIXct("2019-09-12 12:06:30", tz = "UTC")),
@@ -278,23 +268,25 @@ deploy_list <- list(
   list(ID = "PIN_CAM_14", start = as.POSIXct("2019-09-27 12:17:14", tz = "UTC"), end = as.POSIXct("2019-09-27 12:35:35", tz = "UTC")),
   list(ID = "PIN_CAM_15", start = as.POSIXct("2019-09-27 14:06:23", tz = "UTC"), end = as.POSIXct("2019-09-27 14:33:55", tz = "UTC")),
   list(ID = "PIN_CAM_25", start = as.POSIXct("2020-10-14 13:53:17", tz = "UTC"), end = NA),
+  list(ID = "PIN_CAM_26", start = NA, end = as.POSIXct("2021-09-08 18:12:07", tz = "UTC")),
   list(ID = "PIN_CAM_32", start = as.POSIXct("2022-09-17 13:34:40", tz = "UTC"), end = as.POSIXct("2022-09-18 10:31:52", tz = "UTC"))
 )
 deploy_periods <- do.call(rbind, lapply(deploy_list, as.data.frame))
 
-filter_results <- filterDeploymentData(data                    = list.files("./data interim/imported", full.names = TRUE),
-                                       custom.deployment.times = deploy_periods,   # known windows; NA boundaries auto-detected
-                                       depth.threshold         = 3.5,    # depth (m) that counts as "in the water" for detection
-                                       variance.threshold      = 6,      # depth-variance change that marks attachment/detachment
-                                       max.changepoints        = 6,
-                                       use.temperature         = FALSE,  # corroborate with temperature too, if it's reliable
-                                       min.deployment.hours    = 0.25,   # discard anything shorter than this
-                                       plot                    = TRUE,   # one diagnostic panel per deployment...
-                                       plot.file               = "./plots/filtered_deployments.pdf",  # ...into a single PDF to review
-                                       plot.metrics            = c("temp", "az"),  # extra traces to overlay on the panel
-                                       return.data             = FALSE,
-                                       output.dir           = "./data interim/filtered",
-                                       verbose                 = "detailed")
+
+filterDeploymentData(data                    = list.files("./data interim/01_imported", full.names = TRUE),
+                     custom.deployment.times = deploy_periods,   # known windows; NA boundaries auto-detected
+                     depth.threshold         = 3.5,    # depth (m) that counts as "in the water" for detection
+                     variance.threshold      = 6,      # depth-variance change that marks attachment/detachment
+                     max.changepoints        = 6,
+                     use.temperature         = FALSE,  # corroborate with temperature too, if it's reliable
+                     min.deployment.hours    = 1,   # discard anything shorter than this
+                     plot                    = FALSE,   # one diagnostic panel per deployment...
+                     plot.file               = "./plots/filtered_deployments.pdf",  # ...into a single PDF to review
+                     plot.metrics            = c("temp", "az"),  # extra traces to overlay on the panel
+                     return.data             = FALSE,
+                     output.dir              = "./data interim/02_filtered",
+                     verbose                 = "detailed")
 
 
 ################################################################################
@@ -308,81 +300,86 @@ filter_results <- filterDeploymentData(data                    = list.files("./d
 # NA rather than inventing behaviour across them. Coverage statistics (how much was interpolated, gap
 # fraction, jitter) are stored in each object's metadata.
 
-data_list <- regularizeTimeSeries(data                 = list.files("./data interim/filtered", full.names = TRUE),
-                                  gap.threshold        = 2,        # fill gaps up to 2 s; leave longer ones as NA (0 = never fill)
-                                  interpolation.method = "linear", # or "spline" / "locf"
-                                  plot                 = TRUE,     # flags deployments with notable gaps/jitter for review
-                                  plot.file            = "./plots/regularization.pdf",
-                                  return.data          = FALSE,
-                                  output.dir        = "./data interim/regularized",
-                                  verbose              = "detailed")
+regularizeTimeSeries(data                 = list.files("./data interim/02_filtered", full.names = TRUE),
+                     gap.threshold        = 2,        # fill gaps up to 2 s; leave longer ones as NA (0 = never fill)
+                     interpolation.method = "linear", # or "spline" / "locf"
+                     plot                 = FALSE,    
+                     plot.file            = "./plots/regularization.pdf",
+                     return.data          = FALSE,
+                     output.dir           = "./data interim/03_checked",
+                     verbose              = "detailed")
 
 
 ################################################################################
-# STEP 6. Screen the channels                                                  #
+# STEP 6. Screen the sensor channels                                           #
 ################################################################################
 
-# Quality-control, run in order. First we ask whether each sensor channel is a trustworthy instance of
-# the sensor it claims to be (6.1); then we clean up transient glitches on the channels that survive
-# (6.2); finally we screen the position fixes - the location channel - for implausible detections (6.3).
-# All three are data-cleaning steps, done here before any downstream analysis consumes the data.
+# The quality-control workflow consists of three sequential steps. First, sensor integrity 
+# is assessed to identify unreliable channels. Next, transient anomalies such as spikes or 
+# sensor malfunctions are corrected. Finally, GPS/Argos position fixes are screened for 
+# implausible locations. Performing these steps before downstream analyses helps ensure the
+# data are as reliable as possible.
 
-data_files <- list.files("./data interim/regularized", full.names = TRUE)
 
 ## 6.1 Structural integrity ------------------------------------------------------------------------
-# checkSensorIntegrity() looks for hardware- and firmware-level faults - a channel that is a near-exact
-# copy of the accelerometer (a known firmware bug), a dead channel that never changes, a clipped or
-# implausible signal. Run it first: a corrupt channel should be flagged before STEP 6.2 cosmetically
-# smooths over its symptoms. Two checks are error-level and mean "don't trust this channel" -
-# "duplication" and "dead"; the rest are advisory. Here we run the full set for a thorough look, then
-# re-run with apply = TRUE to actually drop the error-flagged channels.
-integrity <- checkSensorIntegrity(data   = data_files,
+# checkSensorIntegrity() performs an initial assessment of sensor channels to identify hardware- or 
+# firmware-related issues, such as duplicated, unresponsive, clipped, or otherwise implausible signals. 
+# This integrity check should be run before sensor quality control to ensure corrupted channels are 
+# identified before any corrections are applied. The recommended workflow is to first review the results 
+# and then re-run the function with apply = TRUE to remove channels flagged as unreliable.
+integrity <- checkSensorIntegrity(data   = list.files("./data interim/03_checked", full.names = TRUE),
                                   checks = c("duplication", "dead", "saturation", "mag.plausibility",
                                              "accel.scale", "gyro.bias", "paddle.contamination", "dropout"),
-                                  apply  = FALSE,   # report first; set TRUE to drop the error-flagged channels
-                                  plot   = TRUE,
-                                  plot.file = "./plots/sensor_integrity.pdf")
-integrity$issues                                    # the findings, one row per flagged channel
+                                  apply  = TRUE,
+                                  apply.severity = "error",
+                                  plot   = FALSE,
+                                  plot.file   = "./plots/sensor_integrity.pdf",
+                                  return.data = FALSE,
+                                  output.dir  = "./data interim/03_checked",
+                                  verbose     = "detailed")
+
+# the findings, one row per flagged channel
+integrity$issues                                   
+
 
 ## 6.2 Transient signal quality --------------------------------------------------------------------
-# checkSensorQuality() repairs the passing channels: isolated spikes and stuck/flat-line stretches. You
-# describe each channel's expectations with anomalyControl() - how fast it can plausibly change, its
-# resolution, how long a stall must last to count - and the function screens several channels in one
-# call. Like STEP 6.1 it is report-first: run once with apply = FALSE to review the issues, then again
-# with apply = TRUE to write the fixes (spikes interpolated, malfunction blocks removed).
-data_list <- checkSensorQuality(data    = data_files,
-                                sensors = list(
-                                  depth = anomalyControl(rate.threshold = 7,   # max plausible change per second (m/s)
-                                                         sensor.resolution = 0.5),
-                                  temp  = anomalyControl(rate.threshold = 1,    # deg C per second
-                                                         sensor.resolution = 0.05)),
-                                apply         = TRUE,
-                                interpolate   = TRUE,     # patch isolated spikes (vs. setting them to NA)
-                                return.data   = FALSE,
-                                output.dir = "./data interim/checked",
-                                verbose       = "detailed")
+#checkSensorQuality() identifies and corrects common issues in sensor data, such as isolated spikes and 
+# periods where sensors become stuck or stop recording properly. Users define the expected behaviour of 
+# each sensor channel with anomalyControl(), allowing the function to detect implausible values.
+quality <- checkSensorQuality(data    = list.files("./data interim/03_checked", full.names = TRUE),
+                              sensors = list(
+                                depth = anomalyControl(rate.threshold = 7,   # max plausible change per second (m/s)
+                                                       sensor.resolution = 0.5),
+                                temp  = anomalyControl(rate.threshold = 1,    # deg C per second
+                                                       sensor.resolution = 0.05)),
+                              apply         = TRUE,
+                              interpolate   = TRUE,     # patch isolated spikes (vs. setting them to NA)
+                              plot          = FALSE,
+                              plot.file     = "./plots/sensor_quality.pdf",
+                              return.data   = FALSE,
+                              output.dir    = "./data interim/03_checked",
+                              verbose       = "detailed")
+
+# the findings, one row per flagged channel
+quality$issues  
 
 ## 6.3 Position fixes ------------------------------------------------------------------------------
-# filterLocations() screens the tag's GPS/Argos fixes - the location channel - exactly as the two steps
-# above screen the sensor channels. It is the location analogue of checkSensorQuality(), so it belongs
-# here in the clean phase, before any track reconstruction or mapping consumes the fixes. It works off
-# the canonical position record stored at import (meta$ancillary$positions), so the sensor time series
-# is untouched. Three independent, opt-in checks: a satellite-count floor for weak Fastloc fixes; a
-# neighbour-consistency speed test (a fix is a spike only when it implies an impossible speed to BOTH
-# its neighbours - so a single genuinely fast segment is kept); and an optional gross-distance bound.
-# Only the automatically-acquired FastGPS/Argos fixes are ever removed - User positions and the
-# deploy/pop-up anchors are trusted and kept. Thresholds are species-specific: 10 km/h is a conservative
-# cruising cap for a whale shark. Reads and re-saves the checked files in place.
-data_files <- list.files("./data interim/checked", full.names = TRUE)
-filterLocations(data           = data_files,
+# The filterLocations() function performs quality control on GPS/Argos positions before track analysis. 
+# It identifies and removes unreliable fixes based on criteria such as poor satellite quality, impossible movement speeds, 
+# or unrealistic spatial jumps. Importantly, only automatically generated locations are filtered, 
+# while user-defined positions and deployment anchors are preserved.
+filterLocations(data           = list.files("./data interim/03_checked", full.names = TRUE),
                 max.speed.kmh   = 10,     # reject fixes implying > 10 km/h to both neighbours
                 min.satellites  = 4,      # drop Fastloc fixes computed from < 4 satellites
                 # max.distance.km = 300,  # optional gross-error bound (off by default; see ?filterLocations)
-                plot            = TRUE,
+                basemap         = "land",
+                coastline       = "auto",
+                plot            = FALSE,
                 plot.file       = "./plots/location_filter.pdf",
                 return.data     = FALSE,
-                output.dir   = "./data interim/checked",   # overwrite in place
+                output.dir      = "./data interim/03_checked",   # overwrite in place
                 verbose         = "detailed")
+
 
 
 ################################################################################
@@ -398,7 +395,9 @@ filterLocations(data           = data_files,
 # when the name carries no time. With cross.check = TRUE it OCRs the overlay as well and flags any clip
 # whose file-name time and on-screen time disagree.
 
-camera_folders <- list.dirs("path/to/camera videos", recursive = FALSE)
+
+camera_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/CAMS", recursive = FALSE)
+#camera_folders <- list.dirs("/Volumes/T7 Shield/CAMS", recursive = TRUE)
 
 video_metadata <- getVideoMetadata(video.folders    = camera_folders,
                                    video.format     = c("mp4", "mov"),
@@ -406,6 +405,8 @@ video_metadata <- getVideoMetadata(video.folders    = camera_folders,
                                    cross.check      = TRUE,     # also OCR the overlay and flag disagreements
                                    use.parallel     = TRUE,
                                    verbose          = "detailed")
+#video_metadata$ID <- sub(".*/[0-9]{4}/([^/]+)/.*", "\\1", video_metadata$file)
+
 
 # For any clip whose start time is uncertain (OCR-sourced, missing, or flagged), save the timestamp
 # crop to a folder so you can confirm it by eye.
@@ -427,10 +428,11 @@ for (k in seq_len(nrow(overrides))) {
 }
 
 write.csv(video_metadata, file = "./outputs/video_metadata.csv", row.names = FALSE)
+#video_metadata <- read.csv(file = "./outputs/video_metadata.csv")
 
 
 ################################################################################
-# STEP 8. Work out the tag orientation                                         #
+# STEP 8. Resolve the IMU axis orientation                                     #
 ################################################################################
 
 # A tag can be attached at any angle, but "pitch", "roll" and "heading" only mean something once we've
@@ -465,15 +467,15 @@ configs <- list(
 # frame and the expected geomagnetic field. Where a documented config agrees, it's confirmed; where one
 # disagrees or is missing, the axes are inferred; where the data can't decide, the deployment is
 # honestly flagged rather than forced.
-data_files <- list.files("./data interim/checked", full.names = TRUE)
-mapping_qc <- checkTagMapping(data                     = data_files,
+mapping_qc <- checkTagMapping(data                     = list.files("./data interim/03_checked", full.names = TRUE),
                               configs                  = configs,
-                              deployment.type          = "towed",  # matches the posture scorer to the attachment
                               static.threshold         = 0.1,      # how still counts as "static" for the gravity read
                               vertical.speed.threshold = 0.5,      # dive speed (m/s) that counts as real diving
+                              dba.window               = 5,
                               use.dynamics             = TRUE,     # use dive dynamics to resolve the fore-aft axis
+                              locomotor.band           = c(0.2, 3),
                               locomotor.axis           = "sway",   # tail beats show up on the lateral axis (see STEP 12's notes)
-                              plot                     = TRUE,
+                              plot                     = FALSE,
                               plot.file                = "./plots/axis_mapping.pdf",
                               verbose                  = "detailed")
 
@@ -484,17 +486,19 @@ vapply(mapping_qc, function(x) x$frame_state$prior$status, character(1))
 saveRDS(mapping_qc, "./outputs/mapping_qc.rds")
 # mapping_qc <- readRDS("./outputs/mapping_qc.rds")
 
+
 ## 8.3 Rescue uncertain deployments by consensus ---------------------------------------------------
 # Deployments that share the same physical tag share a fixed sensor geometry. consensusAxisMapping()
 # uses that: within each hardware group it forms a confidence-weighted consensus and lends it to the
 # weaker members, so a dive-rich deployment can rescue a short or flat-swimming sibling. It only ever
 # fills genuine ambiguity - it never overrides a deployment that already resolved on its own, and if two
 # confident deployments in a group disagree, it flags the conflict instead of papering over it.
-mapping_consensus <- consensusAxisMapping(mapping_qc,
+mapping_consensus <- consensusAxisMapping(results       = mapping_qc,
                                           group.by      = c("package_id", "logger_id"),  # what counts as "same hardware"
                                           min.agreement = 0.75,   # how strongly a group must agree to lend its mapping
                                           min.voters    = 2,      # and how many confident members it needs
                                           verbose       = "detailed")
+
 
 ## 8.4 Confirm the tricky ones on video (optional) -------------------------------------------------
 # For camera deployments, footage is the gold standard for handedness. reviewTagMapping() picks the
@@ -502,14 +506,15 @@ mapping_consensus <- consensusAxisMapping(mapping_qc,
 # finds their clearest rolls and dives, and renders short clips showing a sensor "attitude indicator"
 # next to the real footage. Nothing is modified here - candidate mappings are applied only to temporary
 # copies. It hands back a decision sheet: one row per flagged deployment, for you to fill in.
-review <- reviewTagMapping(data             = data_files,
+review <- reviewTagMapping(data             = list.files("./data interim/03_checked", full.names = TRUE),
                            mapping          = mapping_qc,          # the per-deployment evidence to triage on
                            base             = mapping_consensus,   # the mapping actually applied, unless you override it
                            video.metadata   = video_metadata,
                            configs          = configs,
                            include          = c("conflict", "coreg_fail", "ambiguous", "gyro_inconsistent"),
-                           output.dir = "./outputs/axis review")
+                           output.dir = "./outputs/mapping review")
 review   # the decision sheet: flagged deployments, their candidate 'options', and a blank 'decision'
+
 
 # How to read a clip: for a conflict the dashboard shows two labelled attitude indicators side by side -
 # "Documented" (the recorded config) and "Proposed" (the frame the data prefers). Find a moment where
@@ -517,12 +522,12 @@ review   # the decision sheet: flagged deployments, their candidate 'options', a
 #
 # Fill the 'decision' column with the winning option for each flagged deployment. Only comparison clips
 # need a decision; single-candidate flags fall through to the base mapping.
-review$decision[review$id == "PIN_CAM_04"] <- "Documented"
-review$decision[review$id == "PIN_CAM_08"] <- "Proposed"
+review$decision[review$id == "PIN_CAM_26"] <- "Proposed"
 # ... one line per flagged deployment (see 'review' for the full list) ...
 # If a deployment's orientation is genuinely untrustworthy and no candidate is right, mark it "Exclude"
 # and STEP 8.5 will drop it from the output:
 # review$decision[review$id == "PIN_CAM_XX"] <- "Exclude"
+
 
 ## 8.5 Apply the mapping ---------------------------------------------------------------------------
 # applyAxisMapping() rotates the raw axes into the body frame. The transform is absolute (raw -> body)
@@ -534,12 +539,13 @@ review$decision[review$id == "PIN_CAM_08"] <- "Proposed"
 # The gyroscope comes along automatically: for an accelerometer-only config its mapping is derived from
 # the accelerometer's, and check.handedness verifies that the two agree. A left-handed convention is
 # harmless; a genuine accel/gyro mismatch is warned about and recorded in tagMetadata(x)$axis_mapping$coreg_corr.
-data_list <- applyAxisMapping(data             = data_files,
-                              mapping          = review,           # or mapping_consensus if you skipped 8.4
-                              check.handedness = TRUE,             # verify the accel/gyro frames agree
-                              return.data      = FALSE,
-                              output.dir    = "./data interim/oriented",
-                              verbose          = "detailed")
+applyAxisMapping(data             = list.files("./data interim/03_checked", full.names = TRUE),
+                 mapping          = review,                  # or mapping_consensus if you skipped 8.4
+                 check.handedness = TRUE,                     # verify the accel/gyro frames agree
+                 return.data      = FALSE,
+                 output.dir       = "./data interim/04_oriented",
+                 verbose          = "detailed")
+
 
 
 ################################################################################
@@ -547,9 +553,7 @@ data_list <- applyAxisMapping(data             = data_files,
 ################################################################################
 
 # You only need this step if you care about magnetometer-derived heading. Skipping it is fine -
-# processTagData() estimates and applies the same best-effort calibration inline anyway (a full hard +
-# soft-iron ellipsoid when the sensor is well swept, otherwise a hard-iron-only correction). Running this
-# step first just lets you review the fit, and unlocks per-package pooling and external calibration sources.
+# processTagData() applies a solid per-axis magnetometer calibration on its own.
 #
 # The catch is physical: a clean magnetometer calibration wants the sensor swept through every
 # orientation, tracing a full sphere. A whale shark cruising near-horizontal only ever traces a thin
@@ -562,29 +566,31 @@ data_list <- applyAxisMapping(data             = data_files,
 # processTagData() then picks up that stored calibration automatically - but only when its confidence
 # is good enough; a low-confidence fit is kept for inspection and quietly ignored.
 
-calibrateMagnetometer(data          = list.files("./data interim/oriented", full.names = TRUE),
-                      control       = magCalibrationControl(method = "ellipsoid"),  # full ellipsoid; hard-iron-only 2D fallback for a thin band
-                      group.by      = "package_id",     # pool deployments of one tag (paddle/non-paddle stay separate)
+calibrateMagnetometer(data          = list.files("./data interim/04_oriented", full.names = TRUE),
+                      control       = magCalibrationControl(method = "ellipsoid"),  # hard-iron-only 2D fallback for a thin band
+                      group.by      = c("package_id", "logger_id"),  # what counts as "same hardware"
+                      plot          = FALSE,
+                      plot.file     = "./plots/magnetometer_calibration.pdf",
                       return.data   = FALSE,
-                      output.dir = "./data interim/oriented",   # writes back over the oriented files
+                      output.dir = "./data interim/05_processed",   
                       verbose       = "detailed")
 # You can check the per-deployment heading confidence later via processingSummary()$heading_conf.
 
 
+
 ################################################################################
-# STEP 10. Prepare paddle-wheel speed calibration (optional; paddle tags)      #
+# STEP 10. Impute paddle-wheel speed calibration (optional; paddle tags)      #
 ################################################################################
 
-# Some tags carry a small magnetic paddle wheel that spins as the animal swims; processTagData() turns
-# its spin rate into swimming speed (speed = slope x frequency), where the slope is specific to each
-# tag. Skip this step for tags without a paddle wheel.
-#
-# The snag is that a slope is measured for only some tag-years, yet processTagData() needs one for every
-# deployed paddle tag. imputePaddleCalibration() fills the gaps: it learns how the slope drifts as a
-# paddle wears (efficiency drops, so the slope creeps up with age) and projects a complete, gap-free
-# table - measured values kept as-is, the rest imputed and labelled as such.
+# Some tags carry a magnetic paddle wheel that spins as the animal swims; processTagData() turns its
+# rotation frequency into speed (speed = slope x frequency, zero intercept), where the slope is
+# tag-specific. It needs a slope for EVERY deployed paddle tag-year, but only some are ever
+# calibrated. imputePaddleCalibration() fills the gaps: it learns how the slope drifts with age
+# (paddle-wheel efficiency declines, so the slope rises) and projects a gap-free table ready to pass
+# straight to processTagData(). See ?imputePaddleCalibration for the alternative methods and the
+# provenance / quality columns it returns.
 
-# Measured calibration slopes (one row per calibration): year, package_id, slope, and fit quality.
+# Measured calibration slopes (one row per calibration): year, package_id, slope (+ fit quality).
 calibration_regression <- read.csv("./paddle wheel calibration/Velocity_RotationHz_Regression.csv")
 colnames(calibration_regression) <- c("year", "package_id", "slope", "r.squared", "adj.r.squared")
 
@@ -601,132 +607,119 @@ paddle_calibration <- imputePaddleCalibration(calibration       = calibration_re
 
 
 ################################################################################
-# STEP 11. Derive the movement metrics                                         #
+# STEP 11. Process the tag data                                                #
 ################################################################################
 
-# This is the heart of the pipeline. processTagData() takes the oriented, cleaned data and reconstructs
-# what the animal was doing: it calibrates the sensors, estimates body attitude (roll, pitch, heading),
+# processTagData() is the core derivation step: it takes the oriented, cleaned data and 
+# computes the full set of kinematic and motion metrics. It estimates body attitude (roll, pitch, heading),
 # splits acceleration into the static (gravity/posture) and dynamic (movement) parts, and computes the
 # full metric suite - dynamic body acceleration (VeDBA/ODBA, a proxy for movement intensity widely used
 # to estimate activity and, with species-specific calibration, energy expenditure), surge/sway/heave,
 # vertical velocity, and paddle-wheel speed where available. It must run on the
 # oriented files, since every posture metric depends on a correct body frame. Downsampling the output
 # (here to 20 Hz) keeps the files manageable for downstream analysis without losing the behaviour.
-#
+ 
 # The processing knobs are grouped into small control objects, one per concern, so the call stays
 # readable. Each is shown here with the options worth knowing about.
 
-data_list <- processTagData(
-  data                  = list.files("./data interim/oriented", full.names = TRUE),
+processTagData(
+  data                  = list.files("./data interim/04_oriented", full.names = TRUE),
   downsample.to         = 20,               # output rate (Hz); the full-rate signal is used first, then decimated
   orientation.algorithm = "tilt_compass",   # the attitude estimator ("tilt_compass" or "madgwick")
-  # Fine-tune the attitude estimator: correct for the tag's mounting pitch/roll offset, and (for
-  # "madgwick") its filter gain.
-  orientation = orientationControl(correct.pitch = TRUE, correct.roll = TRUE, madgwick.beta = 0.02),
+  # Fine-tune the attitude estimator: correct for the tag's mounting pitch/roll offset, and (for "madgwick") its filter gain.
+  orientation = orientationControl(correct.pitch = TRUE, correct.roll = TRUE,  heading.denoise = "auto"),
   # Magnetometer calibration. With use.stored = TRUE a trusted fit from STEP 9 is applied; otherwise the
   # same engine estimates one inline (full ellipsoid, or hard-iron-only for a thin band) and applies it
   # only when the animal rotated through enough headings to trust it.
   calibration = calibrationControl(hard.iron = TRUE, soft.iron = TRUE, use.stored = TRUE),
-  # Smoothing windows, in seconds. 'static' sets the gravity/movement split (a zero-phase Butterworth
-  # high-pass) and can't be switched off; the rest are optional post-smoothers (set any to NULL to disable).
+  # Smoothing windows, in seconds. 'static' sets the gravity/movement split and can't be switched off;
+  # the rest are optional post-smoothers (set any to NULL to disable it).
   smoothing = smoothingControl(static = 5, orientation = 1, dba = 2, depth = 10, speed = 1),
   # Correct the slow (mostly thermal) drift in the pressure sensor's zero, anchored to moments the tag
   # is known to be at the surface (the wet/dry sensor and GPS fixes). Set method = "none" to skip it.
   depth.drift = depthDriftControl(method = "surface", surface.evidence = c("dry", "gps")),
   paddle.calibration = paddle_calibration,  # from STEP 10; omit for non-paddle tags
   burst.quantiles    = c(0.95, 0.99),       # acceleration thresholds that mark high-effort "burst" events
+  plot               = FALSE,
+  plot.file          = "./plots/processed_data.pdf",
   return.data        = FALSE,
-  output.dir      = "./data interim/processed",
+  output.dir         = "./data interim/05_processed",
   output.suffix      = "-20Hz",
   verbose            = "detailed")
 
 
+# processingSummary() is the companion view: one row per deployment describing what the *pipeline* did
+# (orientation estimator, mounting-offset corrections, magnetometer heading confidence, depth-drift
+# outcome, sampling rates). Handy as a final provenance check across the whole cohort.
+processing_summary <- processingSummary(list.files("./data interim/05_processed", full.names = TRUE))
+
+
 ################################################################################
-# STEP 12. Estimate tail-beat frequency                                        #
+# STEP 12. Estimate tail-beat frequencies                                      #
 ################################################################################
 
-# How hard and how often an animal beats its tail is a direct window onto swimming effort and gait.
-# calculateTailBeats() reads the rhythm straight from the acceleration signal, returning a per-beat
-# frequency (tbf_hz) and a beat amplitude (tbf_amplitude, an effort proxy). It does NOT decide swimming
-# vs gliding by default: on a towed tag that call cannot be made reliably from sway alone (flow and
-# tether motion oscillate in the same band), so tbf_swimming is NA unless you pass a min.amplitude
-# reference to threshold against.
+# calculateTailBeats() estimates the tail-beat frequency from a motion channel. The default "peaks"
+# method returns per-beat frequency (tbf_hz), amplitude (tbf_amplitude, an effort proxy) and a
+# swimming/gliding flag (tbf_swimming).
 #
-# Two things matter for the axis. Which axis actually carries the beat depends on the species, the gait
-# and where the tag sits, and it is not always the one the body plan suggests (in our own manta records
-# the wingbeat sat in surge, not sway), so if you are unsure pass several candidates and let the built-in
-# cross-axis consensus pick - it reports the axis it chose and flags a possible 2f harmonic. And watch
-# the sampling rate: you need at least twice max.freq.Hz to resolve the beat (four times is comfortable),
-# or the frequency can fold over and read double.
-
-data_list <- calculateTailBeats(data            = list.files("./data interim/processed", full.names = TRUE),
-                                method          = "peaks",   # per-beat peaks; "wavelet" gives a time-frequency ridge
-                                motion.col      = "sway",    # lateral axis for a laterally-swimming shark
-                                min.freq.Hz     = 0.1,       # ignore rhythms slower than this...
-                                max.freq.Hz     = 2.5,       # ...and faster than this (needs >= ~10 Hz sampling)
-                                bandpass.filter = TRUE,      # isolate the tail-beat band before detecting peaks
-                                smooth.window   = 5,
-                                plot            = TRUE,
-                                plot.file       = "./plots/tail_beats.pdf",
-                                return.data     = FALSE,
-                                output.dir   = "./data interim/tailbeats",
-                                verbose         = "detailed")
-
+# Choosing the axis: for lateral swimmers (most sharks and teleosts) tail beats are cleanest on the
+# lateral 'sway' axis; other taxa (e.g. cetaceans, rays) may need the vertical 'heave' axis. Using an
+# axis perpendicular to the propulsive stroke can report double the true frequency. Sampling must
+# exceed twice `max.freq.Hz` (Nyquist); >= 4x is recommended.
+calculateTailBeats(data            = list.files("./data interim/05_processed", full.names = TRUE),
+                   method          = c("peaks", "wavelet"),
+                   motion.col      = c("surge"),
+                   min.freq.Hz     = 0.1,
+                   max.freq.Hz     = 2.5,
+                   bandpass.filter = TRUE,
+                   smooth.window   = 5,
+                   plot            = TRUE,
+                   plot.file       = "./plots/tail_beats.pdf",
+                   return.data     = FALSE,
+                   output.dir      =  "./data interim/06_tailbeats",
+                   verbose         = "detailed")
+                               
+                  
 
 ################################################################################
 # STEP 13. Summarize each deployment                                           #
 ################################################################################
 
-# summarizeTagData() distils each deployment into one row of headline numbers: how long the tag was on,
-# the depth and temperature ranges the animal used, sampling rate, positions, and - now that STEP 12 has
-# run - tail-beat and speed statistics. Passing the QC'd 'deployments' object completes the roster, so
-# deployments that dropped out along the way still appear (as excluded rows) rather than silently
-# vanishing; extra.metadata joins on any additional per-animal covariates you want alongside.
+# summarizeTagData() builds a one-row-per-deployment table of headline metrics (duration, depth and
+# temperature ranges, sampling rate, positions, tail-beat and speed statistics, ...). Passing the
+# QC'd `deployments` object completes the roster (deployments with no processed data appear as
+# excluded rows), and `extra.metadata` joins any extra per-ID covariates.
 
-summary <- summarizeTagData(data           = list.files("./data interim/tailbeats", full.names = TRUE),
-                            deployments    = deployments,                       # completes the roster
-                            extra.metadata = animal_metadata[, c("ID", "sex", "size")],
-                            error.stat     = "sd",       # spread statistic for the population summary row
+summary <- summarizeTagData(data           = list.files("./data interim/06_tailbeats", full.names = TRUE),
+                            deployments    = deployments,
+                            error.stat     = "sd",
                             verbose        = "detailed")
 
-summary   # a typed table; its print method shows a formatted view with a population mean +/- sd row
 
 # For export, format() renders the publication-style version (write.csv2 + UTF-8 keeps the degree and
 # per-second unit symbols intact in the headers).
-summary_table <- format(summary, style = "report", include.summary.row = TRUE)
+summary_table <- format(summary, style = "concise", include.summary.row = TRUE)
 write.csv2(summary_table, file = "./outputs/summary_table.csv", row.names = FALSE, fileEncoding = "UTF-8")
-
-# processingSummary() is the companion view: one row per deployment describing what the *pipeline* did
-# (orientation estimator, mounting-offset corrections, magnetometer heading confidence, depth-drift
-# outcome, sampling rates). Handy as a final provenance check across the whole cohort.
-processingSummary(list.files("./data interim/tailbeats", full.names = TRUE))
 
 
 ################################################################################
-# STEP 14. Plot the dive profiles                                              #
+# STEP 14. Plot depth profiles                                                 #
 ################################################################################
 
 # A depth-versus-time profile is the most immediate portrait of a deployment: dive shape, vertical
 # range, and the temperatures the animal moved through. plotDepthProfiles() draws one panel per
 # deployment, coloured by temperature and shaded by day/night (read from each deployment's coordinates),
-# and manages the multi-page PDF itself - so you just hand it the file paths. We drop the handful of
-# deployments too short to make a useful profile first.
+# and manages the multi-page PDF itself - so you just hand it the file paths. 
 
-exclude_ids   <- c("PIN_CAM_02", "PIN_CAM_03", "PIN_CAM_05", "PIN_CAM_06",
-                   "PIN_CAM_07", "PIN_CAM_10", "PIN_CAM_14", "PIN_CAM_15")
-profile_files <- list.files("./data interim/tailbeats", full.names = TRUE)
-profile_files <- profile_files[!sub("-20Hz$", "", tools::file_path_sans_ext(basename(profile_files))) %in% exclude_ids]
-
-plotDepthProfiles(profile_files,
-                  color.by        = "temp",   # colour the trace by any per-sample metric
+plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", full.names = TRUE),
+                  color.by         = "temp",   # colour the trace by any per-sample metric
                   shade.diel       = TRUE,     # shade night vs day (uses each deployment's coordinates)
                   same.depth.scale = FALSE,    # let each panel use its own depth range
                   downsample       = 5,        # thin to ~5 s for a lighter PDF
                   plot             = FALSE,
-                  plot.file        = "./plots/depth-profiles.pdf",
+                  plot.file        = "./plots/depth-profiles3.pdf",
                   ncols            = 2,
-                  nrows            = 9)
-
+                  nrows            = 7)
 
 ################################################################################
 # STEP 15. Compare metric distributions across the cohort                      #
@@ -736,12 +729,12 @@ plotDepthProfiles(profile_files,
 # stack of per-deployment violins over a pooled population strip, one panel per metric. It's the quick
 # way to spot among-individual variation and multimodal behaviour that a mean would hide - and it
 # returns the per-deployment distribution summary invisibly, for tables and stats.
-dist_summary <- plotDistributions(profile_files,
+dist_summary <- plotDistributions(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
                                   metrics   = c("tbf_hz", "paddle_speed"),
-                                  order.by  = "median",   # rank the animals by their median value
+                                  order.by  = "id",  
                                   min.n     = 30,         # ignore deployments with too few samples for a metric
                                   plot      = FALSE,
-                                  plot.file = "./plots/metric-distributions.pdf")
+                                  plot.file = "./plots/metric-distributions2.pdf")
 
 
 ################################################################################
@@ -752,14 +745,14 @@ dist_summary <- plotDistributions(profile_files,
 # each depth (and temperature), as duration-weighted profiles with fine bins near the surface. Ask for
 # both variables together to see time-at-depth beside time-at-temperature, mirror night against day, or
 # facet by a biological trait to compare groups. It returns the underlying per-bin table invisibly.
-tad_summary <- plotTimeAtDepth(profile_files,
+tad_summary <- plotTimeAtDepth(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
                                variable  = c("depth", "temp"),   # depth-use and thermal-use side by side
                                diel      = TRUE,                 # mirror night vs day (needs coordinates)
                                style     = "profile",            # or "heatmap" for a cohort-by-depth grid
                                plot      = FALSE,
                                plot.file = "./plots/time-at-depth.pdf")
 # Compare groups, restyled with a theme preset:
-# plotTimeAtDepth(profile_files, group.by = "sex", theme = plotTheme("minimal"),
+# plotTimeAtDepth(profile_files, group = "sex", theme = plotTheme("minimal"),
 #                 plot.file = "./plots/tad-by-sex.pdf")
 
 

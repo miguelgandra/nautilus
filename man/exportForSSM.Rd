@@ -83,8 +83,8 @@ position per \code{thin.minutes} interval before export (set \code{thin.minutes 
 \subsection{Using the result}{
 
 With \pkg{aniMotum}, pass the frame straight to \code{fit_ssm()}; with \pkg{crawl}, project the coordinates and
-supply the same metre-scale error (\code{y.sd}) to \code{crwMLE()}'s error model. See the dead-reckoning tutorial
-for a worked example. \pkg{aniMotum} / \pkg{crawl} are optional (\code{Suggests}); this function only
+supply the same metre-scale error (\code{y.sd}) to \code{crwMLE()}'s error model. See
+\code{vignette("movement-tracks", package = "nautilus")} for a worked example. \pkg{aniMotum} / \pkg{crawl} are optional (\code{Suggests}); this function only
 formats a data frame and does not require them to be installed.
 }
 }

@@ -41,8 +41,8 @@
 #'
 #' ## Using the result
 #' With \pkg{aniMotum}, pass the frame straight to `fit_ssm()`; with \pkg{crawl}, project the coordinates and
-#' supply the same metre-scale error (`y.sd`) to `crwMLE()`'s error model. See the dead-reckoning tutorial
-#' for a worked example. \pkg{aniMotum} / \pkg{crawl} are optional (\code{Suggests}); this function only
+#' supply the same metre-scale error (`y.sd`) to `crwMLE()`'s error model. See
+#' \code{vignette("movement-tracks", package = "nautilus")} for a worked example. \pkg{aniMotum} / \pkg{crawl} are optional (\code{Suggests}); this function only
 #' formats a data frame and does not require them to be installed.
 #'
 #' @param data The output of \code{\link{reconstructTrack}}: a `nautilus_tag` / data.frame, a (named) list
