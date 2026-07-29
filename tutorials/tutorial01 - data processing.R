@@ -65,7 +65,7 @@ if (!require(readxl)) { install.packages("readxl"); library(readxl) }
 
 # Install 'nautilus' from GitHub once, then load it.
 # install.packages("remotes")
-# remotes::install_github("miguelgandra/nautilus")
+# remotes::install_github("miguelgandra/nautilus", build_vignettes = TRUE)
 library(nautilus)
 
 

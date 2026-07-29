@@ -240,12 +240,6 @@ Install the development version from GitHub:
 remotes::install_github("miguelgandra/nautilus", build_vignettes = TRUE)
 ```
 
-`build_vignettes = TRUE` matters: `install_github()` skips vignettes by default, and
-without it `browseVignettes("nautilus")` reports that none were found. Building them
-needs **knitr** and **rmarkdown**, which `install.packages("remotes")` does not pull in
-&mdash; add `dependencies = TRUE` if you do not already have them. To install without the
-guides, drop the argument; everything else works the same.
-
 nautilus has a deliberately light dependency footprint and needs **no geospatial system
 libraries** (no GDAL/GEOS/PROJ). A few *optional* branches use external tools when you
 reach for them:
