@@ -2,7 +2,7 @@
 % Please edit documentation in R/annotateData.R
 \name{annotateData}
 \alias{annotateData}
-\title{Annotate Dataset with Events or Behaviors of Interest}
+\title{Annotate tag data with scored events or behaviours}
 \usage{
 annotateData(
   data,
@@ -12,48 +12,83 @@ annotateData(
   event.col = "event",
   start.col = "start",
   end.col = "end",
-  selected.events = NULL
+  selected.events = NULL,
+  verbose = "detailed"
 )
 }
 \arguments{
-\item{data}{A list of data tables/data frames, one for each individual, or a single aggregated data table/data frame containing data from multiple animals.}
+\item{data}{A \code{nautilus_tag}, a (named) list of them, or a plain data.frame/data.table - either one
+table per individual, or a single aggregated table carrying \code{id.col}, which is split internally.
+\code{NULL} list elements (e.g. a deployment dropped by an upstream quality-control step) are accepted,
+skipped, and omitted from the result.}
 
-\item{annotations}{A data frame containing the start and end times of events/behaviors (columns specified by \code{start.col} and \code{end.col})
-and an individual ID column (specified by \code{id.col}).}
+\item{annotations}{A data.frame of scored event windows, with an individual ID column (\code{id.col}), an
+event-type column (\code{event.col}), and POSIXct start and end columns (\code{start.col}, \code{end.col}).}
 
-\item{id.col}{A character string specifying the name of the column in both \code{data} and \code{annotations} containing animal IDs.}
+\item{id.col}{Name of the column holding animal IDs, in both \code{data} and \code{annotations}.}
 
-\item{datetime.col}{A character string specifying the name of the column in \code{data} containing the datetime values.}
+\item{datetime.col}{Name of the POSIXct timestamp column in \code{data}.}
 
-\item{event.col}{A character string specifying}
+\item{event.col}{Name of the column in \code{annotations} holding the event or behaviour type. Its values
+become the names of the new columns, so they must not clash with columns already in \code{data}.}
 
-\item{start.col}{A character string specifying the name of the column in \code{annotations} containing event start times.}
+\item{start.col}{Name of the POSIXct column in \code{annotations} holding each event's start time.}
 
-\item{end.col}{A character string specifying the name of the column in \code{annotations} containing event end times.}
+\item{end.col}{Name of the POSIXct column in \code{annotations} holding each event's end time.}
 
-\item{selected.events}{A vector of event types to be annotated. If NULL (default), all events will be annotated.}
+\item{selected.events}{Optional character vector of event types to annotate. \code{NULL} (default) uses
+every event present in \code{annotations}.}
+
+\item{verbose}{Console detail: \code{"quiet"}, \code{"normal"} or \code{"detailed"} (default).}
 }
 \value{
-A list of data frames (one for each individual) with binary columns indicating the presence (1) or absence (0) of each specified event.
+A named list of tables, one per individual, each carrying one \code{0}/\code{1} column per event type.
+The class and metadata of the input are preserved, and the call is recorded in the processing
+history (see \code{\link{processingHistory}}). Individuals whose input element was \code{NULL} are
+omitted, so the result may be shorter than the input.
 }
 \description{
-This function annotates a list of individual data frames (or a single aggregated data frame) with event or behavior information.
-It links time-bound events (e.g., feeding, social interactions) to sensor data collected from individual animals,
-with the event annotations typically derived from a detailed review of footage recorded by camera tags.
-The function scans the dataset(s) for each animal, checking whether each row's timestamp falls within the defined time intervals of
-specific events listed in the provided annotations data frame, marking rows that fall within the specified event or behavior
-periods as \code{1} and those outside the periods as \code{0}.
+Marks each sample of a deployment according to whether it falls inside a scored event window.
+Events are normally read off the tag's own camera footage - a feeding bout, a social interaction, a
+cleaning station visit - and supplied as a table of start/end times per individual. Every sample
+inside a window is marked \code{1}, every sample outside it \code{0}, one column per event type.
+
+The resulting columns are what turns a sensor record into a labelled training set:
+\code{\link{extractFeatures}} builds the predictors, and these columns supply the response.
+}
+\details{
+\strong{Every individual receives every event column.} The column set is fixed once, from the events
+present in \code{annotations} (after \code{selected.events} filtering), so a deployment that was never scored
+for a given behaviour gets that column filled with \code{0} rather than having it missing. This is what
+makes the returned tables safe to row-bind and pool; it also means a \code{0} should be read as "not
+scored as this event", which is not always the same as "this event did not occur".
+
+\strong{What this function does not do.} It does not check that an individual was observed at all: an
+animal absent from \code{annotations} is returned with all-zero event columns, and is named in the
+console output so the difference is visible. It does not interpolate, resample, or alter any
+existing column. It does not infer event windows - the scoring is entirely yours.
+
+Windows are compared inclusively at both ends (\verb{start <= t <= end}), and overlapping windows for the
+same event are unioned. Annotation rows with a missing \code{start} or \code{end} are skipped and reported.
 }
 \examples{
 \dontrun{
-# 'data' is a list of per-individual data frames (e.g. processed tag data);
-# 'annotations' holds event windows scored from the tag's camera footage
+# windows scored from the tag's camera footage
 annotations <- data.frame(
-  ID    = c("shark01", "shark01"),
-  event = c("feeding", "social"),
-  start = as.POSIXct(c("2023-05-01 09:15:00", "2023-05-01 11:40:00"), tz = "UTC"),
-  end   = as.POSIXct(c("2023-05-01 09:18:00", "2023-05-01 11:42:00"), tz = "UTC"))
-annotated <- annotateData(data, annotations, id.col = "ID",
-                          datetime.col = "datetime", event.col = "event")
+  ID    = c("shark01", "shark01", "shark02"),
+  event = c("feeding", "social", "feeding"),
+  start = as.POSIXct(c("2023-05-01 09:15:00", "2023-05-01 11:40:00",
+                       "2023-05-01 14:02:00"), tz = "UTC"),
+  end   = as.POSIXct(c("2023-05-01 09:18:00", "2023-05-01 11:42:00",
+                       "2023-05-01 14:09:00"), tz = "UTC"))
+
+# `tags` is the processed output of processTagData()
+labelled <- annotateData(tags, annotations)
+
+# both animals carry BOTH columns, so the cohort can be pooled
+lapply(labelled, function(x) colSums(x[, c("feeding", "social")]))
 }
+}
+\seealso{
+\code{\link{extractFeatures}}, \code{\link{filterVideoPeriod}}, \code{\link{launchVideo}}.
 }

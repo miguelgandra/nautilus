@@ -20,12 +20,15 @@ launchVideo(
 \item{video.metadata}{A data.frame of video segments with columns \code{ID}, \code{start}, \code{end}, \code{video} and
 \code{file}, as returned by \link{getVideoMetadata}.}
 
-\item{vlc.path}{Optional path to the VLC executable. If \code{NULL}, an OS-specific default is used.}
+\item{vlc.path}{Optional path to the VLC executable. If \code{NULL} (default), VLC is looked up on the
+system path and then in the usual per-OS install locations.}
 
 \item{close.existing}{Logical. Close any running VLC instance first. Default \code{TRUE}.}
 }
 \value{
-\code{TRUE} invisibly if a video was opened, otherwise \code{FALSE}.
+\code{TRUE} invisibly once VLC has been launched; \code{FALSE} if no video segment covers
+\code{datetime}. Invalid arguments, a missing VLC executable and a missing video file all raise an
+error rather than returning \code{FALSE}.
 }
 \description{
 Finds the video segment for an individual that contains a given datetime and opens it in VLC, seeked

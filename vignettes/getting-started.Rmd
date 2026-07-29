@@ -285,10 +285,10 @@ clock), align sensor data to filmed intervals, annotate behaviours, and render s
 overlays.
 
 ```{r branch-video}
-getVideoMetadata("video/")
-filterVideoPeriod(tags)
-annotateData(tags)
-renderOverlayVideo(tags)
+vmeta <- getVideoMetadata("video/")
+tags  <- filterVideoPeriod(tags, vmeta)
+tags  <- annotateData(tags, annotations)   # `annotations`: your scored event windows
+renderOverlayVideo(tags, vmeta)
 ```
 
 ## Working at scale
