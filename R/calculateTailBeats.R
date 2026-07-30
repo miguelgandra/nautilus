@@ -103,7 +103,7 @@
 #'   \item \code{tbf_swimming}: logical swimming/gliding flag when \code{min.amplitude} is supplied,
 #'         otherwise \code{NA} (see Details).
 #'   \item When both backends run: \code{tbf_hz_alt} (the second backend's frequency) and
-#'         \code{tbf_agree} (whether the two agree within 10\%).
+#'         \code{tbf_agree} (whether the two agree within 10%).
 #' }
 #' \code{tbf_agree} reads as a certificate, not an error flag: where the two backends agree they are
 #' rarely both wrong, but where they disagree nothing identifies which one to distrust, so \code{FALSE}
@@ -143,7 +143,7 @@
 #' \strong{Band-pass filtering.} A Butterworth band-pass of order \code{filter.order} is applied within
 #' continuous data segments before detection, isolating the tail-beat band and removing low-frequency
 #' posture drift and high-frequency noise. The band defaults to \code{min.freq.Hz} and \code{max.freq.Hz}
-#' widened by a 10\% margin, or is set explicitly via \code{filter.low.freq} / \code{filter.high.freq}.
+#' widened by a 10% margin, or is set explicitly via \code{filter.low.freq} / \code{filter.high.freq}.
 #' Disable it with \code{bandpass.filter = FALSE}.
 #'
 #' \strong{Peak detection} (\code{method = "peaks"}). Individual beats are located as successive
@@ -191,8 +191,8 @@
 #' The two part company in a specific, recognisable situation: a record carrying a slow high-amplitude
 #' component alongside a faster beat. Autocorrelation asks which waveform repeats and finds the slow one;
 #' a spectral peak asks where the power is concentrated and finds the faster one. On one whale-shark
-#' deployment this described 60\% of the record, and there the peak backend reported roughly a third
-#' lower than the wavelet; over the remaining 40\%, where the two questions have the same answer, both
+#' deployment this described 60% of the record, and there the peak backend reported roughly a third
+#' lower than the wavelet; over the remaining 40%, where the two questions have the same answer, both
 #' backends were unbiased to within 0.03 octaves. A low \code{tbf_agree} on a deployment is therefore
 #' worth reading as a question about what the animal was doing, not only as instrument noise -- and
 #' raising \code{min.periodicity} will withhold exactly the ambiguous stretches, at the cost of coverage.

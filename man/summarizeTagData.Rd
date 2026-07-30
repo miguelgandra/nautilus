@@ -49,7 +49,7 @@ recorded data span - the true on-animal window once the data have been deploymen
 \item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (°C).
 \item \strong{vedba_mean}, \strong{odba_mean} (g): mean activity (dynamic body acceleration).
 \item \strong{tbf_mean} (Hz): mean tail-beat frequency over beating samples; \strong{pct_swimming}
-(\\%): share of time actively swimming - both present only after \link{calculateTailBeats}.
+(\%): share of time actively swimming - both present only after \link{calculateTailBeats}.
 \item \strong{paddle_wheel} (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).
 \item \strong{speed_mean}, \strong{speed_max} (m/s): paddle-wheel speed, when available.
 \item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).

@@ -99,8 +99,8 @@
 #' Warning only: below the flagged group the metric runs continuously from 0.94 down to 0.59, so an
 #' automatic error grade would be false precision - the same reasoning applied to \code{mag.plausibility}.
 #'
-#' Two limits are structural rather than incidental. Each side of a break must be at least 15\% of the
-#' record for it to count as persistent, so \strong{a break in the first or last 15\% cannot be seen}; and
+#' Two limits are structural rather than incidental. Each side of a break must be at least 15% of the
+#' record for it to count as persistent, so \strong{a break in the first or last 15% cannot be seen}; and
 #' a record yielding fewer than 30 ten-minute windows (about 5 h) makes the check \strong{abstain} rather
 #' than guess - 13 of the 52 fleet deployments abstain on that rule. (metric: the separation, in
 #' \[0.5, 1\].)
