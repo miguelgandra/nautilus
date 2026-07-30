@@ -391,14 +391,16 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_match(d2, "Smoothing:")                         # fixed config (smoothing) lives in the header
   expect_match(d2, "A01 \\(1/1\\)")                      # per-individual cli sub-header
   # the detailed block reports findings (key: value), not step narration
-  expect_match(d2, "Methods: peaks \\+ wavelet")         # default runs both -> header names both ("Methods:")
+  expect_match(d2, "Methods: peaks \\(primary\\) \\+ wavelet \\(validation\\)")   # roles, not just names
   expect_match(d2, "Bandpass: [0-9.]+ . [0-9.]+ Hz")     # band is fixed config: its own header line, not per deployment
   expect_match(d2, "input:.*Hz")                         # rows | sampling rate | duration (fs shown ONCE, here)
   expect_match(d2, "axis: sway")                         # selected axis (single candidate present here)
-  # two backends -> one frequency line per method, each qualified by the method that produced it
-  expect_match(d2, "frequency \\(peaks\\): median")
-  expect_match(d2, "frequency \\(wavelet\\): median")
-  expect_match(d2, "amplitude \\(peaks\\): median.*g")   # only the primary method retains an amplitude
+  # grouped BY BACKEND: a bare method heading, then that backend's own statistics indented beneath it
+  expect_match(d2, "frequency: +median")
+  expect_match(d2, "amplitude: +median.*g")              # only the primary method retains an amplitude
+  expect_match(d2, "unresolved: +[0-9]+%")
+  expect_false(grepl("frequency (peaks)", d2, fixed = TRUE))   # the qualifier moved into the heading
+  expect_false(grepl("typical diff %", d2, fixed = TRUE))
   # min.amplitude is a run-wide setting: stated once in the header, never repeated per deployment
   expect_match(d2, "Swimming: not classified \\(no min\\.amplitude\\)")
   expect_false(grepl("swimming:", d2, fixed = TRUE))
@@ -418,16 +420,54 @@ test_that("verbose output is a standardized cli diagnostic block (no legacy cat/
   expect_false(grepl("swimming", d1, fixed = TRUE))      # nothing to say when classification is off
 })
 
-test_that("a single method reports unqualified frequency/amplitude lines and no agreement line", {
+test_that("a single method prints only its own section, and no agreement block", {
   skip_if_not_installed("signal")
   d2 <- paste(cli::cli_fmt(suppressWarnings(
     calculateTailBeats(list(A01 = .sway()), motion.col = "sway", method = "peaks",
                        min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = 2))), collapse = "\n")
   expect_match(d2, "Method: peaks")                      # header names one backend, singular
-  expect_match(d2, "frequency: median")                  # no "(peaks)" qualifier when there is nothing to disambiguate
-  expect_match(d2, "amplitude: median")
+  expect_match(d2, "frequency: +median")
+  expect_match(d2, "amplitude: +median")
   expect_false(grepl("frequency (", d2, fixed = TRUE))
   expect_false(grepl("agreement:", d2, fixed = TRUE))    # nothing to compare against
+  expect_false(grepl("typical difference", d2, fixed = TRUE))
+})
+
+test_that("the per-deployment block groups statistics by backend, in primary-then-validation order", {
+  skip_if_not_installed("signal")
+  lines <- cli::ansi_strip(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(list(A01 = .sway(fs = 20, dur = 300)), motion.col = "sway",
+                       min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = 2))))
+  at <- function(p) grep(p, lines)[1]
+  i_pk <- at("peaks$"); i_wv <- at("wavelet$"); i_ag <- at("agreement:")
+  expect_false(is.na(i_pk)); expect_false(is.na(i_wv)); expect_false(is.na(i_ag))
+  # the conceptual order of the function: primary estimate, then its validation, then their agreement
+  expect_lt(i_pk, i_wv)
+  expect_lt(i_wv, i_ag)
+  # each backend's own statistics sit BETWEEN its heading and the next one, not interleaved
+  sub <- function(from, to) lines[(from + 1L):(to - 1L)]
+  expect_true(any(grepl("frequency:", sub(i_pk, i_wv))))
+  expect_true(any(grepl("amplitude:", sub(i_pk, i_wv))))    # only the primary retains an amplitude
+  expect_true(any(grepl("frequency:", sub(i_wv, i_ag))))
+  expect_false(any(grepl("amplitude:", sub(i_wv, i_ag))))
+  # the agreement sub-line is subordinate to the agreement line, not to a backend
+  expect_match(lines[i_ag + 1L], "typical difference:")
+})
+
+test_that("values in a backend block line up in a column (cli must not collapse the padding)", {
+  skip_if_not_installed("signal")
+  lines <- cli::ansi_strip(cli::cli_fmt(suppressWarnings(
+    calculateTailBeats(list(A01 = .sway(fs = 20, dur = 300)), motion.col = "sway", method = "peaks",
+                       min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = 2))))
+  # indented sub-lines only: the SUMMARY's "tail-beat frequency:" is a top-level line with its own prefix
+  rows <- lines[grepl("^\\s", lines) & grepl("frequency:|amplitude:|unresolved:", lines)]
+  expect_gte(length(rows), 3L)
+  # the value starts at the same offset on every row, whatever the label's length
+  starts <- vapply(rows, function(r) {
+    m <- regexpr("[a-z]+: +", r)
+    m + attr(m, "match.length")
+  }, numeric(1), USE.NAMES = FALSE)
+  expect_length(unique(starts), 1L)
 })
 
 test_that("supplying min.amplitude restores the per-deployment swimming line and drops the header note", {
@@ -787,11 +827,11 @@ test_that("two methods: the header names both and a cross-check agreement line i
                        return.data = TRUE, verbose = 2, ...))), collapse = "\n")
 
   out2 <- fmt(method = c("peaks", "wavelet"))
-  expect_match(out2, "Methods: peaks \\+ wavelet \\(cross-checked, peaks primary\\)")  # header names both + primary
-  # each method's median gets its own frequency line, so the agreement line carries only the comparison
-  expect_match(out2, "frequency \\(peaks\\): median [0-9.]+ Hz")
-  expect_match(out2, "frequency \\(wavelet\\): median [0-9.]+ Hz")
-  expect_match(out2, "agreement: [0-9]+% . typical diff [0-9.]+ Hz")                   # the cross-check payoff
+  expect_match(out2, "Methods: peaks \\(primary\\) \\+ wavelet \\(validation\\)")      # header names both + their roles
+  # each backend gets its own section, so the agreement block carries only the comparison
+  expect_match(out2, "frequency: +median [0-9.]+ Hz")
+  expect_match(out2, "agreement: [0-9]+%")                                             # the cross-check payoff
+  expect_match(out2, "typical difference: [0-9.]+ Hz")
   expect_false(grepl("wavelet median", out2, fixed = TRUE))                            # median no longer repeated here
 
   out1 <- fmt(method = "peaks")

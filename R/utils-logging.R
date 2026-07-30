@@ -197,6 +197,20 @@
   invisible(NULL)
 }
 
+#' `.log_subdetail()` for rows whose columns must line up.
+#'
+#' Same glyph and indent, so the two are interchangeable within a block, but routed through
+#' `cli_verbatim`: `cli_text`/`cli_bullets` normalise runs of whitespace for prose, which silently
+#' collapses any padding used to align values into a column. Verbatim also passes literal `{}` through
+#' untouched, so no escaping dance is needed.
+#' @keywords internal
+#' @noRd
+.log_subdetail_aligned <- function(lvl, ...) {
+  if (lvl < 2L) return(invisible(NULL))
+  cli::cli_verbatim(paste0("  \u21b3 ", paste0(...)))
+  invisible(NULL)
+}
+
 #' The final summary line (level >= 1), typically counts + elapsed time.
 #' @keywords internal
 #' @noRd

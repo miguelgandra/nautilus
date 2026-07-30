@@ -444,7 +444,7 @@ calculateTailBeats <- function(data,
               bullets = hdr_bullets,
               arrow = c(
                 if (length(methods) > 1L)
-                  sprintf("Methods: %s (cross-checked, %s primary)", paste(methods, collapse = " + "), method)
+                  sprintf("Methods: %s (primary) + %s (validation)", methods[1], methods[2])
                 else paste0("Method: ", method),
                 if (bandpass.filter) sprintf("Bandpass: %g \u2013 %g Hz", filter.low.freq, filter.high.freq)
                 else "Bandpass: none",
@@ -780,11 +780,16 @@ calculateTailBeats <- function(data,
     co_agree[i]  <- agree
     co_swim[i]   <- swim
     co_edge[i]   <- edge_occ
-    # both backends now publish an unresolved share, so the primary's is the one reported; the label
-    # follows it, because "no in-band spectral peak" and "no repeating waveform" are different findings
     prim_unres   <- attr(data_list[[i]], "tb_unresolved", exact = TRUE)
-    unres_src    <- if (!is.null(prim_unres) || length(methods) == 1L) method else methods[2]
     co_unres[i]  <- prim_unres %||% alt_unres %||% NA_real_
+    # Both backends publish an unresolved share, and they are not the same measurement: the wavelet
+    # withholds where no scale stands above the local spectral background, peak detection where the
+    # waveform does not repeat strongly enough to fix a period. So each is keyed to the backend that
+    # measured it and reported under that backend's own heading, rather than collapsed into one line.
+    # The metadata keeps the primary's (above), unchanged.
+    unres_by <- stats::setNames(rep(NA_real_, length(methods)), methods)
+    unres_by[[method]] <- prim_unres %||% NA_real_
+    if (length(methods) > 1L) unres_by[[methods[2]]] <- alt_unres %||% NA_real_
 
     meta <- .getMeta(res_i)
     if (!is.null(meta)) {
@@ -814,45 +819,26 @@ calculateTailBeats <- function(data,
       b <- cli::symbol$bullet
       med_f <- stats::median(tbf_v, na.rm = TRUE)
       if (lvl >= 2L) {
-        # with two backends the estimates are two distinct answers, not one answer plus a footnote, so each
-        # gets its own frequency line qualified by the method that produced it. The method qualifier is
-        # dropped in single-method runs, where it would only add noise.
+        # Grouped by BACKEND, in the order the function reasons: the primary estimate, then the backend
+        # that validates it, then their agreement. Interleaving them by statistic instead (one frequency
+        # line per method, then one amplitude line) made the reader hop between methods to assemble
+        # either answer. Only the primary retains an amplitude -- the cross-check keeps frequency only.
         has_alt <- length(methods) > 1L && !is.null(res_i$tbf_hz_alt) && any(!is.na(res_i$tbf_hz_alt))
-        fr <- range(tbf_v, na.rm = TRUE)
-        .log_detail(lvl, sprintf("frequency%s: median %.2f Hz (%.2f \u2013 %.2f Hz)",
-                                 if (has_alt) paste0(" (", methods[1], ")") else "", med_f, fr[1], fr[2]))
-        if (has_alt) {
-          alt_r <- range(res_i$tbf_hz_alt, na.rm = TRUE)
-          .log_detail(lvl, sprintf("frequency (%s): median %.2f Hz (%.2f \u2013 %.2f Hz)", methods[2],
-                                   stats::median(res_i$tbf_hz_alt, na.rm = TRUE), alt_r[1], alt_r[2]))
-        }
-        if (!is.null(amp_v) && any(is.finite(amp_v))) {
-          ar <- range(amp_v, na.rm = TRUE)
-          # the unit follows the axis: hardcoding "g" mislabels a gyro channel as an accelerometer one
-          u <- .tbAxisUnits(axis)
-          # only the primary method's amplitude is retained (the alt backend stores frequency only), so the
-          # qualifier makes explicit which estimate this envelope belongs to.
-          .log_detail(lvl, sprintf("amplitude%s: median %.2f %s (%.2f \u2013 %.2f %s)",
-                                   if (has_alt) paste0(" (", methods[1], ")") else "",
-                                   stats::median(amp_v, na.rm = TRUE), u, ar[1], ar[2], u))
-        }
-        # Either backend withholds a sample where it cannot establish an oscillation: the wavelet when no
-        # scale stands above the local spectral background, peak detection when the waveform does not
-        # repeat strongly enough to fix a period. A large share is the finding itself -- the record has no
-        # resolvable oscillation for much of its length -- and it distinguishes that from the other reason
-        # two methods disagree (a competing real component). Labelled with the backend that measured it,
-        # since the two ask different questions of the signal.
-        if (!is.na(co_unres[i]) && co_unres[i] > 0.05)
-          .log_detail(lvl, sprintf("unresolved: %.0f%% of the record has no resolvable oscillation (%s)",
-                                   100 * co_unres[i], unres_src))
-        # with the per-method medians already stated above, this line carries only the comparison itself:
-        # how often the two backends concur (samples within 10%) and the typical per-sample gap.
-        if (has_alt && !is.na(agree)) {
-          diff_med <- stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
-          .log_detail(lvl, sprintf("agreement: %.0f%% \u00b7 typical diff %.2f Hz", 100 * agree, diff_med))
-        }
+        # the unit follows the axis: hardcoding "g" mislabels a gyro channel as an accelerometer one
+        u <- .tbAxisUnits(axis)
+        sections <- list(list(name = method, freq = tbf_v, amp = amp_v,
+                              unresolved = unres_by[[method]], units = u))
+        if (has_alt)
+          sections <- c(sections, list(list(name = methods[2], freq = res_i$tbf_hz_alt, amp = NULL,
+                                            unresolved = unres_by[[methods[2]]], units = u)))
+        .logTailBeatMethods(lvl, sections,
+                            agree = if (has_alt) agree else NA_real_,
+                            agree.diff = if (has_alt)
+                              stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
+                              else NA_real_)
         # `swim` is NA exactly when no classification ran (min.amplitude unset) - a run-wide fact already
-        # stated once in the header, so nothing is reported per deployment in that case.
+        # stated once in the header, so nothing is reported per deployment in that case. It stays a
+        # top-level line: both backends share one classifier, so it belongs to neither section.
         if (!is.na(swim)) .log_detail(lvl, sprintf("swimming: %.0f%%", 100 * swim))
         if (!is.null(saved_to)) .log_ok(lvl, "saved ", basename(saved_to)) else .log_ok(lvl, id, " processed")
       } else {
@@ -931,6 +917,61 @@ calculateTailBeats <- function(data,
   ids <- sapply(data_list, function(x) unique(x[[id.col]])[1])
   .collectOutput(data_list, saved, return.data, ids)
 
+}
+
+
+#' Report one deployment's tail-beat results, grouped by backend.
+#'
+#' One renderer for every method combination, so the single-backend and cross-checked layouts cannot
+#' drift apart: each section prints only the statistics its backend actually produced, and a section
+#' whose backend produced nothing is omitted entirely rather than left as an empty heading.
+#'
+#' Values are aligned in a column (the labels differ in width by one character), which is what makes a
+#' 51-deployment log scannable down the page rather than only readable block by block.
+#'
+#' @param sections List of per-backend records, in report order (primary first). Each has `name`, `freq`,
+#'   `amp` (may be `NULL` -- only the primary backend retains one), `unresolved` and `units`.
+#' @param agree Fraction of samples where the two backends concur, or `NA` for a single-backend run.
+#' @param agree.diff Median absolute per-sample difference between the two estimates (Hz).
+#' @keywords internal
+#' @noRd
+.logTailBeatMethods <- function(lvl, sections, agree = NA_real_, agree.diff = NA_real_) {
+  if (lvl < 2L) return(invisible(NULL))
+  # pad label + colon to a common width so the values line up under each other
+  lab <- function(x) sprintf("%-12s", paste0(x, ":"))
+
+  for (s in sections) {
+    rows <- character(0)
+    if (!is.null(s$freq) && any(!is.na(s$freq))) {
+      r <- range(s$freq, na.rm = TRUE)
+      rows <- c(rows, paste0(lab("frequency"), sprintf("median %.2f Hz (%.2f \u2013 %.2f Hz)",
+                                                       stats::median(s$freq, na.rm = TRUE), r[1], r[2])))
+    }
+    if (!is.null(s$amp) && any(is.finite(s$amp))) {
+      r <- range(s$amp, na.rm = TRUE)
+      rows <- c(rows, paste0(lab("amplitude"), sprintf("median %.2f %s (%.2f \u2013 %.2f %s)",
+                                                       stats::median(s$amp, na.rm = TRUE), s$units,
+                                                       r[1], r[2], s$units)))
+    }
+    # Reported whenever the backend measured it, including 0%: in a per-backend block a missing row reads
+    # as "not measured" rather than "nothing withheld", and the withheld share is part of the estimate's
+    # coverage, not an exception to it.
+    if (isTRUE(is.finite(s$unresolved)))
+      rows <- c(rows, paste0(lab("unresolved"), sprintf("%.0f%%", 100 * s$unresolved)))
+
+    if (!length(rows)) next
+    .log_detail(lvl, s$name)
+    for (r in rows) .log_subdetail_aligned(lvl, r)
+  }
+
+  # the comparison itself, subordinate to neither backend: how often the two concur (samples within 10%)
+  # and, beneath it, the typical per-sample gap
+  if (isTRUE(is.finite(agree))) {
+    .log_detail(lvl, sprintf("agreement: %.0f%%", 100 * agree))
+    if (isTRUE(is.finite(agree.diff)))
+      .log_subdetail_aligned(lvl, sprintf("typical difference: %.2f Hz", agree.diff))
+  }
+  invisible(NULL)
 }
 
 
