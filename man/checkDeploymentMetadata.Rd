@@ -2,7 +2,7 @@
 % Please edit documentation in R/checkDeploymentMetadata.R
 \name{checkDeploymentMetadata}
 \alias{checkDeploymentMetadata}
-\title{Quality-control and normalise deployment metadata}
+\title{Quality-control deployment metadata before importing}
 \usage{
 checkDeploymentMetadata(
   metadata,
@@ -12,38 +12,76 @@ checkDeploymentMetadata(
 )
 }
 \arguments{
-\item{metadata}{A data.frame (or data.table) with one row per deployment.}
+\item{metadata}{A table with one row per deployment.}
 
-\item{columns}{A column-mapping schema built with \code{\link{metadataColumns}}, describing which
-columns of \code{metadata} hold each role. Map the optional roles (\code{recovery_datetime}, \code{package_id},
-\code{logger_id}, ...) to enable the checks that depend on them.}
+\item{columns}{How your columns map onto nautilus roles, built with \code{\link[=metadataColumns]{metadataColumns()}}. Map the
+optional roles you have - recovery datetime, package and logger identifiers, and so on - to enable
+the checks that depend on them.}
 
-\item{future.tolerance}{Numeric. Days into the future a deployment datetime may fall before it is
-flagged as implausible (allows for clock skew / time-zone slop). Default \code{1}.}
+\item{future.tolerance}{How many days beyond today a deployment datetime may fall before it is
+treated as implausible (default \code{1}). The allowance exists because tag clocks drift and time zones
+are easy to misread; raise it if your records legitimately run slightly ahead.}
 
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed"
-(default). At \verb{>= 1} the QC summary is printed via the console UI and no \code{warning()} is fired;
-at \code{0} the console is silent and, if any errors were found, a single aggregated \code{warning()} is
-emitted (the channel headless callers can catch).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A \code{nautilus_deployments} object: the normalised metadata table (a data.frame) with the
-QC verdict and the issue table attached. Retrieve the issues with \code{\link{issues}}. The
-function never \code{stop()}s on data problems - errors are reported and carried on the object so
-you can inspect them; \code{importTagData} is what refuses to import on unresolved errors.
+A \code{nautilus_deployments} object: the cleaned metadata table, carrying its quality verdict and
+the list of problems found. Inspect the problems with \code{\link[=issues]{issues()}}, and pass the object directly to
+\code{\link[=importTagData]{importTagData()}}, which reads its verdict and needs no separate \code{columns} argument.
 }
 \description{
-Validates and cleans a deployment-metadata table before the sensor data are imported. Columns are
-mapped to nautilus \emph{roles} with \code{\link{metadataColumns}}; the table is then normalised into a
-canonical form (trimmed identifiers, chronological order) and screened by a set of checks. Each check
-runs only when the roles it depends on are mapped, so the function is metadata-agnostic: map the
-roles you have, and the relevant checks switch on automatically.
+A deployment table is small, hand-assembled, and usually the least-checked part of a study - yet
+almost every downstream result depends on it. A transposed latitude puts an animal on land, a
+mistyped year places a deployment in the future, a duplicated identifier silently merges two
+animals, and a recovery date before the deployment date makes a record impossible. These errors are
+cheap to find now and expensive to find later, once they have propagated into tracks, dive
+statistics and diel analyses.
 
-The result is a \code{nautilus_deployments} object - the cleaned metadata table, carrying the QC
-verdict and the issue list as attributes - that can be passed straight to \code{\link{importTagData}}
-(no \code{columns} argument needed: the QC step is the normalisation step). \code{importTagData}
-reads the QC stamp and reports it; if it receives un-QC'd metadata instead, it re-runs these checks
-inline as a guard.
+\code{checkDeploymentMetadata()} screens the table before any sensor data are read, and returns a cleaned
+version carrying its own quality verdict. Run it once, at the start, and pass the result straight to
+\code{\link[=importTagData]{importTagData()}}.
+}
+\details{
+\subsection{Roles, and why they matter}{
+
+Your columns are matched to nautilus \emph{roles} using \code{\link[=metadataColumns]{metadataColumns()}}. A role is what a column
+means, not merely what it is called, so mapping one both renames it and switches on the checks and
+features that depend on it. Roles you do not map are skipped and their checks are silently disabled -
+so if a check you expected is missing, confirm the role is mapped. The roles that were recognised are
+listed in the console output.
+}
+
+\subsection{What is checked}{
+
+Each check runs only when the roles it needs are available.
+
+\describe{
+\item{Identifiers}{Missing or duplicated animal identifiers, and identifiers that needed trimming
+or case normalisation to match.}
+\item{Deployment records}{Missing deployment dates or positions; positions outside plausible
+geographic bounds; deployment dates further into the future than \code{future.tolerance} allows.}
+\item{Chronology}{Recovery or pop-up datetimes falling before the deployment datetime.}
+\item{Hardware reuse}{The same tag package deployed on overlapping dates, which would make its
+axis orientation ambiguous; and the same logger appearing on more than one deployment.}
+\item{Declared sensor faults}{Sensor channels listed as known-bad, checked for spelling against the
+recognised channel names so that a typo does not silently fail to exclude anything.}
+}
+
+The package-overlap check additionally needs \code{recovery_datetime}, since it requires a deployment
+window to intersect.
+}
+
+\subsection{Reporting, not stopping}{
+
+Problems are reported and attached to the returned object rather than raised as errors, so you can
+see the whole picture at once and decide what to fix. Nothing is silently repaired. It is
+\code{\link[=importTagData]{importTagData()}} that refuses to proceed on unresolved errors, which keeps inspection and
+enforcement as separate steps.
+
+At \code{verbose = 0} the console is silent and any errors are raised as a single aggregated R warning
+instead, which is the channel a scripted caller can capture.
+}
 }
 \examples{
 \dontrun{
@@ -53,10 +91,11 @@ meta <- checkDeploymentMetadata(
                             deploy_lon = "longitudeD", deploy_lat = "latitudeD",
                             package_id = "PackageID", logger_id = "ID_CMD",
                             recovery_datetime = "recoveryDate"))
-issues(meta)                       # inspect the flagged records
-data <- importTagData(folders, metadata = meta)   # consumes the cleaned table directly
+issues(meta)                                    # inspect what was flagged
+tags <- importTagData(folders, metadata = meta) # consumes the cleaned table directly
 }
 }
 \seealso{
-\code{\link{metadataColumns}}, \code{\link{importTagData}}, \code{\link{issues}}
+\code{\link[=metadataColumns]{metadataColumns()}} to describe your columns; \code{\link[=issues]{issues()}} to inspect what was found;
+\code{\link[=importTagData]{importTagData()}} for the next step.
 }

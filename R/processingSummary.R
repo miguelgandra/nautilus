@@ -142,6 +142,15 @@ processingSummary <- function(data, id.col = "ID") {
 }
 
 
+#' Print a processing summary
+#'
+#' Renders the cohort processing sheet as an aligned table, one row per deployment, with a short
+#' banner giving the number of deployments covered.
+#'
+#' @param x A `nautilus_processing_summary` object from [processingSummary()].
+#' @param ... Unused.
+#' @return `x`, invisibly. Called for the printed output.
+#' @seealso [processingSummary()]
 #' @exportS3Method print nautilus_processing_summary
 print.nautilus_processing_summary <- function(x, ...) {
   df <- as.data.frame(x)

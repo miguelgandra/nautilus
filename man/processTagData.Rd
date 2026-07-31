@@ -313,8 +313,8 @@ processTagData(list.files("./oriented", full.names = TRUE),
 }
 }
 \references{
-Gunner RM, Holton MD, Scantlebury MD, \emph{et al.} (2021) Dead-reckoning animal
-movements in R: a reappraisal using Gundog. \emph{Animal Biotelemetry}. 9:1-37.
+Gunner RM, Holton MD, Scantlebury MD, \emph{et al.} (2021) Dead-reckoning animal movements in R: a
+reappraisal using Gundog.Tracks. \emph{Animal Biotelemetry}. 9:23.
 \doi{10.1186/s40317-021-00245-z}
 
 Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, \emph{et al.} (2009).

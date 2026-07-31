@@ -69,6 +69,11 @@ orientationControl(correct.roll = FALSE)     # skip the roll-offset correction
 orientationControl(madgwick.beta = 0.05)     # stronger Madgwick gain
 orientationControl(heading.denoise = "manual", heading.denoise.window = 2)
 }
+\references{
+Madgwick SOH, Harrison AJL, Vaidyanathan R (2011) Estimation of IMU and MARG orientation using a
+gradient descent algorithm. \emph{IEEE International Conference on Rehabilitation Robotics}. 1-7.
+\doi{10.1109/ICORR.2011.5975346}
+}
 \seealso{
 \code{\link{processTagData}}, \code{\link{calibrationControl}}, \code{\link{smoothingControl}}
 }

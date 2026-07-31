@@ -255,8 +255,8 @@
 #' file paths. Files are written to disk whenever \code{output.dir} is set.
 #'
 #' @references
-#' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal
-#' movements in R: a reappraisal using Gundog. *Animal Biotelemetry*. 9:1-37.
+#' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal movements in R: a
+#' reappraisal using Gundog.Tracks. *Animal Biotelemetry*. 9:23.
 #' \doi{10.1186/s40317-021-00245-z}
 #'
 #' Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, *et al.* (2009).

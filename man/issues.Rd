@@ -2,12 +2,12 @@
 % Please edit documentation in R/checkDeploymentMetadata.R
 \name{issues}
 \alias{issues}
-\title{Retrieve the QC issues from a \code{nautilus_deployments} object}
+\title{Inspect the problems found in deployment metadata}
 \usage{
 issues(x, severity = NULL)
 }
 \arguments{
-\item{x}{A \code{nautilus_deployments} object returned by \code{\link{checkDeploymentMetadata}}.}
+\item{x}{A \code{nautilus_deployments} object returned by \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}.}
 
 \item{severity}{Optional character vector to filter by severity (\code{"error"}, \code{"warning"}, \code{"info"}).
 Default \code{NULL} (all).}
@@ -17,7 +17,12 @@ A data.frame with columns \code{id}, \code{check}, \code{severity}, \code{messag
 per flagged record. Zero rows when the metadata is clean.
 }
 \description{
-Retrieve the QC issues from a \code{nautilus_deployments} object
+\code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} reports rather than stops, so its verdict travels with the returned
+object instead of interrupting your session. \code{issues()} opens that verdict: one row per flagged
+record, saying which deployment, which check, and what is wrong.
+
+Use it to triage a table before importing - filter to \code{severity = "error"} to see what would block
+the import, and to \code{"warning"} for what is merely suspect.
 }
 \examples{
 \dontrun{

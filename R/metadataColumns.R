@@ -2,13 +2,16 @@
 # Metadata column schema ##############################################################################
 #######################################################################################################
 
-#' Map deployment-metadata columns for importTagData()
+#' Describe your deployment-metadata columns
 #'
 #' @description
-#' Describes which columns of your `metadata` table hold each piece of deployment information.
-#' It replaces the long list of individual `*.col` arguments with a single, self-documenting object:
-#' fields default to the canonical nautilus names, so metadata that already uses those names needs no
-#' configuration, and only non-standard columns have to be named explicitly.
+#' Deployment tables differ from study to study: the animal identifier might be `ID`, `shark_id` or
+#' `individual`, and the tagging date `tagging_date`, `deploy_date` or `dateTime`. Rather than
+#' requiring you to rename your columns, nautilus asks you to describe them once.
+#'
+#' `metadataColumns()` builds that description. Each field names the column holding one piece of
+#' deployment information. Fields default to the canonical nautilus names, so a table that already uses
+#' them needs no configuration - name only the columns that differ.
 #'
 #' @param id Column holding the animal/deployment ID (default `"ID"`). Required.
 #' @param tag_model Column holding the tag model (default `"tag"`). Required.
@@ -19,28 +22,28 @@
 #' @param deploy_lon,deploy_lat Columns holding the deployment longitude / latitude. Required
 #'   (defaults `"deploy_lon"` / `"deploy_lat"`).
 #' @param recovery_datetime Column holding the recovery (or detachment) datetime, POSIXct, or `NULL`.
-#'   Mapping it enables the recovery-before-deployment check in \code{\link{checkDeploymentMetadata}}, and
+#'   Mapping it enables the recovery-before-deployment check in [checkDeploymentMetadata()], and
 #'   is also required by the package-overlap check. Default `NULL`.
 #' @param popup_datetime,popup_lon,popup_lat Columns holding the pop-up (detachment) datetime /
 #'   longitude / latitude. Supply all three to enable pop-up location integration. Default `NULL`.
 #' @param package_id Column holding the physical tag-package ID (the housing whose axis orientation is
 #'   constant), or `NULL`. Enables paddle-wheel speed calibration, per-package axis-orientation
-#'   consensus (\code{\link{consensusAxisMapping}}), and the package-overlap check in
-#'   \code{\link{checkDeploymentMetadata}} - which additionally requires `recovery_datetime`, since it needs
+#'   consensus ([consensusAxisMapping()]), and the package-overlap check in
+#'   [checkDeploymentMetadata()] - which additionally requires `recovery_datetime`, since it needs
 #'   a deployment window to intersect. Default `NULL`.
 #' @param logger_id Column holding the logger / data-recorder ID (the unit that owns the raw recording
 #'   file, which may be reused across packages), or `NULL`. Enables the logger-reuse note in
-#'   \code{\link{checkDeploymentMetadata}}, which flags a logger appearing on more than one deployment.
+#'   [checkDeploymentMetadata()], which flags a logger appearing on more than one deployment.
 #'   Default `NULL`.
 #' @param exclude_sensors Column listing sensor channels known to be unusable on a deployment (a
 #'   data-quality fact kept separate from axis orientation, e.g. a firmware bug), or `NULL`. Each value
 #'   is a comma-separated list of families (`"accel"`, `"gyro"`, `"mag"`) and/or channels (e.g.
-#'   `"mx"`, `"gz"`), blank for none. Reported by \code{\link{checkDeploymentMetadata}} and dropped by
-#'   \code{\link{importTagData}} (so the channel is simply absent downstream). Default `NULL`.
+#'   `"mx"`, `"gz"`), blank for none. Reported by [checkDeploymentMetadata()] and dropped by
+#'   [importTagData()] (so the channel is simply absent downstream). Default `NULL`.
 #' @param axis_config Column naming the IMU orientation configuration of each deployment (e.g.
 #'   `"CATS Camera"`), or `NULL`. The name is looked up in a `configs` dictionary by
-#'   \code{\link{checkTagMapping}} (to validate the documented mapping against the data) and
-#'   \code{\link{applyAxisMapping}} (to apply it); blank means "no documented config" (resolve from the
+#'   [checkTagMapping()] (to validate the documented mapping against the data) and
+#'   [applyAxisMapping()] (to apply it); blank means "no documented config" (resolve from the
 #'   data instead). Carried onto each tag's metadata at import. Default `NULL`.
 #' @param paddle_wheel Column flagging whether the tag carried a paddle wheel (logical or 0/1), or
 #'   `NULL`. Default `NULL`.
@@ -48,23 +51,22 @@
 #'   "left_pectoral", "right_pectoral"); informs the magnetometer/sway-sign cross-checks. Default
 #'   `NULL`.
 #' @param deployment_type Column recording the mount type, `"rigid"` or `"towed"`; used by
-#'   \code{\link{checkTagMapping}} to choose the posture scorer (rigid rewards near-zero resting
+#'   [checkTagMapping()] to choose the posture scorer (rigid rewards near-zero resting
 #'   roll/pitch; towed tolerates resting offsets). Default `NULL`.
 #' @param tag_format Column naming each deployment's raw data format, so a single
-#'   \code{\link{importTagData}} call can mix tag makes: it selects the reader per deployment and
-#'   overrides that call's `format` argument. Values are the reader names (`"cats"`,
-#'   `"little_leonardo"`). Mapping this role is the explicit, QC'd alternative to `format = "auto"`
-#'   detection. Default `NULL` (every deployment uses the `format` argument).
-#' @param data_start Column holding the instant the LOGGER STARTED RECORDING, as POSIXct. Required only
-#'   for loggers whose raw files carry no clock (e.g. Little Leonardo, whose header reads
-#'   `START DATE 0000/00/00`): timestamps are synthesised from it plus the sampling rate. This is **not**
-#'   `deploy_datetime` - recording usually starts before the animal is released, and the two are
-#'   different events. Default `NULL`.
-#' @param traits Character *vector* of column names holding passive biological / ecological attributes of
-#'   the animal (e.g. `c("sex", "length", "maturity", "species")`), or `NULL`. Unlike the roles above,
-#'   traits drive no processing - they are carried through VERBATIM by \code{\link{importTagData}} into
-#'   each object's metadata (`tagMetadata(x)$biometrics`), so they are consistently available for later
-#'   grouping, filtering, and plotting (e.g. `group = "sex"`). Default `NULL`.
+#'   [importTagData()] call can mix tag makes: it selects the reader per deployment and overrides that
+#'   call's `format` argument. Values are reader names: `"cats"`, `"little_leonardo"`. Mapping this role
+#'   is the explicit, quality-controlled alternative to automatic format detection. Default `NULL`
+#'   (every deployment uses the `format` argument).
+#' @param data_start Column holding the moment the logger began recording, as POSIXct. Needed only for
+#'   loggers whose files carry no clock - Little Leonardo tags, whose headers read
+#'   `START DATE 0000/00/00`, are the common case - where timestamps are generated from it and the
+#'   sampling rate. This is not the deployment datetime: recording normally starts before the animal is
+#'   released, and using the wrong one shifts the whole record. Default `NULL`.
+#' @param traits Column names holding passive biological attributes of the animal, for example
+#'   `c("sex", "length", "maturity", "species")`. Unlike the roles above, traits drive no processing:
+#'   they are carried through unchanged and stored with each tag, so they remain available for grouping,
+#'   filtering and plotting later - for example `group = "sex"`. Default `NULL`.
 #'
 #' @details
 #' Each field maps one column of your metadata table to a *role* that nautilus understands. Mapping a
@@ -88,16 +90,20 @@
 #'   `popup_datetime`/`popup_lon`/`popup_lat` \tab optional \tab pop-up location integration\cr
 #'   `paddle_wheel` \tab optional \tab paddle-wheel speed estimation\cr
 #'   `attachment_site` \tab optional \tab magnetometer / sway-sign cross-checks\cr
-#'   `deployment_type` \tab optional \tab rigid-vs-towed posture scorer
+#'   `deployment_type` \tab optional \tab rigid-vs-towed posture scorer\cr
+#'   `tag_format` \tab optional \tab per-deployment reader choice, so one import can mix tag makes\cr
+#'   `data_start` \tab required for clock-less loggers \tab generates timestamps from the recording
+#'     start and the sampling rate
 #' }
 #'
-#' `traits` is the exception to the table above: it is NOT a role. It lists passive attribute columns
-#' (sex, length, maturity, species, ...) carried onto each object's metadata verbatim (they drive no
-#' check), for later grouping / filtering / plotting - see the `traits` argument.
+#' `traits` is the exception to the table above: it is not a role. It lists passive attribute columns -
+#' sex, length, maturity, species - that are carried onto each deployment's metadata unchanged and drive
+#' no check, for grouping, filtering and plotting later.
 #'
 #' @return A validated `nautilus_metadata_columns` object (a named list) for the `columns` argument of
-#'   \code{\link{importTagData}} and \code{\link{checkDeploymentMetadata}}.
-#' @seealso \code{\link{importTagData}}, \code{\link{checkDeploymentMetadata}}
+#'   [importTagData()] and [checkDeploymentMetadata()].
+#' @seealso [checkDeploymentMetadata()] to screen the table once described; [importTagData()] to read
+#'   the deployments against it.
 #' @examples
 #' # metadata already uses the canonical names:
 #' metadataColumns()

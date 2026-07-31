@@ -2,73 +2,82 @@
 # buildTagData(): construct a nautilus_tag from in-memory data ########################################
 #######################################################################################################
 
-#' Build a nautilus_tag from an in-memory data frame
+#' Build a tag object from data already in R
 #'
 #' @description
-#' Assembles a validated \code{nautilus_tag} from sensor data you already hold in memory - the same
-#' internal object \code{\link{importTagData}} produces from files, but starting from a
-#' \code{data.frame}/\code{data.table} you supply. Use it when the tag format is not one
-#' \code{importTagData()} can read yet, when the data was exported from another tool, or for simulated
-#' data. The result flows through the rest of the pipeline (\code{\link{processTagData}},
-#' \code{\link{checkTagMapping}}, \code{\link{applyAxisMapping}}, ...) exactly like an imported tag.
+#' Not every deployment arrives as a file nautilus can read. The logger may use an export format that
+#' is not yet supported, the data may have been through another analysis tool, a collaborator may send
+#' a processed table, or the record may be simulated for testing a method.
+#'
+#' `buildTagData()` assembles sensor data you already hold in R into a tag object identical in
+#' structure to one [importTagData()] reads from disk, so it flows through the rest of the pipeline
+#' unchanged.
+#'
+#' This is a constructor, not a processing step: it applies no axis rotation, no calibration and no
+#' unit conversion. Supply the channels in the tag's own recorded frame, with acceleration in g.
+#' Reorienting the axes is a later, deliberate step - see [applyAxisMapping()].
 #'
 #' @details
-#' \strong{Sensor columns.} One row per sample. Sensor channels should use the canonical names
-#' \code{ax, ay, az, gx, gy, gz, mx, my, mz, depth, temp, paddle_speed, paddle_freq}; any that are present
-#' are recorded in \code{meta$sensors$present}. Columns under other names can be renamed on the way in with
-#' \code{sensor.mapping} (e.g. \code{c(ax = "X", ay = "Y", az = "Z")}). At least one sensor channel must be
-#' present. \strong{This is a raw constructor: no axis transform, calibration or unit conversion is
-#' applied} - orientation is a downstream \code{\link{applyAxisMapping}} / \code{\link{processTagData}}
-#' step, so supply the axes in the tag's own recorded frame and units (acceleration in g).
+#' ## Sensor columns
+#' One row per sample. Channels should use the canonical names `ax`, `ay`, `az`, `gx`, `gy`, `gz`,
+#' `mx`, `my`, `mz`, `depth`, `temp`, `paddle_speed` and `paddle_freq`; whichever are present are
+#' recorded in the tag's metadata. Columns under other names can be renamed on the way in with
+#' `sensor.mapping`. At least one sensor channel is required.
 #'
-#' \strong{Timestamps.} Provide either a POSIXct \code{datetime} column (named by \code{datetime.col}) or,
-#' for loggers that store only a start time and a fixed rate, a POSIXct \code{start} plus a
-#' \code{sampling.rate} (Hz) - the timestamps are then synthesised as
-#' \code{start + (0:(n-1)) / sampling.rate}. Timestamps should already be POSIXct in \code{timezone}; they
-#' are not silently reinterpreted.
+#' ## Timestamps
+#' Either supply a POSIXct column naming the time of each sample, or - for loggers that record only a
+#' start time and a fixed rate - supply `start` and `sampling.rate`, and the timestamps are generated
+#' as `start + (0:(n - 1)) / sampling.rate`. Timestamps are taken as given in `timezone` and are never
+#' silently reinterpreted.
 #'
-#' \strong{Metadata.} Optional deployment metadata is mapped from \code{metadata} using the
-#' \code{\link{metadataColumns}} role names (\code{deploy_lon}, \code{deploy_lat}, \code{deploy_datetime},
-#' \code{popup_lon}/\code{lat}/\code{datetime}, \code{tag_model}, \code{tag_type}, \code{package_id},
-#' \code{logger_id}, \code{axis_config}, \code{paddle_wheel}, \code{attachment_site},
-#' \code{deployment_type}). A single-row \code{nautilus_deployments} object from
-#' \code{\link{checkDeploymentMetadata}} is accepted directly (its columns already use these names). Columns
-#' named in \code{traits} are carried through verbatim as passive biometric traits (into
-#' \code{meta$biometrics}). Anything not supplied stays \code{NA}; none of it is required to run the
-#' accelerometer pipeline.
+#' ## Deployment metadata
+#' Optional. Metadata is read using the role names from [metadataColumns()] - where and when the tag
+#' was deployed and recovered, the tag model and type, the attachment site, and so on. A single-row
+#' object from [checkDeploymentMetadata()] can be passed directly, since its columns already use those
+#' names. Columns named in `traits` are carried through unchanged as biometric traits, for example
+#' length or sex. Anything not supplied stays missing; none of it is needed to run an accelerometer
+#' analysis.
 #'
-#' \strong{Magnetometer/gyroscope-free tags.} A tag carrying accelerometer channels (\code{ax/ay/az}) plus
-#' \code{depth} needs no magnetometer or gyroscope: \code{processTagData()} derives ODBA/VeDBA,
-#' surge/sway/heave and pitch/roll from acceleration alone (heading is left \code{NA}), and
-#' \code{checkTagMapping()} resolves the tag-to-body axes from gravity and diving dynamics. Note that
-#' \code{processTagData()} currently requires a \code{depth} channel (used for vertical velocity and the
-#' mounting-pitch correction); \code{buildTagData()} itself does not - it will build a depth-less tag for
-#' use with functions that do not need depth.
+#' ## Tags without a magnetometer or gyroscope
+#' A tag carrying only accelerometer channels and depth is fully usable. [processTagData()] derives
+#' dynamic body acceleration, the surge, sway and heave components and pitch and roll from
+#' acceleration alone, leaving heading missing, and [checkTagMapping()] can still resolve the
+#' tag-to-body axes from gravity and diving behaviour.
 #'
-#' @param data A \code{data.frame}/\code{data.table}, one row per sample: a timestamp column (or use
-#'   \code{start} + \code{sampling.rate}) and one or more sensor columns.
-#' @param id Character deployment ID. If \code{NULL}, taken from an \code{"ID"} column in \code{data} or
-#'   from \code{metadata}; an error is raised if none is available or if \code{data} mixes several IDs.
-#' @param datetime.col Name of the POSIXct timestamp column in \code{data} (default \code{"datetime"});
-#'   renamed to \code{"datetime"} on output. Ignored when \code{start} + \code{sampling.rate} are given.
-#' @param start,sampling.rate Optional. When \code{data} has no timestamp column: a length-1 POSIXct
-#'   \code{start} and a positive \code{sampling.rate} (Hz) synthesise the \code{datetime} column.
-#' @param metadata Optional single-row \code{data.frame}/\code{nautilus_deployments} or named list of
-#'   deployment metadata, keyed by \code{\link{metadataColumns}} role names.
-#' @param traits Character vector of \code{metadata} column names to carry through as passive biometric
-#'   traits (into \code{meta$biometrics}).
-#' @param sensor.mapping Optional named character vector renaming \code{data} columns to canonical sensor
-#'   names, e.g. \code{c(ax = "X", ay = "Y", az = "Z")} (names = canonical, values = current column names).
-#' @param timezone Time zone the timestamps are recorded in (default \code{"UTC"}); stored in
-#'   \code{meta$sensors$timezone}.
-#' @param required.sensors Character vector of sensor channels that must be present, or \code{NULL}
-#'   (require only a timestamp and at least one sensor channel).
-#' @param verbose Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal",
-#'   \code{2}/"detailed".
-#' @return A validated \code{nautilus_tag} (a \code{data.table} carrying the consolidated \code{nautilus}
-#'   metadata), ready for \code{\link{processTagData}}.
-#' @seealso \code{\link{importTagData}}, \code{\link{processTagData}}, \code{\link{applyAxisMapping}},
-#'   \code{\link{checkDeploymentMetadata}}, \code{\link{metadataColumns}}
+#' Note that [processTagData()] does require a `depth` channel, which it uses for vertical velocity and
+#' for the mounting-pitch correction. `buildTagData()` itself does not, so a depth-less tag can be
+#' built for use with the functions that do not need it.
+#'
+#' @param data A data frame or data.table with one row per sample: a timestamp column - or `start` and
+#'   `sampling.rate` instead - and one or more sensor columns.
+#' @param id The deployment identifier. `NULL` (default) takes it from an `ID` column in `data`, or
+#'   from `metadata`. An error is raised if none is available, or if `data` mixes several animals.
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`). Set it when your
+#'   table names that column something else; it is renamed on output so the rest of the pipeline sees
+#'   a consistent name.
+#' @param start,sampling.rate For loggers that record no clock: the time of the first sample and the
+#'   recording rate in Hz, from which the timestamps are generated. Little Leonardo tags are the
+#'   common case. Ignored when a timestamp column is present.
+#' @param metadata Optional deployment metadata: a single-row data frame, a `nautilus_deployments`
+#'   object, or a named list, keyed by the role names from [metadataColumns()].
+#' @param traits Which columns of `metadata` to carry through as biometric traits, for example length,
+#'   mass or sex. These are stored with the tag and travel with it, but are not used by any analysis
+#'   step.
+#' @param sensor.mapping How your column names map onto the canonical sensor names, for example
+#'   `c(ax = "X", ay = "Y", az = "Z")`. Needed only when the columns are not already canonically named.
+#' @param timezone The time zone the timestamps are recorded in (default `"UTC"`). This records what
+#'   the timestamps mean; it does not shift them.
+#' @param required.sensors Which sensor channels a tag must carry to be built. `NULL` (default)
+#'   requires only a timestamp and at least one recognised channel. Name the channels your analysis
+#'   depends on to have an incomplete tag rejected here rather than later.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`.
+#'
+#' @return A validated `nautilus_tag`: a data.table carrying the sensor data together with the
+#'   deployment metadata and a processing record, ready for [processTagData()].
+#'
+#' @seealso [importTagData()] to read tags from disk; [metadataColumns()] and
+#'   [checkDeploymentMetadata()] for the metadata; [applyAxisMapping()] for the axis frame;
+#'   [processTagData()] for the next step.
 #' @examples
 #' # a minimal accelerometer-only tag from an in-memory data frame
 #' n  <- 6000

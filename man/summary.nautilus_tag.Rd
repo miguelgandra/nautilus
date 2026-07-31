@@ -2,7 +2,7 @@
 % Please edit documentation in R/nautilus-class.R
 \name{summary.nautilus_tag}
 \alias{summary.nautilus_tag}
-\title{Summarise a nautilus_tag}
+\title{Summarise a deployment at a glance}
 \usage{
 \method{summary}{nautilus_tag}(object, ...)
 }
@@ -15,5 +15,9 @@
 A one-row data.frame of per-deployment summary statistics.
 }
 \description{
-Summarise a nautilus_tag
+A quick check on one deployment: how long it ran, at what rate, which sensor channels it carries and
+the range of the main ones. Useful immediately after import, to confirm a tag read as expected before
+committing to a long processing run.
+
+For a whole fleet in one table, use \code{\link[=summarizeTagData]{summarizeTagData()}}.
 }

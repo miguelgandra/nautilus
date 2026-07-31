@@ -619,7 +619,14 @@ print.nautilus_tag <- function(x, ...) {
 }
 
 
-#' Summarise a nautilus_tag
+#' Summarise a deployment at a glance
+#'
+#' @description
+#' A quick check on one deployment: how long it ran, at what rate, which sensor channels it carries and
+#' the range of the main ones. Useful immediately after import, to confirm a tag read as expected before
+#' committing to a long processing run.
+#'
+#' For a whole fleet in one table, use [summarizeTagData()].
 #'
 #' @param object A `nautilus_tag` object.
 #' @param ... Unused.

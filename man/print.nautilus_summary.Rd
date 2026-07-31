@@ -11,6 +11,9 @@
 
 \item{...}{Unused.}
 }
+\value{
+\code{x}, invisibly. Called for the printed output.
+}
 \description{
 Renders the formatted table (via \code{\link[=format.nautilus_summary]{format}}) plus a one-line
 banner; for more than one deployment the formatted table carries a display-only \verb{mean +/- error} row.

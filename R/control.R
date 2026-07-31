@@ -236,6 +236,10 @@ magCalibrationControl <- function(method = c("ellipsoid", "diagonal"),
 #' orientationControl(correct.roll = FALSE)     # skip the roll-offset correction
 #' orientationControl(madgwick.beta = 0.05)     # stronger Madgwick gain
 #' orientationControl(heading.denoise = "manual", heading.denoise.window = 2)
+#' @references
+#' Madgwick SOH, Harrison AJL, Vaidyanathan R (2011) Estimation of IMU and MARG orientation using a
+#' gradient descent algorithm. *IEEE International Conference on Rehabilitation Robotics*. 1-7.
+#' \doi{10.1109/ICORR.2011.5975346}
 #' @export
 orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, correct.roll = TRUE,
                                pitch.offset.min.r2 = 0.1, mount.roll.max = 60, warning.threshold = 45,
@@ -817,7 +821,7 @@ filterLocationsControl <- function(min.time.mins = 0,
 #'   as sound as the speed estimate.
 #' @references
 #' Bidder OR, Soresina M, Shepard ELC, *et al.* (2012) The need for speed: testing acceleration for
-#' estimating animal travel rate in terrestrial dead-reckoning systems. *Zoology*. 115:58-64.
+#' estimating animal travel rates in terrestrial dead-reckoning systems. *Zoology*. 115:58-64.
 #' \doi{10.1016/j.zool.2011.09.003}
 #'
 #' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal movements in R: a reappraisal
@@ -825,6 +829,8 @@ filterLocationsControl <- function(min.time.mins = 0,
 #'
 #' Wensveen PJ, Thomas L, Miller PJO (2015) A path reconstruction method integrating dead-reckoning and
 #' position fixes applied to humpback whales. *Movement Ecology*. 3:31. \doi{10.1186/s40462-015-0061-6}
+#' @return A validated `nautilus_reconstruct_track` control object, for the `control` argument of
+#'   [reconstructTrack()].
 #' @seealso \code{\link{reconstructTrack}}
 #' @examples
 #' reconstructTrackControl(speed.method = "paddle", vpc.method = "linear")

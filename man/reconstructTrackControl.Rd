@@ -106,6 +106,10 @@ denominator is the \emph{reckoned} path, directedness is effectively net speed d
 speed, so a badly mis-set \code{constant.speed} (or a hot speed calibration) can mis-fire - the gate is only
 as sound as the speed estimate.}
 }
+\value{
+A validated \code{nautilus_reconstruct_track} control object, for the \code{control} argument of
+\code{\link[=reconstructTrack]{reconstructTrack()}}.
+}
 \description{
 Groups the dead-reckoning and track-correction knobs of \code{\link{reconstructTrack}} into a
 single object: how the animal's swimming speed is set, the biological speed cap, and how the drifting
@@ -166,7 +170,7 @@ reconstructTrackControl(speed.method = "vedba", vedba.model = c(0.15, 3.1))
 }
 \references{
 Bidder OR, Soresina M, Shepard ELC, \emph{et al.} (2012) The need for speed: testing acceleration for
-estimating animal travel rate in terrestrial dead-reckoning systems. \emph{Zoology}. 115:58-64.
+estimating animal travel rates in terrestrial dead-reckoning systems. \emph{Zoology}. 115:58-64.
 \doi{10.1016/j.zool.2011.09.003}
 
 Gunner RM, Holton MD, Scantlebury MD, \emph{et al.} (2021) Dead-reckoning animal movements in R: a reappraisal

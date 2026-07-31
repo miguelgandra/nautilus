@@ -2,7 +2,7 @@
 % Please edit documentation in R/importTagData.R
 \name{importTagData}
 \alias{importTagData}
-\title{Import and Standardize Archival Biologging Tag Data}
+\title{Import archival tag data into a standard structure}
 \usage{
 importTagData(
   data.folders,
@@ -25,210 +25,170 @@ importTagData(
 )
 }
 \arguments{
-\item{data.folders}{Character vector. Paths to the folders containing data to be processed.
-Each folder corresponds to an individual animal and should contain subdirectories with sensor data and possibly
-additional (Wildlife Computers) tag data.}
+\item{data.folders}{Paths to the deployment folders to import, one per animal. Pass several to
+import a whole fleet in one call.}
 
-\item{sensor.subdirectory}{Character. Name of the subdirectory within each animal folder that contains sensor data (default: "CMD").}
+\item{sensor.subdirectory}{Name of the subdirectory inside each deployment folder that holds the
+sensor files (default \code{"CMD"}). Change it to match your own folder layout.}
 
-\item{format}{Character. The raw data format to read: \code{"cats"} (default; the CATS/CEiiA multi-sensor
-CSV export), \code{"little_leonardo"} (Little Leonardo archival loggers - a \verb{_A.txt} acceleration file
-plus an optional \verb{_DT.txt} depth/temperature file, which carry no clock and so additionally need the
-\code{data_start} role, see \code{\link{metadataColumns}}; its per-second camera-on flag, when present, is
-preserved as a transition-encoded \code{meta$ancillary$video} stream), or \code{"auto"} to identify each
-deployment's format from its files.
+\item{format}{Which raw format to read: \code{"cats"} (default), \code{"little_leonardo"}, or \code{"auto"} to
+identify each deployment from its own files. Use \code{"auto"} for an archive containing more than
+one tag make; see Details.}
 
-\code{"auto"} inspects the headers of the files in each folder and routes it to the matching reader. It
-never guesses: a folder matching two readers, or none, is reported rather than assumed - so a
-misidentified deployment fails loudly instead of being read as the wrong make. It recognises stock
-exports, using the built-in column mappings only; a custom exporter (i.e. one that needs
-\code{import.mapping}) is reported as unidentifiable and should be named with \code{format} or \code{tag_format}.
+\item{wc.subdirectory}{Name of the subdirectory holding paired Wildlife Computers data, or \code{NULL}
+(default) to locate it automatically. Set it only if detection picks the wrong folder.}
 
-To import several tag makes in ONE call, either use \code{"auto"} or map the \code{tag_format} role: a
-per-deployment value there overrides this argument, and the two combine - \code{format = "auto"} with a
-\code{tag_format} column naming only some deployments honours those and detects the rest. Data you have
-already read into R does not need a reader at all - see \code{\link{buildTagData}}.
-This subdirectory should include the sensor CSV files for the corresponding animal.}
+\item{timezone}{The time zone the tag's clock was set to (default \code{"UTC"}, which matches standard
+CATS exports). Timestamps are labelled with this zone, never shifted by it. Set it only if the
+tag was configured to log local time: an incorrect zone places the record at the wrong point in
+the solar day and will bias any analysis of diel behaviour.}
 
-\item{wc.subdirectory}{Character or NULL. Name of the subdirectory within each animal folder that contains Wildlife Computers tag data
-(e.g., MiniPAT, MK10, or SPOT tag data), or NULL to auto-detect tag folders (default: NULL).
-This subdirectory should contain the "Locations.csv" file with position data from the tag.}
+\item{import.mapping}{A data frame describing how the columns of a non-standard export map onto
+sensor channels and units, or \code{NULL} (default) to use the built-in mappings. Supply it when an
+export the readers do not recognise fails to import. It needs three columns - \code{colname},
+\code{sensor} and \code{units} - one row per channel to import.
 
-\item{timezone}{Character. The time zone in which the tag \strong{recorded} its timestamps. It is used
-to \emph{interpret} the (time-zone-naive) clock readings in the sensor files: the recorded clock
-values are preserved and the resulting \code{datetime} column is simply labelled with this zone -
-\strong{no shifting or conversion is performed}. Must be a valid \code{OlsonNames()} zone. Defaults
-to "UTC", which matches standard CATS exports (whose columns are labelled "Date (UTC)" /
-"Time (UTC)"); set it only if your tag was configured to log in local time. If a CATS calibration
-sidecar reporting a non-zero \code{utc_offset} is found and it disagrees with this argument, a warning
-is issued (the clock is never silently shifted). Wildlife Computers location files are always read
-as UTC (their native zone), independent of this argument.}
+\code{sensor} accepts \code{"datetime"}, \code{"date"}, \code{"time"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"},
+\code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}, \code{"paddle_freq"} and \code{"paddle_speed"};
+\code{units} accepts \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"},
+\code{"m"}, \code{"Hz"}, \code{"m/s"}, or \code{""} for a dimensionless channel.}
 
-\item{import.mapping}{Data frame or NULL. Optional specification of column names to import
-from the CSV files and their corresponding sensor type and units. If \code{NULL} (default), uses
-standard column names for archival G-Pilot and i-Pilot data. When specified, it must be a data frame
-with three columns:
-\itemize{
-\item \strong{colname}: The exact column name as it appears in the input CSV file.
-\item \strong{sensor}: The standardized sensor name to be used in the processed data. Valid options include: \code{"date"}, \code{"time"}, \code{"datetime"}, \code{"ax"}, \code{"ay"}, \code{"az"}, \code{"gx"}, \code{"gy"}, \code{"gz"}, \code{"mx"}, \code{"my"}, \code{"mz"}, \code{"depth"}, \code{"temp"}, \code{"paddle_freq"}, \code{"paddle_speed"}.
-\item \strong{units}: The units of the sensor data. Valid options include: \code{"UTC"}, \code{"m/s2"}, \code{"g"}, \code{"mrad/s"}, \code{"rad/s"}, \code{"deg/s"}, \code{"uT"}, \code{"C"}, \code{"m"}, \code{"Hz"}, \code{"m/s"}, or \code{""} (an empty string) for unitless/dimensionless quantities.
-}
-For date and time columns, use \code{sensor = "datetime"} and \code{units = "UTC"}.
+\item{required.sensors}{The sensor channels a deployment must carry to be imported. \code{NULL}
+(default) accepts any record with usable timestamps and at least one recognised channel, so
+accelerometer-only and depth-and-temperature-only tags import normally. Name the channels your
+analysis cannot proceed without - for example \code{c("depth", "temp")} - to have incomplete
+deployments rejected at import rather than partway through the pipeline.}
 
-\strong{Temperature handling.} Only water-temperature channels are mapped to \code{temp}: the
-pressure-sensor thermistor (\code{"Temperature (depth)"} / \code{"Depth (200bar) 2"}) and the CEIIA
-\code{"Temperature (deg C)"}. Tag-electronics channels (\code{"Temp. (magnet.)"}, the magnetometer
-chip, and \code{"Temperature (imu)"}, the IMU board) are blacklisted and never auto-mapped, because
-they report internal temperature, not the environment. If a deployment's only temperature column is
-a blacklisted one, \code{temp} is left unset (consistent with how any other missing sensor is
-handled) and a per-deployment warning is issued. Explicitly mapping a blacklisted header via
-\code{import.mapping} overrides the blacklist (it is then used as \code{temp}) but still warns.}
+\item{metadata}{The deployment metadata: which animal, which tag, and when and where it was
+deployed. Ideally the object returned by \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}, which carries its own
+column schema and a quality verdict. A plain data frame is accepted and checked as it is read.}
 
-\item{required.sensors}{Character vector or \code{NULL}. The sensor channels that must be
-present for a file to be imported. If \code{NULL} (default), a file is imported as long as
-it has a usable datetime and at least one recognized sensor channel — so
-accelerometer-only, gyroscope-free, magnetometer-free, or depth/temperature-only
-(TDR-style) datasets are all supported. Whichever recognized channels are present are
-kept; the rest are simply absent from the output. To enforce a specific set (e.g.
-require depth for dive analysis, or a full IMU), pass their names, e.g.
-\code{c("depth", "temp")} or \code{c("ax","ay","az","gx","gy","gz","mx","my","mz")}. Valid names:
-\code{ax}, \code{ay}, \code{az}, \code{gx}, \code{gy}, \code{gz}, \code{mx}, \code{my}, \code{mz}, \code{depth}, \code{temp}, \code{paddle_speed},
-\code{paddle_freq}. Note that downstream analyses may still require particular sensors.}
+\item{columns}{How your metadata columns map onto the fields nautilus expects, built with
+\code{\link[=metadataColumns]{metadataColumns()}}. Needed only where your column names differ from the defaults.}
 
-\item{metadata}{Data frame. Metadata about the IDs to associate with the processed data.
-Must contain at least columns for ID, tag model, and deployment date/longitude/latitude (see \code{columns}).
-Preferably a \code{nautilus_deployments} object returned by \code{\link{checkDeploymentMetadata}}: it
-carries its own column schema (so \code{columns} is not needed) and a QC verdict that is reported in the
-header and rejected if it failed. If a plain data.frame is supplied instead, the same metadata checks
-are run inline as a guard, and blocking errors abort the import before the long read.}
+\item{return.data}{Return the imported data in memory (default \code{TRUE}), or, when \code{FALSE}, the
+paths of the files written. The paths feed directly into the next step, so a fleet too large to
+hold in memory can be processed a deployment at a time. Requires \code{output.dir}.}
 
-\item{columns}{A column-mapping schema built with \code{\link{metadataColumns}}, describing which
-columns of \code{metadata} hold each piece of deployment information (ID, tag model/type,
-deployment and pop-up datetime/longitude/latitude, package ID, paddle wheel, attachment site).
-Fields default to the canonical nautilus names, so metadata that already uses those names needs
-no configuration; override only the columns that differ, e.g.
-\code{columns = metadataColumns(deploy_datetime = "tagging_date", package_id = "PackageID")}.}
+\item{output.dir}{Directory in which to write one \code{.rds} file per deployment. Supplying a
+directory is what triggers saving; \code{NULL} (default) writes nothing. It must already exist.}
 
-\item{return.data}{Logical. Return the imported data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument -- so a large fleet can be imported without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{output.suffix}{Optional text added to each file name before \code{.rds}, to distinguish one
+processing run from another.}
 
-\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
-a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+\item{compress}{Compression for the saved files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
+\code{"gzip"}, \code{"bzip2"}, \code{"xz"}. Uncompressed files are markedly faster to write and roughly 1.5-2
+times larger; the contents are identical and \code{readRDS()} reads either.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{data.table.threads}{Number of threads data.table may use, or \code{NULL} (default) to leave its
+current setting unchanged. More threads speed up large imports at the cost of memory.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set).
-\code{TRUE} (default, gzip) produces smaller files. Set \code{FALSE} to write uncompressed, which is
-markedly faster for very large tags - gzip compression can otherwise dominate the import time -
-at the cost of larger files (typically ~1.5-2x). May also be one of \code{"gzip"}, \code{"bzip2"}, \code{"xz"}
-to choose the codec explicitly. The file content is identical either way; \code{readRDS()} reads both
-transparently. Passed to \code{\link[base]{saveRDS}}.}
+\item{import.calibration}{Whether to record the calibration constants the tag firmware applied,
+where a sidecar file accompanies the export (default \code{TRUE}). These are kept as an audit record
+and never re-applied. The one field that is used is the recording UTC offset, which is checked
+against \code{timezone}.}
 
-\item{data.table.threads}{Integer or NULL. Specifies the number of threads
-that data.table should use for parallelized operations. NULL (default): Uses data.table's current default threading.
-Notes:
-\itemize{
-\item Optimal thread count depends on your CPU cores and data size
-\item More threads use more RAM but can significantly speed up large operations
-\item Can be permanently set via \code{data.table::setDTthreads()}
-\item Current thread count: \code{data.table::getDTthreads()}
-}}
+\item{alignment}{How to align the clocks of the archival tag and a paired Wildlife Computers tag,
+built with \code{\link[=alignmentControl]{alignmentControl()}}. Pass \code{alignmentControl(method = "none")} to leave both as
+recorded.}
 
-\item{import.calibration}{Logical. If \code{TRUE} (default), the function looks for a
-calibration sidecar paired with each sensor CSV (a CATS mini-diary \code{.txt}, or a
-camera \verb{_resume.json}) and, when found, records the parsed constants (per-sensor
-offsets/factors, magnetometer ASA coefficients, depth zero-offset) in the tag's
-metadata (\code{meta$calibration}). These are the corrections the tag firmware already
-applied to the exported CSV, so nautilus keeps them \strong{only as an audit record} and
-never re-applies them; they are not consumed by any analysis step. The one
-functional field is the recording UTC offset, which is cross-checked against
-\code{timezone} (a mismatch raises a warning). If no sidecar is found, \code{meta$calibration}
-is \code{NULL}.}
-
-\item{alignment}{A control object from \code{\link{alignmentControl}} governing the temporal alignment
-between a primary archival tag (depth + IMU) and a paired Wildlife Computers tag (wet/dry + GPS),
-which keep independent clocks. When both record depth, the offset between their clocks is recovered
-by cross-correlating the two depth traces and the WC-clock streams (\code{positions}, \code{dry}) are shifted
-onto the primary tag's timeline, so downstream steps that combine them (the depth zero-offset
-correction, dead-reckoning fix anchors) see one consistent clock. The correction abstains when the
-evidence is too weak (no shared depth, too little overlap, a poor correlation) and is recorded in
-\code{meta$ancillary$alignment}. Pass \code{alignmentControl(method = "none")} to disable it.}
-
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal" (framed header, one line
-per folder, and a final \code{SUMMARY} block with the run count, runtime and consolidated issues), or
-\code{2}/"detailed" (default; adds per-individual diagnostics: tag attributes, sensor channels, row
-count and sampling rate, span, calibration sidecar, unit conversions, integrated locations and any
-excluded sensors). Defaults to \code{"detailed"}.
-
-\strong{Issue reporting is verbosity-gated.} Data-quality issues (folders with no sensor file,
-locations outside the recording period, timezone mismatches, discarded
-electronics temperature sensors, ...) are surfaced through the console UI when \code{verbose >= 1}
-(pre-flight ones as amber alerts in the header, per-deployment ones inline, all of them echoed in
-the final \code{SUMMARY} tally) and \strong{no base-R \code{warning()} is emitted}. Only when
-\code{verbose = 0}/quiet are these issues emitted as aggregated R \code{warning()} conditions (once
-each, at the very end). Automated / headless callers that catch issues with
-\code{tryCatch()} / \code{withCallingHandlers()} must therefore run with \code{verbose = 0}; at the
-default \code{"detailed"} the cli console is the channel and no warning conditions are raised.}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-If \code{return.data = TRUE}, a named list where each element contains the imported sensor
-data for one folder. If \code{return.data = FALSE}, a character vector of the written \code{.rds} file
-paths. Data is written to disk whenever \code{output.dir} is set.
+A named list of \code{nautilus_tag} objects, one per deployment, each carrying its sensor data,
+deployment metadata and a processing record. When \code{return.data = FALSE}, a character vector of
+the file paths written instead.
 }
 \description{
-This function provides an end-to-end solution for importing and standardizing
-high-resolution biologging data from archival tags. It handles raw sensor outputs from
-various tag types (defaulting to G-Pilot and i-Pilot formats) and transforms them into
-analysis-ready datasets with consistent formatting.
+Archival biologging tags record continuously for days to months, and every manufacturer exports
+that record in its own layout, with its own column names and units. Before any analysis can begin
+the exports must be read, placed on a single time base, converted to common units and matched to
+the deployment they came from - work that is tedious to do correctly and easy to get quietly wrong.
 
-It can process data from a single individual or automatically iterate through directories
-to process data from multiple individuals sequentially, making it well-suited for
-large-scale studies.
-
-Sensor time series are automatically processed and converted to standardized units
-— \code{g} for acceleration, \code{rad/s} for angular velocity, and \verb{µT} for magnetic fields —
-while preserving the original temporal resolution and structure.
-
-Users can optionally specify a custom column mapping using the \code{import.mapping} argument,
-which allows importing data from CSV files with non-standard column names. When provided,
-this mapping defines how columns in the raw data correspond to standard sensor types,
-including the associated units. This ensures compatibility with the function's
-standardization routines, even when input data deviates from default naming conventions.
-
-Sensor data is imported in its raw axis frame; converting the IMU to an animal-centric frame such as
-NED (North-East-Down) is a separate, explicit step afterwards via \code{\link{applyAxisMapping}}
-(optionally validated against the data with \code{\link{checkTagMapping}}).
-
-When available, location data from Wildlife Computers tags (e.g., MiniPAT, MK10, SPOT)
-can be integrated automatically. These should be stored in dedicated subfolders
-(e.g., \code{"SPOT"}) within each individual's directory. Deployment and pop-up locations,
-if present in the metadata, are also extracted and included in the output.
-
-The function employs memory-efficient processing to handle large datasets (>10 million rows),
-using optimized \code{data.table} operations with configurable multi-threading.
+\code{importTagData()} is the entry point to a nautilus analysis. It reads one deployment or a whole
+fleet from disk, standardises the sensor channels, attaches the deployment metadata, and returns
+tag objects that every later step accepts. Use it once, at the start of a study. If your data are
+already in R, use \code{\link[=buildTagData]{buildTagData()}} instead.
 }
-\note{
-For optimal performance with very large datasets, consider:
-\itemize{
-\item Setting \code{data.table.threads} to match available CPU cores;
-\item Setting \code{return.data = FALSE} with an \code{output.dir} to stream results to disk;
-\item Processing individuals sequentially rather than simultaneously.
+\details{
+\subsection{Formats and automatic detection}{
+
+The built-in readers cover the CATS/CEiiA multi-sensor CSV export (\code{format = "cats"}) and Little
+Leonardo archival loggers (\code{format = "little_leonardo"}, an \verb{_A.txt} acceleration file with an
+optional \verb{_DT.txt} depth and temperature file). Little Leonardo files carry no clock, so they
+additionally need a \code{data_start} entry in the metadata; see \code{\link[=metadataColumns]{metadataColumns()}}.
+
+\code{format = "auto"} inspects each deployment's files and routes it to the matching reader. It does
+not guess: a folder that matches two readers, or none, is reported rather than assumed, so a
+misidentified deployment fails visibly instead of being read as the wrong make. Detection
+recognises stock exports only - a custom export that needs \code{import.mapping} is reported as
+unidentifiable and should be named explicitly.
+
+To import several tag makes in a single call, either use \code{"auto"} or add a \code{tag_format} column to
+the metadata. A per-deployment value overrides \code{format}, and the two combine: \code{"auto"} with a
+\code{tag_format} column naming only some deployments honours those and detects the rest.
+}
+
+\subsection{Units and axis frame}{
+
+Sensor channels are converted to acceleration in g, angular velocity in rad/s and magnetic field
+in \eqn{\mu}T, preserving the original sampling rate. Data are imported in the tag's own axis
+frame; rotating them into an animal-centred frame is a separate, explicit step, via
+\code{\link[=applyAxisMapping]{applyAxisMapping()}} and optionally checked against the data with \code{\link[=checkTagMapping]{checkTagMapping()}}.
+}
+
+\subsection{Temperature channels}{
+
+Only water-temperature channels are mapped to \code{temp}. Tag-electronics channels - the magnetometer
+chip and the IMU board - report the temperature inside the housing rather than the animal's
+environment, and are never mapped automatically; a deployment whose only temperature channel is
+one of these is imported without \code{temp}, with a warning. Mapping such a channel explicitly through
+\code{import.mapping} overrides this, and still warns.
+}
+
+\subsection{Paired Wildlife Computers tags}{
+
+Where a deployment also carries a Wildlife Computers tag (MiniPAT, MK10, SPOT), its locations and
+wet/dry record are read and attached. The two tags keep independent clocks, so their timelines are
+aligned before the data are combined; see \code{alignment} and \code{\link[=alignmentControl]{alignmentControl()}}.
+}
+
+\subsection{Large deployments}{
+
+Deployments are read one at a time, so memory use does not grow with fleet size. For records of
+tens of millions of rows, writing to disk with \code{output.dir} and \code{return.data = FALSE} keeps the
+whole fleet out of memory, and \code{compress = FALSE} removes the compression step, which can
+otherwise dominate the import.
+}
+
+\subsection{How problems are reported}{
+
+Deployments with no readable sensor file, positions outside the recording period, time-zone
+disagreements and discarded channels are reported in the console while the import runs, and
+collected in the closing summary. When \code{verbose = 0} the same issues are raised as R warnings
+instead, so that scripted callers can capture them.
 }
 }
 \examples{
 \dontrun{
-# QC the deployment metadata first, then feed it straight to the import:
-meta <- checkDeploymentMetadata(raw_metadata, columns = metadataColumns())
-imported <- importTagData(
-  data.folders        = list.dirs("./tags", recursive = FALSE),
-  sensor.subdirectory = "CMD",
-  metadata         = meta,
-  timezone            = "UTC")
+# Check the deployment metadata, then import against it
+meta <- checkDeploymentMetadata(raw_metadata)
+tags <- importTagData(
+  data.folders = list.dirs("./tags", recursive = FALSE),
+  metadata     = meta,
+  timezone     = "UTC")
+
+# A fleet too large to hold in memory: write to disk and pass the paths on
+files <- importTagData(
+  data.folders = list.dirs("./tags", recursive = FALSE),
+  metadata     = meta,
+  output.dir   = "./imported",
+  return.data  = FALSE)
 }
 }
 \seealso{
-\link{processTagData}, \link{filterDeploymentData}
+\code{\link[=buildTagData]{buildTagData()}} for data already in R; \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} and
+\code{\link[=metadataColumns]{metadataColumns()}} for preparing the metadata; \code{\link[=applyAxisMapping]{applyAxisMapping()}} for the axis frame;
+\code{\link[=processTagData]{processTagData()}} for the next step.
 }

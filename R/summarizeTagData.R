@@ -623,6 +623,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 #' table, use `format(x)` (e.g. `write.csv(format(x), file, row.names = FALSE)`).
 #' @param x A `nautilus_summary` object.
 #' @param ... Unused.
+#' @return `x`, invisibly. Called for the printed output.
 #' @exportS3Method print nautilus_summary
 
 print.nautilus_summary <- function(x, ...) {
