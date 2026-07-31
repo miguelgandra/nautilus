@@ -2,7 +2,7 @@
 % Please edit documentation in R/control.R
 \name{magCalibrationControl}
 \alias{magCalibrationControl}
-\title{Control the optional magnetometer hard/soft-iron calibration}
+\title{Fit and confidence thresholds for calibrateMagnetometer()}
 \usage{
 magCalibrationControl(
   method = c("ellipsoid", "diagonal"),
@@ -21,83 +21,99 @@ magCalibrationControl(
 )
 }
 \arguments{
-\item{method}{Fit method. \code{"ellipsoid"} (default) fits the full hard-iron + soft-iron ellipsoid
-when the data genuinely determine it (well covered on every axis and dip-consistent) and otherwise
-falls back to a hard-iron-only fit that still corrects heading (see the Details of
-\code{\link{calibrateMagnetometer}}). \code{"diagonal"} forces a per-axis hard-iron + scale fit.}
+\item{method}{How to fit the distortion. \code{"ellipsoid"} (default) fits the full hard-iron and
+soft-iron ellipsoid where the data genuinely determine it, and otherwise falls back to a
+hard-iron-only fit that still corrects heading. \code{"diagonal"} forces a per-axis offset-and-scale fit,
+which is worth trying when the full ellipsoid is unstable.}
 
-\item{igrf.normalize}{Logical. When pooling deployments of one package, rescale each deployment's field
-to the IGRF total-field intensity at its location before pooling, so different survey locations do not
-distort the shared soft-iron. Default TRUE (ignored for a single deployment with no coordinates).}
+\item{igrf.normalize}{When pooling deployments of one tag, whether to rescale each deployment's field
+to the expected geomagnetic intensity at its location before pooling (default \code{TRUE}), so that
+deployments from different survey areas do not distort the shared soft iron. Ignored for a single
+deployment with no coordinates.}
 
-\item{min.coverage}{Minimum per-axis coverage (half-range as a fraction of the sphere radius) for the
-fit to be trusted; below this the orientation coverage is too poor. Passed to the robust hard-iron
-estimate. Default 0.5.}
+\item{min.coverage}{Minimum per-axis coverage, as a fraction of the sphere radius, for the fit to be
+trusted (default \code{0.5}). Below this the animal did not turn through enough orientations. Lower it
+only if you are prepared to accept a fit resting on a narrow slice of the sphere.}
 
-\item{cond.max}{Maximum ellipsoid axis-ratio (condition number) accepted as a real ellipsoid before
-falling back to the diagonal fit. Default 25.}
+\item{cond.max}{Largest ellipsoid axis ratio still accepted as a real ellipsoid before falling back
+to the diagonal fit (default \code{25}). A very elongated ellipsoid usually means the cloud is a band
+being over-fitted rather than a genuinely distorted sphere.}
 
-\item{radcv.max}{Corrected-radius coefficient of variation at/below which the fit is "high" confidence
-(0 = a perfect sphere). Default 0.1.}
+\item{radcv.max}{Coefficient of variation of the corrected radius at or below which a fit earns high
+confidence (default \code{0.1}; zero would be a perfect sphere). This is the sphericity test: how tightly
+the corrected field sits on one sphere.}
 
-\item{igrf.residual.max}{Absolute geomagnetic dip residual (measured minus IGRF inclination, degrees)
-at/below which a full 3D fit is "high" confidence. It ALSO gates 3D soft-iron acceptance: a
-thin-band ellipsoid whose corrected field exceeds this dip residual has an unconstrained perpendicular
-centre, so it is routed to the hard-iron-only 2D fallback instead of applying an untrustworthy
-soft-iron. It does NOT gate the 2D fallback's own heading trust, which rests on in-plane yaw coverage
-(heading needs the horizontal components, not the vertical dip). Default 15.}
+\item{igrf.residual.max}{Largest absolute dip residual, in degrees, at or below which a full
+three-dimensional fit earns high confidence (default \code{15}). Dip residual is the measured
+geomagnetic inclination minus the value expected at that place. It also gates soft-iron acceptance:
+a thin-band ellipsoid whose corrected field misses the expected dip by more than this has an
+unconstrained perpendicular centre, so it is routed to the hard-iron-only fallback rather than
+applying a soft iron that cannot be trusted. It does not gate the fallback's own heading trust,
+which rests on in-plane yaw coverage, because heading needs the horizontal components and not the
+vertical dip.}
 
-\item{center.warn, center.reject}{Hard-iron-centre agreement thresholds used ONLY when a calibration is
-fit from an external source (see \code{calibration.data} in \code{\link{calibrateMagnetometer}}). The
-source's estimated hard-iron centre is cross-checked against the deployment's own in-situ centre, as a
-fraction of the field radius: a disagreement above \code{center.reject} (default 0.35) rejects the source
-bind (a fixed magnetic mass co-rotated with the tag during the calibration, e.g. boat steel - it is
-absorbed into the centre yet passes the sphericity/dip QC, so this is the only guard that catches it);
-above \code{center.warn} (default 0.10) the bind is kept but its confidence is downgraded. Ignored for the
-default in-situ calibration (no source). \code{center.reject} must be >= \code{center.warn}.}
+\item{center.warn, center.reject}{How closely the hard-iron centre estimated from an external source
+must agree with the deployment's own in-situ centre, as a fraction of the field radius. Used only
+when a calibration is fitted from \code{calibration.data}. A disagreement above \code{center.reject} (default
+\code{0.35}) rejects the source; above \code{center.warn} (default \code{0.10}) the source is kept but its
+confidence is downgraded. This cross-check exists because a fixed magnetic mass that co-rotated with
+the tag during the calibration spin - vessel steel, most often - is absorbed into the centre and
+still passes every sphericity and dip test, so nothing internal to the recording can reveal it.
+\code{center.reject} must be at least \code{center.warn}.}
 
-\item{planarity.max}{Maximum planarity (smallest / largest PCA eigenvalue of the field cloud) for a
-2D-fallback fit to be applied. A genuine swimming band is planar (planarity near 0); a near-stationary
-isotropic blob approaches 1 - its full azimuth coverage is only sensor noise - and is rejected. Default 0.6.}
+\item{planarity.max}{Maximum planarity of the field cloud for a fallback fit to be applied (default
+\code{0.6}). A genuine swimming band is close to planar; a near-stationary cloud approaches an isotropic
+blob, whose apparently full azimuth coverage is only sensor noise, and is rejected.}
 
-\item{azimuth.min}{Minimum swept yaw arc (degrees, 0-360) for a hard-iron-only (2D-fallback) fit to earn
-"medium" heading confidence. Below this the animal did not turn through enough headings to determine
-the in-plane hard-iron centre, so the heading is left uncalibrated. Default 150.}
+\item{azimuth.min}{Minimum swept yaw arc, in degrees, for a hard-iron-only fit to earn medium heading
+confidence (default \code{150}). Below this the animal did not turn through enough headings to place the
+in-plane centre, and the heading is left uncalibrated.}
 
-\item{linearity.abort}{Minimum linearity (2nd / 1st PCA eigenvalue) below which the cloud has collapsed to
-a 1-D arc (a single heading held), so the in-plane centre is unobservable and the fit is not applied.
-Default 0.1.}
+\item{linearity.abort}{Minimum linearity below which the cloud has collapsed to a one-dimensional arc,
+meaning a single heading was held, so the in-plane centre is unobservable and no fit is applied.
+Default \code{0.1}.}
 
-\item{extent.min}{Minimum angular extent (degrees) of the cloud about its centre, below which it is a
-stationary blob and the fit is not applied. Default 40.}
+\item{extent.min}{Minimum angular extent of the cloud about its centre, in degrees, below which it is
+a stationary blob and no fit is applied. Default \code{40}.}
 
-\item{target.field}{Optional numeric override for the target field magnitude (uT); by default the IGRF
-intensity (when coordinates are available) or the cloud's own median radius is used. Default NULL.}
+\item{target.field}{Optional override for the target field magnitude, in \eqn{\mu}T. By default the
+expected geomagnetic intensity is used where coordinates are available, and the cloud's own median
+radius otherwise. Set it if you know the local field and the deployment has no position.}
 }
 \value{
 A validated \code{nautilus_mag_calibration} object for the \code{control} argument of
-\code{\link{calibrateMagnetometer}}.
+\code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}.
 }
 \description{
-Groups the tuning of \code{\link{calibrateMagnetometer}} into one validated object. Magnetometer
-calibration from free-swimming field data is under-determined (a near-horizontal swimmer samples a
-band, not a sphere), so this is a BEST-EFFORT estimate with an explicit heading-confidence flag; the
-defaults are conservative and honest rather than optimistic.
+Groups the tuning of \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}} into one validated object, so the main call stays
+uncluttered.
+
+Calibrating a magnetometer from free-swimming data is under-determined: a near-horizontal swimmer
+sweeps a band of orientations rather than a sphere, so part of the correction is never observed.
+These thresholds decide how much evidence a fit must show before it is accepted, and how much of the
+result may be trusted. They are set conservatively, on the principle that an honest low-confidence
+verdict is more useful than an optimistic correction.
 }
 \details{
-The thresholds map onto the stages of the fit in \code{\link{calibrateMagnetometer}} (see its Details).
-For accepting the full 3D ellipsoid: \code{cond.max} bounds how elongated an ellipsoid is still accepted,
-\code{igrf.residual.max} is the dip tolerance that BOTH gates 3D soft-iron acceptance and defines "high"
-confidence, \code{radcv.max} is the sphericity tolerance for "high", and \code{min.coverage} sets when a
-cloud counts as well covered on every axis. For the hard-iron-only 2D fallback (a thin swimming band),
-\code{azimuth.min} is the swept-yaw coverage needed to trust the in-plane centre, while
-\code{planarity.max}, \code{linearity.abort} and \code{extent.min} reject clouds that are not a genuine
-planar ring (a solid blob, or a single held heading). \code{center.warn} / \code{center.reject} apply only
-when the fit is taken from an external \code{calibration.data} source.
+The thresholds map onto the stages of the fit, which are described in the Details of
+\code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}.
+
+Accepting the full three-dimensional ellipsoid rests on \code{cond.max}, which bounds how elongated an
+ellipsoid may be and still be believed; \code{igrf.residual.max}, the dip tolerance; \code{radcv.max}, the
+sphericity tolerance for high confidence; and \code{min.coverage}, which sets when a cloud counts as well
+covered on every axis.
+
+For the hard-iron-only fallback used on a thin swimming band, \code{azimuth.min} is the swept yaw coverage
+needed to trust the in-plane centre, while \code{planarity.max}, \code{linearity.abort} and \code{extent.min} reject
+clouds that are not a genuine planar ring - a solid blob, or a single heading held throughout.
+
+\code{center.warn} and \code{center.reject} apply only when the fit comes from an external \code{calibration.data}
+source.
 }
 \examples{
 magCalibrationControl(method = "diagonal")
 }
 \seealso{
-\code{\link{calibrateMagnetometer}}, \code{\link{calibrationControl}}
+\code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}} for the function that consumes it; \code{\link[=calibrationControl]{calibrationControl()}} for
+whether the resulting estimate is applied.
 }

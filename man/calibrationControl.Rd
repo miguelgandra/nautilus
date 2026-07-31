@@ -7,27 +7,37 @@
 calibrationControl(hard.iron = TRUE, soft.iron = TRUE, use.stored = TRUE)
 }
 \arguments{
-\item{hard.iron}{Logical. Apply hard-iron (offset) magnetometer calibration. Default TRUE.}
+\item{hard.iron}{Whether to correct the fixed offset that magnetised components inside the tag add to
+the field (default \code{TRUE}). This is the dominant distortion and the one heading depends on; there is
+rarely a reason to disable it.}
 
-\item{soft.iron}{Logical. Apply axis-aligned soft-iron (per-axis scale) magnetometer calibration;
-cross-axis misalignment terms are not fitted. Default TRUE.}
+\item{soft.iron}{Whether to correct the per-axis scaling that ferromagnetic material imposes on the
+field (default \code{TRUE}). Only the axis-aligned scales are fitted here, not the cross-axis shear.
+Disable it if a deployment's orientation coverage is so poor that the scales are being fitted to
+noise.}
 
-\item{use.stored}{Logical. If \code{TRUE} (default) and a stored magnetometer calibration is present in the
-metadata (from \code{\link{calibrateMagnetometer}}, e.g. a per-package pooled fit), apply THAT instead
-of estimating one inline - but only when it clears the confidence gate (a low-confidence stored fit is
-ignored, falling back to the inline per-tag estimate). Set \code{FALSE} to always estimate inline.}
+\item{use.stored}{Whether to prefer a calibration already stored in the metadata by
+\code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}, such as a fit pooled across every deployment of one tag (default
+\code{TRUE}). A stored fit is used only when it clears the confidence gate; a low-confidence one is
+ignored and the inline per-deployment estimate is used instead. Set \code{FALSE} to always estimate
+inline, for instance when comparing the two.}
 }
 \value{
-A validated \code{nautilus_calibration} object for the \code{calibration} argument of \code{\link{processTagData}}.
+A validated \code{nautilus_calibration} object for the \code{calibration} argument of
+\code{\link[=processTagData]{processTagData()}}.
 }
 \description{
-Groups the magnetometer-calibration switches of \code{\link{processTagData}} into one object. The
-mounting pitch/roll offset corrections and the orientation-estimator tuning live in
-\code{\link{orientationControl}}.
+Groups the magnetometer-calibration switches of \code{\link[=processTagData]{processTagData()}} into one object. These decide
+whether the magnetometer is corrected for the tag's own iron before heading is computed, and whether
+a calibration already estimated by \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}} is used in preference to one fitted on
+the spot. The mounting offset corrections and the orientation-estimator tuning live in
+\code{\link[=orientationControl]{orientationControl()}}.
 }
 \examples{
 calibrationControl(soft.iron = FALSE)
 }
 \seealso{
-\code{\link{processTagData}}, \code{\link{calibrateMagnetometer}}, \code{\link{orientationControl}}, \code{\link{smoothingControl}}
+\code{\link[=processTagData]{processTagData()}} for the function that consumes it; \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}} for the
+stored calibration it can draw on; \code{\link[=orientationControl]{orientationControl()}} and \code{\link[=smoothingControl]{smoothingControl()}} for the other
+processing settings.
 }

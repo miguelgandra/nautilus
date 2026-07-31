@@ -2,7 +2,7 @@
 % Please edit documentation in R/reviewTagMapping.R
 \name{reviewTagMapping}
 \alias{reviewTagMapping}
-\title{Render annotated video clips for manual review of inferred IMU orientations}
+\title{Confirm a tag's axis mapping against the animal on video}
 \usage{
 reviewTagMapping(
   data,
@@ -27,139 +27,164 @@ reviewTagMapping(
 )
 }
 \arguments{
-\item{data}{The same un-oriented data passed to \link{checkTagMapping}: a list of \code{nautilus_tag}
-objects, a character vector of \code{.rds} paths, or one aggregated data.frame with an \code{id.col}.}
+\item{data}{The same un-oriented data passed to \code{\link[=checkTagMapping]{checkTagMapping()}}: a tag object, a list of them, a
+single table with an \code{id.col}, or a character vector of \code{.rds} paths.}
 
-\item{mapping}{The list returned by \link{checkTagMapping} (or \link{consensusAxisMapping}); each
-element carries the per-deployment \code{frame_state} the triage reads.}
+\item{mapping}{The list returned by \code{\link[=checkTagMapping]{checkTagMapping()}} (or \code{\link[=consensusAxisMapping]{consensusAxisMapping()}}); each element
+carries the per-deployment \code{frame_state} that triage reads.}
 
-\item{video.metadata}{A data frame of video time spans as returned by \link{getVideoMetadata}
-(columns \code{ID}, \code{file}, \code{start}, \code{end}); used to locate the clip covering each manoeuvre.}
+\item{video.metadata}{A data frame of video time spans as returned by \code{\link[=getVideoMetadata]{getVideoMetadata()}} (columns
+\code{ID}, \code{file}, \code{start}, \code{end}), used to locate the footage covering each manoeuvre.}
 
 \item{output.dir}{An existing directory to write the review clips into.}
 
-\item{configs}{The documented-orientation dictionary (as passed to \link{checkTagMapping}); required
-to render (and later apply) the documented config for \code{conflict} deployments.}
+\item{configs}{The documented-orientation dictionary, as passed to \code{\link[=checkTagMapping]{checkTagMapping()}}. Required to
+render, and later apply, the documented mapping for deployments flagged \code{conflict}.}
 
-\item{base}{The mapping actually applied to each deployment - and overridden by the review decisions
-for the flagged ones. The result of \link{consensusAxisMapping} or \link{checkTagMapping}. Defaults
-to \code{mapping}. Pass the reconciled \code{consensusAxisMapping()} object here when you triage from the
-per-deployment \code{checkTagMapping()} evidence in \code{mapping} but want the consensus mapping as the base.}
+\item{base}{The mapping applied to every deployment the review does not override, defaulting to
+\code{mapping}. Pass the reconciled \code{\link[=consensusAxisMapping]{consensusAxisMapping()}} object here when you triage from the
+per-deployment \code{\link[=checkTagMapping]{checkTagMapping()}} evidence but want the consensus mapping as the starting point.}
 
-\item{ids}{Deployments to review. \code{NULL} (default) auto-triages the suspect set (see Details); an
-explicit vector reviews exactly those.}
+\item{ids}{Deployments to review. \code{NULL} (default) triages the suspect set automatically, described
+below; an explicit vector reviews exactly those.}
 
-\item{include}{Triage reasons to auto-select. Default the four suspect classes; add
-\code{"low_confidence"} to also review resolved-but-weakly-supported frames.}
+\item{include}{Triage reasons to select automatically. The default covers the four suspect classes;
+add \code{"low_confidence"} to also review frames that resolved, but only weakly.}
 
-\item{types, n, window}{Passed to \link{findValidationSegments}. Default \code{types} here is
-\code{c("roll", "dive")} (not the three-type default): \strong{roll} is the handedness cue that decides the
-mapping, and \code{"turn"} is deliberately excluded because it keys off heading, which the lightweight
-uncalibrated orientation pass cannot estimate reliably (its segments would be noise-selected).}
+\item{types, n, window}{Passed to \code{\link[=findValidationSegments]{findValidationSegments()}}. The default \code{types} here is
+\code{c("roll", "dive")} rather than that function's three: roll is the handedness cue the decision
+turns on, and \code{"turn"} is excluded because it keys off heading, which the lightweight uncalibrated
+orientation pass behind the overlay cannot estimate reliably.}
 
-\item{clips.per.deployment}{Maximum clips rendered per deployment (default 3), chosen round-robin
-across \code{types} by rank.}
+\item{clips.per.deployment}{Maximum number of clips rendered per deployment (default \code{3}), chosen
+round-robin across \code{types} by rank. Raise it if a single manoeuvre is often ambiguous on screen.}
 
-\item{max.candidates}{Maximum candidate frames shown side by side for an ambiguous deployment
-(default 3).}
+\item{max.candidates}{Maximum number of candidate frames shown side by side for an ambiguous
+deployment (default \code{3}). More candidates make each indicator smaller and harder to read.}
 
-\item{side, overlay.fps}{Passed to \link{renderOverlayVideo}.}
+\item{side, overlay.fps}{Passed to \code{\link[=renderOverlayVideo]{renderOverlayVideo()}}.}
 
-\item{codec}{Output codec family for the clips, \code{"hevc"} (default, smaller files) or \code{"h264"} (larger
-but plays essentially everywhere); passed to \link{renderOverlayVideo}. Both are QuickTime-compatible.}
+\item{codec}{Codec family for the clips: \code{"hevc"} (default, smaller files) or \code{"h264"} (larger, but
+plays essentially everywhere). Both are QuickTime-compatible. Passed to \code{\link[=renderOverlayVideo]{renderOverlayVideo()}}.}
 
-\item{id.col, datetime.col}{Column names for the animal ID and datetime. Defaults \code{"ID"}/\code{"datetime"}.}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A \code{nautilus_review} object (invisibly): a data frame with one row per flagged deployment -
-\code{id}, \code{review_reason}, \code{priority}, \code{n_clips}, \code{status}, \code{options}, \code{decision} - where \code{status} is
-one of \code{rendered}, \code{no_video}, \code{no_coverage}, \code{no_segment}, \code{render_failed}, \code{options} lists the
-candidate labels, and \code{decision} is \code{NA} until you fill it. It carries the base mapping, the concrete
-candidate mappings, and the full per-clip manifest (\code{attr(x, "review_manifest")}) as attributes;
-pass it to \link{applyAxisMapping} as \code{mapping}. See \link{print.nautilus_review}.
+A \code{nautilus_review} object, invisibly: a data frame with one row per flagged deployment -
+\code{id}, \code{review_reason}, \code{priority}, \code{n_clips}, \code{status}, \code{options} and \code{decision} - where \code{status} is
+one of \code{rendered}, \code{no_video}, \code{no_coverage}, \code{no_segment} or \code{render_failed}, \code{options} lists the
+candidate labels, and \code{decision} is \code{NA} until you fill it in. It carries the base mapping, the
+candidate mappings and the full per-clip manifest (\code{attr(x, "review_manifest")}) as attributes.
+Pass it to \code{\link[=applyAxisMapping]{applyAxisMapping()}} as \code{mapping}. See \code{\link[=print.nautilus_review]{print.nautilus_review()}}.
 }
 \description{
-Companion to \link{checkTagMapping}. Where \code{checkTagMapping()} validates the axis mapping against the
-sensor DATA, \code{reviewTagMapping()} prepares the gold-standard HUMAN check, to be run \strong{before}
-\link{applyAxisMapping}. It triages the deployments whose mapping is uncertain (documented configs
-that conflict with the data, gyroscope/accelerometer co-registration failures, ambiguous frames,
-contradictory gyroscope evidence, or deployments the automated check could not analyse at all),
-matches each to its on-animal video, auto-selects the clearest manoeuvres with
-\link{findValidationSegments}, and renders short side-by-side overlay clips so a reviewer can confirm
-the orientation by eye (a visible left roll must read as a left roll on the attitude indicator).
+Some deployments cannot be settled from the sensors alone. The automated frame check may leave two
+mirror-image mappings equally consistent with the recording, or the orientation written down in the
+field notes may disagree with what the data imply. Both readings produce pitch, roll and heading that
+look entirely plausible, so there is nothing in the numbers to choose between them.
 
-Every candidate mapping is applied to a \strong{transient in-memory copy} of the raw data (the inputs are
-never modified) and a lightweight orientation pass derives the overlay series. When a gyroscope is
-present it is fused into the attitude indicator with a complementary filter, so the dial tracks quick
-banks tightly instead of lagging behind the footage (the accelerometer tilt alone must smooth out the
-animal's own motion, which blurs fast rolls); this affects only the display, never the stored data or
-the automated frame check. Whenever a flagged
-deployment has a competing accel-frame hypothesis - a documented/data \code{conflict} - the clip is a
-\strong{side-by-side comparison}: the documented orientation ("Documented") beside the data-preferred,
-corrected one ("Proposed"), each driving its own attitude indicator, so the reviewer simply keeps the
-one that banks the same way as the animal. \code{ambiguous} deployments compare their distinct surviving
-frames the same way; the remaining reasons (including \code{coreg_fail}) show a single indicator.
+On-animal footage breaks the tie. If the video shows the animal banking to its left, the correct
+mapping is the one whose attitude indicator banks left as well. This function assembles that check:
+it triages the deployments whose mapping is uncertain, matches each to its video, selects the
+clearest manoeuvres with \code{\link[=findValidationSegments]{findValidationSegments()}}, and renders short clips in which the camera view
+sits beside one or more labelled attitude indicators, each driven by a candidate mapping.
 
-It does NOT decide whether a mapping is correct - that judgement is the reviewer's, made from the
-clips and then applied with \link{applyAxisMapping} (see the manual decision loop in Details). It
-returns a MANIFEST recording what was selected, why, and where each clip was written.
+Run it after \code{\link[=checkTagMapping]{checkTagMapping()}} and before \code{\link[=applyAxisMapping]{applyAxisMapping()}}. It decides nothing itself - that
+judgement is yours, made from the clips. It returns a decision sheet with one row per flagged
+deployment and an empty \code{decision} column, which you fill in and hand back to \code{\link[=applyAxisMapping]{applyAxisMapping()}}.
 }
 \details{
-Triage assigns each deployment its single most-severe reason (highest priority first): \code{conflict}
-(the documented config disagrees with the data), \code{coreg_fail} (the gyroscope does not co-register with
-the accelerometer - the co-die default \code{gyro = det(M)*M} was decisively rejected by the data),
-\code{ambiguous} (the data did not uniquely resolve the frame and no config pins it), \code{gyro_inconsistent}
-(the two gyroscope estimators disagree) and, opt-in,
-\code{low_confidence} (the vertical resolved but the fore-aft axis leaned on handedness alone).
-Deployments present in \code{data} and \code{video.metadata} but absent from \code{mapping} (the automated check
-could not analyse them) are flagged \code{unanalysed} at top priority.
+\subsection{Which deployments are reviewed}{
 
-\strong{Reading a clip.} Each clip pairs the camera footage with a sensor dashboard: one or more labelled
-attitude indicators (a rear-view shark that banks with roll), a depth trace and a gyroscope trace.
-Find a moment where the animal clearly rolls or banks to one side in the video; the correct mapping is
-the indicator that banks the \strong{same} way. Heading is deliberately omitted - the lightweight,
-uncalibrated orientation pass cannot estimate it reliably, so roll handedness is the cue.
-
-\strong{Acting on the review (the decision sheet).} The function returns a \code{nautilus_review} - a decision
-sheet with one row per flagged deployment and an editable \code{decision} column. It is self-contained: it
-embeds the mapping to apply (\code{base}), the concrete candidate mappings, and the per-clip manifest, so
-the workflow is fill-the-sheet, then hand the whole object back to \link{applyAxisMapping}:
-\enumerate{
-\item Watch the clips (named \verb{<id>_<type>_<rank>.mp4} in \code{output.dir}). For a \code{conflict}
-the dashboard compares two labelled candidates; note which banks like the animal.
-\item Set each flagged deployment's \code{decision} to one of its \code{options}, e.g.
-\code{review$decision[review$id == "PIN_CAM_04"] <- "Documented"}.
-\item Apply: \code{applyAxisMapping(data, mapping = review)}. Un-reviewed deployments take the base
-mapping; decided ones take the chosen candidate (recorded with \code{review} provenance).
+Each deployment is assigned its single most severe reason, in this order of priority:
+\itemize{
+\item \code{unanalysed} - present in \code{data} and \code{video.metadata} but absent from \code{mapping}, so the automated
+check could not analyse it at all.
+\item \code{conflict} - the documented configuration disagrees with the data.
+\item \code{coreg_fail} - the gyroscope does not co-register with the accelerometer, so the usual
+co-die relationship between the two sensors was rejected by the data.
+\item \code{ambiguous} - the data did not resolve the frame uniquely and no documented configuration pins it.
+\item \code{gyro_inconsistent} - the two gyroscope estimators disagree.
+\item \code{low_confidence} - the vertical axis resolved but the fore-aft axis rests on handedness alone.
+Opt-in, through \code{include}.
 }
-Only deployments that rendered a genuine comparison need a decision; single-candidate reasons
-(\code{gyro_inconsistent}, \code{low_confidence}, \code{unanalysed}) and deployments with no footage fall through to
-the base mapping. \code{applyAxisMapping()} ERRORS if a reviewable deployment is left undecided, so a
-handedness is never applied without confirmation. The clips are advisory; nothing downstream changes
-until you apply.
+}
 
-Set \code{decision} to the reserved value \code{"Exclude"} (valid on any row) when the orientation cannot be
-trusted - neither candidate is right and it is not a correctable, constant mounting offset (a genuine
-sensor fault or a non-rigid mount). \code{applyAxisMapping()} then drops that deployment from its output
-entirely (no oriented file, absent from the returned list), so downstream steps simply never see it.
-Decision values are matched case-insensitively (\code{"Exclude"}, \code{"exclude"} and \code{"Documented"},
-\code{"documented"} are equivalent), so you need not worry about the exact casing you type.
-Note this is for \emph{orientation}-unfixable cases only; data-hygiene problems such as a mistimed
-detachment belong to the deployment-filtering step, not here.
+\subsection{How the clips are built}{
+
+Every candidate mapping is applied to a transient in-memory copy of the data, so the inputs are never
+modified, and a lightweight orientation pass derives the overlay series. Where a gyroscope is
+available it is fused into the attitude indicator with a complementary filter, so the dial tracks
+quick banks instead of lagging behind the footage; accelerometer tilt on its own has to smooth out
+the animal's own motion, which blurs exactly the fast rolls the review depends on. This affects the
+display only, never the stored data or the automated frame check.
+
+A deployment with a competing accelerometer-frame hypothesis - a \code{conflict} - is rendered as a
+side-by-side comparison: the documented orientation (labelled \code{Documented}) beside the data-preferred
+one (\code{Proposed}), each driving its own indicator. Deployments flagged \code{ambiguous} compare their
+surviving frames the same way. The remaining reasons, \code{coreg_fail} among them, show a single
+indicator.
+}
+
+\subsection{Reading a clip}{
+
+Each clip pairs the camera footage with a sensor dashboard: one or more labelled attitude indicators
+(a rear-view shark that banks with roll), a depth trace and a gyroscope trace. Find a moment where
+the animal clearly rolls or banks to one side, and keep the indicator that banks the same way.
+Heading is deliberately left out, because the uncalibrated orientation pass cannot estimate it
+reliably; roll handedness is the cue.
+}
+
+\subsection{Acting on the review}{
+
+The returned decision sheet is self-contained. It embeds the base mapping, the concrete candidate
+mappings and the per-clip manifest, so the workflow is to fill in the sheet and hand the whole object
+back:
+\enumerate{
+\item Watch the clips, named \verb{<id>_<type>_<rank>.mp4} in \code{output.dir}. Where the dashboard compares two
+labelled candidates, note which one banks like the animal.
+\item Set each flagged deployment's \code{decision} to one of its \code{options}, for example
+\code{review$decision[review$id == "PIN_CAM_04"] <- "Documented"}.
+\item Apply it: \code{applyAxisMapping(data, mapping = review)}. Deployments left un-reviewed take the base
+mapping; decided ones take the chosen candidate, recorded with \code{review} provenance.
+}
+
+Only deployments that rendered a genuine comparison need a decision. Single-candidate reasons
+(\code{gyro_inconsistent}, \code{low_confidence}, \code{unanalysed}) and deployments with no footage fall through to
+the base mapping. \code{\link[=applyAxisMapping]{applyAxisMapping()}} stops with an error if a reviewable deployment is left
+undecided, so a handedness is never applied without confirmation. The clips are advisory: nothing
+downstream changes until you apply. Decision values are matched without regard to case, so
+\code{"Documented"} and \code{"documented"} are equivalent.
+}
+
+\subsection{Excluding a deployment}{
+
+Set \code{decision} to the reserved value \code{"Exclude"}, valid on any row, when the orientation cannot be
+trusted at all - neither candidate is right, and the problem is not a correctable constant mounting
+offset but a genuine sensor fault or a mount that moved during the deployment. \code{\link[=applyAxisMapping]{applyAxisMapping()}}
+then drops that deployment entirely: no oriented file is written and it is absent from the returned
+list, so later steps never see it. This is for orientation problems only. Data-hygiene issues such as
+a mistimed detachment belong to the deployment-filtering step, not here.
+}
 }
 \examples{
 \dontrun{
 mapping <- checkTagMapping(data, configs = configs)
 meta    <- getVideoMetadata("./videos")
 review  <- reviewTagMapping(data, mapping, meta, "./review/clips", configs = configs)
+
 # watch the clips, fill in the decision column, then apply the reviewed mapping
 review$decision[review$id == "PIN_CAM_04"] <- "Documented"
 applyAxisMapping(data, mapping = review)
 }
 }
 \seealso{
-\link{checkTagMapping}, \link{consensusAxisMapping}, \link{applyAxisMapping},
-\link{findValidationSegments}, \link{renderOverlayVideo}, \link{getVideoMetadata}.
+\code{\link[=checkTagMapping]{checkTagMapping()}} for the automated check this reviews; \code{\link[=applyAxisMapping]{applyAxisMapping()}} for applying
+the decisions; \code{\link[=consensusAxisMapping]{consensusAxisMapping()}} for reconciling mappings across a fleet;
+\code{\link[=findValidationSegments]{findValidationSegments()}} and \code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for the clip selection and rendering.
 }

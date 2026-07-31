@@ -2,7 +2,7 @@
 % Please edit documentation in R/checkTagMapping.R
 \name{checkTagMapping}
 \alias{checkTagMapping}
-\title{Guess IMU Axis Mapping for Tag Data}
+\title{Work out how a tag's sensor axes relate to the animal}
 \usage{
 checkTagMapping(
   data,
@@ -35,21 +35,17 @@ checkTagMapping(
 )
 }
 \arguments{
-\item{data}{Input data, which can be either:
-\itemize{
-\item A list of data frames/tables (each containing sensor data for one individual)
-\item A single data frame/table
-\item Character vector of paths to RDS files containing sensor data
-}
-The inference assumes the record is trimmed to the on-animal period: off-animal data (e.g. a tag
-drifting after detachment) can bias the axis estimate, so a warning is raised for any pipeline-
-processed deployment whose history lacks a \link{filterDeploymentData} step.}
+\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
+\code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
+processed without ever holding it all.
 
-\item{id.col}{Character. Name of the column containing unique identifier for each tag/animal.
-Used when input is a single data.frame that needs splitting. Default "ID".}
+Trim the record first. A tag drifting after detachment, or sitting on deck, contributes postures
+the animal never adopted and can pull the estimate towards the wrong arrangement; a warning is
+raised for any deployment whose history shows no \code{\link[=filterDeploymentData]{filterDeploymentData()}} step.}
 
-\item{datetime.col}{Character. Name of the datetime column. Must contain POSIXct values.
-Default "datetime".}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
 
 \item{depth.col}{Character. Name of the column containing raw depth data. Defaults to "depth".}
 
@@ -60,7 +56,7 @@ Default "datetime".}
 \item{az.col}{Character. Name of the column containing raw Z-axis acceleration data. Defaults to "az".}
 
 \item{configs}{Optional named dictionary of documented configurations (config name -> \code{from}/\code{to}
-data.frame), the same object accepted by \code{\link{applyAxisMapping}}. When supplied, each tag's
+data.frame), the same object accepted by \code{\link[=applyAxisMapping]{applyAxisMapping()}}. When supplied, each tag's
 \code{axis_config} metadata (set at import) is looked up and its documented accelerometer frame is
 \strong{validated against the inferred frame}: per deployment, \code{frame_state$prior$status} reports
 \code{"confirmed"} (data uniquely resolved to exactly that frame), \code{"consistent"} (the documented frame
@@ -77,7 +73,7 @@ reference frame is not pinned to the doc and the family is \code{"unverifiable"}
 resting roll/pitch (assumes a level resting posture); \code{"towed"} rewards stability (MAD), which
 tolerates the resting offsets typical of fin-clamp / tethered mounts, and suppresses the weak
 pitch-depth warning (decoupling is expected). \code{NULL} (default) takes the type per dataset from
-metadata (\code{columns = metadataColumns(deployment_type = ...)} in \code{\link{importTagData}}),
+metadata (\code{columns = metadataColumns(deployment_type = ...)} in \code{\link[=importTagData]{importTagData()}}),
 falling back to the stability scorer when unknown. Either a single value or a per-dataset vector.
 The vertical axis is resolved from gravity regardless, so this only affects horizontal ranking
 and warnings.}
@@ -96,7 +92,7 @@ threshold of 1g are considered static. Defaults to 0.1g.}
 
 \item{depth.smoothing, speed.smoothing}{Smoothing windows (seconds) for the vertical-velocity estimate
 used by the surge anchor (centered difference on smoothed depth, then optional velocity smoothing -
-the same estimate as \code{\link{processTagData}}). Low-passing removes the quantization staircase
+the same estimate as \code{\link[=processTagData]{processTagData()}}). Low-passing removes the quantization staircase
 that otherwise degrades the pitch / depth-rate relationship. Defaults 10 and 1; \code{NULL} disables.}
 
 \item{tie.tolerance}{Numeric. Score gap (in the score's units, roughly degrees) within which
@@ -153,21 +149,21 @@ A named list, one element per individual, each containing:
 \itemize{
 \item \code{id}, \code{package_id}, \code{tag}, \code{type}: the deployment identifier plus the
 grouping keys carried from metadata (\code{NA} if absent) - the physical-unit \code{package_id},
-the \code{tag} model and \code{type}. Any of these can be used by \code{\link{consensusAxisMapping}}
+the \code{tag} model and \code{type}. Any of these can be used by \code{\link[=consensusAxisMapping]{consensusAxisMapping()}}
 (via its \code{group.by}) to reconcile mapping solutions across related deployments.
 \item \code{proposal}: a \code{from}/\code{to} data.frame for the best-scoring mapping, ready to
-pass to \code{\link{applyAxisMapping}}.
+pass to \code{\link[=applyAxisMapping]{applyAxisMapping()}}.
 \item \code{resolution}: a data.frame stating, for each body axis (X/Y/Z), whether it is
 \code{"resolved"} or \code{"ambiguous"}, the raw source axis/sign when resolved, and the
 \code{evidence} that resolved it ("gravity", "depth-rate", or "handedness").
 \item \code{families}: gyroscope and magnetometer results. The gyroscope defaults to the
 co-die transform of the accelerometer map (\code{gyro = det(M)*M}, an axial vector) and that
-default is VALIDATED by co-registration (the strapdown identity \code{d(ghat)/dt = -omega x ghat}
+default is validated by co-registration (the strapdown identity \code{d(ghat)/dt = -omega x ghat}
 scored for the identity hypothesis; see \code{families$gyro$coreg_corr} and
 \code{frame_state$coreg}). When it co-registers (or there is too little rotation to judge) it is
 adopted (\code{source = "coreg-derived"}); when it is decisively rejected the data-driven
 resolvers (roll-rate / pitch-rate correlation and the strapdown frame estimator) take over and
-the deployment is flagged \code{coreg_fail} for \code{\link{reviewTagMapping}}. The magnetometer
+the deployment is flagged \code{coreg_fail} for \code{\link[=reviewTagMapping]{reviewTagMapping()}}. The magnetometer
 is validated against the accelerometer frame via the gravity-field dip (its heading axes cannot
 be fixed from dip alone, so they share the accelerometer resolution). Each has a \code{status}
 ("resolved" / "unresolved" / "inconsistent" / "absent/insufficient") and a \code{mapping}.
@@ -182,13 +178,23 @@ corroboration, the attachment site, and a human-readable \code{note}.
 }
 }
 \description{
-Systematically evaluates possible accelerometer axis mappings to identify the most likely
-correct orientation of IMU (Inertial Measurement Unit) sensors in archival tags deployed
-on marine animals. The function tests all possible permutations and sign combinations of
-the raw axes, scoring each based on how well the remapped data matches expected physical behavior.
-The "goodness" of each mapping is determined by how well calculated roll and pitch
-angles align with expected values (median absolute roll/pitch near zero) and
-how closely the remapped Z-axis acceleration matches gravity during static periods.
+An accelerometer records along its own three axes, which depend on how the circuit board sits in the
+housing and how the housing sits on the animal. Manufacturers document this inconsistently, tags are
+remounted between deployments, and a board can be replaced without anyone noting the change. Until
+the relationship is known, no orientation-derived quantity can be trusted.
+
+Getting it wrong is not obvious. Swapped or inverted axes produce pitch, roll and heading that look
+entirely plausible - smooth, correctly scaled, varying with behaviour - while describing an animal
+that is not the one you tagged. Dead-reckoned tracks, body-orientation summaries and dynamic
+acceleration all inherit the error silently.
+
+\code{checkTagMapping()} recovers the relationship from the data itself, using the two things physics
+guarantees: gravity points down, and a swimming animal spends most of its time roughly level. Each
+candidate arrangement of the axes is scored on how well the record it produces matches that
+expectation, and the best-supported one is proposed for review.
+
+It proposes rather than applies. Review the proposals with \code{\link[=reviewTagMapping]{reviewTagMapping()}}, then commit them
+with \code{\link[=applyAxisMapping]{applyAxisMapping()}}.
 }
 \details{
 The function evaluates the 24 handedness-preserving signed permutations of the raw axes (proper
@@ -212,12 +218,12 @@ guessed. The \code{resolution} and \code{confidence} elements make this explicit
 
 The gyroscope and magnetometer families are then resolved against the accelerometer body frame
 (see \code{families}). Across several deployments of one tag unit, pool the proposals with
-\code{\link{consensusAxisMapping}}. Set \code{plot} / \code{plot.file} for a per-individual visual
+\code{\link[=consensusAxisMapping]{consensusAxisMapping()}}. Set \code{plot} / \code{plot.file} for a per-individual visual
 validation panel (depth-rate vs pitch, gravity partition over a dive, per-axis spectra, mag dip).
 
 For tags whose metadata flags a magnetic paddle wheel (\code{tag$paddle_wheel = TRUE}), the
 magnetometer is pre-smoothed with a 3-second rolling mean before the dip diagnostic - mirroring the
-safeguard in \code{\link{processTagData}} - so the spinning-magnet noise does not inflate the dip
+safeguard in \code{\link[=processTagData]{processTagData()}} - so the spinning-magnet noise does not inflate the dip
 variance. Standard tags are unaffected.
 
 \strong{Performance.} The axis resolution is entirely low-frequency (gravity loading, dive pitch,
@@ -239,5 +245,5 @@ oriented <- applyAxisMapping(data = files, mapping = qc)
 }
 }
 \seealso{
-\code{\link{applyAxisMapping}}, \code{\link{consensusAxisMapping}}, \code{\link{importTagData}}
+\code{\link[=applyAxisMapping]{applyAxisMapping()}}, \code{\link[=consensusAxisMapping]{consensusAxisMapping()}}, \code{\link[=importTagData]{importTagData()}}
 }

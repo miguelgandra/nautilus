@@ -2,7 +2,7 @@
 % Please edit documentation in R/applyAxisMapping.R
 \name{applyAxisMapping}
 \alias{applyAxisMapping}
-\title{Re-map IMU sensor axes without re-reading the raw files}
+\title{Rotate a tag's sensor axes onto the animal}
 \usage{
 applyAxisMapping(
   data,
@@ -35,7 +35,7 @@ mapping is routed to the dataset with the matching id. \code{from} is a raw axis
 
 \item{configs}{A named dictionary of documented configurations - config name -> \code{from}/\code{to}
 data.frame - applied by looking up each tag's \code{axis_config} metadata (set at import from the
-\code{axis_config} column of \code{\link{metadataColumns}}). The apply-the-documented-config path: use it
+\code{axis_config} column of \code{\link[=metadataColumns]{metadataColumns()}}). The apply-the-documented-config path: use it
 instead of \code{mapping} when the orientation is known and you are not inferring it from the data. A tag
 with a blank/absent \code{axis_config} is left unchanged; a config name not in the dictionary is an
 error. Default \code{NULL}.}
@@ -87,24 +87,25 @@ mapping, its producer and the per-family origin are recorded in each object's
 their ids in \code{attr(., "excluded")}).
 }
 \description{
-Applies a signed-permutation axis mapping (axis swaps and/or sign flips, with the literal \code{"NA"}
-to drop a faulty axis) to the accelerometer, gyroscope, and magnetometer channels of
-already-imported data. Orientation is a single, explicit step after \link{importTagData} (which imports
-raw): this is where the IMU is rotated into the animal-centric (e.g. NED) frame, on in-memory data or
-saved \code{.rds} files, without re-parsing the original CSVs.
+Sensor data are imported in the tag's own axis frame, because that is what the tag recorded.
+Interpreting them as the animal's motion requires knowing which recorded axis points forward, which
+to the side and which down - and applying that relationship to every channel.
 
-\code{mapping} is polymorphic - it accepts the diagnostic objects produced upstream and routes the right
-per-deployment mapping to each dataset automatically, so the QC workflow flows straight through:
+\code{applyAxisMapping()} is where that happens. It is a deliberate, separate step rather than something
+the import does quietly, so that the rotation appears in the record's history and can be revisited if
+the mapping turns out to be wrong. It works on data already in memory or on saved files, without
+re-reading the original exports.
+
+Give it the reviewed output of \code{\link[=checkTagMapping]{checkTagMapping()}} and it routes each deployment's own mapping to the
+right record, so the workflow runs straight through:
 \preformatted{
 qc <- checkTagMapping(data_files)            # per-deployment proposals
 qc <- consensusAxisMapping(qc)               # rescue unresolved ones from group consensus
 applyAxisMapping(data = data_files, mapping = qc)
 }
-Accepted shapes: the output of \link{checkTagMapping} (each deployment's own \verb{$proposal}), the output of
-\link{consensusAxisMapping} (each deployment's reconciled \verb{$mappings}, carrying the per-family
-self/consensus origin), a single \code{from}/\code{to} data.frame (applied to every dataset), or a named list
-of such data.frames (one per deployment id). The origin of each remapped family is inferred from the
-object and written to the metadata audit trail - there is no \code{source} argument to set by hand.
+\code{mapping} also accepts a mapping you have written yourself: a single \code{from}/\code{to} table applied to
+every deployment, or a named list of them, one per deployment. Where each mapping came from is
+recorded in the record's history automatically, so there is nothing to declare by hand.
 }
 \details{
 The transform is tracked in the object's metadata (\code{tagMetadata(x)$axis_mapping}) as the \emph{net} signed

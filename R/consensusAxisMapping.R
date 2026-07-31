@@ -11,17 +11,17 @@
 #' "upright (Z up) and forward (X forward)" regardless of the attachment site (dorsal, left or right
 #' pectoral), so the full raw -> body transform is a single per-unit constant.
 #'
-#' This function groups the per-deployment results of \code{\link{checkTagMapping}} by a metadata key
+#' This function groups the per-deployment results of [checkTagMapping()] by a metadata key
 #' (\code{group.by}, default the physical-unit \code{package_id}) and, within each group, builds a
 #' confidence-weighted consensus mapping from the deployments that resolved unambiguously. That
 #' consensus is then propagated to weaker / ambiguous deployments of the same group - but only when it
 #' is consistent with their own evidence - so a dive-rich deployment can rescue a flat-swimming or short
 #' one. Disagreement between confidently-resolved deployments of the same group is flagged as a
-#' \emph{conflict} (a likely sign that the circuit board was swapped, replaced, or remounted in a
+#' *conflict* (a likely sign that the circuit board was swapped, replaced, or remounted in a
 #' different orientation, or that the grouping key is shared by two physically different units).
 #'
 #' @details
-#' Only \emph{confident} deployments vote: an accelerometer vote is cast only when \code{checkTagMapping}
+#' Only *confident* deployments vote: an accelerometer vote is cast only when \code{checkTagMapping}
 #' resolved all three axes (its \code{$proposal} carries a complete accelerometer triplet), and a
 #' gyroscope / magnetometer vote only when that family was decisively resolved. Within a unit, the
 #' modal signed permutation per family is the consensus.
@@ -31,7 +31,7 @@
 #' deployment that already resolved a family keeps its own mapping (never overridden). This guarantees
 #' the consensus can only \emph{fill} ambiguity, never contradict a deployment's own data.
 #'
-#' @param results The output of \code{\link{checkTagMapping}} (a named list, one element per
+#' @param results The output of [checkTagMapping()] (a named list, one element per
 #'   deployment), a list of such outputs, or any nested list whose leaves are \code{checkTagMapping}
 #'   result elements (carrying \code{$proposal}). Each element should carry the grouping keys added by
 #'   \code{checkTagMapping} (\code{$package_id}, \code{$tag}, \code{$type}); a leaf missing the chosen
@@ -54,7 +54,7 @@
 #' @return A list with:
 #'   \itemize{
 #'     \item \code{mappings}: a named list (one per deployment) of \code{from}/\code{to} data.frames
-#'       giving each deployment's final, reconciled mapping, ready for \code{\link{applyAxisMapping}}
+#'       giving each deployment's final, reconciled mapping, ready for [applyAxisMapping()]
 #'       (empty data.frame where still unresolved).
 #'     \item \code{provenance}: a data.frame, one row per deployment, with the \code{group} key (and
 #'       \code{package_id} for reference) and, per family (\code{accel}/\code{gyro}/\code{mag}), how it
@@ -66,7 +66,7 @@
 #'       solutions, a \code{conflict} flag, the contributing deployment ids, and the consensus mapping.
 #'     \item \code{n_groups}, \code{n_deployments}, \code{n_filled}, \code{n_conflicts}: run tallies.
 #'   }
-#' @seealso \code{\link{checkTagMapping}}, \code{\link{applyAxisMapping}}
+#' @seealso [checkTagMapping()], [applyAxisMapping()]
 #' @examples
 #' \dontrun{
 #' files <- list.files("imported", pattern = "\\.rds$", full.names = TRUE)

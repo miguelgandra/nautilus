@@ -13,7 +13,7 @@ consensusAxisMapping(
 )
 }
 \arguments{
-\item{results}{The output of \code{\link{checkTagMapping}} (a named list, one element per
+\item{results}{The output of \code{\link[=checkTagMapping]{checkTagMapping()}} (a named list, one element per
 deployment), a list of such outputs, or any nested list whose leaves are \code{checkTagMapping}
 result elements (carrying \code{$proposal}). Each element should carry the grouping keys added by
 \code{checkTagMapping} (\code{$package_id}, \code{$tag}, \code{$type}); a leaf missing the chosen
@@ -41,7 +41,7 @@ deployments of the group resolved that family (so a lone resolution is never pro
 A list with:
 \itemize{
 \item \code{mappings}: a named list (one per deployment) of \code{from}/\code{to} data.frames
-giving each deployment's final, reconciled mapping, ready for \code{\link{applyAxisMapping}}
+giving each deployment's final, reconciled mapping, ready for \code{\link[=applyAxisMapping]{applyAxisMapping()}}
 (empty data.frame where still unresolved).
 \item \code{provenance}: a data.frame, one row per deployment, with the \code{group} key (and
 \code{package_id} for reference) and, per family (\code{accel}/\code{gyro}/\code{mag}), how it
@@ -61,7 +61,7 @@ tags this package targets, the housing-to-body orientation is also physically co
 "upright (Z up) and forward (X forward)" regardless of the attachment site (dorsal, left or right
 pectoral), so the full raw -> body transform is a single per-unit constant.
 
-This function groups the per-deployment results of \code{\link{checkTagMapping}} by a metadata key
+This function groups the per-deployment results of \code{\link[=checkTagMapping]{checkTagMapping()}} by a metadata key
 (\code{group.by}, default the physical-unit \code{package_id}) and, within each group, builds a
 confidence-weighted consensus mapping from the deployments that resolved unambiguously. That
 consensus is then propagated to weaker / ambiguous deployments of the same group - but only when it
@@ -93,5 +93,5 @@ oriented <- applyAxisMapping(data = files, mapping = rec)
 }
 }
 \seealso{
-\code{\link{checkTagMapping}}, \code{\link{applyAxisMapping}}
+\code{\link[=checkTagMapping]{checkTagMapping()}}, \code{\link[=applyAxisMapping]{applyAxisMapping()}}
 }

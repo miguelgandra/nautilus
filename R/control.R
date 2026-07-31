@@ -40,19 +40,32 @@ smoothingControl <- function(static = 3, orientation = 1, dba = 2, depth = 10, s
 #' Magnetometer-calibration switches for processTagData()
 #'
 #' @description
-#' Groups the magnetometer-calibration switches of \code{\link{processTagData}} into one object. The
-#' mounting pitch/roll offset corrections and the orientation-estimator tuning live in
-#' \code{\link{orientationControl}}.
+#' Groups the magnetometer-calibration switches of [processTagData()] into one object. These decide
+#' whether the magnetometer is corrected for the tag's own iron before heading is computed, and whether
+#' a calibration already estimated by [calibrateMagnetometer()] is used in preference to one fitted on
+#' the spot. The mounting offset corrections and the orientation-estimator tuning live in
+#' [orientationControl()].
 #'
-#' @param hard.iron Logical. Apply hard-iron (offset) magnetometer calibration. Default TRUE.
-#' @param soft.iron Logical. Apply axis-aligned soft-iron (per-axis scale) magnetometer calibration;
-#'   cross-axis misalignment terms are not fitted. Default TRUE.
-#' @param use.stored Logical. If `TRUE` (default) and a stored magnetometer calibration is present in the
-#'   metadata (from \code{\link{calibrateMagnetometer}}, e.g. a per-package pooled fit), apply THAT instead
-#'   of estimating one inline - but only when it clears the confidence gate (a low-confidence stored fit is
-#'   ignored, falling back to the inline per-tag estimate). Set `FALSE` to always estimate inline.
-#' @return A validated `nautilus_calibration` object for the `calibration` argument of \code{\link{processTagData}}.
-#' @seealso \code{\link{processTagData}}, \code{\link{calibrateMagnetometer}}, \code{\link{orientationControl}}, \code{\link{smoothingControl}}
+#' @param hard.iron Whether to correct the fixed offset that magnetised components inside the tag add to
+#'   the field (default `TRUE`). This is the dominant distortion and the one heading depends on; there is
+#'   rarely a reason to disable it.
+#' @param soft.iron Whether to correct the per-axis scaling that ferromagnetic material imposes on the
+#'   field (default `TRUE`). Only the axis-aligned scales are fitted here, not the cross-axis shear.
+#'   Disable it if a deployment's orientation coverage is so poor that the scales are being fitted to
+#'   noise.
+#' @param use.stored Whether to prefer a calibration already stored in the metadata by
+#'   [calibrateMagnetometer()], such as a fit pooled across every deployment of one tag (default
+#'   `TRUE`). A stored fit is used only when it clears the confidence gate; a low-confidence one is
+#'   ignored and the inline per-deployment estimate is used instead. Set `FALSE` to always estimate
+#'   inline, for instance when comparing the two.
+#'
+#' @return A validated `nautilus_calibration` object for the `calibration` argument of
+#'   [processTagData()].
+#'
+#' @seealso [processTagData()] for the function that consumes it; [calibrateMagnetometer()] for the
+#'   stored calibration it can draw on; [orientationControl()] and [smoothingControl()] for the other
+#'   processing settings.
+#'
 #' @examples
 #' calibrationControl(soft.iron = FALSE)
 #' @export
@@ -87,69 +100,88 @@ basemapControl <- function(provider = "Esri.WorldImagery", cache = TRUE) {
   structure(list(provider = provider, cache = cache), class = "nautilus_basemap")
 }
 
-#' Control the optional magnetometer hard/soft-iron calibration
+#' Fit and confidence thresholds for calibrateMagnetometer()
 #'
 #' @description
-#' Groups the tuning of \code{\link{calibrateMagnetometer}} into one validated object. Magnetometer
-#' calibration from free-swimming field data is under-determined (a near-horizontal swimmer samples a
-#' band, not a sphere), so this is a BEST-EFFORT estimate with an explicit heading-confidence flag; the
-#' defaults are conservative and honest rather than optimistic.
+#' Groups the tuning of [calibrateMagnetometer()] into one validated object, so the main call stays
+#' uncluttered.
+#'
+#' Calibrating a magnetometer from free-swimming data is under-determined: a near-horizontal swimmer
+#' sweeps a band of orientations rather than a sphere, so part of the correction is never observed.
+#' These thresholds decide how much evidence a fit must show before it is accepted, and how much of the
+#' result may be trusted. They are set conservatively, on the principle that an honest low-confidence
+#' verdict is more useful than an optimistic correction.
 #'
 #' @details
-#' The thresholds map onto the stages of the fit in \code{\link{calibrateMagnetometer}} (see its Details).
-#' For accepting the full 3D ellipsoid: \code{cond.max} bounds how elongated an ellipsoid is still accepted,
-#' \code{igrf.residual.max} is the dip tolerance that BOTH gates 3D soft-iron acceptance and defines "high"
-#' confidence, \code{radcv.max} is the sphericity tolerance for "high", and \code{min.coverage} sets when a
-#' cloud counts as well covered on every axis. For the hard-iron-only 2D fallback (a thin swimming band),
-#' \code{azimuth.min} is the swept-yaw coverage needed to trust the in-plane centre, while
-#' \code{planarity.max}, \code{linearity.abort} and \code{extent.min} reject clouds that are not a genuine
-#' planar ring (a solid blob, or a single held heading). \code{center.warn} / \code{center.reject} apply only
-#' when the fit is taken from an external \code{calibration.data} source.
+#' The thresholds map onto the stages of the fit, which are described in the Details of
+#' [calibrateMagnetometer()].
 #'
-#' @param method Fit method. \code{"ellipsoid"} (default) fits the full hard-iron + soft-iron ellipsoid
-#'   when the data genuinely determine it (well covered on every axis and dip-consistent) and otherwise
-#'   falls back to a hard-iron-only fit that still corrects heading (see the Details of
-#'   \code{\link{calibrateMagnetometer}}). \code{"diagonal"} forces a per-axis hard-iron + scale fit.
-#' @param igrf.normalize Logical. When pooling deployments of one package, rescale each deployment's field
-#'   to the IGRF total-field intensity at its location before pooling, so different survey locations do not
-#'   distort the shared soft-iron. Default TRUE (ignored for a single deployment with no coordinates).
-#' @param min.coverage Minimum per-axis coverage (half-range as a fraction of the sphere radius) for the
-#'   fit to be trusted; below this the orientation coverage is too poor. Passed to the robust hard-iron
-#'   estimate. Default 0.5.
-#' @param cond.max Maximum ellipsoid axis-ratio (condition number) accepted as a real ellipsoid before
-#'   falling back to the diagonal fit. Default 25.
-#' @param radcv.max Corrected-radius coefficient of variation at/below which the fit is "high" confidence
-#'   (0 = a perfect sphere). Default 0.1.
-#' @param igrf.residual.max Absolute geomagnetic dip residual (measured minus IGRF inclination, degrees)
-#'   at/below which a full 3D fit is "high" confidence. It ALSO gates 3D soft-iron acceptance: a
-#'   thin-band ellipsoid whose corrected field exceeds this dip residual has an unconstrained perpendicular
-#'   centre, so it is routed to the hard-iron-only 2D fallback instead of applying an untrustworthy
-#'   soft-iron. It does NOT gate the 2D fallback's own heading trust, which rests on in-plane yaw coverage
-#'   (heading needs the horizontal components, not the vertical dip). Default 15.
-#' @param center.warn,center.reject Hard-iron-centre agreement thresholds used ONLY when a calibration is
-#'   fit from an external source (see `calibration.data` in \code{\link{calibrateMagnetometer}}). The
-#'   source's estimated hard-iron centre is cross-checked against the deployment's own in-situ centre, as a
-#'   fraction of the field radius: a disagreement above `center.reject` (default 0.35) rejects the source
-#'   bind (a fixed magnetic mass co-rotated with the tag during the calibration, e.g. boat steel - it is
-#'   absorbed into the centre yet passes the sphericity/dip QC, so this is the only guard that catches it);
-#'   above `center.warn` (default 0.10) the bind is kept but its confidence is downgraded. Ignored for the
-#'   default in-situ calibration (no source). `center.reject` must be >= `center.warn`.
-#' @param azimuth.min Minimum swept yaw arc (degrees, 0-360) for a hard-iron-only (2D-fallback) fit to earn
-#'   "medium" heading confidence. Below this the animal did not turn through enough headings to determine
-#'   the in-plane hard-iron centre, so the heading is left uncalibrated. Default 150.
-#' @param planarity.max Maximum planarity (smallest / largest PCA eigenvalue of the field cloud) for a
-#'   2D-fallback fit to be applied. A genuine swimming band is planar (planarity near 0); a near-stationary
-#'   isotropic blob approaches 1 - its full azimuth coverage is only sensor noise - and is rejected. Default 0.6.
-#' @param linearity.abort Minimum linearity (2nd / 1st PCA eigenvalue) below which the cloud has collapsed to
-#'   a 1-D arc (a single heading held), so the in-plane centre is unobservable and the fit is not applied.
-#'   Default 0.1.
-#' @param extent.min Minimum angular extent (degrees) of the cloud about its centre, below which it is a
-#'   stationary blob and the fit is not applied. Default 40.
-#' @param target.field Optional numeric override for the target field magnitude (uT); by default the IGRF
-#'   intensity (when coordinates are available) or the cloud's own median radius is used. Default NULL.
+#' Accepting the full three-dimensional ellipsoid rests on `cond.max`, which bounds how elongated an
+#' ellipsoid may be and still be believed; `igrf.residual.max`, the dip tolerance; `radcv.max`, the
+#' sphericity tolerance for high confidence; and `min.coverage`, which sets when a cloud counts as well
+#' covered on every axis.
+#'
+#' For the hard-iron-only fallback used on a thin swimming band, `azimuth.min` is the swept yaw coverage
+#' needed to trust the in-plane centre, while `planarity.max`, `linearity.abort` and `extent.min` reject
+#' clouds that are not a genuine planar ring - a solid blob, or a single heading held throughout.
+#'
+#' `center.warn` and `center.reject` apply only when the fit comes from an external `calibration.data`
+#' source.
+#'
+#' @param method How to fit the distortion. `"ellipsoid"` (default) fits the full hard-iron and
+#'   soft-iron ellipsoid where the data genuinely determine it, and otherwise falls back to a
+#'   hard-iron-only fit that still corrects heading. `"diagonal"` forces a per-axis offset-and-scale fit,
+#'   which is worth trying when the full ellipsoid is unstable.
+#' @param igrf.normalize When pooling deployments of one tag, whether to rescale each deployment's field
+#'   to the expected geomagnetic intensity at its location before pooling (default `TRUE`), so that
+#'   deployments from different survey areas do not distort the shared soft iron. Ignored for a single
+#'   deployment with no coordinates.
+#' @param min.coverage Minimum per-axis coverage, as a fraction of the sphere radius, for the fit to be
+#'   trusted (default `0.5`). Below this the animal did not turn through enough orientations. Lower it
+#'   only if you are prepared to accept a fit resting on a narrow slice of the sphere.
+#' @param cond.max Largest ellipsoid axis ratio still accepted as a real ellipsoid before falling back
+#'   to the diagonal fit (default `25`). A very elongated ellipsoid usually means the cloud is a band
+#'   being over-fitted rather than a genuinely distorted sphere.
+#' @param radcv.max Coefficient of variation of the corrected radius at or below which a fit earns high
+#'   confidence (default `0.1`; zero would be a perfect sphere). This is the sphericity test: how tightly
+#'   the corrected field sits on one sphere.
+#' @param igrf.residual.max Largest absolute dip residual, in degrees, at or below which a full
+#'   three-dimensional fit earns high confidence (default `15`). Dip residual is the measured
+#'   geomagnetic inclination minus the value expected at that place. It also gates soft-iron acceptance:
+#'   a thin-band ellipsoid whose corrected field misses the expected dip by more than this has an
+#'   unconstrained perpendicular centre, so it is routed to the hard-iron-only fallback rather than
+#'   applying a soft iron that cannot be trusted. It does not gate the fallback's own heading trust,
+#'   which rests on in-plane yaw coverage, because heading needs the horizontal components and not the
+#'   vertical dip.
+#' @param center.warn,center.reject How closely the hard-iron centre estimated from an external source
+#'   must agree with the deployment's own in-situ centre, as a fraction of the field radius. Used only
+#'   when a calibration is fitted from `calibration.data`. A disagreement above `center.reject` (default
+#'   `0.35`) rejects the source; above `center.warn` (default `0.10`) the source is kept but its
+#'   confidence is downgraded. This cross-check exists because a fixed magnetic mass that co-rotated with
+#'   the tag during the calibration spin - vessel steel, most often - is absorbed into the centre and
+#'   still passes every sphericity and dip test, so nothing internal to the recording can reveal it.
+#'   `center.reject` must be at least `center.warn`.
+#' @param azimuth.min Minimum swept yaw arc, in degrees, for a hard-iron-only fit to earn medium heading
+#'   confidence (default `150`). Below this the animal did not turn through enough headings to place the
+#'   in-plane centre, and the heading is left uncalibrated.
+#' @param planarity.max Maximum planarity of the field cloud for a fallback fit to be applied (default
+#'   `0.6`). A genuine swimming band is close to planar; a near-stationary cloud approaches an isotropic
+#'   blob, whose apparently full azimuth coverage is only sensor noise, and is rejected.
+#' @param linearity.abort Minimum linearity below which the cloud has collapsed to a one-dimensional arc,
+#'   meaning a single heading was held, so the in-plane centre is unobservable and no fit is applied.
+#'   Default `0.1`.
+#' @param extent.min Minimum angular extent of the cloud about its centre, in degrees, below which it is
+#'   a stationary blob and no fit is applied. Default `40`.
+#' @param target.field Optional override for the target field magnitude, in \eqn{\mu}T. By default the
+#'   expected geomagnetic intensity is used where coordinates are available, and the cloud's own median
+#'   radius otherwise. Set it if you know the local field and the deployment has no position.
+#'
 #' @return A validated `nautilus_mag_calibration` object for the `control` argument of
-#'   \code{\link{calibrateMagnetometer}}.
-#' @seealso \code{\link{calibrateMagnetometer}}, \code{\link{calibrationControl}}
+#'   [calibrateMagnetometer()].
+#'
+#' @seealso [calibrateMagnetometer()] for the function that consumes it; [calibrationControl()] for
+#'   whether the resulting estimate is applied.
+#'
 #' @examples
 #' magCalibrationControl(method = "diagonal")
 #' @export
@@ -194,44 +226,60 @@ magCalibrationControl <- function(method = c("ellipsoid", "diagonal"),
 #' Orientation-estimation tuning for processTagData()
 #'
 #' @description
-#' Groups the specialised orientation-estimation knobs of \code{\link{processTagData}} into one object,
-#' leaving the primary choice - the estimator itself - as the top-level `orientation.algorithm` argument
-#' of \code{\link{processTagData}}. Covers the Madgwick filter gain, the mounting pitch/roll offset
-#' corrections, and the orientation-anomaly warning threshold.
+#' Groups the specialised orientation settings of [processTagData()] into one object, leaving the
+#' primary choice - the estimator itself - as that function's top-level `orientation.algorithm`
+#' argument.
 #'
-#' @param madgwick.beta Numeric. The Madgwick filter's gain parameter (the accelerometer-vs-gyroscope
-#'   trust trade-off); used only when `orientation.algorithm = "madgwick"`. Default 0.02.
-#' @param correct.pitch Logical. Correct the mounting pitch offset (pitch vs vertical-velocity intercept). Default TRUE.
-#' @param correct.roll Logical. Correct the mounting roll offset (median roll over level swimming). Default TRUE.
-#' @param pitch.offset.min.r2 Minimum R^2 of the pitch-vs-vertical-velocity fit required to apply the
-#'   `correct.pitch` mounting-offset correction. Below it the "offset" is really just the mean pitch, so
-#'   subtracting it would strip genuine posture signal and the correction is skipped. Default 0.1.
-#' @param mount.roll.max Numeric. Largest mounting ROLL offset (degrees) that `correct.roll` will still
-#'   subtract. This is a plausibility gate, not an alarm: beyond it the estimate is more likely to mean
-#'   the body frame is wrong than that the tag was clamped very far round, so the offset is recorded but
-#'   left uncorrected. Default 60. It is deliberately WIDER than `warning.threshold` - a steeply rolled
-#'   clamp is a real mounting geometry (a left- vs right-side attachment is mirror-imaged), and such a
-#'   deployment should be corrected AND flagged, not left uncorrected because it is unusual. Set it lower
-#'   to be stricter about what gets absorbed into the mount. Roll only: a large pitch offset means the tag
-#'   points along the body rather than across it, which is not a normal mounting geometry, so the pitch
+#' Two distinct things are tuned here. The first is the estimator: how much the Madgwick filter trusts
+#' the accelerometer against the gyroscope, and how paddle-wheel contamination is removed before heading
+#' is computed. The second is the mounting geometry: a tag is never attached perfectly level, and the
+#' resulting constant pitch and roll offsets are indistinguishable from the animal's own posture unless
+#' they are estimated and removed.
+#'
+#' @param madgwick.beta The Madgwick filter's gain, which sets how much it trusts the accelerometer
+#'   against the gyroscope (default `0.02`). Raise it if the estimated orientation drifts over long
+#'   stretches; lower it if the orientation is jittery during vigorous swimming. Used only when
+#'   `orientation.algorithm = "madgwick"`.
+#' @param correct.pitch Whether to estimate and subtract the mounting pitch offset (default `TRUE`),
+#'   taken from where the pitch-against-vertical-velocity relationship crosses zero. Disable it if you
+#'   know the tag was mounted level and want the raw posture.
+#' @param correct.roll Whether to estimate and subtract the mounting roll offset (default `TRUE`), taken
+#'   as the median roll over level swimming.
+#' @param pitch.offset.min.r2 Minimum R-squared of the pitch-against-vertical-velocity fit required
+#'   before the pitch offset is subtracted (default `0.1`). Below this the fitted offset is really just
+#'   the mean pitch, and subtracting it would strip out genuine posture, so the correction is skipped.
+#' @param mount.roll.max Largest mounting roll offset, in degrees, that `correct.roll` will still
+#'   subtract (default `60`). This is a plausibility gate rather than an alarm: beyond it, a large
+#'   estimate more likely means the body frame is wrong than that the tag was clamped that far round, so
+#'   the offset is recorded but left in place. It is deliberately wider than `warning.threshold`, because
+#'   a steeply rolled clamp is a real mounting geometry - a left-side and a right-side attachment are
+#'   mirror images - and such a deployment should be both corrected and flagged. Lower it to be stricter
+#'   about what may be absorbed into the mount. Roll only: a large pitch offset would mean the tag points
+#'   along the body rather than across it, which is not a normal mounting geometry, so the pitch
 #'   correction stays capped by `warning.threshold`.
-#' @param warning.threshold Numeric. Threshold (degrees) above which an orientation warning is raised, for
-#'   three independent checks: an unusual median |pitch|, an unusual estimated mounting |roll| (raised
-#'   whether or not the correction was applied), and a leftover median |roll| after the correction. It also
-#'   caps the `correct.pitch` mounting-offset correction. Default 45. Lower it (e.g. 35) to hear about
-#'   moderately rolled mounts as well; it does not change what gets corrected, only what is reported.
-#' @param heading.denoise How to suppress paddle-wheel magnetometer contamination before computing heading.
-#'   A spinning paddle magnet adds a large, high-frequency oscillation to the field; because it is additive
-#'   in the field-vector domain and averages to zero over a rotation, a centred (zero-phase) running mean
-#'   of the magnetometer vector removes it while preserving the slow, orientation-driven variation.
-#'   \code{"auto"} (default) detects the paddle and derives one stable window per deployment from its
-#'   rotation frequency (via the shared paddle-state primitive); \code{"manual"} always applies
-#'   `heading.denoise.window`; \code{"off"} disables it. When the paddle is too slow to separate from the
-#'   animal's turning, no window can help and a warning is raised (use a gyro-based orientation instead).
-#' @param heading.denoise.window Numeric. Smoothing window (seconds) used when `heading.denoise = "manual"`.
-#'   Default 3.
-#' @return A validated `nautilus_orientation` object for the `orientation` argument of \code{\link{processTagData}}.
-#' @seealso \code{\link{processTagData}}, \code{\link{calibrationControl}}, \code{\link{smoothingControl}}
+#' @param warning.threshold Threshold in degrees above which an orientation warning is raised (default
+#'   `45`), for three independent checks: an unusual median absolute pitch, an unusual estimated mounting
+#'   roll, raised whether or not the correction was applied, and an unusual median absolute roll left
+#'   over after correction. It also caps the pitch offset correction. Lower it, to `35` say, to hear
+#'   about moderately rolled mounts as well; it changes what is reported, not what is corrected.
+#' @param heading.denoise How to suppress paddle-wheel contamination of the magnetometer before heading
+#'   is computed. A spinning paddle magnet adds a large, fast oscillation to the field; because it adds
+#'   to the field vector and averages to zero over a rotation, a centred running mean of the
+#'   magnetometer vector removes it while preserving the slow, orientation-driven variation. `"auto"`
+#'   (default) detects the paddle and derives one stable window per deployment from its rotation rate;
+#'   `"manual"` always applies `heading.denoise.window`; `"off"` disables it. Where the paddle turns too
+#'   slowly to be separated from the animal's own turning, no window can help and a warning is raised -
+#'   use a gyroscope-based orientation estimator instead.
+#' @param heading.denoise.window Smoothing window in seconds used when `heading.denoise = "manual"`
+#'   (default `3`). It should span several paddle rotations but stay well short of the animal's turning
+#'   timescale.
+#'
+#' @return A validated `nautilus_orientation` object for the `orientation` argument of
+#'   [processTagData()].
+#'
+#' @seealso [processTagData()] for the function that consumes it; [calibrationControl()] and
+#'   [smoothingControl()] for the other processing settings.
+#'
 #' @examples
 #' orientationControl(correct.roll = FALSE)     # skip the roll-offset correction
 #' orientationControl(madgwick.beta = 0.05)     # stronger Madgwick gain
@@ -391,39 +439,52 @@ depthDriftControl <- function(method = c("surface", "none"),
 #' Cross-device clock-alignment settings for importTagData()
 #'
 #' @description
-#' Bundles the settings for the temporal alignment applied by \code{\link{importTagData}} when a
-#' deployment pairs a primary archival tag (depth + IMU) with a separate Wildlife Computers tag
-#' (wet/dry + Fastloc-GPS). The two devices keep independent clocks that can disagree by anything from a
-#' few seconds to many minutes, and that offset - invisible without a shared signal - silently corrupts
-#' every step that combines the streams (the depth zero-offset correction, dead-reckoning fix anchors).
+#' Bundles the settings for the temporal alignment [importTagData()] applies when a deployment pairs a
+#' primary archival tag, recording depth and inertial data, with a separate Wildlife Computers tag
+#' recording wet/dry state and Fastloc-GPS positions.
 #'
-#' The Wildlife Computers `...-Archive.csv` records the tag's own depth (and temperature) at a low rate.
-#' Because depth is a physical quantity measured by \emph{both} devices, cross-correlating the WC depth
-#' against the primary tag's depth recovers the clock offset directly: the lag that maximises their
-#' correlation is the offset. In real deployments this peak is razor-sharp (correlation ~1.0), so the
-#' estimate is robust. The WC-clock streams (`meta$ancillary$positions`, `meta$ancillary$dry`) are then
-#' shifted onto the primary tag's timeline. The primary depth/IMU stream is the reference and is never
-#' moved; deploy/pop-up positions (which come from the metadata table, not the WC clock) are never moved.
+#' The two devices keep independent clocks, which can disagree by anything from a few seconds to many
+#' minutes. Nothing in either record reveals the offset on its own, yet it silently corrupts every step
+#' that combines the streams: the depth zero-offset correction, and the position fixes that anchor a
+#' dead-reckoned track.
 #'
-#' A single constant offset per deployment is estimated: in practice the residual clock drift is
-#' negligible (a few seconds over a multi-day record) and dominated by the constant offset. The
-#' correction is conservative - it \strong{abstains} (shifting nothing, and saying so) whenever the
-#' evidence is too weak to trust: no shared depth channel, too little temporal overlap, a flat depth
-#' trace with no dives to lock onto, or a peak correlation below `min.correlation`. The clock is never
-#' silently shifted; the estimated offset and its diagnostics are stored in `meta$ancillary$alignment`.
+#' @details
+#' The Wildlife Computers archive file records that tag's own depth, and often temperature, at a low
+#' rate. Because depth is a physical quantity measured by *both* devices, cross-correlating the two
+#' depth series recovers the offset directly: it is the lag at which they agree best. In real
+#' deployments this peak is sharp, so the estimate is well determined. The streams carried on the
+#' Wildlife Computers clock are then shifted onto the primary tag's timeline. The primary depth and
+#' inertial stream is the reference and is never moved, and neither are the deployment and pop-up
+#' positions, which come from the metadata table rather than from that clock.
 #'
-#' @param method Alignment method: `"depth-xcorr"` (cross-correlate the shared depth channel, the
-#'   default) or `"none"` (disable; the WC streams are kept on their own clock).
-#' @param max.lag Maximum absolute clock offset to search for, in seconds (the cross-correlation is
-#'   evaluated over `[-max.lag, +max.lag]`). Also a sanity bound: a best lag landing on the search edge is
-#'   treated as unresolved and the correction abstains. Default 3600 (one hour).
-#' @param min.overlap Minimum temporal overlap between the two depth records, in minutes, required to
-#'   attempt alignment. Below this the correction abstains. Default 30.
-#' @param min.correlation Minimum peak Pearson correlation between the two depth traces (at the best lag)
-#'   for the offset to be accepted. Below this the depth profiles do not match well enough to trust the
-#'   lag, and the correction abstains. Default 0.9.
-#' @return A validated `nautilus_alignment` object for the `alignment` argument of \code{\link{importTagData}}.
-#' @seealso \code{\link{importTagData}}, \code{\link{depthDriftControl}}
+#' A single constant offset is estimated per deployment. Residual drift is negligible in practice - a
+#' few seconds over a multi-day record - and dominated by the constant term.
+#'
+#' The correction abstains, shifting nothing and saying so, whenever the evidence is too weak to trust:
+#' no shared depth channel, too little overlap between the records, a flat depth trace with no dives to
+#' lock onto, or a peak correlation below `min.correlation`. The clock is never shifted silently, and
+#' the estimated offset and its diagnostics are stored in the deployment's metadata.
+#'
+#' @param method How to align the clocks: `"depth-xcorr"` (default) cross-correlates the shared depth
+#'   channel, and `"none"` disables alignment, keeping the Wildlife Computers streams on their own
+#'   clock.
+#' @param max.lag Largest absolute clock offset to search for, in seconds (default `3600`, one hour).
+#'   This also acts as a sanity bound: a best lag landing on the edge of the search range is treated as
+#'   unresolved and the correction abstains. Widen it only if you have reason to expect a larger
+#'   disagreement.
+#' @param min.overlap Minimum overlap between the two depth records, in minutes, required to attempt
+#'   alignment (default `30`). Below this the correction abstains, because a short overlap can produce a
+#'   convincing correlation peak at the wrong lag.
+#' @param min.correlation Minimum peak correlation between the two depth traces, at the best lag, for
+#'   the offset to be accepted (default `0.9`). Below this the profiles do not match well enough to trust
+#'   the lag and the correction abstains. Lower it only for records whose depth traces are genuinely
+#'   noisy, and check the stored diagnostics afterwards.
+#'
+#' @return A validated `nautilus_alignment` object for the `alignment` argument of [importTagData()].
+#'
+#' @seealso [importTagData()] for the function that consumes it; [depthDriftControl()] for the depth
+#'   correction that depends on the alignment being right.
+#'
 #' @examples
 #' alignmentControl(min.correlation = 0.95)   # stricter acceptance
 #' alignmentControl(method = "none")          # disable clock alignment

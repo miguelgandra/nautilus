@@ -16,53 +16,65 @@ orientationControl(
 )
 }
 \arguments{
-\item{madgwick.beta}{Numeric. The Madgwick filter's gain parameter (the accelerometer-vs-gyroscope
-trust trade-off); used only when \code{orientation.algorithm = "madgwick"}. Default 0.02.}
+\item{madgwick.beta}{The Madgwick filter's gain, which sets how much it trusts the accelerometer
+against the gyroscope (default \code{0.02}). Raise it if the estimated orientation drifts over long
+stretches; lower it if the orientation is jittery during vigorous swimming. Used only when
+\code{orientation.algorithm = "madgwick"}.}
 
-\item{correct.pitch}{Logical. Correct the mounting pitch offset (pitch vs vertical-velocity intercept). Default TRUE.}
+\item{correct.pitch}{Whether to estimate and subtract the mounting pitch offset (default \code{TRUE}),
+taken from where the pitch-against-vertical-velocity relationship crosses zero. Disable it if you
+know the tag was mounted level and want the raw posture.}
 
-\item{correct.roll}{Logical. Correct the mounting roll offset (median roll over level swimming). Default TRUE.}
+\item{correct.roll}{Whether to estimate and subtract the mounting roll offset (default \code{TRUE}), taken
+as the median roll over level swimming.}
 
-\item{pitch.offset.min.r2}{Minimum R^2 of the pitch-vs-vertical-velocity fit required to apply the
-\code{correct.pitch} mounting-offset correction. Below it the "offset" is really just the mean pitch, so
-subtracting it would strip genuine posture signal and the correction is skipped. Default 0.1.}
+\item{pitch.offset.min.r2}{Minimum R-squared of the pitch-against-vertical-velocity fit required
+before the pitch offset is subtracted (default \code{0.1}). Below this the fitted offset is really just
+the mean pitch, and subtracting it would strip out genuine posture, so the correction is skipped.}
 
-\item{mount.roll.max}{Numeric. Largest mounting ROLL offset (degrees) that \code{correct.roll} will still
-subtract. This is a plausibility gate, not an alarm: beyond it the estimate is more likely to mean
-the body frame is wrong than that the tag was clamped very far round, so the offset is recorded but
-left uncorrected. Default 60. It is deliberately WIDER than \code{warning.threshold} - a steeply rolled
-clamp is a real mounting geometry (a left- vs right-side attachment is mirror-imaged), and such a
-deployment should be corrected AND flagged, not left uncorrected because it is unusual. Set it lower
-to be stricter about what gets absorbed into the mount. Roll only: a large pitch offset means the tag
-points along the body rather than across it, which is not a normal mounting geometry, so the pitch
+\item{mount.roll.max}{Largest mounting roll offset, in degrees, that \code{correct.roll} will still
+subtract (default \code{60}). This is a plausibility gate rather than an alarm: beyond it, a large
+estimate more likely means the body frame is wrong than that the tag was clamped that far round, so
+the offset is recorded but left in place. It is deliberately wider than \code{warning.threshold}, because
+a steeply rolled clamp is a real mounting geometry - a left-side and a right-side attachment are
+mirror images - and such a deployment should be both corrected and flagged. Lower it to be stricter
+about what may be absorbed into the mount. Roll only: a large pitch offset would mean the tag points
+along the body rather than across it, which is not a normal mounting geometry, so the pitch
 correction stays capped by \code{warning.threshold}.}
 
-\item{warning.threshold}{Numeric. Threshold (degrees) above which an orientation warning is raised, for
-three independent checks: an unusual median |pitch|, an unusual estimated mounting |roll| (raised
-whether or not the correction was applied), and a leftover median |roll| after the correction. It also
-caps the \code{correct.pitch} mounting-offset correction. Default 45. Lower it (e.g. 35) to hear about
-moderately rolled mounts as well; it does not change what gets corrected, only what is reported.}
+\item{warning.threshold}{Threshold in degrees above which an orientation warning is raised (default
+\code{45}), for three independent checks: an unusual median absolute pitch, an unusual estimated mounting
+roll, raised whether or not the correction was applied, and an unusual median absolute roll left
+over after correction. It also caps the pitch offset correction. Lower it, to \code{35} say, to hear
+about moderately rolled mounts as well; it changes what is reported, not what is corrected.}
 
-\item{heading.denoise}{How to suppress paddle-wheel magnetometer contamination before computing heading.
-A spinning paddle magnet adds a large, high-frequency oscillation to the field; because it is additive
-in the field-vector domain and averages to zero over a rotation, a centred (zero-phase) running mean
-of the magnetometer vector removes it while preserving the slow, orientation-driven variation.
-\code{"auto"} (default) detects the paddle and derives one stable window per deployment from its
-rotation frequency (via the shared paddle-state primitive); \code{"manual"} always applies
-\code{heading.denoise.window}; \code{"off"} disables it. When the paddle is too slow to separate from the
-animal's turning, no window can help and a warning is raised (use a gyro-based orientation instead).}
+\item{heading.denoise}{How to suppress paddle-wheel contamination of the magnetometer before heading
+is computed. A spinning paddle magnet adds a large, fast oscillation to the field; because it adds
+to the field vector and averages to zero over a rotation, a centred running mean of the
+magnetometer vector removes it while preserving the slow, orientation-driven variation. \code{"auto"}
+(default) detects the paddle and derives one stable window per deployment from its rotation rate;
+\code{"manual"} always applies \code{heading.denoise.window}; \code{"off"} disables it. Where the paddle turns too
+slowly to be separated from the animal's own turning, no window can help and a warning is raised -
+use a gyroscope-based orientation estimator instead.}
 
-\item{heading.denoise.window}{Numeric. Smoothing window (seconds) used when \code{heading.denoise = "manual"}.
-Default 3.}
+\item{heading.denoise.window}{Smoothing window in seconds used when \code{heading.denoise = "manual"}
+(default \code{3}). It should span several paddle rotations but stay well short of the animal's turning
+timescale.}
 }
 \value{
-A validated \code{nautilus_orientation} object for the \code{orientation} argument of \code{\link{processTagData}}.
+A validated \code{nautilus_orientation} object for the \code{orientation} argument of
+\code{\link[=processTagData]{processTagData()}}.
 }
 \description{
-Groups the specialised orientation-estimation knobs of \code{\link{processTagData}} into one object,
-leaving the primary choice - the estimator itself - as the top-level \code{orientation.algorithm} argument
-of \code{\link{processTagData}}. Covers the Madgwick filter gain, the mounting pitch/roll offset
-corrections, and the orientation-anomaly warning threshold.
+Groups the specialised orientation settings of \code{\link[=processTagData]{processTagData()}} into one object, leaving the
+primary choice - the estimator itself - as that function's top-level \code{orientation.algorithm}
+argument.
+
+Two distinct things are tuned here. The first is the estimator: how much the Madgwick filter trusts
+the accelerometer against the gyroscope, and how paddle-wheel contamination is removed before heading
+is computed. The second is the mounting geometry: a tag is never attached perfectly level, and the
+resulting constant pitch and roll offsets are indistinguishable from the animal's own posture unless
+they are estimated and removed.
 }
 \examples{
 orientationControl(correct.roll = FALSE)     # skip the roll-offset correction
@@ -75,5 +87,6 @@ gradient descent algorithm. \emph{IEEE International Conference on Rehabilitatio
 \doi{10.1109/ICORR.2011.5975346}
 }
 \seealso{
-\code{\link{processTagData}}, \code{\link{calibrationControl}}, \code{\link{smoothingControl}}
+\code{\link[=processTagData]{processTagData()}} for the function that consumes it; \code{\link[=calibrationControl]{calibrationControl()}} and
+\code{\link[=smoothingControl]{smoothingControl()}} for the other processing settings.
 }

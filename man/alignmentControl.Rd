@@ -12,49 +12,59 @@ alignmentControl(
 )
 }
 \arguments{
-\item{method}{Alignment method: \code{"depth-xcorr"} (cross-correlate the shared depth channel, the
-default) or \code{"none"} (disable; the WC streams are kept on their own clock).}
+\item{method}{How to align the clocks: \code{"depth-xcorr"} (default) cross-correlates the shared depth
+channel, and \code{"none"} disables alignment, keeping the Wildlife Computers streams on their own
+clock.}
 
-\item{max.lag}{Maximum absolute clock offset to search for, in seconds (the cross-correlation is
-evaluated over \verb{[-max.lag, +max.lag]}). Also a sanity bound: a best lag landing on the search edge is
-treated as unresolved and the correction abstains. Default 3600 (one hour).}
+\item{max.lag}{Largest absolute clock offset to search for, in seconds (default \code{3600}, one hour).
+This also acts as a sanity bound: a best lag landing on the edge of the search range is treated as
+unresolved and the correction abstains. Widen it only if you have reason to expect a larger
+disagreement.}
 
-\item{min.overlap}{Minimum temporal overlap between the two depth records, in minutes, required to
-attempt alignment. Below this the correction abstains. Default 30.}
+\item{min.overlap}{Minimum overlap between the two depth records, in minutes, required to attempt
+alignment (default \code{30}). Below this the correction abstains, because a short overlap can produce a
+convincing correlation peak at the wrong lag.}
 
-\item{min.correlation}{Minimum peak Pearson correlation between the two depth traces (at the best lag)
-for the offset to be accepted. Below this the depth profiles do not match well enough to trust the
-lag, and the correction abstains. Default 0.9.}
+\item{min.correlation}{Minimum peak correlation between the two depth traces, at the best lag, for
+the offset to be accepted (default \code{0.9}). Below this the profiles do not match well enough to trust
+the lag and the correction abstains. Lower it only for records whose depth traces are genuinely
+noisy, and check the stored diagnostics afterwards.}
 }
 \value{
-A validated \code{nautilus_alignment} object for the \code{alignment} argument of \code{\link{importTagData}}.
+A validated \code{nautilus_alignment} object for the \code{alignment} argument of \code{\link[=importTagData]{importTagData()}}.
 }
 \description{
-Bundles the settings for the temporal alignment applied by \code{\link{importTagData}} when a
-deployment pairs a primary archival tag (depth + IMU) with a separate Wildlife Computers tag
-(wet/dry + Fastloc-GPS). The two devices keep independent clocks that can disagree by anything from a
-few seconds to many minutes, and that offset - invisible without a shared signal - silently corrupts
-every step that combines the streams (the depth zero-offset correction, dead-reckoning fix anchors).
+Bundles the settings for the temporal alignment \code{\link[=importTagData]{importTagData()}} applies when a deployment pairs a
+primary archival tag, recording depth and inertial data, with a separate Wildlife Computers tag
+recording wet/dry state and Fastloc-GPS positions.
 
-The Wildlife Computers \code{...-Archive.csv} records the tag's own depth (and temperature) at a low rate.
-Because depth is a physical quantity measured by \emph{both} devices, cross-correlating the WC depth
-against the primary tag's depth recovers the clock offset directly: the lag that maximises their
-correlation is the offset. In real deployments this peak is razor-sharp (correlation ~1.0), so the
-estimate is robust. The WC-clock streams (\code{meta$ancillary$positions}, \code{meta$ancillary$dry}) are then
-shifted onto the primary tag's timeline. The primary depth/IMU stream is the reference and is never
-moved; deploy/pop-up positions (which come from the metadata table, not the WC clock) are never moved.
+The two devices keep independent clocks, which can disagree by anything from a few seconds to many
+minutes. Nothing in either record reveals the offset on its own, yet it silently corrupts every step
+that combines the streams: the depth zero-offset correction, and the position fixes that anchor a
+dead-reckoned track.
+}
+\details{
+The Wildlife Computers archive file records that tag's own depth, and often temperature, at a low
+rate. Because depth is a physical quantity measured by \emph{both} devices, cross-correlating the two
+depth series recovers the offset directly: it is the lag at which they agree best. In real
+deployments this peak is sharp, so the estimate is well determined. The streams carried on the
+Wildlife Computers clock are then shifted onto the primary tag's timeline. The primary depth and
+inertial stream is the reference and is never moved, and neither are the deployment and pop-up
+positions, which come from the metadata table rather than from that clock.
 
-A single constant offset per deployment is estimated: in practice the residual clock drift is
-negligible (a few seconds over a multi-day record) and dominated by the constant offset. The
-correction is conservative - it \strong{abstains} (shifting nothing, and saying so) whenever the
-evidence is too weak to trust: no shared depth channel, too little temporal overlap, a flat depth
-trace with no dives to lock onto, or a peak correlation below \code{min.correlation}. The clock is never
-silently shifted; the estimated offset and its diagnostics are stored in \code{meta$ancillary$alignment}.
+A single constant offset is estimated per deployment. Residual drift is negligible in practice - a
+few seconds over a multi-day record - and dominated by the constant term.
+
+The correction abstains, shifting nothing and saying so, whenever the evidence is too weak to trust:
+no shared depth channel, too little overlap between the records, a flat depth trace with no dives to
+lock onto, or a peak correlation below \code{min.correlation}. The clock is never shifted silently, and
+the estimated offset and its diagnostics are stored in the deployment's metadata.
 }
 \examples{
 alignmentControl(min.correlation = 0.95)   # stricter acceptance
 alignmentControl(method = "none")          # disable clock alignment
 }
 \seealso{
-\code{\link{importTagData}}, \code{\link{depthDriftControl}}
+\code{\link[=importTagData]{importTagData()}} for the function that consumes it; \code{\link[=depthDriftControl]{depthDriftControl()}} for the depth
+correction that depends on the alignment being right.
 }
