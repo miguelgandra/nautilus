@@ -386,3 +386,81 @@ test_that("prominence_m is no longer a second copy of amplitude_m", {
   expect_lt(m$prominence_m, m$amplitude_m)          # amplitude is from the reference, prominence from
                                                     # the col, which sits at the band
 })
+
+
+# ---------------------------------------------------------------------------
+# reference = "auto" needs BOTH conditions, not just an anchored zero
+# ---------------------------------------------------------------------------
+
+test_that("reference = 'auto' requires the record to visit the surface band, not only an anchored ZOC", {
+  # an anchored zero on a record that never comes shallow: every sample sits at 40-60 m, so a
+  # 0-referenced band is never re-entered and a surface threshold would report one endless dive
+  set.seed(1)
+  deep <- 50 + 10 * sin(seq(0, 12 * pi, length.out = 3000))
+  tag  <- .diveTag("DEEP", deep, zoc = TRUE)
+
+  res <- detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
+                                                      surface.band = 2, min.duration = 10),
+                     verbose = FALSE)
+  expect_identical(.diveProv(res[[1]])$reference, "baseline")
+
+  # the same record with the occupancy requirement switched off resolves the old way, to "surface"
+  res0 <- detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
+                                                       surface.band = 2, min.duration = 10,
+                                                       min.surface.occupancy = 0),
+                      verbose = FALSE)
+  expect_identical(.diveProv(res0[[1]])$reference, "surface")
+})
+
+test_that("reference = 'auto' still picks surface for a record that does visit the band", {
+  tag <- .diveTag("SHALLOW", .diveTrain, zoc = TRUE)
+  res <- detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
+                                                      surface.band = 2, min.duration = 10),
+                     verbose = FALSE)
+  expect_identical(.diveProv(res[[1]])$reference, "surface")
+})
+
+test_that("min.surface.occupancy is the threshold that decides, and it is honoured exactly", {
+  # 10% of samples at the surface, the rest at 30 m
+  depth <- c(rep(0, 300), rep(30, 2700))
+  tag   <- .diveTag("TENPC", depth, zoc = TRUE)
+  ref_at <- function(occ) {
+    r <- detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
+                                                      surface.band = 2, min.duration = 10,
+                                                      min.surface.occupancy = occ),
+                     verbose = FALSE)
+    .diveProv(r[[1]])$reference
+  }
+  expect_identical(ref_at(0.05), "surface")   # 10% clears a 5% bar
+  expect_identical(ref_at(0.20), "baseline")  # 10% fails a 20% bar
+})
+
+# ---------------------------------------------------------------------------
+# wiggle.amplitude must reach diveMetrics(), not stop at the settings list
+# ---------------------------------------------------------------------------
+
+test_that("detectDives records the resolved wiggle amplitude in its provenance", {
+  tag <- .diveTag("W", .diveTrain)
+  expect_equal(.diveProv(.detect(tag, .diveCtl(wiggle.amplitude = 3))[[1]])$wiggle_amplitude_m, 3)
+  # left NULL, the derived value is recorded rather than dropped
+  expect_true(is.finite(.diveProv(.detect(tag, .diveCtl())[[1]])$wiggle_amplitude_m))
+})
+
+test_that("wiggle.amplitude changes the reversal count diveMetrics() reports", {
+  # one dive with a resolvable shape - a graded descent, an oscillating bottom and a graded ascent -
+  # carrying 2 m wiggles: counted at a 1 m threshold, ignored at 5 m
+  depth <- c(rep(0, 40),
+             seq(0, 30, length.out = 60),
+             rep(c(rep(30, 20), rep(28, 20)), 7),
+             seq(30, 0, length.out = 60),
+             rep(0, 40))
+  tag   <- .diveTag("WIG", depth)
+
+  n_rev <- function(w) {
+    d <- .detect(tag, .diveCtl(wiggle.amplitude = w))
+    diveMetrics(d, verbose = FALSE)$n_reversals[1]
+  }
+  expect_gt(n_rev(1), n_rev(5))
+  # at a 5 m bar the 2 m wiggles are gone and only the dive's own apex survives as a reversal
+  expect_identical(n_rev(5), 1L)
+})

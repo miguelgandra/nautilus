@@ -248,7 +248,7 @@
 #' Which metrics of a heading are meaningful only in a GEOGRAPHIC frame?
 #'
 #' A magnetic heading differs from a geographic one by a constant offset (the magnetic declination:
-#' about -7.6 degrees in the Azores, roughly -8 to +12 worldwide with the sign varying). That offset
+#' about -7.6 degrees in the Azores, but exceeding 25 degrees of either sign elsewhere). That offset
 #' cancels exactly in anything built from angle DIFFERENCES or from the length of a resultant vector -
 #' turning rate, angular velocity, circular variance / sd / mrl, heading autocorrelation, u-turn and
 #' circling detection - so those are valid on a magnetic heading and must NOT warn. It does not cancel

@@ -210,10 +210,12 @@
 #' `min.prominence`, then each half is reconsidered, so a run with several sub-peaks separates in order
 #' of significance rather than left to right.
 #'
-#' The default `min.prominence` is `depth.threshold - surface.band`, which is not arbitrary: that is
-#' precisely the rise hysteresis demands to REOPEN a dive at the reference. Applying the same bar at a
-#' saddle asks the consistent question - would this ascent and re-descent have started a new dive if it
-#' had happened at the surface? Set it higher to merge W-dives into one, lower to separate more.
+#' `min.prominence` has NO derived default: `NULL` resolves to `Inf` in `.diveDeriveSettings()`, so nothing
+#' is ever split unless the user opts in with a number. `thr - band` was the obvious candidate - it is
+#' precisely the rise hysteresis demands to REOPEN a dive at the reference, so applying the same bar at
+#' a saddle asks the consistent question. It was rejected because the DERIVED `thr` is a
+#' record-resolution floor, which makes `thr - band` small enough that a sub-metre re-ascent inside a
+#' deep dive splits it. Set it higher to merge W-dives into one, lower to separate more.
 #' @keywords internal
 #' @noRd
 .diveKeyCol <- function(z, min.prominence) {
@@ -411,10 +413,9 @@
     ok <- zst %in% c("applied", "applied_with_gaps", "constant_offset")
     ok[is.na(ok)] <- FALSE
     ref <- "per-deployment"
-    ref_note <- if (all(ok)) "surface (auto: ZOC anchored on every deployment)"
-                else if (!any(ok)) "baseline (auto: ZOC abstained or absent on every deployment)"
-                else sprintf("mixed (auto: surface on %d, baseline on %d - ZOC anchored per deployment)",
-                             sum(ok), sum(!ok))
+    ref_note <- if (!any(ok)) "baseline (auto: ZOC abstained or absent on every deployment)"
+                else sprintf("per deployment (auto: ZOC anchored on %d of %d; surface also needs %.2f%% of samples within the band)",
+                             sum(ok), length(ok), 100 * control$min.surface.occupancy)
   } else {
     ref_note <- sprintf("%s (user)", ref)
     if (identical(ref, "surface") && !any(zst %in% c("applied", "applied_with_gaps", "constant_offset"), na.rm = TRUE)) {
@@ -462,11 +463,22 @@
   tnum <- .asTimeSeconds(x[[datetime.col]])
   d <- .asNumericSafe(x[[depth.col]])
 
-  # resolve THIS deployment's reference (the cohort-level value may be "per-deployment")
+  # resolve THIS deployment's reference (the cohort-level value may be "per-deployment").
+  # TWO conditions, not one. A zero that is anchored but never RETURNED TO cannot referee a surface
+  # threshold: the animal has to visit the band for "not diving" to mean anything there. An anchored
+  # ZOC on a record that never comes shallow otherwise yields one dive spanning the whole deployment.
   ref <- settings$reference
+  occ <- NA_real_
   if (identical(ref, "per-deployment")) {
-    ok <- isTRUE(scan$zoc_status %in% c("applied", "applied_with_gaps", "constant_offset"))
-    ref <- if (ok) "surface" else "baseline"
+    zoc_ok <- isTRUE(scan$zoc_status %in% c("applied", "applied_with_gaps", "constant_offset"))
+    fin <- d[is.finite(d)]
+    occ <- if (length(fin)) mean(abs(fin) <= settings$surface.band) else 0
+    band_ok <- is.finite(occ) && occ >= control$min.surface.occupancy
+    ref <- if (zoc_ok && band_ok) "surface" else "baseline"
+    if (lvl >= 2L)
+      .log_arrow(lvl, sprintf("reference: %s (auto: ZOC %s, %.2f%% of samples within the %.2f m band, needs %.2f%%)",
+                              ref, if (zoc_ok) "anchored" else "not anchored",
+                              100 * occ, settings$surface.band, 100 * control$min.surface.occupancy))
   }
   b <- if (identical(ref, "surface")) rep(0, n)
        else .diveBaseline(d, tnum, control, control$direction)
@@ -487,12 +499,12 @@
   runs <- do.call(rbind, lapply(signs, function(s)
     .diveRuns(resid, tnum, settings$depth.threshold, settings$surface.band, sign = s)))
   if (is.null(runs) || !nrow(runs)) {
-    e <- empty; e$baseline <- b; e$status <- "applied_no_dives"; return(e)
+    e <- empty; e$baseline <- b; e$reference <- ref; e$status <- "applied_no_dives"; return(e)
   }
   runs <- .diveSplitOnGaps(runs, tnum, d, settings$max.gap)
   runs <- .diveSplitOnProminence(runs, resid, settings$min.prominence)
   runs <- .diveScreenRuns(runs, resid, tnum, settings$min.amplitude, settings$min.duration, n)
-  if (!nrow(runs)) { e <- empty; e$baseline <- b; e$status <- "applied_no_dives"; return(e) }
+  if (!nrow(runs)) { e <- empty; e$baseline <- b; e$reference <- ref; e$status <- "applied_no_dives"; return(e) }
   runs <- runs[order(runs$start_i), , drop = FALSE]
 
   dive_id <- rep(0L, n)

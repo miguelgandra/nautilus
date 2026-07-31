@@ -139,7 +139,7 @@
 #' calibrated"; this answers "north relative to what", and neither implies the other.
 #'
 #' The distinction matters because a magnetic heading differs from a geographic one by a CONSTANT offset
-#' (-7.6 degrees in the Azores; roughly -8 to +12 worldwide, sign varying). Analyses built on angle
+#' (-7.6 degrees in the Azores, but over 25 degrees of either sign elsewhere). Analyses built on angle
 #' DIFFERENCES - turning rate, angular velocity, circular variance - are unaffected, because the offset
 #' cancels. Analyses making an ABSOLUTE claim about direction - dead reckoning, comparison with GPS
 #' fixes, a circular mean heading - are rotated by it, systematically and without averaging out.

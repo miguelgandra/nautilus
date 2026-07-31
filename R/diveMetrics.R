@@ -5,128 +5,165 @@
 #' Summarise each detected dive
 #'
 #' @description
-#' Reduces the per-sample output of \code{\link{detectDives}} to one row per dive: timing, depth,
-#' phase structure, kinematics, and a quality block saying what each row can and cannot support.
+#' Once dives have been labelled, most analyses work on dives rather than samples: a distribution of
+#' maximum depths, a model of duration against temperature, a comparison of bottom time between
+#' individuals. This function performs that reduction, turning the per-sample output of [detectDives()]
+#' into one row per dive.
 #'
-#' `variables` summarises ANY per-sample channel over each dive - present or future - with correct
-#' circular handling for headings and roll. That single argument is what makes this a general reducer
-#' rather than a fixed list of depth statistics.
+#' Each row carries the dive's timing, depth, phase structure and kinematics, the detection settings
+#' that produced it, and a quality block stating what that row can and cannot support - whether the
+#' whole dive was recorded, how much of its depth channel was present, and how much of its amplitude
+#' the processing could have removed.
 #'
-#' @param data Data annotated by \code{\link{detectDives}}: `.rds` paths, a `nautilus_tag` /
-#'   data.frame, or a list of them.
-#' @param variables Character vector of per-sample columns to summarise per dive (e.g.
-#'   `c("temp", "odba", "tbf_hz_peaks")`). `NULL` (default) adds none. Each costs 2 columns, or 8 with
-#'   `by.phase = TRUE`.
-#' @param circular.variables Character. Which of `variables` are angles in degrees, summarised as a
-#'   mean angle and a mean resultant length. Default `c("heading", "roll")`, matching
-#'   \code{\link{extractFeatures}}.
-#' @param statistics Character. Which statistics to compute for `variables`: any of `"mean"`, `"sd"`.
-#' @param by.phase Logical. Also summarise `variables` within descent / bottom / ascent. Default `FALSE`.
-#' @param id.col,datetime.col,depth.col Column names for the deployment id, timestamp and depth.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
+#' `variables` summarises any per-sample channel over each dive, with correct circular handling for
+#' angles. That one argument is what makes this a general reducer rather than a fixed list of depth
+#' statistics.
+#'
+#' @param data Data annotated by [detectDives()]: a tag object, a list of them, a single table with an
+#'   `id.col`, or a character vector of `.rds` paths.
+#' @param variables Per-sample columns to summarise for each dive, for example
+#'   `c("temp", "odba", "tbf_hz_peaks")`. `NULL` (default) adds none. Each costs two columns, or eight
+#'   with `by.phase = TRUE`, so a long list makes for a wide table.
+#' @param circular.variables Which of `variables` are angles in degrees, and so must be summarised as a
+#'   mean angle and a mean resultant length rather than averaged directly. Default `c("heading", "roll")`,
+#'   matching [extractFeatures()].
+#' @param statistics Which statistics to compute for `variables`: any of `"mean"` and `"sd"`.
+#' @param by.phase Whether to also summarise `variables` separately within descent, bottom and ascent
+#'   (default `FALSE`). Useful when a channel is expected to differ between phases, such as activity
+#'   during descent against activity on the bottom.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param depth.col Which column holds the depth record (default `"depth"`).
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
 #'
 #' @details
-#' \strong{NA semantics, one rule per block.} A NA in a phase or kinematics column means "not supported
-#' for this dive", and `shape_supported` says so explicitly. A NA in `inter_dive_s` or
-#' `inter_dive_censored` means "last dive in this deployment" - there is no following dive to measure to,
-#' so a deployment holding a single dive has both NA throughout. A NA in an auxiliary column means the
-#' source channel was absent or entirely NA over that dive. Column presence never varies with anything
-#' except `variables` and `by.phase`, so `rbind` across a mixed cohort always succeeds.
+#' ## What an NA means, one rule per block
 #'
-#' \strong{Every row says how much of its own dive was actually recorded.} `truncated_start` and
-#' `truncated_end` mark a dive that touches the start or the end of the record - the tag began or stopped
-#' mid-dive. Such dives are retained and flagged, never dropped, because dropping them shortens the
-#' observed duration distribution at the tail. `n_gaps` counts the interruptions bounding (or interior
-#' to) the dive and `gap_s` is the seconds of record lost at them; for a depth dropout that is the span
-#' of the dark run, not the timestamp step across it. `censoring` names the cause and takes exactly one
-#' of five values: `"none"`, `"boundary"` (a record edge), `"time_gap"` (a jump in the timestamps),
-#' `"depth_gap"` (the depth channel went dark while sampling continued) or `"mixed"` (more than one of
-#' those). `complete` is `TRUE` for `censoring == "none"` and nothing else - filter on it before fitting
-#' anything to `duration_s`, and report how many rows that removed.
+#' An NA in a phase or kinematics column means the quantity is not supported for that dive, and
+#' `shape_supported` says so explicitly. An NA in `inter_dive_s` or `inter_dive_censored` means this is
+#' the last dive in the deployment, so there is no following dive to measure to; a deployment holding a
+#' single dive has both NA throughout. An NA in one of the `variables` columns means the source channel
+#' was absent, or entirely NA over that dive - except for a circular variable, whose mean angle is also
+#' NA when the directions over the dive cancel out, leaving a mean resultant length below 0.1 and so no
+#' meaningful average direction to report. Column presence never varies with anything except
+#' `variables` and `by.phase`, so binding tables from a mixed cohort always succeeds.
 #'
-#' \strong{`inter_dive_censored` asks about the interval, not about the dives that bound it.}
-#' `inter_dive_s` is the time from the end of one dive to the start of the next, and
-#' `inter_dive_censored` is `TRUE` when the record failed DURING that interval: a jump in the timestamps
-#' longer than `max.gap`, or a run of non-finite depth whose span exceeds `max.gap`, lying strictly
-#' between the two dives. A shorter dropout leaves the interval uncensored. Nothing about the bounding
-#' dives enters it, deliberately: an interval has a dive on each side, so neither of its neighbours can be
-#' the dive a record boundary cut short. That is a different question from whether either bounding dive
-#' was censored, and the difference is the one that matters: two dives can each be `complete` and still be
-#' separated by an 8.7 h blackout, which enters the table as an 8.7 h surface interval describing the
-#' sensor rather than the animal. Filter on `!inter_dive_censored` before reading `inter_dive_s` as a
-#' surface interval; filtering on the bounding dives' `complete` instead would keep exactly that row.
+#' ## Every row says how much of its own dive was recorded
 #'
-#' \strong{`depth_coverage` is what tells a foray from a dropout.} It is the fraction of this dive's
-#' samples carrying a finite depth. A long dive with high coverage was measured throughout and may be
-#' real behaviour; a long dive with low coverage is mostly absent record, and its `duration_s` and
-#' `max_depth_m` then describe the dropout rather than the animal. Nothing is split on that basis - see
-#' \code{\link{detectDives}} - but the verbose summary flags unusually long dives with their median
-#' coverage, so the call stays with you.
+#' `truncated_start` and `truncated_end` mark a dive that touches the beginning or the end of the
+#' record, meaning the tag started or stopped mid-dive. Such dives are kept and flagged, never dropped,
+#' because dropping them shortens the tail of the observed duration distribution.
 #'
-#' \strong{The long-dive flag needs at least five dives to exist.} It marks every dive longer than the
-#' median duration + 5 x MAD of the POOLED table - every deployment in the call taken together, not each
-#' one on its own - floored at 2 h, and the whole block is skipped when that pooled table holds fewer than
-#' five rows. A threshold is used at all because "unusually long" is only definable against a
-#' distribution; on a handful of dives there is no distribution, and a median and a MAD taken over four
-#' values are as likely to be inflated by the outlier as to expose it, so the flag would fire on nothing
-#' or on everything. The consequence is about small COHORTS, not small deployments: a four-dive deployment
-#' summarised on its own, one of those dives a nine-hour dropout, prints no warning at all, whereas the
-#' same four dives inside a ten-deployment call are well past the gate and their outlier is measured
-#' against the pooled distribution. The flag is also a verbosity-2 line: it is computed whenever anything
-#' is printed at all, but printed only at `verbose = 2` / `"detailed"` (the default), so at
-#' `verbose = TRUE` / `1` the check runs silently. On tables that small, or at that verbosity, read
-#' `duration_s`, `depth_coverage` and `censoring` yourself.
+#' `n_gaps` counts the interruptions bounding or interior to the dive, and `gap_s` is the seconds of
+#' record lost at them - for a depth dropout, the span of the dark run rather than the timestamp step
+#' across it. `censoring` names the cause and takes exactly one of five values: `"none"`, `"boundary"`
+#' for a record edge, `"time_gap"` for a jump in the timestamps, `"depth_gap"` where the depth channel
+#' went dark while sampling continued, or `"mixed"` for more than one of those. `complete` is `TRUE`
+#' when `censoring` is `"none"` and in no other case. Filter on it before fitting anything to
+#' `duration_s`, and report how many rows that removed.
 #'
-#' \strong{`depth_attenuation` bounds what binning could have taken off this dive.} The only filter that
-#' reaches the stored `depth` channel is \code{\link{processTagData}}'s `downsample.to`, which
-#' mean-aggregates every numeric channel into bins - and bin-averaging is a boxcar. (`smoothingControl(depth = )`
-#' does NOT reach it: that window conditions only the series vertical velocity is differentiated from.)
-#' The bin width is read from the two recorded sampling rates, and only a PROCESSED rate below the
-#' ORIGINAL counts as evidence that aggregation ran, because downsampling is skipped when the requested
-#' rate meets or exceeds the native one. No downsampling, or no sampling provenance, reads exactly 1.
+#' ## `inter_dive_censored` asks about the interval, not the dives around it
+#'
+#' `inter_dive_s` is the time from the end of one dive to the start of the next.
+#' `inter_dive_censored` is `TRUE` when the record failed *during* that interval: a jump in the
+#' timestamps longer than `max.gap`, or a run of non-finite depth whose span exceeds it, lying strictly
+#' between the two dives. A shorter dropout leaves the interval uncensored.
+#'
+#' Nothing about the bounding dives enters it, and that is deliberate. An interval has a dive on each
+#' side, so neither neighbour can be the dive a record boundary cut short. This is a different question
+#' from whether either bounding dive was censored, and the difference matters: two dives can each be
+#' `complete` and still be separated by a blackout lasting hours, which enters the table as a surface
+#' interval describing the sensor rather than the animal. Filter on `!inter_dive_censored` before
+#' reading `inter_dive_s` as a surface interval; filtering on the bounding dives' `complete` instead
+#' would keep exactly that row.
+#'
+#' ## `depth_coverage` tells a foray from a dropout
+#'
+#' It is the fraction of the dive's samples carrying a finite depth. A long dive with high coverage was
+#' measured throughout and may be real behaviour; a long dive with low coverage is mostly absent record,
+#' and its `duration_s` and `max_depth_m` then describe the dropout rather than the animal. Nothing is
+#' split on that basis, but the verbose summary flags unusually long dives with their median coverage,
+#' so the call stays with you.
+#'
+#' ## The long-dive flag needs at least five dives to exist
+#'
+#' It marks every dive longer than the median duration plus five median absolute deviations of the
+#' *pooled* table - every deployment in the call taken together, not each one on its own - with a floor
+#' at two hours. The whole block is skipped when that pooled table holds fewer than five rows, because
+#' "unusually long" is only definable against a distribution: over four values, a median and a deviation
+#' are as likely to be inflated by the outlier as to expose it, so the flag would fire on nothing or on
+#' everything.
+#'
+#' The consequence is about small cohorts rather than small deployments. Four dives summarised on their
+#' own, one of them a long dropout, print no warning at all; the same four dives inside a
+#' ten-deployment call are past the gate and their outlier is measured against the pooled distribution.
+#' The flag is also a detailed-verbosity line: it is computed whenever anything is printed, but shown
+#' only at `verbose = 2`, so at `verbose = 1` the check runs silently. On tables that small, or at that
+#' verbosity, read `duration_s`, `depth_coverage` and `censoring` yourself.
+#'
+#' ## `depth_attenuation` bounds what binning could have taken off a dive
+#'
+#' The only filter reaching the stored `depth` channel is [processTagData()]'s `downsample.to`, which
+#' mean-aggregates every numeric channel into bins - and bin-averaging is a boxcar.
+#' (`smoothingControl(depth = )` does not reach it: that window conditions only the series vertical
+#' velocity is differentiated from.) The bin width is read from the two recorded sampling rates, and
+#' only a processed rate below the original counts as evidence that aggregation ran, because
+#' downsampling is skipped when the requested rate meets or exceeds the native one. No downsampling, or
+#' no sampling provenance, reads exactly 1.
 #'
 #' Bin-averaging is phase-dependent in a way a centred filter is not: a dive whose apex falls mid-bin
-#' survives better than one whose apex lands on a boundary, and the gap between them is real. This column
-#' reports the BOUND, not the lucky case. For a triangular excursion of duration T under bins of width L
-#' the worst-case peak retention is `1 - L/T` once `T >= 2L`, and `T/(4L)` below that, where the bin holds
-#' only half the triangle; the two meet at `T = 2L`, both giving 0.5. Worked at a 1 Hz processed rate:
-#' a 4 s dive keeps at least 0.75 of its amplitude, an 8 s dive 0.875, a 42 s dive 0.988. At a 20 Hz
-#' processed rate the same dives keep 0.9875, 0.994 and 0.9988 - which is the point of the column: it
-#' scales with the choice you made, so it says whether YOUR downsampling mattered rather than asserting
-#' that downsampling in general does.
+#' survives better than one whose apex lands on a bin boundary, and the difference between them is real.
+#' This column reports the bound, not the lucky case. For a triangular excursion of duration \eqn{T}
+#' under bins of width \eqn{L}, the worst-case peak retention is \eqn{1 - L/T} once \eqn{T \ge 2L}, and
+#' \eqn{T/(4L)} below that, where the bin holds only half the triangle; the two meet at \eqn{T = 2L},
+#' both giving 0.5. At a 1 Hz processed rate a 4 s dive keeps at least 0.75 of its amplitude, an 8 s
+#' dive 0.875 and a 42 s dive 0.976. At 20 Hz the same dives keep 0.9875, 0.994 and 0.9988 - which is
+#' the point of the column. It scales with the choice you made, so it says whether your downsampling
+#' mattered rather than asserting that downsampling in general does.
 #'
-#' Reading it: 1 means nothing binned this dive; 0.6 means up to 40% of `amplitude_m`, `prominence_m` and
-#' `max_depth_m` may be missing. Act on a low value by excluding those rows from any amplitude comparison,
-#' or by re-processing at a finer `downsample.to` and detecting again. Nothing is corrected here, because
-#' the retention holds for a triangle and a real dive is not one - a flat-bottomed dive loses less, so
-#' treat this as a bound on the loss and not an estimate of it. The same bin width sets the derived
-#' `min.duration` floor in \code{\link{detectDives}}, so the two agree by construction.
+#' Reading it: 1 means nothing binned this dive; 0.6 means up to 40 per cent of `amplitude_m`,
+#' `prominence_m` and `max_depth_m` may be missing. Act on a low value by excluding those rows from any
+#' amplitude comparison, or by re-processing at a finer `downsample.to` and detecting again. Nothing is
+#' corrected here, because the retention holds for a triangle and a real dive is not one - a
+#' flat-bottomed dive loses less - so treat it as a bound on the loss rather than an estimate of it. The
+#' same bin width sets the derived `min.duration` floor in [detectDives()], so the two agree by
+#' construction.
 #'
-#' \strong{Rates are reported as `_q90`, not `_max`.} The maximum of a smoothed series is an artefact of
-#' the smoothing window, and its magnitude depends on dive duration, so maxima are not comparable
-#' between a short dive and a long one even within one animal.
+#' ## Rates are reported as `_q90`, not `_max`
 #'
-#' \strong{The threshold travels with every row.} `reference`, `direction`, `depth_threshold_m` and
-#' `surface_band_m` are columns, not metadata, so a bound cohort table is self-documenting and a
-#' published dive count is reproducible from the table alone. When `detectDives(reference = "auto")`
-#' resolved differently across deployments, the `reference` column makes that mixture visible.
+#' The maximum of a smoothed series is an artefact of the smoothing window, and its magnitude depends on
+#' how long the dive lasted, so maxima are not comparable between a short dive and a long one even
+#' within one animal.
 #'
-#' \strong{What is deliberately not computed.} Dive efficiency, aerobic dive limit and dive:pause ratio
-#' are air-breather constructs that assume the surface interval is a recovery period. `bottom_duration_s`
-#' and `inter_dive_s` are provided; if those constructs are meaningful for your animal, form them
-#' yourself rather than have the package assert they apply.
+#' ## The thresholds travel with every row
 #'
-#' @return A `data.frame` (class `nautilus_dive_metrics`), one row per dive, with a fixed schema:
+#' `reference`, `direction`, `depth_threshold_m` and `surface_band_m` are columns rather than metadata,
+#' so a bound cohort table documents itself and a published dive count is reproducible from the table
+#' alone. Where `detectDives(reference = "auto")` resolved differently across deployments, the
+#' `reference` column makes that mixture visible.
+#'
+#' ## What is deliberately not computed
+#'
+#' Dive efficiency, aerobic dive limit and the dive-to-pause ratio are air-breather constructs that
+#' assume the surface interval is a recovery period. `bottom_duration_s` and `inter_dive_s` are
+#' provided; if those constructs are meaningful for your animal, form them yourself rather than have the
+#' package assert that they apply.
+#'
+#' @return A data frame of class `nautilus_dive_metrics`, one row per dive, with a fixed schema:
 #'   identification, timing, the detection settings that produced the dive, depth, phase structure,
-#'   kinematics, a quality block,
-#'   and last the requested `variables`. The quality block is, in schema order, `inter_dive_s` (a timing
-#'   measure, stored at the head of the block because its censoring flag belongs there),
-#'   `inter_dive_censored`, `complete`, `truncated_start`, `truncated_end`, `n_gaps`, `gap_s`,
-#'   `censoring`, `depth_attenuation`, `depth_coverage` and `shape_supported` - the last being `TRUE`
-#'   when at least two of descent / bottom / ascent were resolved, which is the precondition for every
-#'   phase and kinematics column being anything but NA. All are defined in Details.
-#' @seealso \link{detectDives}, \link{diveControl}, \link{plotDives}, \link{summarizeTagData},
-#'   \link{plotDistributions}
+#'   kinematics, a quality block, and last the requested `variables`. The quality block holds, in schema
+#'   order, `inter_dive_s` - a timing measure, kept at the head of the block because its censoring flag
+#'   belongs there - then `inter_dive_censored`, `complete`, `truncated_start`, `truncated_end`,
+#'   `n_gaps`, `gap_s`, `censoring`, `depth_attenuation`, `depth_coverage` and `shape_supported`. The
+#'   last is `TRUE` when at least two of descent, bottom and ascent were resolved, which is the
+#'   precondition for every phase and kinematics column being anything other than NA. All are defined
+#'   above.
+#'
+#' @seealso [detectDives()] for producing the input; [diveControl()] for what counts as a dive;
+#'   [plotDives()] and [plotDistributions()] for looking at the result; [summarizeTagData()] for a
+#'   deployment-level overview.
+#'
 #' @examples
 #' \dontrun{
 #' tag <- detectDives(processed, control = diveControl(depth.threshold = 5))
