@@ -129,7 +129,9 @@ first:
 library(nautilus)
 
 # Validate and normalise the deployment metadata before anything else.
-meta <- checkDeploymentMetadata("deployments.csv", columns = cols)
+# checkDeploymentMetadata() takes the table itself, so read it in first.
+deployments <- read.csv("deployments.csv")
+meta <- checkDeploymentMetadata(deployments, columns = cols)
 
 # Import each animal's sensor CSVs into nautilus_tag objects.
 # `data.folders` points at the per-animal folders; `metadata` is the table above.

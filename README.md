@@ -265,7 +265,8 @@ annotated one.
 library(nautilus)
 
 # --- Core sequence: prepare, clean, orient ----------------------------------
-meta <- checkDeploymentMetadata("deployments.csv")     # validate deployment metadata
+deployments <- read.csv("deployments.csv")             # your deployment table
+meta <- checkDeploymentMetadata(deployments)           # validate deployment metadata
 tags <- importTagData(data.folders = "tag-data/",      # -> one nautilus_tag per animal
                       metadata = meta)
 
