@@ -22,7 +22,13 @@
 #' @param ink,axis,subtitle Colours for titles, axis text/ticks, and subtitles.
 #' @param palette Qualitative palette for groups: a vector of colours, or the name of an
 #'   \code{\link[grDevices]{hcl.colors}} palette (e.g. `"viridis"`).
-#' @param sequential Sequential ramp (>= 2 colours) for the heatmap style.
+#' @param sequential Continuous ramp (>= 2 colours) for a variable mapped to colour -- currently the
+#'   `color.by` trace in \code{\link{plotDepthProfiles}}. The default spans blue to dark red through
+#'   cyan, green, yellow and orange, which is what makes a temperature gradient legible at a glance
+#'   across a page of small multiples; a monochrome ramp collapses that variation into one hue. Note it
+#'   is chosen for discriminability rather than for monotonic lightness, so for a figure that must
+#'   survive greyscale printing or that is read by value rather than by pattern, pass a perceptually
+#'   uniform ramp instead, e.g. `sequential = hcl.colors(9, "Viridis")`.
 #' @param day,night,day.border Colours for the diel-split (day / night) bars and the day-bar border.
 #' @param bar.alpha Fill opacity for bars (0-1).
 #' @param bar.border Bar border colour.
@@ -78,7 +84,14 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
 #' @noRd
 .themePreset <- function(preset) {
   common <- list(palette = c("#2FA4A0", "#E7913B", "#3E86C0", "#8B6BB1", "#C25B56", "#7FA65E", "#5B7FBD", "#C77F9E"),
-                 sequential = c("#9ECAE1", "#3B7BB4", "#08306B"), bar.alpha = 1, font.family = "", cex = 1)
+                 # The ramp a mapped variable is drawn through. These stops are the package's original
+                 # depth-profile palette: the theme migration replaced them with a three-stop blue
+                 # sequential ramp, believing it was moving only the SOURCE of the colours, but for a
+                 # colour-mapped trace the base colours ARE the palette, and a page of profiles went
+                 # monochrome. Restored, and locked by a test.
+                 sequential = c("#020275", "#0808E5", "#4272CB", "#17E2E2", "#7FE07F", "#E2E207",
+                                "#DC7534", "#E50303", "#740101"),
+                 bar.alpha = 1, font.family = "", cex = 1)
   switch(preset,
     light   = c(list(panel = "grey97", grid = "grey88", ink = "#1B1F27", axis = "#586074",
                      subtitle = "#9AA1B0", day = "#DCEAF6", night = "#294763", day.border = "#AFC9E0",

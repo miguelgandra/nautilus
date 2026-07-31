@@ -176,11 +176,11 @@ plotDepthProfiles <- function(data,
   if (same.depth.scale)
     depth_ylim_global <- .depthYlim(max(vapply(deployments, function(d) max(d$data[[depth.col]], na.rm = TRUE), numeric(1)), na.rm = TRUE))
 
-  # Default palette: the theme's sequential ramp, re-weighted so that more colour resolution is devoted
+  # Default palette: the theme's continuous ramp, re-weighted so that more colour resolution is devoted
   # to the upper range (the last 30% of the ramp is stretched 3:2 against the rest). That weighting is
-  # what keeps the warm/high end of a temperature scale readable instead of saturating into one tone,
-  # so it is preserved verbatim from the pre-theme jet default - only the BASE colours now come from
-  # the theme.
+  # what keeps the warm/high end of a temperature scale readable instead of saturating into one tone.
+  # Both the weighting and the ramp itself come from the pre-theme default; override either with
+  # `color.pal` here, or `sequential` in plotTheme() to restyle every mapped trace at once.
   if (is.null(color.pal)) {
     base_pal  <- grDevices::colorRampPalette(theme$sequential)(100)
     color.pal <- grDevices::colorRampPalette(c(rep(base_pal[1:70], each = 2), rep(base_pal[71:100], each = 3)))(100)
