@@ -2,24 +2,30 @@
 % Please edit documentation in R/getVideoMetadata.R
 \name{installCamOcrModel}
 \alias{installCamOcrModel}
-\title{Download the fine-tuned camera-tag OCR model}
+\title{Download the camera-tag timestamp-recognition model}
 \usage{
 installCamOcrModel(quiet = FALSE)
 }
 \arguments{
-\item{quiet}{Logical. Suppress progress messages. Default \code{FALSE}.}
+\item{quiet}{Whether to suppress the progress messages. Default \code{FALSE}.}
 }
 \value{
-Invisibly, the path to the cached model, or \code{NULL} if it could not be downloaded (e.g. no
-internet). When it is unavailable, OCR falls back to Tesseract's generic \code{eng} model, which is less
-accurate for the cam-tag timestamp font.
+The path to the cached model, invisibly, or \code{NULL} where it could not be downloaded. In that
+case timestamp recognition falls back to Tesseract's generic English model, which still works but
+is noticeably less accurate on the camera-tag timestamp font.
 }
 \description{
-The \code{nautilus} optical-character-recognition (OCR) model that reads camera-tag on-screen timestamps is
-~11 MB and is NOT bundled with the package. \code{\link{getVideoMetadata}} fetches it automatically the
-first time OCR is actually needed (that is, when a timestamp cannot be read from the file name). Call this
-to pre-download it - for example before working offline. The model is cached in the per-user cache
-directory (\code{tools::R_user_dir("nautilus", "cache")}) and reused thereafter, so it downloads only once.
+The model that reads camera-tag on-screen timestamps is about 11 MB, which is too large to bundle
+with the package, so it is downloaded on first use and cached thereafter.
+
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} fetches it automatically the first time it actually has to read a timestamp off
+the picture. Call this to fetch it in advance - before working offline, or before a long batch run
+where an unexpected download would be unwelcome.
+}
+\details{
+The model is cached in the per-user cache directory, \code{tools::R_user_dir("nautilus", "cache")}, and
+reused from there, so the download happens once per machine rather than once per session. Calling
+this when the model is already cached does nothing but confirm it.
 }
 \examples{
 \dontrun{
@@ -27,5 +33,5 @@ installCamOcrModel()
 }
 }
 \seealso{
-\code{\link{getVideoMetadata}}
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} for what uses the model; \code{\link[=ocrControl]{ocrControl()}} for selecting a different one.
 }

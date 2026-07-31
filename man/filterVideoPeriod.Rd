@@ -2,7 +2,7 @@
 % Please edit documentation in R/filterVideoPeriod.R
 \name{filterVideoPeriod}
 \alias{filterVideoPeriod}
-\title{Restrict tag data to video-covered (and optionally annotated) periods}
+\title{Restrict tag data to the periods covered by video}
 \usage{
 filterVideoPeriod(
   data,
@@ -14,38 +14,55 @@ filterVideoPeriod(
 )
 }
 \arguments{
-\item{data}{A list of datasets (one per individual), or a single aggregated data.table/data.frame
-with an \code{id.col}. Each must contain a POSIXct \code{datetime.col}.}
+\item{data}{A tag object, a list of them, or a single table with an \code{id.col}. Each must carry a
+timestamp column.}
 
-\item{video.metadata}{A data.frame/data.table of video segments with columns \code{id.col}, \code{start} and
-\code{end} (POSIXct), as returned by \link{getVideoMetadata}.}
+\item{video.metadata}{A table of video segments with an \code{id.col} and \code{start} and \code{end} columns, as
+returned by \code{\link[=getVideoMetadata]{getVideoMetadata()}}.}
 
-\item{annotation.intervals}{Optional data.frame/data.table of annotation intervals with \code{id.col},
-\code{start} and \code{end} (POSIXct). \code{NULL} (default) filters on video availability only.}
+\item{annotation.intervals}{An optional table of scored intervals with the same three columns, to
+narrow the result further to periods you have actually annotated. \code{NULL} (default) filters on video
+coverage alone.}
 
-\item{id.col, datetime.col}{Column names for the ID and datetime. Defaults \code{"ID"}/\code{"datetime"}.}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A named list of filtered data.tables (individuals with no retained rows are dropped).
+A named list of filtered tables. Deployments left with no rows are dropped, so the result may
+be shorter than the input.
 }
 \description{
-Subsets each individual's sensor data to the periods for which video footage exists (from
-\code{video.metadata}), and optionally further to manually annotated intervals. Useful for aligning
-sensor analyses with the footage that backs them. Temporal jumps between video segments are handled
-naturally - a row is kept if its timestamp falls within ANY video segment (and ANY annotation
-interval, when supplied). For annotation intervals, a missing \code{start} is filled with the earliest,
-and a missing \code{end} with the latest, video-covered time for that individual.
+A camera runs for a fraction of a deployment - its battery and memory are spent long before the
+tag's. Any analysis that compares sensor data against what the footage shows must therefore be
+confined to the stretches where footage exists, or it silently mixes verified and unverified periods.
+
+This function makes that restriction explicit: it keeps only the samples falling inside a video
+segment, and optionally inside a scored annotation interval as well.
+}
+\details{
+A sample is kept when it falls inside any video segment, and, where annotations are supplied, inside
+any annotation interval too. Coverage therefore need not be continuous: the gaps between video
+segments are handled without special treatment, and a deployment whose camera stopped and restarted
+several times is filtered correctly.
+
+In an annotation interval, a missing \code{start} is filled with the earliest video-covered time for that
+deployment and a missing \code{end} with the latest, so an interval that is open at one end means "from
+the beginning of the footage" or "to the end of it" rather than being discarded.
 }
 \examples{
 \dontrun{
 processed <- processTagData(imported)
 meta      <- getVideoMetadata("./videos")
+
 # keep only the sensor rows that fall within video coverage
-filtered  <- filterVideoPeriod(processed, meta)
+filtered <- filterVideoPeriod(processed, meta)
 }
 }
 \seealso{
-\link{getVideoMetadata}, \link{annotateData}.
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} for the segment table; \code{\link[=annotateData]{annotateData()}} for turning scored intervals
+into label columns.
 }

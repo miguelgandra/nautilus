@@ -44,7 +44,7 @@ every event present in \code{annotations}.}
 \value{
 A named list of tables, one per individual, each carrying one \code{0}/\code{1} column per event type.
 The class and metadata of the input are preserved, and the call is recorded in the processing
-history (see \code{\link{processingHistory}}). Individuals whose input element was \code{NULL} are
+history (see \code{\link[=processingHistory]{processingHistory()}}). Individuals whose input element was \code{NULL} are
 omitted, so the result may be shorter than the input.
 }
 \description{
@@ -54,7 +54,7 @@ cleaning station visit - and supplied as a table of start/end times per individu
 inside a window is marked \code{1}, every sample outside it \code{0}, one column per event type.
 
 The resulting columns are what turns a sensor record into a labelled training set:
-\code{\link{extractFeatures}} builds the predictors, and these columns supply the response.
+\code{\link[=extractFeatures]{extractFeatures()}} builds the predictors, and these columns supply the response.
 }
 \details{
 \strong{Every individual receives every event column.} The column set is fixed once, from the events
@@ -85,10 +85,12 @@ annotations <- data.frame(
 # `tags` is the processed output of processTagData()
 labelled <- annotateData(tags, annotations)
 
-# both animals carry BOTH columns, so the cohort can be pooled
+# both animals carry both columns, so the cohort can be pooled
 lapply(labelled, function(x) colSums(x[, c("feeding", "social")]))
 }
 }
 \seealso{
-\code{\link{extractFeatures}}, \code{\link{filterVideoPeriod}}, \code{\link{launchVideo}}.
+\code{\link[=extractFeatures]{extractFeatures()}} for building the predictors these labels pair with;
+\code{\link[=filterVideoPeriod]{filterVideoPeriod()}} for restricting the data to the periods you scored; \code{\link[=launchVideo]{launchVideo()}} for
+checking a window against the footage.
 }

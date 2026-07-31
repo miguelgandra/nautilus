@@ -33,275 +33,296 @@ calculateTailBeats(
 )
 }
 \arguments{
-\item{data}{A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
-containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
-\code{.rds} files, each containing data for a single individual. When a character vector is provided,
-files are loaded sequentially to optimize memory use. The output of the \link{processTagData} function
-is strongly recommended, as it formats the data appropriately for all downstream analysis.}
+\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
+\code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
+processed without ever holding it all. The output of \code{\link[=processTagData]{processTagData()}} is strongly recommended,
+since it supplies the motion channels in the form this step expects.}
 
-\item{method}{Character. One or both estimation backends. Naming both (the default) runs both and
-cross-checks them: each fills its own \code{tbf_hz_<backend>} column and their per-row agreement
-becomes \code{tbf_agree}. Name a single backend to skip the cross-check.
+\item{method}{Which estimation backends to run. Naming both (the default) runs both and cross-checks
+them: each fills its own \verb{tbf_hz_<backend>} column and their per-row agreement becomes \code{tbf_agree}.
+Name one to skip the cross-check and halve the runtime.
 \itemize{
-\item \code{"peaks"}: detects individual beats as peak/trough oscillations in the band-passed
-signal, yielding per-beat frequency, amplitude and timing. Fast and interpretable.
-\item \code{"wavelet"}: a Morlet continuous wavelet transform, tracking the strongest in-band
-oscillation per sample.
-}
-The two fail on different signals (see Details), so where they agree that agreement is evidence.}
+\item \code{"peaks"} locates individual beats as peak-and-trough pairs in the band-passed signal, so it alone
+yields per-beat timing, interval and amplitude. Fast and directly interpretable.
+\item \code{"wavelet"} computes a Morlet continuous wavelet transform and tracks the strongest in-band
+oscillation at each sample. It carries no per-beat detail but degrades more gracefully on a noisy
+record.
+}}
 
-\item{id.col}{Character. The name of the column identifying individuals (default: "ID").}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{datetime.col}{Character. The name of the column containing datetime information (default: "datetime").}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
 
-\item{motion.col}{Character. One or more candidate motion columns (default \code{"sway"}). When
-several are given, the axis is chosen per individual by \emph{cross-axis frequency consensus} (the
-axis whose dominant in-band frequency is corroborated by another axis, which rejects an axis-isolated
-artefact such as a tow-pendulum swing), falling back to plain in-band power -- with a warning -- when
-no two axes agree. Which axis carries the beat is species-, tag-placement- and gait-dependent, so no
-axis is prescribed here: the function reports the axis it selected, and flags per individual when
-that axis looks like a 2f harmonic of another candidate (see Details).}
+\item{motion.col}{One or more candidate motion channels to look for the beat in (default \code{"sway"}).
+Which axis carries the beat depends on the species, where the tag sits and how the animal is
+swimming, so nothing is prescribed here. Name several and the axis is chosen per deployment by
+cross-axis consensus, described below; the function reports which it chose and why.}
 
-\item{min.freq.Hz}{Numeric. The lowest frequency of interest (in Hz). Default is 0.1 Hz.}
+\item{min.freq.Hz, max.freq.Hz}{The frequency band of interest, in Hz. Defaults \code{0.1} and \code{3}. Set
+them from what your animal plausibly does: too wide a band admits swell and posture drift, too
+narrow a one clips the beat at its edges and biases the estimate toward the middle.}
 
-\item{max.freq.Hz}{Numeric. The highest frequency of interest (in Hz). Default is 3 Hz.}
+\item{bandpass.filter}{Whether to band-pass the motion channel before detection (default \code{TRUE}).
+Recommended, since it removes the posture drift and high-frequency noise either backend would
+otherwise have to work around.}
 
-\item{bandpass.filter}{Logical. Whether to band-pass filter the motion channel before detection.
-Default is TRUE. Recommended, as it isolates the tail-beat band and improves signal quality.}
+\item{filter.low.freq, filter.high.freq}{Explicit band-pass cutoffs in Hz. \code{NULL} (default) widens
+\code{min.freq.Hz} and \code{max.freq.Hz} by a tenth, leaving a margin so that a beat sitting near the edge of
+the band of interest is not attenuated by the filter that isolates it.}
 
-\item{filter.low.freq}{Numeric. Lower cutoff frequency for bandpass filter (in Hz).
-If NULL (default), uses min.freq.Hz * 0.9 to allow some margin below the minimum frequency of interest.}
+\item{filter.order}{The order of the Butterworth band-pass (default \code{4}). A higher order cuts off
+more sharply but rings more around abrupt changes.}
 
-\item{filter.high.freq}{Numeric. Upper cutoff frequency for bandpass filter (in Hz).
-If NULL (default), uses max.freq.Hz * 1.1 to allow some margin above the maximum frequency of interest.}
+\item{min.amplitude}{An absolute amplitude-envelope threshold, in the units of \code{motion.col}, above
+which a sample counts as active swimming. Supplying it turns on the swimming-or-gliding call in
+\code{tbf_swimming}; with \code{NULL} (default) that call is withheld as \code{NA}, for the reasons given below.
+Calibrate it for a species and tag combination, ideally against footage, rather than guessing.}
 
-\item{filter.order}{Integer. Filter order for the Butterworth bandpass filter. Default is 4.
-Higher orders provide steeper cutoffs but may introduce artifacts.}
+\item{smooth.window}{The window, in seconds, of the centred moving average applied to the per-row
+frequency series (default \code{10}). It suppresses sample-to-sample jitter while preserving sustained
+behaviour; set \code{0} to disable it and see the raw per-sample estimate.}
 
-\item{min.amplitude}{Numeric or NULL (default). An absolute in-band amplitude-envelope threshold, in
-the units of \code{motion.col}, above which a sample is classified as actively swimming. Supplying
-it enables the swimming/gliding call (\code{tbf_swimming}); with \code{NULL} that call is withheld
-(\code{NA}) because it cannot be inferred reliably from the signal alone (see Details). It also sets
-peak-detection sensitivity for \code{method = "peaks"}.}
+\item{max.interp.gap}{The longest gap, in seconds, to fill by linear interpolation between frequency
+estimates (default \code{10}). \code{NULL} disables filling. Keep it well short of the timescale on which the
+animal changes gait, since an interpolated value is an assumption, not a measurement.}
 
-\item{smooth.window}{Numeric. Window size (in seconds) for moving average smoothing of frequency estimates.
-Set to 0 to disable smoothing. Default is 10 seconds.}
+\item{ridge.prominence}{How far the winning wavelet scale must stand above its own local spectral
+background before the estimate is reported (default \code{2}); below it the sample is \code{NA}. Wavelet
+backend only. A per-sample maximum always returns something, so without this floor a record
+containing no oscillation at all yields a confident-looking frequency. Set \code{0} to report a frequency
+wherever one can be computed.}
 
-\item{max.interp.gap}{Numeric. Maximum gap (in seconds) for linear interpolation of missing frequency values.
-Set to NULL to disable interpolation. Default is 10 seconds.}
+\item{min.periodicity}{How strongly the band-passed signal must repeat, measured as its
+autocorrelation at the dominant lag, before a frequency is reported (default \code{0.15}); below it the
+sample is \code{NA}. Peak backend only. This is the time-domain counterpart of \code{ridge.prominence}: it
+asks whether the waveform repeats at all, not how large it is. Keep it low - a high floor discards
+stretches that demonstrably contain an oscillation. Set \code{0} to report a frequency everywhere a
+period can be fitted.}
 
-\item{ridge.prominence}{Numeric (default 2). Wavelet method only. The factor by which the winning
-wavelet scale must exceed its own local spectral background for the estimate to be reported; below
-it the sample is \code{NA}. A per-column maximum always returns \emph{something}, so without this
-floor a record containing no oscillation yields a confident-looking frequency (for the 1/f-shaped
-background typical of these records, one pinned near \code{min.freq.Hz}). Set \code{0} to disable
-and recover the unguarded behaviour. See Details for how the background is estimated and why a peak
-sitting exactly on a band edge cannot be established.}
+\item{plot}{Whether to draw the diagnostic plots to the active graphics device. Default \code{FALSE}.}
 
-\item{min.periodicity}{Numeric (default 0.15). Peak-detection method only. The minimum
-autocorrelation the band-passed signal must show at its dominant lag before a tail-beat frequency is
-reported; below it the sample is \code{NA}. This is the peak-domain counterpart of
-\code{ridge.prominence}: it asks whether the waveform repeats at all, not how large it is. Keep it
-low -- on validated whale-shark records a floor of 0.3 discards roughly a quarter of stretches that
-demonstrably contain an oscillation. Set \code{0} to report a frequency everywhere a period can be
-fitted.}
+\item{plot.file}{Path to a single multi-page PDF for the diagnostic plots, one page per deployment
+per enabled panel. The parent directory must exist and the name must end in \code{.pdf}. \code{NULL} (default)
+writes no file. Independent of \code{plot}. The wavelet spectrogram is down-sampled to a page-friendly
+width so the file stays compact.}
 
-\item{plot}{Logical. If \code{TRUE}, draw the diagnostic plots to the active graphics device. Default \code{FALSE}.}
+\item{plot.wavelet}{Whether to include the wavelet power-spectrum panel when plotting. Default
+\code{TRUE}.}
 
-\item{plot.file}{Character. Path to a single multi-page PDF in which to save the diagnostic plots
-(one page per individual per enabled panel). The parent directory must already exist; must end in
-\code{.pdf}. If \code{NULL} (default), no file is written. Independent of \code{plot}. The wavelet spectrogram is
-down-sampled to a page-friendly width so the PDF stays compact.}
+\item{plot.diagnostic}{Whether to include the diagnostic panel - the band-passed signal with
+frequency and amplitude through time - when plotting. Default \code{TRUE}.}
 
-\item{plot.wavelet}{Logical. Include the wavelet power-spectrum panel when plotting. Default TRUE.}
-
-\item{plot.diagnostic}{Logical. Include the wavelet diagnostic panel (band-passed signal, frequency
-and amplitude through time) when plotting. Default TRUE.}
-
-\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
+\item{return.data}{Whether to return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
 function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
+step's \code{data} argument - so a large fleet can be processed without ever holding it all in memory.
 \code{return.data = FALSE} therefore requires an \code{output.dir}.}
 
-\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
-a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+\item{output.dir}{Directory in which to write one \verb{<id>.rds} file per deployment. Providing a
+directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already
+exist.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{output.suffix}{Optional suffix appended to each saved file name, before \code{.rds}, to tag a
+processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is set.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
-(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+\item{compress}{Compression for the saved \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
+\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is set. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal" (header, per-ID
-outcome, summary), or \code{2}/"detailed" (default; adds low-level per-step diagnostics and progress
-bars). Defaults to \code{"detailed"}.}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default), which adds the per-step diagnostics behind each deployment's estimate.}
 }
 \value{
-If \code{return.data = TRUE} (default), the input data with added per-row columns:
+If \code{return.data = TRUE}, the input data with these columns added:
 \itemize{
-\item \code{tbf_hz_peaks} / \code{tbf_hz_wavelet}: estimated tail-beat frequency (Hz), NA where the
-animal is not beating. One column per backend that ran, named after it -- there is no
-method-agnostic \code{tbf_hz}, so a value's provenance always travels with it. Use
-\code{\link{tailBeatColumn}} to resolve which to read in backend-agnostic code.
-\item \code{tbf_amplitude_peaks} / \code{tbf_amplitude_wavelet}: an effort proxy in the units of
-\code{motion.col}, as the \strong{peak-to-trough excursion} for both backends, corrected for
-the band-pass attenuation. The two are therefore directly comparable.
-\item \code{tbf_swimming}: logical swimming/gliding flag when \code{min.amplitude} is supplied,
-otherwise \code{NA} (see Details). Unsuffixed: it is derived from the band-passed signal the
-backends share, so it is identical whichever of them ran.
-\item When both backends run: \code{tbf_agree} (whether the two agree within 10\%). Also unsuffixed:
-it is a property of the pair, not of either backend.
+\item \code{tbf_hz_peaks} and \code{tbf_hz_wavelet} - the estimated frequency in Hz, one column per backend that
+ran and named after it. There is deliberately no method-agnostic \code{tbf_hz}, so a value's provenance
+always travels with it; use \code{\link[=tailBeatColumn]{tailBeatColumn()}} to resolve which to read in backend-agnostic code.
+\item \code{tbf_amplitude_peaks} and \code{tbf_amplitude_wavelet} - an effort proxy in the units of \code{motion.col},
+reported as the \strong{peak-to-trough excursion} by both backends and corrected for the band-pass
+attenuation, so the two are directly comparable.
+\item \code{tbf_swimming} - the swimming-or-gliding flag where \code{min.amplitude} was supplied, and \code{NA}
+otherwise. It carries no backend suffix because it derives from the band-passed signal both backends
+share.
+\item \code{tbf_agree} - where both backends ran, whether they agree within 10 per cent. Also unsuffixed, being
+a property of the pair rather than of either one.
 }
-\code{tbf_agree} reads as a certificate, not an error flag: where the two backends agree they are
-rarely both wrong, but where they disagree nothing identifies which one to distrust, so \code{FALSE}
-means unresolved rather than bad. The certificate has one known blind spot -- both backends fix a
-dominant periodicity first, so neither can vouch for the other against a harmonic error (see Details).
-For list/file inputs, returns a named list of modified data tables. Run-level QC (method, axis used,
-median TBF and amplitude, percent swimming) is recorded in the metadata audit trail. If
+
+Read \code{tbf_agree} as a certificate rather than an error flag. Where the two backends agree they are
+rarely both wrong; where they disagree, nothing identifies which to distrust, so \code{FALSE} means
+unresolved rather than bad. The certificate has one known blind spot, described above: both backends
+fix a dominant periodicity first, so neither can vouch for the other against a harmonic error.
+
+Run-level quality control - the backend used, the axis chosen, median frequency and amplitude, and the
+percentage of time classified as swimming - is recorded in the metadata audit trail. If
 \code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
 }
 \description{
-Estimates the frequency and amplitude of the dominant in-band oscillation of a motion channel -- for
-a swimming animal, its tail beat. Two backends are available and both run by default: peak detection,
-which locates individual beats as peak/trough oscillations in the time domain, and a Morlet continuous
-wavelet transform, which tracks the strongest in-band oscillation per sample. They fail on different
-signals, so their agreement is reported alongside the estimate. Whether a given oscillation reflects
-active swimming as opposed to gliding is treated as a separate, optional interpretation: it is
-reported only when the caller supplies an amplitude reference (\code{min.amplitude}), and is
-\code{NA} otherwise (see Details). One or many individuals can be processed
-together, with optional diagnostic plots.
+How fast an animal beats its tail is one of the few directly measurable correlates of swimming
+effort, and it falls out of a tag's accelerometer as a regular oscillation. The difficulty is that not
+every oscillation in the record is a tail beat. A towed tag swings on its tether, swell moves the
+animal bodily, and a gliding animal still oscillates at roughly the same frequency it swims at.
+
+This function estimates the dominant oscillation of a motion channel within a frequency band you
+choose. Two backends run by default and are cross-checked against each other: peak detection, which
+locates individual beats in the time domain and so yields per-beat timing, interval and amplitude, and
+a Morlet continuous wavelet transform, which tracks the strongest oscillation in the band at every
+sample. They fail on different signals, so their per-sample agreement is reported alongside the
+estimate.
+
+Whether a given oscillation reflects active swimming rather than a glide is treated as a separate
+question, and answered only if you supply an amplitude reference. Left alone, the function measures
+the oscillation and declines to interpret it.
 }
 \details{
-\strong{Axis selection.} When several \code{motion.col} candidates are supplied, the axis is chosen per
-individual by \emph{cross-axis frequency consensus}, not by raw in-band power. Coordinated propulsion
-drives several axes at one frequency (a ray wingbeat appears on surge \emph{and} heave together),
-whereas a non-locomotor artefact -- classically the tow-pendulum swing of a towed tag, a strong sharp
-peak in the lateral axis a little below the true beat -- is confined to one axis. So the axis whose
-dominant in-band frequency is corroborated by another axis is preferred (ties broken by in-band power);
-if no two candidates agree, the choice falls back to plain in-band power and a warning is issued that
-the estimate may reflect an artefact. On a video-ground-truthed reef-manta record, raw-power selection
-picked the sway tow-pendulum (0.33 Hz) over the true surge wingbeat (0.44 Hz); the consensus rule
-avoids it. Dead or near-dead candidate channels (a flat or stuck sensor axis) are excluded, so they
-cannot form a spurious consensus. \strong{Harmonic ambiguity.} A laterally-swimming fish beats on a
-single axis (sway) while surge and heave carry its \emph{second harmonic}, so a corroborated surge/heave
-pair can be twice the true tail-beat rate. This spectrum is identical to a genuine ray-wingbeat
-consensus contaminated by an artefact near half the beat, so it cannot be resolved from the signal
-alone: rather than guess (and risk silently halving a correct estimate), the function keeps the chosen
-axis and \emph{warns} whenever another axis carries a comparable peak at ~half the chosen frequency,
-naming it as the likely fundamental for a single-axis swimmer. \strong{Towed tags:} when the deployment
-metadata marks a tag as towed (\code{deployment_type == "towed"}), a warning flags that a tow-pendulum
-oscillation may contaminate the lateral axis and bias the reported frequency, whichever axis is used.
-The chosen axis, its selection basis (\code{single}/\code{consensus}/\code{power}), the per-axis peak
-frequencies and any harmonic alternative are recorded in the processing metadata and the console log.
-All of these QC warnings -- no axis consensus, possible harmonic, band-edge pile-up, towed tag -- are
-\emph{grouped}: each is raised once per run, with the shared diagnosis and recommendation stated once
-and one bullet naming each affected deployment, so a large batch does not bury the console (nor lose
-warnings past R's 50-warning buffer).
+\subsection{Choosing the axis}{
 
-\strong{Band-pass filtering.} A Butterworth band-pass of order \code{filter.order} is applied within
-continuous data segments before detection, isolating the tail-beat band and removing low-frequency
-posture drift and high-frequency noise. The band defaults to \code{min.freq.Hz} and \code{max.freq.Hz}
-widened by a 10\% margin, or is set explicitly via \code{filter.low.freq} / \code{filter.high.freq}.
-Disable it with \code{bandpass.filter = FALSE}.
+Where several \code{motion.col} candidates are given, the axis is chosen by cross-axis frequency
+consensus rather than by raw in-band power. Coordinated propulsion drives several axes at one
+frequency - a ray's wingbeat appears on surge \emph{and} heave together - whereas a non-locomotor artefact
+is usually confined to one axis. The classic case is the pendulum swing of a towed tag: a strong,
+sharp peak on the lateral axis, a little below the true beat, which raw in-band power will happily
+select over the real thing.
 
-\strong{Peak detection} (\code{method = "peaks"}). Individual beats are located as successive
-peak/trough pairs in the band-passed signal. Each beat contributes a frequency (from the peak-to-peak
-interval) and an amplitude (the peak-to-trough excursion); every beat whose interval falls in
-\code{[min.freq.Hz, max.freq.Hz]} is kept, and the values are mapped onto a per-row series. Whether a
-beat counts as active swimming is a separate step (see Swimming vs gliding), not part of detection.
+So the axis whose dominant frequency is corroborated by another axis wins, with ties broken on
+in-band power. Where no two candidates agree, the choice falls back to power and a warning says the
+estimate may reflect an artefact. Flat or stuck candidate channels are excluded first, so they cannot
+form a spurious consensus.
+}
 
-Candidate maxima are found with a permissive, data-driven amplitude threshold, and are then thinned by
-a \emph{refractory period}: within 0.6 of the locally-measured beat period only the tallest maximum
-survives. This is what separates a beat from the harmonic shoulder or flank ripple that accompanies it
--- an animal cannot beat its tail twice in one period, so maxima too close together are one beat, not
-two. The period is measured independently of the peak picking, from a rolling autocorrelation of the
+\subsection{The harmonic ambiguity, which is surfaced rather than resolved}{
+
+A fish swimming with lateral undulation beats on a single axis, sway, while surge and heave carry its
+\emph{second harmonic}. A corroborated surge-and-heave pair can therefore sit at twice the true tail-beat
+rate.
+
+That spectrum is identical to a genuine wingbeat consensus contaminated by an artefact near half the
+beat, so it cannot be resolved from the signal alone. Rather than guess, and risk silently halving a
+correct estimate, the function keeps the axis it chose and warns whenever another axis carries a
+comparable peak at about half the chosen frequency, naming it as the likely fundamental for a
+single-axis swimmer. The decision is yours, and footage usually settles it.
+
+Where the deployment metadata marks a tag as towed, a further warning notes that a tow-pendulum
+oscillation may contaminate the lateral axis whichever axis is finally used.
+
+All of these warnings are grouped: each is raised once per run, with the diagnosis and recommendation
+stated once and one line naming each affected deployment, so a large batch neither buries the console
+nor loses warnings past the limit R keeps.
+}
+
+\subsection{Peak detection}{
+
+Individual beats are located as successive peak-and-trough pairs in the band-passed signal. Each beat
+contributes a frequency, from the peak-to-peak interval, and an amplitude, from the peak-to-trough
+excursion; every beat whose interval falls inside the band is kept and the values are mapped onto a
+per-row series.
+
+Candidate maxima are found with a permissive, data-driven threshold and then thinned by a \emph{refractory
+period}: within 0.6 of the locally measured beat period, only the tallest maximum survives. This is
+what separates a real beat from the harmonic shoulder or flank ripple beside it, on the simple
+argument that an animal cannot beat its tail twice in one period, so two maxima that close together
+are one beat.
+
+The period is measured independently of the peak picking, from a rolling autocorrelation of the
 band-passed signal, because peak picking cannot establish its own rate: iterating a refractory period
-from the raw peak intervals converges on double the true rate when seeded from below and half of it
-when seeded from above. Detection is therefore data-driven and not user-tunable, so that the frequency
-estimate does not depend on any behavioural threshold; the one exposed control, \code{min.periodicity},
-governs only when to \emph{withhold} an estimate, not which frequency to report.
+from the raw peak intervals converges on double the true rate when seeded from below, and half of it
+when seeded from above. The rate has to come from outside that loop.
 
-An amplitude threshold cannot do this job, and raising one is not an alternative. Tested across
-whale-shark deployments, the amplitude threshold that recovers a low-amplitude record halves the
-frequency of a clean high-amplitude one: the false maxima are those too close together, not those too
-small, so the invariant is timing rather than size. Where the autocorrelation shows no repeating
-waveform at all (strength below \code{min.periodicity}), the frequency is withheld as \code{NA} rather
-than forced, mirroring the wavelet's \code{ridge.prominence}.
+An amplitude threshold cannot do this job, and raising one is not an alternative. The false maxima are
+those too close together, not those too small, so the invariant is timing rather than size; a
+threshold high enough to clean up a low-amplitude record will halve the frequency reported on a clean
+high-amplitude one. Detection is therefore data-driven and not user-tunable, so that the frequency
+does not depend on any behavioural threshold. The one exposed control, \code{min.periodicity}, governs when
+to \emph{withhold} an estimate, never which frequency to report.
+}
 
-\strong{Wavelet transform} (\code{method = "wavelet"}). A Morlet continuous wavelet transform
-(Torrence & Compo 1998) is computed over \code{[min.freq.Hz, max.freq.Hz]}, and the strongest scale at
-each sample gives the dominant frequency, refined below the scale grid by a parabolic fit, together
-with its absolute amplitude. \code{max.interp.gap} linearly fills short gaps. Estimates whose wavelet
-support reaches a record end are masked (cone of influence). Long records are transformed in blocks
-with guard bands, so the result does not depend on how the record is divided.
+\subsection{Wavelet transform}{
 
-\strong{How independent are the two backends?} Less than fully, and the claim is worth stating
-precisely. Both now begin by establishing a dominant periodicity -- peak detection from a rolling
-autocorrelation, the wavelet from a scale-space ridge -- so a signal that misleads both about the
-fundamental (a dominant second harmonic, say) will mislead them together, and their agreement cannot
-certify against that. Downstream of that step they remain genuinely different: the autocorrelation is
-sensitive to amplitude modulation and to broadband noise in ways the wavelet ridge is not, while the
-ridge can be captured by a strong out-of-band or low-frequency component that the time-domain method
-shrugs off. Agreement is therefore still informative, but it is evidence about contamination within
-the band rather than a guarantee against harmonic error -- for which the separate harmonic flag and
-band-edge check are the relevant instruments.
+A Morlet continuous wavelet transform (Torrence and Compo 1998) is computed across the band, and the
+strongest scale at each sample gives the dominant frequency, refined below the scale grid by a
+parabolic fit, together with its amplitude. Estimates whose wavelet support reaches the end of a
+record are masked, since they are shaped partly by the edge rather than by the animal. Long records
+are transformed in blocks with guard bands, so the result does not depend on how the record happened
+to be divided.
+}
 
-The two part company in a specific, recognisable situation: a record carrying a slow high-amplitude
-component alongside a faster beat. Autocorrelation asks which waveform repeats and finds the slow one;
-a spectral peak asks where the power is concentrated and finds the faster one. On one whale-shark
-deployment this described 60\% of the record, and there the peak backend reported roughly a third
-lower than the wavelet; over the remaining 40\%, where the two questions have the same answer, both
-backends were unbiased to within 0.03 octaves. A low \code{tbf_agree} on a deployment is therefore
-worth reading as a question about what the animal was doing, not only as instrument noise -- and
-raising \code{min.periodicity} will withhold exactly the ambiguous stretches, at the cost of coverage.
+\subsection{How independent are the two backends?}{
 
-\strong{Swimming vs gliding.} This is deliberately \emph{not} inferred from the signal by default.
-The function estimates the dominant in-band oscillation everywhere it can; deciding whether that
-oscillation is a tail beat (the animal propelling) rather than tag motion during a glide requires
-information a single sway axis does not carry. On a video-validated whale-shark towed-tag archive,
-every self-referential rule tried -- a fraction of the beat amplitude, an out-of-band noise floor, an
-Otsu split of the envelope, a spectral-flatness test -- failed: the tag oscillates in the tail-beat
-band whether or not the animal propels, so human-annotated stationary feeding could not be separated
-from active ram feeding, and swell, tag strum or a passing vessel were all reported as continuous
-swimming. The failure held in clean, fully-submerged water, so it is not a removable surface artefact.
+Less than fully, and the limit is worth stating precisely. Both begin by establishing a dominant
+periodicity - peak detection from a rolling autocorrelation, the wavelet from a scale-space ridge - so
+a signal that misleads both about the fundamental, a dominant second harmonic say, misleads them
+together. Their agreement cannot certify against that.
 
-Accordingly, with \code{min.amplitude = NULL} (the default) \code{tbf_swimming} is \code{NA}: the
-honest answer. Supplying \code{min.amplitude} -- an absolute envelope threshold, ideally calibrated
-for a species/tag combination or from validated footage -- turns the classification on: samples whose
-band-passed amplitude envelope exceeds it are swimming (with hysteresis and a minimum-bout filter),
-and the frequency/amplitude columns are then set to \code{NA} on gliding rows. They are always
-reported when unclassified: a frequency is measurable even where a behavioural call is not.
+Downstream of that step they are genuinely different. The autocorrelation responds to amplitude
+modulation and broadband noise in ways the wavelet ridge does not, while the ridge can be captured by
+a strong out-of-band component that the time-domain method shrugs off. Agreement is therefore evidence
+about contamination within the band, rather than a guarantee against harmonic error - for which the
+harmonic flag and the band-edge check are the relevant instruments.
 
-\strong{Smoothing.} A centred moving average of \code{smooth.window} seconds is applied to the per-row
-frequency (and, for peak detection, amplitude) series to suppress sample-to-sample jitter while
-preserving sustained behaviour; set \code{smooth.window = 0} to disable. Both methods share the same
-NA-aware smoother: gaps are averaged over rather than propagated across the window, and the leading and
-trailing half-window of each record is left \code{NA} rather than padded with the end value.
+The two part company in one recognisable situation: a record carrying a slow, high-amplitude component
+alongside a faster beat. Autocorrelation asks which waveform repeats and finds the slow one; a spectral
+peak asks where the power is concentrated and finds the faster one. Where the two questions have the
+same answer, both backends are unbiased. A low \code{tbf_agree} over part of a deployment is therefore
+worth reading as a question about what the animal was doing, not only as instrument noise. Raising
+\code{min.periodicity} withholds exactly those ambiguous stretches, at the cost of coverage.
+}
 
-\strong{Output metrics.} For each individual the chosen axis, the median and range of tail-beat
-frequency, the median and range of amplitude (peak detection), and the percentage of time classified
-as swimming are reported in the console summary and recorded in the metadata audit trail.
+\subsection{Swimming or gliding, and why it is not inferred by default}{
 
-\strong{Sampling frequency.} The sampling rate must exceed twice \code{max.freq.Hz} (Nyquist); at
-least four times is recommended for reliable estimates. For \code{max.freq.Hz = 3}, sample at >= 12 Hz.
+The function estimates the dominant in-band oscillation wherever it can. Deciding whether that
+oscillation is the animal propelling itself, rather than the tag moving during a glide, needs
+information a single motion axis does not carry.
+
+Every self-referential rule tried against video-validated footage failed: a fraction of the beat
+amplitude, an out-of-band noise floor, an Otsu split of the envelope, a spectral-flatness test. The
+reason is physical rather than fixable - a tag oscillates in the tail-beat band whether or not the
+animal is propelling, so annotated stationary feeding could not be separated from active swimming, and
+swell, tag strum or a passing vessel were all reported as continuous swimming. This held in clean,
+fully submerged water, so it is not a surface artefact that better filtering would remove.
+
+Accordingly, with \code{min.amplitude = NULL} the \code{tbf_swimming} column is \code{NA}, which is the honest
+answer. Supplying \code{min.amplitude} turns the classification on: samples whose envelope exceeds it are
+swimming, with hysteresis and a minimum-bout filter, and the frequency and amplitude columns are then
+set to \code{NA} on gliding rows. Where the call is withheld they are always reported, because a frequency
+is measurable even where a behavioural interpretation is not.
+}
+
+\subsection{Smoothing}{
+
+A centred moving average of \code{smooth.window} seconds is applied to the per-row frequency and
+amplitude of both backends, to suppress jitter while preserving sustained behaviour. They share one
+NA-aware smoother: gaps are averaged over rather than propagated across the window, and the leading
+and trailing half-window of each record is left \code{NA} rather than padded with the end value.
+}
+
+\subsection{Sampling rate}{
+
+The sampling rate must exceed twice \code{max.freq.Hz}, and at least four times is advisable for a reliable
+estimate. For \code{max.freq.Hz = 3}, sample at 12 Hz or more.
+}
 }
 \note{
-Both methods require the \pkg{signal} package for band-pass filtering.
+Both backends require the \pkg{signal} package for band-pass filtering.
 }
 \examples{
 \dontrun{
-# Processed tag data -> per-beat frequency, amplitude and a swimming/gliding flag.
+# Processed tag data -> per-beat frequency, amplitude and a swimming/gliding flag
 tag <- processTagData(oriented)
 tag <- calculateTailBeats(tag, method = "peaks", motion.col = "sway",
                           min.freq.Hz = 0.1, max.freq.Hz = 2.5)
 
-# Batch of saved deployments, with a diagnostic PDF.
+# Let the axis be chosen by consensus across three candidates, with a diagnostic PDF
 calculateTailBeats(list.files("./processed", full.names = TRUE),
-                   motion.col = "sway", plot.file = "./plots/tail_beats.pdf",
+                   motion.col = c("sway", "surge", "heave"),
+                   plot.file = "./plots/tail_beats.pdf",
                    return.data = FALSE, output.dir = "./tailbeats")
 }
 }
 \references{
-Torrence, C. & Compo, G.P. (1998) A Practical Guide to Wavelet Analysis.
-\emph{Bulletin of the American Meteorological Society} 79(1):61-78.
+Torrence C, Compo GP (1998) A practical guide to wavelet analysis. \emph{Bulletin of the American
+Meteorological Society} 79:61-78.
+\doi{10.1175/1520-0477(1998)079<0061:APGTWA>2.0.CO;2}
+}
+\seealso{
+\code{\link[=processTagData]{processTagData()}} for the step that must come first; \code{\link[=tailBeatColumn]{tailBeatColumn()}} for reading the
+result without hard-coding a backend; \code{\link[=plotDives]{plotDives()}} and \code{\link[=extractFeatures]{extractFeatures()}} for what typically
+follows.
 }

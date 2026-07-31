@@ -2,51 +2,64 @@
 # Find candidate segments for orientation validation ##################################################
 #######################################################################################################
 
-#' Find candidate segments for orientation / axis-mapping validation
+#' Find the clearest manoeuvres to check against video
 #'
 #' @description
-#' Scans processed tag data for the clearest, most validation-worthy events and returns a tidy table of
-#' short time windows to inspect (e.g. against synchronised video). Manually scrubbing hours of footage
-#' for a clean manoeuvre is the main cost of video-based validation; this picks the handful of moments
-#' where the animal most strongly **turned**, **rolled**, or **dived**, so the computed orientation can
-#' be checked against the observed behaviour at exactly those instants.
+#' Checking a computed orientation against footage means finding a moment where the animal unambiguously
+#' did something - a hard turn, a roll, a steep dive - and comparing what the sensors say with what the
+#' video shows. Scrubbing hours of footage for such a moment is the main cost of video validation, and
+#' most of the record is uninformative because the animal is swimming steadily.
 #'
-#' For each requested event type the per-sample signal is reduced to a centred rolling mean over
-#' `window` seconds (so brief jitter and wiggles cancel and only sustained, net manoeuvres score), and
-#' the top `n` non-overlapping peaks are returned as `[start, end]` windows centred on each peak.
+#' This function does the searching. It scans processed data for the events that discriminate best and
+#' returns a tidy table of short windows to inspect, so the review starts from the handful of instants
+#' where the answer is legible.
 #'
-#' @param data A list of processed datasets (one per individual), a single aggregated
-#'   data.table/data.frame with an `id.col`, or a character vector of `.rds` file paths. The output of
-#'   \link{processTagData} is expected.
-#' @param types Character vector of event types to detect, any of `"turn"` (net heading change, for the
-#'   heading/sway sign), `"roll"` (sustained roll excursion, for the roll sign) and `"dive"` (sustained
-#'   vertical speed, for pitch/surge). Default: all three. A type whose required column is absent is
-#'   skipped with a note.
-#' @param n Integer. Number of (non-overlapping) candidate segments to return per type, per individual.
-#'   Default 5.
-#' @param window Numeric. Segment length in seconds (also the smoothing window for the event signal).
-#'   Default 20.
-#' @param id.col,datetime.col Column names for the animal ID and datetime. Defaults `"ID"`/`"datetime"`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
+#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
+#'   `.rds` paths. The output of [processTagData()] is expected.
+#' @param types Which event types to look for: any of `"turn"`, a net heading change that tests the
+#'   heading and sway signs; `"roll"`, a sustained roll excursion that tests the roll sign; and
+#'   `"dive"`, a sustained vertical speed that tests pitch and surge. All three by default. A type whose
+#'   required column is absent is skipped with a note.
+#' @param n How many non-overlapping candidates to return per type, per deployment (default `5`). Raise
+#'   it if the best few turn out to be ambiguous on screen.
+#' @param window The length of each returned window, in seconds, which is also the smoothing window for
+#'   the event signal (default `20`). Longer windows favour sustained manoeuvres over sharp ones, so
+#'   match it to the timescale on which your animal actually turns.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
 #'
-#' @return A data frame of candidate segments, sorted by individual, type and rank, with columns:
-#' \itemize{
-#'   \item \strong{id}: the individual.
-#'   \item \strong{type}: `"turn"` / `"roll"` / `"dive"`.
-#'   \item \strong{rank}: 1 = clearest event of that type for that individual.
-#'   \item \strong{start}, \strong{end}: the segment window (POSIXct), `window` seconds wide.
-#'   \item \strong{peak_time}: the instant of strongest signal within the segment.
-#'   \item \strong{value}, \strong{unit}: the interpretable magnitude (net heading change in deg for
-#'     turns; peak \|roll\| in deg for rolls; net depth change in m for dives).
-#' }
+#' @details
+#' For each requested type the per-sample signal is reduced to a centred rolling mean over `window`
+#' seconds, so that brief jitter and wiggles cancel and only sustained, net manoeuvres score. The top
+#' `n` non-overlapping peaks are then returned as windows centred on each peak.
 #'
-#' @seealso \link{processTagData}, \link{checkTagMapping}.
+#' The rolling mean is what makes the result useful rather than merely extreme. A raw per-sample maximum
+#' finds the single noisiest instant in the record, which on inspection is usually a knock to the tag;
+#' a net change over twenty seconds finds a manoeuvre the animal actually performed and that a reviewer
+#' can see.
+#'
+#' @return A data frame of candidate segments, sorted by deployment, type and rank, with columns:
+#'
+#' - `id` - the deployment.
+#' - `type` - `"turn"`, `"roll"` or `"dive"`.
+#' - `rank` - 1 is the clearest event of that type for that deployment.
+#' - `start`, `end` - the window, `window` seconds wide.
+#' - `peak_time` - the instant of strongest signal within the window.
+#' - `value`, `unit` - the interpretable magnitude: net heading change in degrees for a turn, peak
+#'   absolute roll in degrees for a roll, and net depth change in metres for a dive.
+#'
+#' @seealso [processTagData()] for the step that must come first; [reviewTagMapping()], which uses this
+#'   to choose its clips; [launchVideo()] for jumping straight to one of these moments.
+#'
 #' @examples
 #' \dontrun{
 #' processed <- processTagData(imported)
-#' # The 5 clearest turns/rolls/dives per animal, as 20-s windows to check against video
+#'
+#' # the 5 clearest turns, rolls and dives per animal, as 20 s windows to check against video
 #' segs <- findValidationSegments(processed, types = c("turn", "roll", "dive"), n = 5, window = 20)
-#' subset(segs, rank == 1)   # the single best manoeuvre of each type per individual
+#' subset(segs, rank == 1)   # the single best manoeuvre of each type per deployment
 #' }
 #' @export
 

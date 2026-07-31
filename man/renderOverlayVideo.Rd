@@ -2,7 +2,7 @@
 % Please edit documentation in R/renderOverlayVideo.R
 \name{renderOverlayVideo}
 \alias{renderOverlayVideo}
-\title{Render a synchronised sensor dashboard alongside camera-tag video}
+\title{Composite a sensor dashboard alongside camera-tag video}
 \usage{
 renderOverlayVideo(
   video,
@@ -28,98 +28,120 @@ renderOverlayVideo(
 \arguments{
 \item{video}{Path to the source video file.}
 
-\item{data}{A \code{nautilus_tag} (or a single data.frame) holding the time-synchronised sensor series.
-The required columns depend on \code{dashboard} (see Details).}
+\item{data}{A tag object, or a single table, holding the time-synchronised sensor series. Which
+columns are required depends on \code{dashboard}; see the Details.}
 
-\item{output}{Path to the output video file to create (its directory must exist).}
+\item{output}{Path of the video file to create. Its directory must already exist.}
 
-\item{dashboard}{Which dashboard to render: \code{"general"} (default), \code{"validation"} or
-\code{"validation-compare"}.}
+\item{dashboard}{Which dashboard to draw: \code{"general"} (default), \code{"validation"} or
+\code{"validation-compare"}. They are described below.}
 
-\item{video.start}{POSIXct giving the sensor datetime of the video's first frame (the sync anchor).
-If \code{NULL}, it is parsed from a \code{YYMMDD-HHMMSS} prefix in the file name when present (otherwise an
-error is raised). For frame-accurate sync, derive it from \link{getVideoMetadata}.}
+\item{video.start}{The sensor-clock time of the video's first frame - the anchor the whole
+synchronisation rests on. \code{NULL} looks for a \code{YYYYMMDD-HHMMSS} or \code{YYMMDD-HHMMSS} timestamp
+anywhere in the file name and errors if it finds neither. For frame-accurate work take it from
+\code{\link[=getVideoMetadata]{getVideoMetadata()}}.}
 
-\item{start, end}{Optional POSIXct bounds (in sensor time) to clip the output to a segment of interest
-(e.g. a validation window from \link{findValidationSegments}). Default: the full overlap of video
-and sensor coverage.}
+\item{start, end}{Optional bounds, in sensor time, clipping the output to a segment of interest - a
+validation window from \code{\link[=findValidationSegments]{findValidationSegments()}}, for instance. The default is the full overlap of
+video and sensor coverage, which for a whole deployment is a very long render.}
 
-\item{side}{Which side to place the dashboard panel, \code{"right"} (default) or \code{"left"}.}
+\item{side}{Which side to put the dashboard panel on: \code{"right"} (default) or \code{"left"}.}
 
-\item{overlay.fps}{Dashboard render frame rate (Hz). Default 5. Lower is faster; the source video
-keeps its own frame rate.}
+\item{overlay.fps}{How many times a second to redraw the dashboard (default \code{5}). See the note on
+speed below. Lower is faster; the source video keeps its own frame rate regardless.}
 
-\item{panel.width}{Panel width in pixels. Default \code{NULL} scales it to the video height.}
+\item{panel.width}{The panel width in pixels. \code{NULL} (default) scales it to the video height.}
 
-\item{depth.window, activity.window}{Width (seconds) of the scrolling depth panel and of the
-activity/vertical-speed/trace panels. Defaults 300 and 30.}
+\item{depth.window, activity.window}{How many seconds of history the scrolling depth panel and the
+activity and vertical-speed panels show. Defaults \code{300} and \code{30}. Widen the depth window to put a
+moment in the context of a whole dive.}
 
-\item{caption}{Optional one-line caption drawn on the validation dashboards (e.g. the mapping under
-test and the review reason).}
+\item{caption}{An optional one-line caption for the validation dashboards, such as the mapping under
+test and the reason it was flagged.}
 
-\item{candidates}{For \code{"validation-compare"} only: a data.frame describing the candidate attitude
-indicators, with columns \code{label}, \code{pitch} and \code{roll} (the last two naming the per-candidate pitch
-and roll columns in \code{data}).}
+\item{candidates}{For \code{"validation-compare"} only: a table describing the attitude indicators to draw,
+with columns \code{label}, \code{pitch} and \code{roll}, the last two naming the per-candidate pitch and roll
+columns in \code{data}.}
 
-\item{crf}{Constant rate factor for the software encoders (\code{libx265}/\code{libx264}; lower = higher
-quality / larger). Default 23. Ignored by the hardware VideoToolbox encoders (which use a fixed
-quality setting).}
+\item{crf}{The constant rate factor for the software encoders, where lower means higher quality and a
+larger file. Default \code{23}. Ignored by the macOS hardware encoders, which use a fixed quality
+setting.}
 
-\item{codec}{Output codec family: \code{"hevc"} (default) or \code{"h264"}. \code{"hevc"} (H.265) gives much smaller
-files and is tagged \code{hvc1} for QuickTime compatibility; \code{"h264"} (tagged \code{avc1}) is larger but plays
-essentially everywhere (all browsers, older devices). Each prefers the macOS hardware VideoToolbox
-encoder when present, else the software \code{libx26x} encoder. Output is always \code{yuv420p} with a
-fast-start (leading \code{moov}) MP4 container.}
+\item{codec}{The output codec family: \code{"hevc"} (default) or \code{"h264"}. HEVC gives much smaller files
+and is tagged for QuickTime compatibility; H.264 is larger but plays essentially everywhere,
+including older devices and every browser. Choose H.264 for anything you intend to circulate. Each
+prefers the macOS hardware encoder where present and falls back to software.}
 
-\item{keep.temp}{Keep the intermediate dashboard video. Default \code{FALSE}.}
+\item{keep.temp}{Whether to keep the intermediate dashboard video. Default \code{FALSE}.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
 The output file path, invisibly.
 }
 \description{
-Composites a live sensor dashboard as a side panel next to camera-tag footage, time-synchronised to
-the sensor data. It is the workhorse for \strong{visual validation} - e.g. confirming an inferred axis
-mapping against an observed turn or roll - and for presentation. Two dashboards are available:
-\describe{
-\item{\code{"general"}}{Orientation dials (heading/pitch/roll) plus scrolling depth, activity (VeDBA)
-and vertical-speed traces - the presentation default.}
-\item{\code{"validation"}}{A large \strong{attitude indicator} - a low-poly 3-D body model, viewed from
-behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace and
-depth, tuned for judging an axis mapping by eye. Heading is intentionally omitted: how the body
-banks is the cue, and an uncalibrated heading is unreliable.}
-\item{\code{"validation-compare"}}{Two or more \strong{labelled} attitude indicators side by side, one per
-candidate mapping (e.g. "Documented" vs "Proposed"), beneath a one-line guidance header - so the
-correct mapping is read off a single clip by keeping the model that banks like the animal.
-Driven by \link{reviewTagMapping}.}
-}
+Sensor data and footage answer each other's questions. The sensors say the animal rolled thirty
+degrees to its left; the video says whether it did. But comparing them means holding a plot in one
+window and a video in another and matching timestamps by eye, which is slow enough that most records
+never get checked.
 
-The dashboard is rendered straight to a video stream with the \pkg{av} package (no thousands of
-intermediate image files), and at a \strong{decoupled frame rate} (\code{overlay.fps}, default 5): the sensor
-state changes slowly, so there is no need to redraw it at the video's frame rate. A single FFmpeg
-pass then stacks the panel beside the (trimmed) source video. Together this is one to two orders of
-magnitude faster than rendering one image per video frame.
+This function renders the two together: a live sensor dashboard beside the footage, sharing one clock,
+as a single video file you can scrub through. It is the workhorse for confirming an inferred axis
+mapping against an observed manoeuvre, and for presenting results.
 }
 \details{
-Required \code{data} columns by dashboard (all alongside \code{datetime}):
+\subsection{The three dashboards}{
+
+\describe{
+\item{\code{"general"}}{Orientation dials for heading, pitch and roll, plus scrolling depth, activity
+and vertical-speed traces. The presentation default.}
+\item{\code{"validation"}}{One large attitude indicator - a low-poly three-dimensional body model, seen
+from behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace
+and depth. Tuned for judging an axis mapping by eye. Heading is deliberately omitted: how the body
+banks is the cue that decides the mapping, and an uncalibrated heading is not reliable enough to
+put on screen beside it.}
+\item{\code{"validation-compare"}}{Two or more labelled attitude indicators side by side, one per
+candidate mapping, beneath a one-line guidance header. The correct mapping is then read off a
+single clip by keeping the model that banks the way the animal does. This is what
+\code{\link[=reviewTagMapping]{reviewTagMapping()}} renders.}
+}
+}
+
+\subsection{Required columns}{
+
+All alongside the timestamp column:
 \itemize{
-\item \code{"general"}: \code{depth}, \code{heading}, \code{pitch}, \code{roll}, \code{vedba}, \code{vertical_velocity}.
-\item \code{"validation"}: \code{depth}, \code{pitch}, \code{roll}; the gyroscope panel uses \code{gx}/\code{gy}/\code{gz} when
-present (omitted if absent).
-\item \code{"validation-compare"}: \code{depth} plus the per-candidate pitch/roll columns named in
+\item \code{"general"}: \code{depth}, \code{heading}, \code{pitch}, \code{roll}, \code{vedba} and \code{vertical_velocity}.
+\item \code{"validation"}: \code{depth}, \code{pitch} and \code{roll}; the gyroscope panel draws whichever of \code{gx}, \code{gy}
+and \code{gz} are present, and is labelled unavailable where none is.
+\item \code{"validation-compare"}: \code{depth}, plus the per-candidate pitch and roll columns named in
 \code{candidates}.
+}
+}
+
+\subsection{Why this is fast}{
+
+The dashboard is drawn straight to a video stream rather than to thousands of intermediate image
+files, and at a frame rate decoupled from the video's. The sensor state changes slowly, so redrawing
+it five times a second loses nothing visible while doing a fraction of the work of matching a 30 fps
+source frame for frame. A single FFmpeg pass then stacks the panel beside the trimmed footage.
+Together these make the render one to two orders of magnitude faster than drawing one image per video
+frame.
 }
 }
 \examples{
 \dontrun{
 tag  <- processTagData(imported)[["PIN_CAM_01"]]
 meta <- getVideoMetadata("./videos/PIN_CAM_01")
+
 # composite the sensor dashboard beside the footage, synced to the first frame
 renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01.mp4",
                    dashboard = "general", video.start = meta$start[1])
 }
 }
 \seealso{
-\link{reviewTagMapping}, \link{processTagData}, \link{findValidationSegments}, \link{getVideoMetadata}.
+\code{\link[=reviewTagMapping]{reviewTagMapping()}}, which uses this to render its review clips;
+\code{\link[=findValidationSegments]{findValidationSegments()}} for choosing the segment to render; \code{\link[=getVideoMetadata]{getVideoMetadata()}} for the
+\code{video.start} anchor; \code{\link[=processTagData]{processTagData()}} for the sensor series.
 }

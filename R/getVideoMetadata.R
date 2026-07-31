@@ -2,62 +2,77 @@
 # Extract recording timestamps and metadata from biologging tag videos ################################
 #######################################################################################################
 
-#' Extract Metadata and Timestamps from Biologging Tag Video Files
+#' Read the timing of every camera-tag video file
 #'
 #' @description
-#' Extracts the recording start time, end time, duration and frame rate of every video file found in
-#' one or more directories, returning one row per video.
+#' Sensor data and video are only comparable once you know, to the second, when each video frame was
+#' recorded. Camera tags do not make this easy: the camera keeps its own clock, files are split into
+#' segments of arbitrary length, and different camera systems record the start time in different places
+#' or not at all.
 #'
-#' The recording start time is taken, whenever possible, from the **file name**: on-camera systems
-#' encode it as `YYYYMMDD-HHMMSS` or `YYMMDD-HHMMSS` (e.g. `CameraCMD71_Spot06-20190831-173658-...mp4`
-#' or `230831-161949_CAM0bc99448_30.mp4`). File-name timestamps are exact, camera-agnostic and require
-#' no image processing, so they are the primary and default source.
+#' This function builds the bridge. It reads the start time, end time, duration and frame rate of every
+#' video in one or more directories and returns one row per file - the table every other video function
+#' in the package takes as its map from a timestamp to a file and an offset within it.
 #'
-#' For cameras whose file names carry no timestamp (e.g. MOBIUS units), the start time can instead be
-#' read by Optical Character Recognition (OCR, via the Tesseract engine) from the timestamp burned into
-#' the video's on-screen display. OCR is a *secondary* source: it is used only as a fallback where the
-#' file name has no timestamp, or - with `cross.check = TRUE` - as an independent check on the file-name
-#' time. All OCR settings (model, the on-screen box location, etc.) are bundled in \code{\link{ocrControl}}.
+#' @param video.folders One or more directories holding video files.
+#' @param video.format Which formats to read, `"mp4"` and/or `"mov"`. Default `"mp4"`.
+#' @param timestamp.source Where to take each video's start time from:
 #'
-#' Duration and frame rate are always read with `ffprobe`; `ffmpeg` and the OCR packages are required
-#' only when OCR is actually used.
+#'   - `"auto"` (default) uses the file-name timestamp and falls back to reading the screen only for
+#'     videos whose name has none.
+#'   - `"filename"` uses the file name alone, leaving videos without a timestamp as `NA`.
+#'   - `"ocr"` reads every timestamp off the screen, ignoring the file name.
+#' @param cross.check Whether to also read the on-screen timestamp for videos whose start time came from
+#'   the file name, and compare the two (default `FALSE`). It costs an optical-character-recognition
+#'   pass per video but validates the file-name times, which is worth doing once for a new camera system
+#'   before trusting them for a whole study. Disagreements beyond two seconds are flagged in `ocr_flag`.
+#' @param ocr A control object from [ocrControl()] holding the recognition settings - the model, the
+#'   position of the timestamp on screen, and how many frames to search. Only consulted when the screen
+#'   is actually read. Pass `ocrControl(...)` to change it.
+#' @param use.parallel Whether to process videos in parallel (default `TRUE`). Reading a directory of
+#'   videos is limited by disk and decoding rather than by R, so this helps considerably.
+#' @param n.cores How many cores to use. `NULL` (default) leaves one free.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
 #'
-#' @param video.folders Character vector. Paths to directories containing video files.
-#' @param video.format Character vector. Allowed video formats, `"mp4"` and/or `"mov"`. Defaults to `"mp4"`.
-#' @param timestamp.source How to obtain each video's start time:
-#'   \itemize{
-#'     \item `"auto"` (default): use the file-name timestamp; fall back to OCR only for videos whose file
-#'       name has none.
-#'     \item `"filename"`: use the file-name timestamp only (no OCR); videos without one get `NA`.
-#'     \item `"ocr"`: read every timestamp by OCR from the on-screen display, ignoring the file name.
-#'   }
-#' @param cross.check Logical. When `TRUE`, videos whose start time came from the file name are also read
-#'   by OCR and the two are compared; disagreements beyond 2 seconds are flagged (see the `ocr_flag`
-#'   output column). Adds OCR cost but validates the file-name timestamps. Defaults to `FALSE`.
-#' @param ocr An \code{\link{ocrControl}} object (or a named list of its fields) bundling the OCR
-#'   settings - the Tesseract model, the on-screen timestamp box geometry, and the frame-search depth.
-#'   Only consulted when OCR is used. Defaults to `ocrControl()`.
-#' @param use.parallel Logical. Whether to process videos in parallel. Defaults to `TRUE`.
-#' @param n.cores Integer. Number of cores for parallel processing. If `NULL`, uses `detectCores() - 1`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
+#' @details
+#' ## Where the start time comes from, and why the file name is preferred
 #'
-#' @return A data frame, one row per video, with columns: `ID`, `video` (file name), `start`/`end`
-#'   (POSIXct, UTC), `duration` (seconds), `frame_rate` (fps), `file` (full path), and `timestamp_source`
-#'   (`"filename"`, `"ocr"`, or `NA` when no timestamp could be obtained). When `cross.check = TRUE`,
-#'   three further columns are added: `ocr_start` (the OCR-read start time), `ocr_offset_s`
-#'   (`start - ocr_start`, seconds) and `ocr_flag` (logical; `TRUE` when the two disagree by > 2 s).
+#' Most on-camera systems encode the recording time in the file name, as `YYYYMMDD-HHMMSS` or
+#' `YYMMDD-HHMMSS`. That is the primary and default source, because it is exact, costs nothing to read,
+#' and does not depend on the camera model, the video quality or where on the frame a clock happens to
+#' be drawn.
 #'
-#' @seealso \code{\link{ocrControl}}, \code{\link{saveUncertainTimestampFrames}}
+#' Some cameras write no timestamp into the file name, and for those the start time can be read by
+#' optical character recognition from the clock burned into the picture. This is a secondary source: it
+#' is slower, and it can misread a digit on a dark or motion-blurred frame. It is used only where the
+#' file name has nothing to offer, or, with `cross.check = TRUE`, as an independent check on the file
+#' name.
+#'
+#' Duration and frame rate are always read from the file itself with `ffprobe`, so an FFmpeg
+#' installation is needed for every run. The `ffmpeg` binary itself, and the character-recognition
+#' packages, are needed only when the screen is actually read.
+#'
+#' @return A data frame with one row per video and columns `ID`, `video` (the file name), `start` and
+#'   `end`, `duration` in seconds, `frame_rate`, `file` (the full path), and `timestamp_source`, which is
+#'   `"filename"`, `"ocr"`, or `NA` where no timestamp could be obtained at all.
+#'
+#'   With `cross.check = TRUE`, three further columns are added: `ocr_start`, the time read from the
+#'   screen; `ocr_offset_s`, the file-name time minus that; and `ocr_flag`, which is `TRUE` where the two
+#'   disagree by more than two seconds.
+#'
+#' @seealso [ocrControl()] for the recognition settings; [launchVideo()] and [filterVideoPeriod()] for
+#'   what consumes this table; [renderOverlayVideo()] for compositing footage with sensor data.
 #'
 #' @examples
 #' \dontrun{
-#' # One row per video; start times taken from the file names where present
+#' # one row per video, start times taken from the file names where present
 #' meta <- getVideoMetadata(c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02"))
 #'
-#' # Cross-check the file-name timestamps against OCR of the on-screen clock
+#' # validate those file-name timestamps against the clock burned into the picture
 #' meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
+#' subset(meta, ocr_flag)
 #' }
-#'
 #' @export
 
 getVideoMetadata <- function(video.folders,
@@ -324,20 +339,29 @@ getVideoMetadata <- function(video.folders,
   tmp                                                         # cache not writable -> valid for this session
 }
 
-#' Download the fine-tuned camera-tag OCR model
+#' Download the camera-tag timestamp-recognition model
 #'
 #' @description
-#' The `nautilus` optical-character-recognition (OCR) model that reads camera-tag on-screen timestamps is
-#' ~11 MB and is NOT bundled with the package. \code{\link{getVideoMetadata}} fetches it automatically the
-#' first time OCR is actually needed (that is, when a timestamp cannot be read from the file name). Call this
-#' to pre-download it - for example before working offline. The model is cached in the per-user cache
-#' directory (\code{tools::R_user_dir("nautilus", "cache")}) and reused thereafter, so it downloads only once.
+#' The model that reads camera-tag on-screen timestamps is about 11 MB, which is too large to bundle
+#' with the package, so it is downloaded on first use and cached thereafter.
 #'
-#' @param quiet Logical. Suppress progress messages. Default `FALSE`.
-#' @return Invisibly, the path to the cached model, or `NULL` if it could not be downloaded (e.g. no
-#'   internet). When it is unavailable, OCR falls back to Tesseract's generic `eng` model, which is less
-#'   accurate for the cam-tag timestamp font.
-#' @seealso \code{\link{getVideoMetadata}}
+#' [getVideoMetadata()] fetches it automatically the first time it actually has to read a timestamp off
+#' the picture. Call this to fetch it in advance - before working offline, or before a long batch run
+#' where an unexpected download would be unwelcome.
+#'
+#' @param quiet Whether to suppress the progress messages. Default `FALSE`.
+#'
+#' @details
+#' The model is cached in the per-user cache directory, `tools::R_user_dir("nautilus", "cache")`, and
+#' reused from there, so the download happens once per machine rather than once per session. Calling
+#' this when the model is already cached does nothing but confirm it.
+#'
+#' @return The path to the cached model, invisibly, or `NULL` where it could not be downloaded. In that
+#'   case timestamp recognition falls back to Tesseract's generic English model, which still works but
+#'   is noticeably less accurate on the camera-tag timestamp font.
+#'
+#' @seealso [getVideoMetadata()] for what uses the model; [ocrControl()] for selecting a different one.
+#'
 #' @examples
 #' \dontrun{
 #' installCamOcrModel()
@@ -356,7 +380,7 @@ installCamOcrModel <- function(quiet = FALSE) {
 #' Ensure the OCR model is available and build the default character whitelist
 #'
 #' The fine-tuned cam-tag OCR model is fetched on demand (\code{.camModelPath}, exposed to users as
-#' \code{\link{installCamOcrModel}}) and installed into the tesseract data directory automatically (no
+#' [installCamOcrModel()]) and installed into the tesseract data directory automatically (no
 #' interactive prompt - batch-safe). If that is not possible (offline, or the directory is not writable),
 #' fall back to the generic `eng` model. Returns the (possibly adjusted) model name and the default
 #' whitelist for the DDMmmYY on-screen timestamp format.

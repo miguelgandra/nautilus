@@ -11,7 +11,7 @@
 #' inside a window is marked `1`, every sample outside it `0`, one column per event type.
 #'
 #' The resulting columns are what turns a sensor record into a labelled training set:
-#' \code{\link{extractFeatures}} builds the predictors, and these columns supply the response.
+#' [extractFeatures()] builds the predictors, and these columns supply the response.
 #'
 #' @details
 #' **Every individual receives every event column.** The column set is fixed once, from the events
@@ -46,10 +46,12 @@
 #'
 #' @return A named list of tables, one per individual, each carrying one `0`/`1` column per event type.
 #'   The class and metadata of the input are preserved, and the call is recorded in the processing
-#'   history (see \code{\link{processingHistory}}). Individuals whose input element was `NULL` are
+#'   history (see [processingHistory()]). Individuals whose input element was `NULL` are
 #'   omitted, so the result may be shorter than the input.
 #'
-#' @seealso \code{\link{extractFeatures}}, \code{\link{filterVideoPeriod}}, \code{\link{launchVideo}}.
+#' @seealso [extractFeatures()] for building the predictors these labels pair with;
+#'   [filterVideoPeriod()] for restricting the data to the periods you scored; [launchVideo()] for
+#'   checking a window against the footage.
 #' @examples
 #' \dontrun{
 #' # windows scored from the tag's camera footage
@@ -64,7 +66,7 @@
 #' # `tags` is the processed output of processTagData()
 #' labelled <- annotateData(tags, annotations)
 #'
-#' # both animals carry BOTH columns, so the cohort can be pooled
+#' # both animals carry both columns, so the cohort can be pooled
 #' lapply(labelled, function(x) colSums(x[, c("feeding", "social")]))
 #' }
 #' @export

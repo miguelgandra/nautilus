@@ -2,81 +2,101 @@
 # Render a sensor-overlay video #######################################################################
 #######################################################################################################
 
-#' Render a synchronised sensor dashboard alongside camera-tag video
+#' Composite a sensor dashboard alongside camera-tag video
 #'
 #' @description
-#' Composites a live sensor dashboard as a side panel next to camera-tag footage, time-synchronised to
-#' the sensor data. It is the workhorse for **visual validation** - e.g. confirming an inferred axis
-#' mapping against an observed turn or roll - and for presentation. Two dashboards are available:
-#' \describe{
-#'   \item{`"general"`}{Orientation dials (heading/pitch/roll) plus scrolling depth, activity (VeDBA)
-#'     and vertical-speed traces - the presentation default.}
-#'   \item{`"validation"`}{A large **attitude indicator** - a low-poly 3-D body model, viewed from
-#'     behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace and
-#'     depth, tuned for judging an axis mapping by eye. Heading is intentionally omitted: how the body
-#'     banks is the cue, and an uncalibrated heading is unreliable.}
-#'   \item{`"validation-compare"`}{Two or more **labelled** attitude indicators side by side, one per
-#'     candidate mapping (e.g. "Documented" vs "Proposed"), beneath a one-line guidance header - so the
-#'     correct mapping is read off a single clip by keeping the model that banks like the animal.
-#'     Driven by \link{reviewTagMapping}.}
-#' }
+#' Sensor data and footage answer each other's questions. The sensors say the animal rolled thirty
+#' degrees to its left; the video says whether it did. But comparing them means holding a plot in one
+#' window and a video in another and matching timestamps by eye, which is slow enough that most records
+#' never get checked.
 #'
-#' The dashboard is rendered straight to a video stream with the \pkg{av} package (no thousands of
-#' intermediate image files), and at a **decoupled frame rate** (`overlay.fps`, default 5): the sensor
-#' state changes slowly, so there is no need to redraw it at the video's frame rate. A single FFmpeg
-#' pass then stacks the panel beside the (trimmed) source video. Together this is one to two orders of
-#' magnitude faster than rendering one image per video frame.
+#' This function renders the two together: a live sensor dashboard beside the footage, sharing one clock,
+#' as a single video file you can scrub through. It is the workhorse for confirming an inferred axis
+#' mapping against an observed manoeuvre, and for presenting results.
 #'
 #' @param video Path to the source video file.
-#' @param data A `nautilus_tag` (or a single data.frame) holding the time-synchronised sensor series.
-#'   The required columns depend on `dashboard` (see Details).
-#' @param output Path to the output video file to create (its directory must exist).
-#' @param dashboard Which dashboard to render: `"general"` (default), `"validation"` or
-#'   `"validation-compare"`.
-#' @param video.start POSIXct giving the sensor datetime of the video's first frame (the sync anchor).
-#'   If `NULL`, it is parsed from a `YYMMDD-HHMMSS` prefix in the file name when present (otherwise an
-#'   error is raised). For frame-accurate sync, derive it from \link{getVideoMetadata}.
-#' @param start,end Optional POSIXct bounds (in sensor time) to clip the output to a segment of interest
-#'   (e.g. a validation window from \link{findValidationSegments}). Default: the full overlap of video
-#'   and sensor coverage.
-#' @param side Which side to place the dashboard panel, `"right"` (default) or `"left"`.
-#' @param overlay.fps Dashboard render frame rate (Hz). Default 5. Lower is faster; the source video
-#'   keeps its own frame rate.
-#' @param panel.width Panel width in pixels. Default `NULL` scales it to the video height.
-#' @param depth.window,activity.window Width (seconds) of the scrolling depth panel and of the
-#'   activity/vertical-speed/trace panels. Defaults 300 and 30.
-#' @param caption Optional one-line caption drawn on the validation dashboards (e.g. the mapping under
-#'   test and the review reason).
-#' @param candidates For `"validation-compare"` only: a data.frame describing the candidate attitude
-#'   indicators, with columns `label`, `pitch` and `roll` (the last two naming the per-candidate pitch
-#'   and roll columns in `data`).
-#' @param crf Constant rate factor for the software encoders (`libx265`/`libx264`; lower = higher
-#'   quality / larger). Default 23. Ignored by the hardware VideoToolbox encoders (which use a fixed
-#'   quality setting).
-#' @param codec Output codec family: `"hevc"` (default) or `"h264"`. `"hevc"` (H.265) gives much smaller
-#'   files and is tagged `hvc1` for QuickTime compatibility; `"h264"` (tagged `avc1`) is larger but plays
-#'   essentially everywhere (all browsers, older devices). Each prefers the macOS hardware VideoToolbox
-#'   encoder when present, else the software `libx26x` encoder. Output is always `yuv420p` with a
-#'   fast-start (leading `moov`) MP4 container.
-#' @param keep.temp Keep the intermediate dashboard video. Default `FALSE`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
+#' @param data A tag object, or a single table, holding the time-synchronised sensor series. Which
+#'   columns are required depends on `dashboard`; see the Details.
+#' @param output Path of the video file to create. Its directory must already exist.
+#' @param dashboard Which dashboard to draw: `"general"` (default), `"validation"` or
+#'   `"validation-compare"`. They are described below.
+#' @param video.start The sensor-clock time of the video's first frame - the anchor the whole
+#'   synchronisation rests on. `NULL` looks for a `YYYYMMDD-HHMMSS` or `YYMMDD-HHMMSS` timestamp
+#'   anywhere in the file name and errors if it finds neither. For frame-accurate work take it from
+#'   [getVideoMetadata()].
+#' @param start,end Optional bounds, in sensor time, clipping the output to a segment of interest - a
+#'   validation window from [findValidationSegments()], for instance. The default is the full overlap of
+#'   video and sensor coverage, which for a whole deployment is a very long render.
+#' @param side Which side to put the dashboard panel on: `"right"` (default) or `"left"`.
+#' @param overlay.fps How many times a second to redraw the dashboard (default `5`). See the note on
+#'   speed below. Lower is faster; the source video keeps its own frame rate regardless.
+#' @param panel.width The panel width in pixels. `NULL` (default) scales it to the video height.
+#' @param depth.window,activity.window How many seconds of history the scrolling depth panel and the
+#'   activity and vertical-speed panels show. Defaults `300` and `30`. Widen the depth window to put a
+#'   moment in the context of a whole dive.
+#' @param caption An optional one-line caption for the validation dashboards, such as the mapping under
+#'   test and the reason it was flagged.
+#' @param candidates For `"validation-compare"` only: a table describing the attitude indicators to draw,
+#'   with columns `label`, `pitch` and `roll`, the last two naming the per-candidate pitch and roll
+#'   columns in `data`.
+#' @param crf The constant rate factor for the software encoders, where lower means higher quality and a
+#'   larger file. Default `23`. Ignored by the macOS hardware encoders, which use a fixed quality
+#'   setting.
+#' @param codec The output codec family: `"hevc"` (default) or `"h264"`. HEVC gives much smaller files
+#'   and is tagged for QuickTime compatibility; H.264 is larger but plays essentially everywhere,
+#'   including older devices and every browser. Choose H.264 for anything you intend to circulate. Each
+#'   prefers the macOS hardware encoder where present and falls back to software.
+#' @param keep.temp Whether to keep the intermediate dashboard video. Default `FALSE`.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
 #'
 #' @details
-#' Required `data` columns by dashboard (all alongside `datetime`):
-#' \itemize{
-#'   \item `"general"`: `depth`, `heading`, `pitch`, `roll`, `vedba`, `vertical_velocity`.
-#'   \item `"validation"`: `depth`, `pitch`, `roll`; the gyroscope panel uses `gx`/`gy`/`gz` when
-#'     present (omitted if absent).
-#'   \item `"validation-compare"`: `depth` plus the per-candidate pitch/roll columns named in
-#'     `candidates`.
+#' ## The three dashboards
+#'
+#' \describe{
+#'   \item{`"general"`}{Orientation dials for heading, pitch and roll, plus scrolling depth, activity
+#'     and vertical-speed traces. The presentation default.}
+#'   \item{`"validation"`}{One large attitude indicator - a low-poly three-dimensional body model, seen
+#'     from behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace
+#'     and depth. Tuned for judging an axis mapping by eye. Heading is deliberately omitted: how the body
+#'     banks is the cue that decides the mapping, and an uncalibrated heading is not reliable enough to
+#'     put on screen beside it.}
+#'   \item{`"validation-compare"`}{Two or more labelled attitude indicators side by side, one per
+#'     candidate mapping, beneath a one-line guidance header. The correct mapping is then read off a
+#'     single clip by keeping the model that banks the way the animal does. This is what
+#'     [reviewTagMapping()] renders.}
 #' }
 #'
+#' ## Required columns
+#'
+#' All alongside the timestamp column:
+#'
+#' - `"general"`: `depth`, `heading`, `pitch`, `roll`, `vedba` and `vertical_velocity`.
+#' - `"validation"`: `depth`, `pitch` and `roll`; the gyroscope panel draws whichever of `gx`, `gy`
+#'   and `gz` are present, and is labelled unavailable where none is.
+#' - `"validation-compare"`: `depth`, plus the per-candidate pitch and roll columns named in
+#'   `candidates`.
+#'
+#' ## Why this is fast
+#'
+#' The dashboard is drawn straight to a video stream rather than to thousands of intermediate image
+#' files, and at a frame rate decoupled from the video's. The sensor state changes slowly, so redrawing
+#' it five times a second loses nothing visible while doing a fraction of the work of matching a 30 fps
+#' source frame for frame. A single FFmpeg pass then stacks the panel beside the trimmed footage.
+#' Together these make the render one to two orders of magnitude faster than drawing one image per video
+#' frame.
+#'
 #' @return The output file path, invisibly.
-#' @seealso \link{reviewTagMapping}, \link{processTagData}, \link{findValidationSegments}, \link{getVideoMetadata}.
+#'
+#' @seealso [reviewTagMapping()], which uses this to render its review clips;
+#'   [findValidationSegments()] for choosing the segment to render; [getVideoMetadata()] for the
+#'   `video.start` anchor; [processTagData()] for the sensor series.
+#'
 #' @examples
 #' \dontrun{
 #' tag  <- processTagData(imported)[["PIN_CAM_01"]]
 #' meta <- getVideoMetadata("./videos/PIN_CAM_01")
+#'
 #' # composite the sensor dashboard beside the footage, synced to the first frame
 #' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01.mp4",
 #'                    dashboard = "general", video.start = meta$start[1])

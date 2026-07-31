@@ -2,7 +2,7 @@
 % Please edit documentation in R/control.R
 \name{ocrControl}
 \alias{ocrControl}
-\title{On-screen-display OCR settings for getVideoMetadata()}
+\title{Timestamp-recognition settings for getVideoMetadata()}
 \usage{
 ocrControl(
   model = "cam",
@@ -14,41 +14,48 @@ ocrControl(
 )
 }
 \arguments{
-\item{model}{Name of the Tesseract model (\code{traineddata}) trained on the overlay font. Default \code{"cam"},
-the fine-tuned camera-tag model, which is downloaded on first use (see
-\code{\link{installCamOcrModel}}); use \code{"eng"} (or any installed model) to skip that.}
+\item{model}{Which Tesseract model to use, trained on the overlay font. Default \code{"cam"}, the
+fine-tuned camera-tag model, downloaded on first use by \code{\link[=installCamOcrModel]{installCamOcrModel()}}. Pass \code{"eng"}, or
+any other installed model, to skip that download at some cost in accuracy on this particular font.}
 
-\item{box}{Integer vector \code{c(x, y, width, height)} giving the pixel location of the timestamp box
-within a frame: top-left corner \verb{(x, y)} and its \code{width}/\code{height}. These coordinates are relative to
-a frame of height \code{frame.height}; for videos of a different resolution they are scaled by
-\code{actual_height / frame.height}, so the same control works across resolutions of the same camera.
-Default \code{c(3249, 2120, 325, 28)} (bottom-right box of the 4K camera overlay).}
+\item{box}{Where the timestamp sits in the frame, as \code{c(x, y, width, height)} in pixels, with \code{x} and
+\code{y} the top-left corner. The coordinates are read relative to \code{frame.height} and rescaled for
+videos of a different resolution, so one setting covers every resolution of the same camera. Default
+\code{c(3249, 2120, 325, 28)}, the bottom-right box of the 4K camera overlay. Change it for a camera that
+draws its clock somewhere else - grab a frame and read the pixel coordinates off it.}
 
-\item{frame.height}{Reference frame height (pixels) the \code{box} coordinates assume. Default 2160 (4K).}
+\item{frame.height}{The frame height, in pixels, that \code{box} was measured against. Default \code{2160}.}
 
-\item{search.radius}{Search radius (pixels) around the expected \code{box} used to lock onto the bright
-timestamp panel when the overlay drifts slightly between cameras/firmwares. Default 80.}
+\item{search.radius}{How far, in pixels, to search around \code{box} for the bright timestamp panel
+(default \code{80}). This absorbs the small drift in overlay position between cameras and firmware
+versions, so a box measured on one unit still works on its siblings. Widen it if the clock moves
+more than that; too wide and the search can lock onto some other bright rectangle.}
 
-\item{max.search.frames}{Maximum number of frames to try when the first sampled frame yields no
-readable timestamp (e.g. a black frame at the very start of a clip). Default 10.}
+\item{max.search.frames}{How many frames to try before giving up on a video (default \code{10}). The first
+frame of a clip is often black or half-exposed, which is what this exists for.}
 
-\item{char.whitelist}{Optional string restricting the characters Tesseract may output (e.g.
-\code{"0123456789:- "}). \code{NULL} (default) uses the model's own configuration.}
+\item{char.whitelist}{The characters the recogniser is allowed to return. \code{NULL} (default) uses the
+package's own alphabet - digits, the letters that spell the month abbreviations, and the few
+punctuation marks a timestamp needs - which is already restrictive enough for this job. Override
+it only for a camera whose clock uses a different format, and remember that the month
+abbreviation is read as letters, so a digits-only whitelist will break the parse.}
 }
 \value{
-A validated \code{nautilus_ocr} object for the \code{ocr} argument of \code{\link{getVideoMetadata}}.
+A validated \code{nautilus_ocr} object for the \code{ocr} argument of \code{\link[=getVideoMetadata]{getVideoMetadata()}}.
 }
 \description{
-Bundles the optical-character-recognition (OCR) settings used by \code{\link{getVideoMetadata}} to
-read the timestamp burned into a camera's on-screen display. OCR is a \emph{secondary} timestamp source:
-\code{\link{getVideoMetadata}} takes the recording start time from the file name whenever possible
-(exact and camera-agnostic), and falls back to OCR only for cameras whose file names carry no
-timestamp (e.g. MOBIUS), or uses it as an optional cross-check. All OCR knobs therefore live here,
-keeping the main call uncluttered.
+Groups the settings \code{\link[=getVideoMetadata]{getVideoMetadata()}} uses when it has to read a recording time off the picture,
+from the clock a camera burns into its own footage.
+
+This is a fallback, not the normal path. The recording time is taken from the file name whenever a
+camera writes one there, because that is exact, costs nothing and does not depend on the video at all.
+Reading the screen is for cameras that write no such name, and for the optional cross-check. Nothing
+here is consulted otherwise.
 }
 \examples{
-ocrControl(box = c(120, 40, 300, 26), frame.height = 1080)   # 1080p camera, top-left overlay
+ocrControl(box = c(120, 40, 300, 26), frame.height = 1080)   # 1080p camera, overlay top-left
 }
 \seealso{
-\code{\link{getVideoMetadata}}
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} for the function that consumes it; \code{\link[=installCamOcrModel]{installCamOcrModel()}} for
+pre-fetching the default model.
 }

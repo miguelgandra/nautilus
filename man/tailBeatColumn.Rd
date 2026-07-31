@@ -2,59 +2,63 @@
 % Please edit documentation in R/tailBeatColumn.R
 \name{tailBeatColumn}
 \alias{tailBeatColumn}
-\title{Find the tail-beat column to use}
+\title{Find the tail-beat column to read}
 \usage{
 tailBeatColumn(x, quantity = c("hz", "amplitude"), method = NULL)
 }
 \arguments{
-\item{x}{A \code{nautilus_tag}, data.frame or data.table carrying tail-beat columns (or a character vector
-of column names).}
+\item{x}{A tag object, data frame or data table carrying tail-beat columns, or simply a character
+vector of column names.}
 
 \item{quantity}{Which quantity to resolve: \code{"hz"} (default) or \code{"amplitude"}.}
 
-\item{method}{Optionally force a backend, e.g. \code{"wavelet"}. Errors if that backend produced nothing,
-naming what is available, so a typo fails loudly rather than quietly resolving to the other backend.}
+\item{method}{Force a particular backend, for example \code{"wavelet"}. It is an error if that backend
+produced nothing, and the message names what is available - so a typo fails loudly rather than
+quietly resolving to the other backend.}
 }
 \value{
-The column name as a string, or \code{NULL} if no backend produced this quantity (for example
-because \code{\link{calculateTailBeats}} has not been run).
+The column name, as a string, or \code{NULL} where no backend produced this quantity - for
+instance because \code{\link[=calculateTailBeats]{calculateTailBeats()}} has not been run.
 }
 \description{
-\code{\link{calculateTailBeats}} names its estimates after the backend that produced them --
-\code{tbf_hz_peaks}, \code{tbf_hz_wavelet}, and the matching \verb{tbf_amplitude_*} -- so that a value's provenance
-travels with it. This helper answers the question that naming raises: \emph{given a table, which of those
-columns should I read?} It is what lets a script stay backend-agnostic without giving up the
-provenance the names carry.
+\code{\link[=calculateTailBeats]{calculateTailBeats()}} names its estimates after the backend that produced them - \code{tbf_hz_peaks},
+\code{tbf_hz_wavelet}, and the matching \verb{tbf_amplitude_*} columns - so that a value's provenance always
+travels with it. That naming raises an obvious question for anyone writing analysis code: given a
+table, which of those columns should I read?
+
+This helper answers it, so a script can stay backend-agnostic without giving up the provenance the
+names carry.
 }
 \details{
-The answer is taken from the data: whichever \verb{tbf_<quantity>_*} columns actually carry values. If
-exactly one backend produced this quantity, that is the answer. If several did, the package's
-documented order (\code{peaks}, then \code{wavelet}) breaks the tie -- a reporting convention, not a claim that
-one backend is better. Pass \code{method} to override it.
+The answer is taken from the data itself: whichever \verb{tbf_<quantity>_*} columns actually carry values.
+If exactly one backend produced this quantity, that is the answer. If several did, the documented
+order - peaks, then wavelet - breaks the tie. That order is a reporting convention, not a claim that
+one backend is better than the other; pass \code{method} to override it.
 
-Resolution deliberately ignores the object's processing metadata. That metadata does not survive the
-operations a cohort analysis performs -- \code{rbind}, \code{data.table::rbindlist}, a CSV round trip,
-\code{dplyr::mutate} and \code{dplyr::select} all discard it -- and pooling deployments keeps the \emph{first}
-deployment's record and applies it to rows produced by the other backend. Column contents survive all
-of that, and describe each row honestly.
+Resolution deliberately ignores the object's processing metadata, which does not survive the
+operations a cohort analysis performs. Binding tables together, a round trip through CSV, and several
+common data-manipulation verbs all discard it, and pooling deployments keeps the \emph{first} deployment's
+record and then applies it to rows produced by the other backend. Column contents survive all of that,
+and describe each row honestly.
 
-Because resolution is per table, a pooled cohort whose deployments used different backends will have
-both columns populated and will fall to the tie-break. \code{\link{summarizeTagData}} therefore
-reports \code{tbf_method} alongside \code{tbf_mean}, so a mixed cohort is visible rather than silently blended.
+Because resolution happens per table, a pooled cohort whose deployments used different backends will
+have both columns populated and will fall to the tie-break. \code{\link[=summarizeTagData]{summarizeTagData()}} therefore reports
+\code{tbf_method} alongside \code{tbf_mean}, so a mixed cohort is visible rather than silently blended.
 }
 \examples{
 \dontrun{
 tags <- calculateTailBeats(processed)          # runs both backends by default
 
-# backend-agnostic: works whichever backend(s) were run
+# backend-agnostic: works whichever backend or backends were run
 col <- tailBeatColumn(tags[[1]])
 mean(tags[[1]][[col]], na.rm = TRUE)
 
-tailBeatColumn(tags[[1]])                       # "tbf_hz_peaks"   (documented tie-break)
+tailBeatColumn(tags[[1]])                       # "tbf_hz_peaks", by the documented tie-break
 tailBeatColumn(tags[[1]], method = "wavelet")   # "tbf_hz_wavelet"
 tailBeatColumn(tags[[1]], quantity = "amplitude")
 }
 }
 \seealso{
-\code{\link{calculateTailBeats}}, \code{\link{summarizeTagData}}
+\code{\link[=calculateTailBeats]{calculateTailBeats()}} for producing the columns; \code{\link[=summarizeTagData]{summarizeTagData()}} for the cohort
+summary that reports which backend each deployment used.
 }

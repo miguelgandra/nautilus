@@ -2,43 +2,56 @@
 # Re-encode camera-tag videos to HEVC #################################################################
 #######################################################################################################
 
-#' Re-encode camera-tag videos to HEVC (H.265)
+#' Re-encode camera-tag videos to a more compact format
 #'
 #' @description
-#' Batch re-encodes the `.mov`/`.mp4` video files in a directory to the more space-efficient HEVC
-#' (H.265) format with FFmpeg, for archival or downstream processing. A hardware encoder
-#' (`hevc_videotoolbox`, `h265_nvenc`, ...) is much faster when available; the software encoder
-#' (`libx265`) is the portable default. Existing outputs are skipped unless `overwrite = TRUE`.
+#' Camera tags produce very large files - a single deployment can fill a disk - and the original
+#' encoding is chosen for the camera's convenience rather than for storage. Re-encoding to HEVC, also
+#' known as H.265, typically cuts the size substantially at visually equivalent quality, which matters
+#' when an archive has to be kept for the life of a study.
 #'
-#' @param mov.directory Directory containing the `.mov`/`.mp4` files to re-encode.
-#' @param output.dir Directory for the re-encoded `.mp4` files. Defaults to `mov.directory`.
-#' @param file.suffix Character string appended to each output base name (before `.mp4`), e.g. to keep
-#'   the re-encoded files distinct from the originals when writing to the same directory. Default `""`.
-#' @param encoder FFmpeg video encoder. Default `"libx265"` (software). Hardware options such as
-#'   `"hevc_videotoolbox"` (macOS), `"h265_nvenc"` (NVIDIA), `"hevc_amf"` (AMD) or `"hevc_qsv"` (Intel)
-#'   are faster when supported. List the available encoders with `ffmpeg -encoders`.
-#' @param crf Constant Rate Factor (0-51; lower = higher quality / larger). Used by the **software**
-#'   encoder (`libx265`). Default 18.
-#' @param video.quality Quality (1-100; higher = better). Used by the **hardware** encoders. Default 50.
-#' @param preset Encoding speed/compression preset, one of `"ultrafast"`, `"superfast"`, `"veryfast"`,
-#'   `"faster"`, `"fast"`, `"medium"` (default), `"slow"`, `"slower"`, `"veryslow"`.
-#' @param overwrite Logical. If `FALSE` (default), files whose output already exists are skipped; if
-#'   `TRUE`, they are re-encoded and replaced.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
+#' This function batch-converts every video in a directory with FFmpeg, skipping any whose output
+#' already exists.
+#'
+#' @param mov.directory The directory holding the `.mov` or `.mp4` files to re-encode.
+#' @param output.dir Where to write the re-encoded `.mp4` files. Defaults to `mov.directory`.
+#' @param file.suffix A string appended to each output name, before `.mp4`, to keep the re-encoded files
+#'   distinct from the originals when writing to the same directory. Default `""`.
+#' @param encoder Which FFmpeg encoder to use. Default `"libx265"`, the portable software encoder.
+#'   Hardware encoders are far faster where supported: `"hevc_videotoolbox"` on macOS, `"hevc_nvenc"` on
+#'   NVIDIA, `"hevc_amf"` on AMD, `"hevc_qsv"` on Intel. List what your build offers with
+#'   `ffmpeg -encoders`.
+#' @param crf The constant rate factor for the **software** encoder, from 0 to 51, where lower means
+#'   higher quality and a larger file. Default `18`, which is visually near-lossless for this material.
+#'   Ignored by the hardware encoders.
+#' @param video.quality The quality setting for the **hardware** encoders, from 1 to 100, where higher
+#'   is better. Default `50`. Ignored by the software encoder.
+#' @param preset How hard the software encoder works for a given quality: one of `"ultrafast"`,
+#'   `"superfast"`, `"veryfast"`, `"faster"`, `"fast"`, `"medium"` (default), `"slow"`, `"slower"` or
+#'   `"veryslow"`. Slower presets buy smaller files at the same quality, at a cost in time that is
+#'   substantial across a whole archive.
+#' @param overwrite Whether to re-encode files whose output already exists (default `FALSE`, which skips
+#'   them). Leave it off so an interrupted batch can simply be re-run.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
 #'
 #' @details
-#' Commonly used HEVC encoders: **libx265** (portable software), **hevc_videotoolbox** (macOS hardware),
-#' **h265_nvenc** (NVIDIA), **hevc_amf** (AMD), **hevc_qsv** (Intel Quick Sync). Audio is dropped
-#' (`-an`) for space-efficient archival.
+#' Audio is dropped, since a camera tag's audio track is rarely of interest and removing it saves space.
+#' If you need the audio, re-encode outside this function.
 #'
-#' @return The vector of output file paths, invisibly.
-#' @seealso \link{getVideoMetadata}, \link{renderOverlayVideo}.
+#' Requires FFmpeg on the system path.
+#'
+#' @return The output file paths, invisibly.
+#'
+#' @seealso [getVideoMetadata()] for reading the timestamps of the resulting files;
+#'   [renderOverlayVideo()] for compositing them with a sensor dashboard.
+#'
 #' @examples
 #' \dontrun{
-#' # Portable software HEVC, written beside the originals with a suffix
+#' # portable software encoder, written beside the originals with a suffix
 #' reencodeVideos("./videos/raw", file.suffix = "_hevc")
 #'
-#' # Faster macOS hardware encoder into a separate output folder
+#' # the much faster macOS hardware encoder, into a separate folder
 #' reencodeVideos("./videos/raw", output.dir = "./videos/hevc",
 #'                encoder = "hevc_videotoolbox")
 #' }
@@ -70,7 +83,7 @@ reencodeVideos <- function(mov.directory,
   video_files <- list.files(mov.directory, pattern = "\\.(mov|mp4)$", full.names = TRUE, ignore.case = TRUE)
   if (!length(video_files)) .abort("No {.file .mov} or {.file .mp4} files found in {.file {mov.directory}}.")
 
-  hardware <- encoder %in% c("hevc_videotoolbox", "h265_nvenc", "hevc_amf", "hevc_qsv")
+  hardware <- encoder %in% c("hevc_videotoolbox", "hevc_nvenc", "hevc_amf", "hevc_qsv")
   .log_header(lvl, "reencodeVideos", "Re-encoding camera videos to HEVC",
               bullets = sprintf("Input: %d file%s in %s", length(video_files),
                                 if (length(video_files) != 1) "s" else "", basename(mov.directory)),

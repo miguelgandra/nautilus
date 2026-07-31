@@ -1180,3 +1180,56 @@ test_that("an all-NA backend column does not win the resolution", {
   dt <- data.frame(tbf_hz_peaks = rep(NA_real_, 5), tbf_hz_wavelet = c(1, 1, NA, 1, 1))
   expect_equal(tailBeatColumn(dt), "tbf_hz_wavelet")
 })
+
+
+test_that("return.data = FALSE does not accumulate the whole fleet in memory", {
+  # the streaming contract: the tables are on disk, so they must not also be carried to the end of the
+  # run. Checked by trapping .collectOutput and inspecting what the loop actually handed it.
+  skip_if_not_installed("signal")
+  dir <- withr::local_tempdir()
+  fs  <- 20
+  mk <- function(id) {
+    n <- fs * 120
+    t <- seq_len(n) / fs
+    d <- data.table::data.table(ID = id,
+                                datetime = as.POSIXct("2020-01-01", tz = "UTC") + t,
+                                sway = sin(2 * pi * 0.8 * t))
+    m <- nautilus:::.newNautilusMeta(); m$id <- id
+    p <- file.path(dir, paste0(id, ".rds"))
+    saveRDS(nautilus:::new_nautilus_tag(d, m), p)
+    p
+  }
+  paths <- vapply(c("A", "B", "C"), mk, "")
+  out <- withr::local_tempdir()
+
+  handed <- NULL
+  testthat::local_mocked_bindings(
+    .collectOutput = function(results, saved, return.data, ids) {
+      handed <<- results
+      invisible(unlist(saved, use.names = FALSE))
+    },
+    .package = "nautilus")
+
+  res <- suppressWarnings(calculateTailBeats(unname(paths), method = "peaks", return.data = FALSE,
+                                             output.dir = out, verbose = FALSE))
+  expect_length(res, 3L)                       # three files written
+  expect_true(all(file.exists(res)))
+  # every slot released: the loop kept none of the three tables
+  expect_true(all(vapply(handed, is.null, logical(1))))
+})
+
+test_that("return.data = TRUE still returns every deployment", {
+  skip_if_not_installed("signal")
+  fs <- 20; n <- fs * 120; t <- seq_len(n) / fs
+  mk <- function(id) {
+    d <- data.table::data.table(ID = id,
+                                datetime = as.POSIXct("2020-01-01", tz = "UTC") + t,
+                                sway = sin(2 * pi * 0.8 * t))
+    m <- nautilus:::.newNautilusMeta(); m$id <- id
+    nautilus:::new_nautilus_tag(d, m)
+  }
+  res <- suppressWarnings(calculateTailBeats(list(A = mk("A"), B = mk("B")), method = "peaks",
+                                             verbose = FALSE))
+  expect_named(res, c("A", "B"))
+  expect_true(all(vapply(res, function(x) "tbf_hz_peaks" %in% names(x), logical(1))))
+})

@@ -2,7 +2,7 @@
 % Please edit documentation in R/launchVideo.R
 \name{launchVideo}
 \alias{launchVideo}
-\title{Open camera-tag video at a given datetime}
+\title{Open camera-tag video at a given moment}
 \usage{
 launchVideo(
   id,
@@ -13,35 +13,44 @@ launchVideo(
 )
 }
 \arguments{
-\item{id}{Character/factor scalar: the individual whose video to open (matched in \code{video.metadata}).}
+\item{id}{Which deployment's video to open, matched in \code{video.metadata}.}
 
-\item{datetime}{POSIXct: the instant to seek to.}
+\item{datetime}{The instant to seek to.}
 
-\item{video.metadata}{A data.frame of video segments with columns \code{ID}, \code{start}, \code{end}, \code{video} and
-\code{file}, as returned by \link{getVideoMetadata}.}
+\item{video.metadata}{A table of video segments with columns \code{ID}, \code{start}, \code{end}, \code{video} and
+\code{file}, as returned by \code{\link[=getVideoMetadata]{getVideoMetadata()}}.}
 
-\item{vlc.path}{Optional path to the VLC executable. If \code{NULL} (default), VLC is looked up on the
-system path and then in the usual per-OS install locations.}
+\item{vlc.path}{The path to the VLC executable. \code{NULL} (default) looks it up on the system path and
+then in the usual per-platform install locations, so this is normally only needed for an unusual
+installation.}
 
-\item{close.existing}{Logical. Close any running VLC instance first. Default \code{TRUE}.}
+\item{close.existing}{Whether to close any running VLC instance first (default \code{TRUE}), which keeps
+repeated calls from filling the screen with windows.}
 }
 \value{
-\code{TRUE} invisibly once VLC has been launched; \code{FALSE} if no video segment covers
-\code{datetime}. Invalid arguments, a missing VLC executable and a missing video file all raise an
-error rather than returning \code{FALSE}.
+\code{TRUE}, invisibly, once VLC has been launched, or \code{FALSE} where no video segment covers
+\code{datetime}. Invalid arguments, a missing VLC executable and a missing video file all raise an error
+rather than returning \code{FALSE}, so a silent \code{FALSE} always means the same thing: there is no footage
+for that moment.
 }
 \description{
-Finds the video segment for an individual that contains a given datetime and opens it in VLC, seeked
-to that instant - convenient for jumping straight to a moment of interest (e.g. a validation segment
-from \link{findValidationSegments}). By default any running VLC instance is closed first.
+A deployment's footage arrives as dozens of segment files, and the moment you want to look at - a
+candidate manoeuvre, a flagged dive, an odd stretch of sensor data - is somewhere inside one of them.
+Finding which, and then scrubbing to the right instant, is tedious enough that it discourages
+checking.
+
+This function does it in one call: it finds the segment covering a given timestamp and opens it in
+VLC, already seeked to that instant.
 }
 \examples{
 \dontrun{
 meta <- getVideoMetadata("./videos/PIN_CAM_01")
-# jump straight to a moment of interest in VLC
+
+# jump straight to a moment of interest
 launchVideo("PIN_CAM_01", as.POSIXct("2019-08-31 17:40:00", tz = "UTC"), meta)
 }
 }
 \seealso{
-\link{getVideoMetadata}, \link{findValidationSegments}.
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} for building the segment table; \code{\link[=findValidationSegments]{findValidationSegments()}} for choosing
+moments worth opening.
 }

@@ -503,35 +503,45 @@ alignmentControl <- function(method = c("depth-xcorr", "none"),
 }
 
 
-#' On-screen-display OCR settings for getVideoMetadata()
+#' Timestamp-recognition settings for getVideoMetadata()
 #'
 #' @description
-#' Bundles the optical-character-recognition (OCR) settings used by \code{\link{getVideoMetadata}} to
-#' read the timestamp burned into a camera's on-screen display. OCR is a *secondary* timestamp source:
-#' \code{\link{getVideoMetadata}} takes the recording start time from the file name whenever possible
-#' (exact and camera-agnostic), and falls back to OCR only for cameras whose file names carry no
-#' timestamp (e.g. MOBIUS), or uses it as an optional cross-check. All OCR knobs therefore live here,
-#' keeping the main call uncluttered.
+#' Groups the settings [getVideoMetadata()] uses when it has to read a recording time off the picture,
+#' from the clock a camera burns into its own footage.
 #'
-#' @param model Name of the Tesseract model (`traineddata`) trained on the overlay font. Default `"cam"`,
-#'   the fine-tuned camera-tag model, which is downloaded on first use (see
-#'   \code{\link{installCamOcrModel}}); use `"eng"` (or any installed model) to skip that.
-#' @param box Integer vector `c(x, y, width, height)` giving the pixel location of the timestamp box
-#'   within a frame: top-left corner `(x, y)` and its `width`/`height`. These coordinates are relative to
-#'   a frame of height `frame.height`; for videos of a different resolution they are scaled by
-#'   `actual_height / frame.height`, so the same control works across resolutions of the same camera.
-#'   Default `c(3249, 2120, 325, 28)` (bottom-right box of the 4K camera overlay).
-#' @param frame.height Reference frame height (pixels) the `box` coordinates assume. Default 2160 (4K).
-#' @param search.radius Search radius (pixels) around the expected `box` used to lock onto the bright
-#'   timestamp panel when the overlay drifts slightly between cameras/firmwares. Default 80.
-#' @param max.search.frames Maximum number of frames to try when the first sampled frame yields no
-#'   readable timestamp (e.g. a black frame at the very start of a clip). Default 10.
-#' @param char.whitelist Optional string restricting the characters Tesseract may output (e.g.
-#'   `"0123456789:- "`). `NULL` (default) uses the model's own configuration.
-#' @return A validated `nautilus_ocr` object for the `ocr` argument of \code{\link{getVideoMetadata}}.
-#' @seealso \code{\link{getVideoMetadata}}
+#' This is a fallback, not the normal path. The recording time is taken from the file name whenever a
+#' camera writes one there, because that is exact, costs nothing and does not depend on the video at all.
+#' Reading the screen is for cameras that write no such name, and for the optional cross-check. Nothing
+#' here is consulted otherwise.
+#'
+#' @param model Which Tesseract model to use, trained on the overlay font. Default `"cam"`, the
+#'   fine-tuned camera-tag model, downloaded on first use by [installCamOcrModel()]. Pass `"eng"`, or
+#'   any other installed model, to skip that download at some cost in accuracy on this particular font.
+#' @param box Where the timestamp sits in the frame, as `c(x, y, width, height)` in pixels, with `x` and
+#'   `y` the top-left corner. The coordinates are read relative to `frame.height` and rescaled for
+#'   videos of a different resolution, so one setting covers every resolution of the same camera. Default
+#'   `c(3249, 2120, 325, 28)`, the bottom-right box of the 4K camera overlay. Change it for a camera that
+#'   draws its clock somewhere else - grab a frame and read the pixel coordinates off it.
+#' @param frame.height The frame height, in pixels, that `box` was measured against. Default `2160`.
+#' @param search.radius How far, in pixels, to search around `box` for the bright timestamp panel
+#'   (default `80`). This absorbs the small drift in overlay position between cameras and firmware
+#'   versions, so a box measured on one unit still works on its siblings. Widen it if the clock moves
+#'   more than that; too wide and the search can lock onto some other bright rectangle.
+#' @param max.search.frames How many frames to try before giving up on a video (default `10`). The first
+#'   frame of a clip is often black or half-exposed, which is what this exists for.
+#' @param char.whitelist The characters the recogniser is allowed to return. `NULL` (default) uses the
+#'   package's own alphabet - digits, the letters that spell the month abbreviations, and the few
+#'   punctuation marks a timestamp needs - which is already restrictive enough for this job. Override
+#'   it only for a camera whose clock uses a different format, and remember that the month
+#'   abbreviation is read as letters, so a digits-only whitelist will break the parse.
+#'
+#' @return A validated `nautilus_ocr` object for the `ocr` argument of [getVideoMetadata()].
+#'
+#' @seealso [getVideoMetadata()] for the function that consumes it; [installCamOcrModel()] for
+#'   pre-fetching the default model.
+#'
 #' @examples
-#' ocrControl(box = c(120, 40, 300, 26), frame.height = 1080)   # 1080p camera, top-left overlay
+#' ocrControl(box = c(120, 40, 300, 26), frame.height = 1080)   # 1080p camera, overlay top-left
 #' @export
 ocrControl <- function(model = "cam",
                        box = c(3249, 2120, 325, 28),

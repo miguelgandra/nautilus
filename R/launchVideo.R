@@ -2,29 +2,40 @@
 # Open camera-tag video at a given datetime ###########################################################
 #######################################################################################################
 
-#' Open camera-tag video at a given datetime
+#' Open camera-tag video at a given moment
 #'
 #' @description
-#' Finds the video segment for an individual that contains a given datetime and opens it in VLC, seeked
-#' to that instant - convenient for jumping straight to a moment of interest (e.g. a validation segment
-#' from \link{findValidationSegments}). By default any running VLC instance is closed first.
+#' A deployment's footage arrives as dozens of segment files, and the moment you want to look at - a
+#' candidate manoeuvre, a flagged dive, an odd stretch of sensor data - is somewhere inside one of them.
+#' Finding which, and then scrubbing to the right instant, is tedious enough that it discourages
+#' checking.
 #'
-#' @param id Character/factor scalar: the individual whose video to open (matched in `video.metadata`).
-#' @param datetime POSIXct: the instant to seek to.
-#' @param video.metadata A data.frame of video segments with columns `ID`, `start`, `end`, `video` and
-#'   `file`, as returned by \link{getVideoMetadata}.
-#' @param vlc.path Optional path to the VLC executable. If `NULL` (default), VLC is looked up on the
-#'   system path and then in the usual per-OS install locations.
-#' @param close.existing Logical. Close any running VLC instance first. Default `TRUE`.
+#' This function does it in one call: it finds the segment covering a given timestamp and opens it in
+#' VLC, already seeked to that instant.
 #'
-#' @return `TRUE` invisibly once VLC has been launched; `FALSE` if no video segment covers
-#'   `datetime`. Invalid arguments, a missing VLC executable and a missing video file all raise an
-#'   error rather than returning `FALSE`.
-#' @seealso \link{getVideoMetadata}, \link{findValidationSegments}.
+#' @param id Which deployment's video to open, matched in `video.metadata`.
+#' @param datetime The instant to seek to.
+#' @param video.metadata A table of video segments with columns `ID`, `start`, `end`, `video` and
+#'   `file`, as returned by [getVideoMetadata()].
+#' @param vlc.path The path to the VLC executable. `NULL` (default) looks it up on the system path and
+#'   then in the usual per-platform install locations, so this is normally only needed for an unusual
+#'   installation.
+#' @param close.existing Whether to close any running VLC instance first (default `TRUE`), which keeps
+#'   repeated calls from filling the screen with windows.
+#'
+#' @return `TRUE`, invisibly, once VLC has been launched, or `FALSE` where no video segment covers
+#'   `datetime`. Invalid arguments, a missing VLC executable and a missing video file all raise an error
+#'   rather than returning `FALSE`, so a silent `FALSE` always means the same thing: there is no footage
+#'   for that moment.
+#'
+#' @seealso [getVideoMetadata()] for building the segment table; [findValidationSegments()] for choosing
+#'   moments worth opening.
+#'
 #' @examples
 #' \dontrun{
 #' meta <- getVideoMetadata("./videos/PIN_CAM_01")
-#' # jump straight to a moment of interest in VLC
+#'
+#' # jump straight to a moment of interest
 #' launchVideo("PIN_CAM_01", as.POSIXct("2019-08-31 17:40:00", tz = "UTC"), meta)
 #' }
 #' @export

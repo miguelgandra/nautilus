@@ -2,7 +2,7 @@
 % Please edit documentation in R/getVideoMetadata.R
 \name{getVideoMetadata}
 \alias{getVideoMetadata}
-\title{Extract Metadata and Timestamps from Biologging Tag Video Files}
+\title{Read the timing of every camera-tag video file}
 \usage{
 getVideoMetadata(
   video.folders,
@@ -16,67 +16,84 @@ getVideoMetadata(
 )
 }
 \arguments{
-\item{video.folders}{Character vector. Paths to directories containing video files.}
+\item{video.folders}{One or more directories holding video files.}
 
-\item{video.format}{Character vector. Allowed video formats, \code{"mp4"} and/or \code{"mov"}. Defaults to \code{"mp4"}.}
+\item{video.format}{Which formats to read, \code{"mp4"} and/or \code{"mov"}. Default \code{"mp4"}.}
 
-\item{timestamp.source}{How to obtain each video's start time:
+\item{timestamp.source}{Where to take each video's start time from:
 \itemize{
-\item \code{"auto"} (default): use the file-name timestamp; fall back to OCR only for videos whose file
-name has none.
-\item \code{"filename"}: use the file-name timestamp only (no OCR); videos without one get \code{NA}.
-\item \code{"ocr"}: read every timestamp by OCR from the on-screen display, ignoring the file name.
+\item \code{"auto"} (default) uses the file-name timestamp and falls back to reading the screen only for
+videos whose name has none.
+\item \code{"filename"} uses the file name alone, leaving videos without a timestamp as \code{NA}.
+\item \code{"ocr"} reads every timestamp off the screen, ignoring the file name.
 }}
 
-\item{cross.check}{Logical. When \code{TRUE}, videos whose start time came from the file name are also read
-by OCR and the two are compared; disagreements beyond 2 seconds are flagged (see the \code{ocr_flag}
-output column). Adds OCR cost but validates the file-name timestamps. Defaults to \code{FALSE}.}
+\item{cross.check}{Whether to also read the on-screen timestamp for videos whose start time came from
+the file name, and compare the two (default \code{FALSE}). It costs an optical-character-recognition
+pass per video but validates the file-name times, which is worth doing once for a new camera system
+before trusting them for a whole study. Disagreements beyond two seconds are flagged in \code{ocr_flag}.}
 
-\item{ocr}{An \code{\link{ocrControl}} object (or a named list of its fields) bundling the OCR
-settings - the Tesseract model, the on-screen timestamp box geometry, and the frame-search depth.
-Only consulted when OCR is used. Defaults to \code{ocrControl()}.}
+\item{ocr}{A control object from \code{\link[=ocrControl]{ocrControl()}} holding the recognition settings - the model, the
+position of the timestamp on screen, and how many frames to search. Only consulted when the screen
+is actually read. Pass \code{ocrControl(...)} to change it.}
 
-\item{use.parallel}{Logical. Whether to process videos in parallel. Defaults to \code{TRUE}.}
+\item{use.parallel}{Whether to process videos in parallel (default \code{TRUE}). Reading a directory of
+videos is limited by disk and decoding rather than by R, so this helps considerably.}
 
-\item{n.cores}{Integer. Number of cores for parallel processing. If \code{NULL}, uses \code{detectCores() - 1}.}
+\item{n.cores}{How many cores to use. \code{NULL} (default) leaves one free.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A data frame, one row per video, with columns: \code{ID}, \code{video} (file name), \code{start}/\code{end}
-(POSIXct, UTC), \code{duration} (seconds), \code{frame_rate} (fps), \code{file} (full path), and \code{timestamp_source}
-(\code{"filename"}, \code{"ocr"}, or \code{NA} when no timestamp could be obtained). When \code{cross.check = TRUE},
-three further columns are added: \code{ocr_start} (the OCR-read start time), \code{ocr_offset_s}
-(\code{start - ocr_start}, seconds) and \code{ocr_flag} (logical; \code{TRUE} when the two disagree by > 2 s).
+A data frame with one row per video and columns \code{ID}, \code{video} (the file name), \code{start} and
+\code{end}, \code{duration} in seconds, \code{frame_rate}, \code{file} (the full path), and \code{timestamp_source}, which is
+\code{"filename"}, \code{"ocr"}, or \code{NA} where no timestamp could be obtained at all.
+
+With \code{cross.check = TRUE}, three further columns are added: \code{ocr_start}, the time read from the
+screen; \code{ocr_offset_s}, the file-name time minus that; and \code{ocr_flag}, which is \code{TRUE} where the two
+disagree by more than two seconds.
 }
 \description{
-Extracts the recording start time, end time, duration and frame rate of every video file found in
-one or more directories, returning one row per video.
+Sensor data and video are only comparable once you know, to the second, when each video frame was
+recorded. Camera tags do not make this easy: the camera keeps its own clock, files are split into
+segments of arbitrary length, and different camera systems record the start time in different places
+or not at all.
 
-The recording start time is taken, whenever possible, from the \strong{file name}: on-camera systems
-encode it as \code{YYYYMMDD-HHMMSS} or \code{YYMMDD-HHMMSS} (e.g. \code{CameraCMD71_Spot06-20190831-173658-...mp4}
-or \verb{230831-161949_CAM0bc99448_30.mp4}). File-name timestamps are exact, camera-agnostic and require
-no image processing, so they are the primary and default source.
+This function builds the bridge. It reads the start time, end time, duration and frame rate of every
+video in one or more directories and returns one row per file - the table every other video function
+in the package takes as its map from a timestamp to a file and an offset within it.
+}
+\details{
+\subsection{Where the start time comes from, and why the file name is preferred}{
 
-For cameras whose file names carry no timestamp (e.g. MOBIUS units), the start time can instead be
-read by Optical Character Recognition (OCR, via the Tesseract engine) from the timestamp burned into
-the video's on-screen display. OCR is a \emph{secondary} source: it is used only as a fallback where the
-file name has no timestamp, or - with \code{cross.check = TRUE} - as an independent check on the file-name
-time. All OCR settings (model, the on-screen box location, etc.) are bundled in \code{\link{ocrControl}}.
+Most on-camera systems encode the recording time in the file name, as \code{YYYYMMDD-HHMMSS} or
+\code{YYMMDD-HHMMSS}. That is the primary and default source, because it is exact, costs nothing to read,
+and does not depend on the camera model, the video quality or where on the frame a clock happens to
+be drawn.
 
-Duration and frame rate are always read with \code{ffprobe}; \code{ffmpeg} and the OCR packages are required
-only when OCR is actually used.
+Some cameras write no timestamp into the file name, and for those the start time can be read by
+optical character recognition from the clock burned into the picture. This is a secondary source: it
+is slower, and it can misread a digit on a dark or motion-blurred frame. It is used only where the
+file name has nothing to offer, or, with \code{cross.check = TRUE}, as an independent check on the file
+name.
+
+Duration and frame rate are always read from the file itself with \code{ffprobe}, so an FFmpeg
+installation is needed for every run. The \code{ffmpeg} binary itself, and the character-recognition
+packages, are needed only when the screen is actually read.
+}
 }
 \examples{
 \dontrun{
-# One row per video; start times taken from the file names where present
+# one row per video, start times taken from the file names where present
 meta <- getVideoMetadata(c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02"))
 
-# Cross-check the file-name timestamps against OCR of the on-screen clock
+# validate those file-name timestamps against the clock burned into the picture
 meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
+subset(meta, ocr_flag)
 }
-
 }
 \seealso{
-\code{\link{ocrControl}}, \code{\link{saveUncertainTimestampFrames}}
+\code{\link[=ocrControl]{ocrControl()}} for the recognition settings; \code{\link[=launchVideo]{launchVideo()}} and \code{\link[=filterVideoPeriod]{filterVideoPeriod()}} for
+what consumes this table; \code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for compositing footage with sensor data.
 }

@@ -2,7 +2,7 @@
 % Please edit documentation in R/findValidationSegments.R
 \name{findValidationSegments}
 \alias{findValidationSegments}
-\title{Find candidate segments for orientation / axis-mapping validation}
+\title{Find the clearest manoeuvres to check against video}
 \usage{
 findValidationSegments(
   data,
@@ -15,56 +15,70 @@ findValidationSegments(
 )
 }
 \arguments{
-\item{data}{A list of processed datasets (one per individual), a single aggregated
-data.table/data.frame with an \code{id.col}, or a character vector of \code{.rds} file paths. The output of
-\link{processTagData} is expected.}
+\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
+\code{.rds} paths. The output of \code{\link[=processTagData]{processTagData()}} is expected.}
 
-\item{types}{Character vector of event types to detect, any of \code{"turn"} (net heading change, for the
-heading/sway sign), \code{"roll"} (sustained roll excursion, for the roll sign) and \code{"dive"} (sustained
-vertical speed, for pitch/surge). Default: all three. A type whose required column is absent is
-skipped with a note.}
+\item{types}{Which event types to look for: any of \code{"turn"}, a net heading change that tests the
+heading and sway signs; \code{"roll"}, a sustained roll excursion that tests the roll sign; and
+\code{"dive"}, a sustained vertical speed that tests pitch and surge. All three by default. A type whose
+required column is absent is skipped with a note.}
 
-\item{n}{Integer. Number of (non-overlapping) candidate segments to return per type, per individual.
-Default 5.}
+\item{n}{How many non-overlapping candidates to return per type, per deployment (default \code{5}). Raise
+it if the best few turn out to be ambiguous on screen.}
 
-\item{window}{Numeric. Segment length in seconds (also the smoothing window for the event signal).
-Default 20.}
+\item{window}{The length of each returned window, in seconds, which is also the smoothing window for
+the event signal (default \code{20}). Longer windows favour sustained manoeuvres over sharp ones, so
+match it to the timescale on which your animal actually turns.}
 
-\item{id.col, datetime.col}{Column names for the animal ID and datetime. Defaults \code{"ID"}/\code{"datetime"}.}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A data frame of candidate segments, sorted by individual, type and rank, with columns:
+A data frame of candidate segments, sorted by deployment, type and rank, with columns:
 \itemize{
-\item \strong{id}: the individual.
-\item \strong{type}: \code{"turn"} / \code{"roll"} / \code{"dive"}.
-\item \strong{rank}: 1 = clearest event of that type for that individual.
-\item \strong{start}, \strong{end}: the segment window (POSIXct), \code{window} seconds wide.
-\item \strong{peak_time}: the instant of strongest signal within the segment.
-\item \strong{value}, \strong{unit}: the interpretable magnitude (net heading change in deg for
-turns; peak \|roll\| in deg for rolls; net depth change in m for dives).
+\item \code{id} - the deployment.
+\item \code{type} - \code{"turn"}, \code{"roll"} or \code{"dive"}.
+\item \code{rank} - 1 is the clearest event of that type for that deployment.
+\item \code{start}, \code{end} - the window, \code{window} seconds wide.
+\item \code{peak_time} - the instant of strongest signal within the window.
+\item \code{value}, \code{unit} - the interpretable magnitude: net heading change in degrees for a turn, peak
+absolute roll in degrees for a roll, and net depth change in metres for a dive.
 }
 }
 \description{
-Scans processed tag data for the clearest, most validation-worthy events and returns a tidy table of
-short time windows to inspect (e.g. against synchronised video). Manually scrubbing hours of footage
-for a clean manoeuvre is the main cost of video-based validation; this picks the handful of moments
-where the animal most strongly \strong{turned}, \strong{rolled}, or \strong{dived}, so the computed orientation can
-be checked against the observed behaviour at exactly those instants.
+Checking a computed orientation against footage means finding a moment where the animal unambiguously
+did something - a hard turn, a roll, a steep dive - and comparing what the sensors say with what the
+video shows. Scrubbing hours of footage for such a moment is the main cost of video validation, and
+most of the record is uninformative because the animal is swimming steadily.
 
-For each requested event type the per-sample signal is reduced to a centred rolling mean over
-\code{window} seconds (so brief jitter and wiggles cancel and only sustained, net manoeuvres score), and
-the top \code{n} non-overlapping peaks are returned as \verb{[start, end]} windows centred on each peak.
+This function does the searching. It scans processed data for the events that discriminate best and
+returns a tidy table of short windows to inspect, so the review starts from the handful of instants
+where the answer is legible.
+}
+\details{
+For each requested type the per-sample signal is reduced to a centred rolling mean over \code{window}
+seconds, so that brief jitter and wiggles cancel and only sustained, net manoeuvres score. The top
+\code{n} non-overlapping peaks are then returned as windows centred on each peak.
+
+The rolling mean is what makes the result useful rather than merely extreme. A raw per-sample maximum
+finds the single noisiest instant in the record, which on inspection is usually a knock to the tag;
+a net change over twenty seconds finds a manoeuvre the animal actually performed and that a reviewer
+can see.
 }
 \examples{
 \dontrun{
 processed <- processTagData(imported)
-# The 5 clearest turns/rolls/dives per animal, as 20-s windows to check against video
+
+# the 5 clearest turns, rolls and dives per animal, as 20 s windows to check against video
 segs <- findValidationSegments(processed, types = c("turn", "roll", "dive"), n = 5, window = 20)
-subset(segs, rank == 1)   # the single best manoeuvre of each type per individual
+subset(segs, rank == 1)   # the single best manoeuvre of each type per deployment
 }
 }
 \seealso{
-\link{processTagData}, \link{checkTagMapping}.
+\code{\link[=processTagData]{processTagData()}} for the step that must come first; \code{\link[=reviewTagMapping]{reviewTagMapping()}}, which uses this
+to choose its clips; \code{\link[=launchVideo]{launchVideo()}} for jumping straight to one of these moments.
 }

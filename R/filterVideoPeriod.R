@@ -2,33 +2,51 @@
 # Restrict sensor data to video-covered (and optionally annotated) periods ############################
 #######################################################################################################
 
-#' Restrict tag data to video-covered (and optionally annotated) periods
+#' Restrict tag data to the periods covered by video
 #'
 #' @description
-#' Subsets each individual's sensor data to the periods for which video footage exists (from
-#' `video.metadata`), and optionally further to manually annotated intervals. Useful for aligning
-#' sensor analyses with the footage that backs them. Temporal jumps between video segments are handled
-#' naturally - a row is kept if its timestamp falls within ANY video segment (and ANY annotation
-#' interval, when supplied). For annotation intervals, a missing `start` is filled with the earliest,
-#' and a missing `end` with the latest, video-covered time for that individual.
+#' A camera runs for a fraction of a deployment - its battery and memory are spent long before the
+#' tag's. Any analysis that compares sensor data against what the footage shows must therefore be
+#' confined to the stretches where footage exists, or it silently mixes verified and unverified periods.
 #'
-#' @param data A list of datasets (one per individual), or a single aggregated data.table/data.frame
-#'   with an `id.col`. Each must contain a POSIXct `datetime.col`.
-#' @param video.metadata A data.frame/data.table of video segments with columns `id.col`, `start` and
-#'   `end` (POSIXct), as returned by \link{getVideoMetadata}.
-#' @param annotation.intervals Optional data.frame/data.table of annotation intervals with `id.col`,
-#'   `start` and `end` (POSIXct). `NULL` (default) filters on video availability only.
-#' @param id.col,datetime.col Column names for the ID and datetime. Defaults `"ID"`/`"datetime"`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
+#' This function makes that restriction explicit: it keeps only the samples falling inside a video
+#' segment, and optionally inside a scored annotation interval as well.
 #'
-#' @return A named list of filtered data.tables (individuals with no retained rows are dropped).
-#' @seealso \link{getVideoMetadata}, \link{annotateData}.
+#' @param data A tag object, a list of them, or a single table with an `id.col`. Each must carry a
+#'   timestamp column.
+#' @param video.metadata A table of video segments with an `id.col` and `start` and `end` columns, as
+#'   returned by [getVideoMetadata()].
+#' @param annotation.intervals An optional table of scored intervals with the same three columns, to
+#'   narrow the result further to periods you have actually annotated. `NULL` (default) filters on video
+#'   coverage alone.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
+#'
+#' @details
+#' A sample is kept when it falls inside any video segment, and, where annotations are supplied, inside
+#' any annotation interval too. Coverage therefore need not be continuous: the gaps between video
+#' segments are handled without special treatment, and a deployment whose camera stopped and restarted
+#' several times is filtered correctly.
+#'
+#' In an annotation interval, a missing `start` is filled with the earliest video-covered time for that
+#' deployment and a missing `end` with the latest, so an interval that is open at one end means "from
+#' the beginning of the footage" or "to the end of it" rather than being discarded.
+#'
+#' @return A named list of filtered tables. Deployments left with no rows are dropped, so the result may
+#'   be shorter than the input.
+#'
+#' @seealso [getVideoMetadata()] for the segment table; [annotateData()] for turning scored intervals
+#'   into label columns.
+#'
 #' @examples
 #' \dontrun{
 #' processed <- processTagData(imported)
 #' meta      <- getVideoMetadata("./videos")
+#'
 #' # keep only the sensor rows that fall within video coverage
-#' filtered  <- filterVideoPeriod(processed, meta)
+#' filtered <- filterVideoPeriod(processed, meta)
 #' }
 #' @export
 

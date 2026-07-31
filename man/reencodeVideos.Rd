@@ -2,7 +2,7 @@
 % Please edit documentation in R/reencodeVideos.R
 \name{reencodeVideos}
 \alias{reencodeVideos}
-\title{Re-encode camera-tag videos to HEVC (H.265)}
+\title{Re-encode camera-tag videos to a more compact format}
 \usage{
 reencodeVideos(
   mov.directory,
@@ -17,54 +17,65 @@ reencodeVideos(
 )
 }
 \arguments{
-\item{mov.directory}{Directory containing the \code{.mov}/\code{.mp4} files to re-encode.}
+\item{mov.directory}{The directory holding the \code{.mov} or \code{.mp4} files to re-encode.}
 
-\item{output.dir}{Directory for the re-encoded \code{.mp4} files. Defaults to \code{mov.directory}.}
+\item{output.dir}{Where to write the re-encoded \code{.mp4} files. Defaults to \code{mov.directory}.}
 
-\item{file.suffix}{Character string appended to each output base name (before \code{.mp4}), e.g. to keep
-the re-encoded files distinct from the originals when writing to the same directory. Default \code{""}.}
+\item{file.suffix}{A string appended to each output name, before \code{.mp4}, to keep the re-encoded files
+distinct from the originals when writing to the same directory. Default \code{""}.}
 
-\item{encoder}{FFmpeg video encoder. Default \code{"libx265"} (software). Hardware options such as
-\code{"hevc_videotoolbox"} (macOS), \code{"h265_nvenc"} (NVIDIA), \code{"hevc_amf"} (AMD) or \code{"hevc_qsv"} (Intel)
-are faster when supported. List the available encoders with \code{ffmpeg -encoders}.}
+\item{encoder}{Which FFmpeg encoder to use. Default \code{"libx265"}, the portable software encoder.
+Hardware encoders are far faster where supported: \code{"hevc_videotoolbox"} on macOS, \code{"hevc_nvenc"} on
+NVIDIA, \code{"hevc_amf"} on AMD, \code{"hevc_qsv"} on Intel. List what your build offers with
+\code{ffmpeg -encoders}.}
 
-\item{crf}{Constant Rate Factor (0-51; lower = higher quality / larger). Used by the \strong{software}
-encoder (\code{libx265}). Default 18.}
+\item{crf}{The constant rate factor for the \strong{software} encoder, from 0 to 51, where lower means
+higher quality and a larger file. Default \code{18}, which is visually near-lossless for this material.
+Ignored by the hardware encoders.}
 
-\item{video.quality}{Quality (1-100; higher = better). Used by the \strong{hardware} encoders. Default 50.}
+\item{video.quality}{The quality setting for the \strong{hardware} encoders, from 1 to 100, where higher
+is better. Default \code{50}. Ignored by the software encoder.}
 
-\item{preset}{Encoding speed/compression preset, one of \code{"ultrafast"}, \code{"superfast"}, \code{"veryfast"},
-\code{"faster"}, \code{"fast"}, \code{"medium"} (default), \code{"slow"}, \code{"slower"}, \code{"veryslow"}.}
+\item{preset}{How hard the software encoder works for a given quality: one of \code{"ultrafast"},
+\code{"superfast"}, \code{"veryfast"}, \code{"faster"}, \code{"fast"}, \code{"medium"} (default), \code{"slow"}, \code{"slower"} or
+\code{"veryslow"}. Slower presets buy smaller files at the same quality, at a cost in time that is
+substantial across a whole archive.}
 
-\item{overwrite}{Logical. If \code{FALSE} (default), files whose output already exists are skipped; if
-\code{TRUE}, they are re-encoded and replaced.}
+\item{overwrite}{Whether to re-encode files whose output already exists (default \code{FALSE}, which skips
+them). Leave it off so an interrupted batch can simply be re-run.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-The vector of output file paths, invisibly.
+The output file paths, invisibly.
 }
 \description{
-Batch re-encodes the \code{.mov}/\code{.mp4} video files in a directory to the more space-efficient HEVC
-(H.265) format with FFmpeg, for archival or downstream processing. A hardware encoder
-(\code{hevc_videotoolbox}, \code{h265_nvenc}, ...) is much faster when available; the software encoder
-(\code{libx265}) is the portable default. Existing outputs are skipped unless \code{overwrite = TRUE}.
+Camera tags produce very large files - a single deployment can fill a disk - and the original
+encoding is chosen for the camera's convenience rather than for storage. Re-encoding to HEVC, also
+known as H.265, typically cuts the size substantially at visually equivalent quality, which matters
+when an archive has to be kept for the life of a study.
+
+This function batch-converts every video in a directory with FFmpeg, skipping any whose output
+already exists.
 }
 \details{
-Commonly used HEVC encoders: \strong{libx265} (portable software), \strong{hevc_videotoolbox} (macOS hardware),
-\strong{h265_nvenc} (NVIDIA), \strong{hevc_amf} (AMD), \strong{hevc_qsv} (Intel Quick Sync). Audio is dropped
-(\code{-an}) for space-efficient archival.
+Audio is dropped, since a camera tag's audio track is rarely of interest and removing it saves space.
+If you need the audio, re-encode outside this function.
+
+Requires FFmpeg on the system path.
 }
 \examples{
 \dontrun{
-# Portable software HEVC, written beside the originals with a suffix
+# portable software encoder, written beside the originals with a suffix
 reencodeVideos("./videos/raw", file.suffix = "_hevc")
 
-# Faster macOS hardware encoder into a separate output folder
+# the much faster macOS hardware encoder, into a separate folder
 reencodeVideos("./videos/raw", output.dir = "./videos/hevc",
                encoder = "hevc_videotoolbox")
 }
 }
 \seealso{
-\link{getVideoMetadata}, \link{renderOverlayVideo}.
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} for reading the timestamps of the resulting files;
+\code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for compositing them with a sensor dashboard.
 }
