@@ -11,35 +11,37 @@ filterLocationsControl(
 )
 }
 \arguments{
-\item{min.time.mins}{Numeric. Minimum time separation (minutes) between two fixes for the implied speed
-between them to be trusted. Segments closer together in time are not judged, since a sub-threshold
-gap inflates the speed unreliably (a metre of GPS jitter over a few seconds looks like a huge speed).
-Default 0 (judge every segment; the position record already drops exact-duplicate timestamps).}
+\item{min.time.mins}{The shortest separation, in minutes, between two fixes for the speed implied
+between them to be trusted. Closer pairs are not judged, because a sub-threshold gap inflates the
+apparent speed unreliably: a metre of positional jitter over a few seconds looks like a huge
+speed. Default \code{0}, which judges every segment, the position record having already dropped
+duplicate timestamps. Raise it if your tag reports bursts of near-simultaneous fixes.}
 
-\item{max.iterations}{Integer. Maximum number of removal passes. Each pass removes the single most
-egregious spike and recomputes speeds against the new neighbours; the loop stops early once no fix is
-implausible. Default 50.}
+\item{max.iterations}{The most removal passes to make. Each pass removes the single most egregious
+spike and recomputes speeds against the new neighbours, and the loop stops early once no fix is
+implausible. Default \code{50}. It is a runaway guard rather than a tuning knob; reaching it usually
+means the threshold is too tight for the data.}
 
-\item{spike.angle}{Numeric in [90, 180], or \code{NULL}. Optional direction-reversal test that supplements
-the speed test: an interior fix is also treated as a spike when the track's heading reverses by at
-least this many degrees at that fix (a sharp out-and-back) \emph{and} at least one adjoining segment
-exceeds \code{max.speed.kmh}. Catches sharp spikes at moderate speed that the pure speed test misses.
-\code{NULL} (default) disables it.}
+\item{spike.angle}{An optional direction-reversal test, in degrees between 90 and 180, that
+supplements the speed test: an interior fix is also treated as a spike when the track's heading
+reverses by at least this much there \emph{and} at least one adjoining segment exceeds
+\code{max.speed.kmh}. It catches the sharp out-and-back spikes that travel slowly enough to pass the
+speed test alone. \code{NULL} (default) disables it; around 160 degrees is a reasonable starting point.}
 }
 \value{
 A validated \code{nautilus_filter_locations} object for the \code{control} argument of
-\code{\link{filterLocations}}.
+\code{\link[=filterLocations]{filterLocations()}}.
 }
 \description{
-Groups the tuning knobs of the neighbour-consistency ("root") speed test used by
-\code{\link{filterLocations}} into one validated object. The primary threshold - the maximum plausible
-speed - stays the top-level \code{max.speed.kmh} argument of \code{\link{filterLocations}}; this object
-controls only how that test is applied.
+Groups the tuning of the neighbour-consistency speed test used by \code{\link[=filterLocations]{filterLocations()}} into one
+validated object. The threshold that matters most - the fastest speed you would believe - stays the
+top-level \code{max.speed.kmh} argument of that function; this object governs only how the test is
+applied.
 }
 \examples{
-filterLocationsControl(min.time.mins = 2)              # ignore fix pairs less than 2 min apart
-filterLocationsControl(spike.angle = 160)             # also flag sharp out-and-back spikes
+filterLocationsControl(min.time.mins = 2)     # ignore fix pairs less than 2 min apart
+filterLocationsControl(spike.angle = 160)     # also flag sharp out-and-back spikes
 }
 \seealso{
-\code{\link{filterLocations}}
+\code{\link[=filterLocations]{filterLocations()}} for the function that consumes it.
 }

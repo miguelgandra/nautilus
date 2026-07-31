@@ -117,7 +117,7 @@ reckoned path is reconciled with verified positions.
 }
 \details{
 Dead reckoning integrates a \emph{speed} and a \emph{heading} forward in time to reconstruct a movement path (see
-the "Dead reckoning in brief" section of \code{\link{reconstructTrack}}). Heading is produced upstream by
+the "How the reconstruction proceeds" section of \code{\link{reconstructTrack}}). Heading is produced upstream by
 \code{\link{processTagData}}; this control object governs the two remaining ingredients - the \strong{speed}
 used at each step, and the \strong{Verified Position Correction (VPC)} that ties the path back to known fixes.
 \subsection{Choosing a speed method}{

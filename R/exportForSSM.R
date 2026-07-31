@@ -2,80 +2,84 @@
 # Export a reconstructed pseudo-track for state-space modelling (aniMotum / crawl) #####################
 #######################################################################################################
 
-#' Export a reconstructed pseudo-track for state-space modelling
+#' Export a reconstructed track for state-space modelling
 #'
 #' @description
-#' Formats the output of \code{\link{reconstructTrack}} into the tidy data frame that continuous-time
-#' state-space movement models expect, so the dead-reckoned pseudo-track can be handed to a dedicated,
-#' well-tested package - \pkg{aniMotum} (Jonsen et al. 2023) or \pkg{crawl} (Johnson et al. 2008) - for
-#' formal smoothing and per-position uncertainty. This package deliberately does not re-implement a
-#' state-space smoother; it delegates to those.
+#' A pseudo-track is a dense, plausible path, but it is a reconstruction rather than a set of
+#' observations with a formal error model. Analyses that need credible intervals - a utilisation
+#' distribution, a behavioural state estimate - require one.
+#'
+#' A continuous-time state-space model provides it: each reconstructed position is treated as a
+#' measurement with a known error, here the `pseudo_error` [reconstructTrack()] already computes, and a
+#' movement process is fitted to them, returning a regularised track with uncertainty. This package
+#' deliberately does not re-implement that machinery. This function instead formats the track into the
+#' tidy frame the established tools expect, so it can be handed to \pkg{aniMotum} (Jonsen et al. 2023)
+#' or \pkg{crawl} (Johnson et al. 2008).
+#'
+#' @param data The output of [reconstructTrack()]: a tag object, a list of them, a single table with an
+#'   `id.col`, or a character vector of `.rds` paths. Each must carry the timestamp, longitude and
+#'   latitude columns named below.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param lon.col,lat.col Which columns hold the reconstructed longitude and latitude. Defaults
+#'   `"pseudo_lon"` and `"pseudo_lat"`.
+#' @param error.col Which column holds the per-position one-sigma error in metres, or `NULL` to omit it
+#'   entirely. Default `"pseudo_error"`. Rows with a finite value are exported with their own error;
+#'   rows without it fall back to the model's default for a GPS position.
+#' @param thin.minutes Keep only one position per this many minutes (default `5`); set `0` to keep every
+#'   sample. A dense track is both heavy for a state-space model and largely redundant, since
+#'   neighbouring samples carry almost the same information. Thin less aggressively if your analysis
+#'   turns on short-lived events.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, which prints the header, any
+#'   per-deployment skip notices and the export summary, or `2`/`"detailed"` (default), which adds a
+#'   progress bar while the deployments are read.
 #'
 #' @details
-#' ## Why hand off to a state-space model?
-#' \code{\link{reconstructTrack}} produces a dense, plausible path, but a *pseudo*-track is a
-#' reconstruction, not a set of observations with a formal error model. A continuous-time state-space model
-#' (SSM) treats each reconstructed position as a measurement with known error (here, `pseudo_error`) and
-#' fits a movement process to them, returning a regularised track with credible intervals - the standard
-#' currency for downstream analyses such as utilisation distributions or behavioural state estimation. The
-#' community-standard tools for this are \pkg{aniMotum}'s continuous-time correlated random walk / move
-#' persistence models and \pkg{crawl}'s CTCRW (Johnson et al. 2008; Jonsen et al. 2023).
-#'
 #' ## What is exported
-#' A single tidy data frame (all deployments stacked, keyed by `id`) in the format \pkg{aniMotum}'s
+#'
+#' One tidy data frame with every deployment stacked and keyed by `id`, in the layout \pkg{aniMotum}'s
 #' `fit_ssm()` reads:
-#' \itemize{
-#'   \item `id` - deployment identifier.
-#'   \item `date` - timestamp (POSIXct).
-#'   \item `lc` - location class, per row: `"GL"` (generic location) where a reckoning error is supplied, so
-#'     `fit_ssm()` uses it; otherwise `"G"` (GPS, the model's default error).
-#'   \item `lon`, `lat` - the reconstructed position.
-#'   \item `x.sd`, `y.sd` - the 1-sigma position error in \strong{metres} (the isotropic `pseudo_error`, so
-#'     both are equal). These are \pkg{aniMotum}'s current per-observation error columns (they replaced the
-#'     deprecated `lonerr`/`laterr` in v1.2), read as metres. They are emitted only when at least one
-#'     position carries an error, so a purely-GPS export stays in the 5-column GPS format (\pkg{aniMotum}
-#'     infers the data type from whether these columns are present).
-#' }
-#' A dense (e.g. 1 Hz) pseudo-track is both heavy for an SSM and largely redundant, so it is thinned to one
-#' position per `thin.minutes` interval before export (set `thin.minutes = 0` to keep every sample).
+#'
+#' - `id` - the deployment identifier.
+#' - `date` - the timestamp.
+#' - `lc` - the location class for each row: `"GL"`, a generic location, where a reckoning error is
+#'   supplied so that the model uses it, and otherwise `"G"` for GPS, which uses the model's own default
+#'   error.
+#' - `lon`, `lat` - the reconstructed position.
+#' - `x.sd`, `y.sd` - the one-sigma position error in **metres**. The error is isotropic, so the two are
+#'   equal. They are emitted only when at least one position carries an error, so a track without one
+#'   stays in the five-column form; \pkg{aniMotum} infers the data type from whether these columns are
+#'   present.
 #'
 #' ## Using the result
-#' With \pkg{aniMotum}, pass the frame straight to `fit_ssm()`; with \pkg{crawl}, project the coordinates and
-#' supply the same metre-scale error (`y.sd`) to `crwMLE()`'s error model. See
-#' \code{vignette("movement-tracks", package = "nautilus")} for a worked example. \pkg{aniMotum} / \pkg{crawl} are optional (\code{Suggests}); this function only
-#' formats a data frame and does not require them to be installed.
 #'
-#' @param data The output of \code{\link{reconstructTrack}}: a `nautilus_tag` / data.frame, a (named) list
-#'   of them, a single aggregated data.frame with an `id.col`, or a character vector of `.rds` paths. Each
-#'   must carry `datetime.col`, `lon.col` and `lat.col`.
-#' @param id.col,datetime.col Column names for the animal ID and timestamp. Defaults `"ID"` / `"datetime"`.
-#' @param lon.col,lat.col Reconstructed longitude / latitude columns. Defaults `"pseudo_lon"` /
-#'   `"pseudo_lat"`.
-#' @param error.col Column holding the per-position 1-sigma error in metres, or `NULL` to omit it. Default
-#'   `"pseudo_error"`. Rows with a finite value get location class `"GL"` and `x.sd`/`y.sd`; rows without
-#'   (or every row, when the column is absent / `NULL`) get `"G"`.
-#' @param thin.minutes Thin the track to one position per this many minutes before export. Default 5; set
-#'   `0` to keep every sample.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default). At
-#'   `"normal"` prints the header, any per-deployment skip notices, and the export summary; `"detailed"`
-#'   additionally shows a live progress bar while the deployments are read and a skipped-deployment count.
+#' With \pkg{aniMotum}, pass the frame straight to `fit_ssm()`. With \pkg{crawl}, project the
+#' coordinates and supply the same metre-scale error to `crwMLE()`'s error model. There is a worked
+#' example in `vignette("movement-tracks", package = "nautilus")`.
 #'
-#' @return A `data.frame` with columns `id`, `date`, `lc`, `lon`, `lat` (plus `x.sd`, `y.sd` when any
-#'   position carries an error), ready for \code{aniMotum::fit_ssm()}. Deployments lacking the required
+#' Both packages are optional. This function only formats a data frame and does not require either to
+#' be installed.
+#'
+#' @return A data frame with columns `id`, `date`, `lc`, `lon` and `lat`, plus `x.sd` and `y.sd` where
+#'   any position carries an error, ready for `aniMotum::fit_ssm()`. Deployments lacking the required
 #'   columns are skipped with a message.
+#'
 #' @references
-#' Johnson DS, London JM, Lea MA, Durban JW (2008) Continuous-time correlated random walk model for animal
-#' telemetry data. *Ecology*. 89:1208-1215. \doi{10.1890/07-1032.1}
+#' Johnson DS, London JM, Lea MA, Durban JW (2008) Continuous-time correlated random walk model for
+#' animal telemetry data. *Ecology* 89:1208-1215. \doi{10.1890/07-1032.1}
 #'
 #' Jonsen ID, Grecian WJ, Phillips L, *et al.* (2023) aniMotum, an R package for animal movement data:
-#' rapid quality control, behavioural estimation and simulation. *Methods in Ecology and Evolution*.
+#' rapid quality control, behavioural estimation and simulation. *Methods in Ecology and Evolution*
 #' 14:806-816. \doi{10.1111/2041-210X.14060}
-#' @seealso \code{\link{reconstructTrack}}, \code{\link{trackMetrics}}
+#'
+#' @seealso [reconstructTrack()] for producing the track; [trackMetrics()] for summarising it without a
+#'   model.
+#'
 #' @examples
 #' \dontrun{
 #' tracks <- reconstructTrack(processed)
 #' ssm_in <- exportForSSM(tracks, thin.minutes = 10)
-#' fit <- aniMotum::fit_ssm(ssm_in, model = "crw", time.step = 2)   # 2-h regularised track
+#' fit <- aniMotum::fit_ssm(ssm_in, model = "crw", time.step = 2)   # a 2 h regularised track
 #' }
 #' @export
 exportForSSM <- function(data,

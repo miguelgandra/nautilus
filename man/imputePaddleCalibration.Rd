@@ -2,7 +2,7 @@
 % Please edit documentation in R/imputePaddleCalibration.R
 \name{imputePaddleCalibration}
 \alias{imputePaddleCalibration}
-\title{Build a complete paddle-wheel speed-calibration grid for every deployed tag-year}
+\title{Fill the gaps in a paddle-wheel speed-calibration table}
 \usage{
 imputePaddleCalibration(
   calibration,
@@ -22,81 +22,101 @@ imputePaddleCalibration(
 )
 }
 \arguments{
-\item{calibration}{A data.frame (or data.table) of measured calibrations, one row per calibration,
-with at least the tag id, calibration year and slope columns (see \code{id.col}, \code{year.col},
-\code{slope.col}).}
+\item{calibration}{A table of measured calibrations, one row per calibration, carrying at least the
+tag identifier, the calibration year and the slope.}
 
-\item{deployments}{A data.frame (or data.table) of deployments (e.g. animal metadata), giving the
-tag id and deployment year of every deployment a calibration is needed for. Optionally filtered to
-paddle-wheel tags via \code{paddle.col}.}
+\item{deployments}{A table of deployments, such as your animal metadata, giving the tag identifier
+and year of every deployment a slope is needed for.}
 
-\item{id.col, year.col, slope.col}{Column names for the tag/physical-unit identifier, the year, and
-the calibration slope. Defaults \code{"package_id"}, \code{"year"}, \code{"slope"}.}
+\item{id.col, year.col, slope.col}{Which columns hold the tag identifier, the year and the calibration
+slope. Defaults \code{"package_id"}, \code{"year"} and \code{"slope"}.}
 
-\item{paddle.col}{Name of a logical column in \code{deployments} flagging paddle-wheel tags; only
-those rows are kept. \code{NULL} uses every deployment. Default \code{"paddle_wheel"} (a no-op
-with a warning if that column is absent).}
+\item{paddle.col}{A logical column in \code{deployments} marking the paddle-wheel tags, so that only those
+rows are kept. Default \code{"paddle_wheel"}, which is a no-op with a warning if the column is absent.
+\code{NULL} uses every deployment.}
 
-\item{weights.col}{Optional column in \code{calibration} used to weight the fits (e.g.
-\code{"r.squared"}), so poorer calibrations count for less. \code{NULL} (default) weights equally.}
+\item{weights.col}{An optional column in \code{calibration} used to weight the fit, so that poorer
+calibrations count for less - an r-squared column, for instance. \code{NULL} (default) weights every
+calibration equally.}
 
-\item{method}{How the degradation rate is obtained: \code{"shared-rate"} (default, one pooled rate
-with per-tag intercepts), \code{"fixed-rate"} (use \code{degradation.rate} as supplied), or
-\code{"per-tag"} (legacy: a separate line per tag with at least two calibrations, the shared rate
-otherwise - flexible but unstable on short series).}
+\item{method}{Where the degradation rate comes from: \code{"shared-rate"} (default) pools one rate across
+every tag calibrated more than once, \code{"fixed-rate"} uses the \code{degradation.rate} you supply, and
+\code{"per-tag"} fits a separate line to each tag with at least two calibrations and then uses the
+average of those per-tag rates for every other tag. Prefer the default unless you have long, clean
+series per tag: \code{"per-tag"} is more flexible but unstable on the few points a calibration record
+usually holds, and averaging its rates gives every tag equal weight however little data it rests
+on.}
 
-\item{degradation.rate}{Annual slope increase. Required for \code{method = "fixed-rate"}; otherwise
-an optional fallback used only when the data cannot support an estimate.}
+\item{degradation.rate}{The annual increase in slope. Required for \code{method = "fixed-rate"}; for the
+other methods it is an optional fallback, used only when the data cannot support an estimate.}
 
-\item{keep.measured}{Logical; if \code{TRUE} (default) measured calibrations are returned exactly
-rather than overwritten by the model's fitted value.}
+\item{keep.measured}{Whether a measured calibration is returned exactly as measured (default \code{TRUE})
+rather than replaced by the model's fitted value. Leave it on unless you specifically want a
+smoothed series.}
 
-\item{non.negative.rate}{Logical; if \code{TRUE} (default) a degradation rate estimated as negative
-is floored at 0 (efficiency is assumed not to improve with age), with a warning.}
+\item{non.negative.rate}{Whether to floor a negative estimated degradation rate at zero (default
+\code{TRUE}), on the assumption that a paddle wheel does not become more efficient with age. A warning
+is raised when this bites, which is itself a sign the calibrations are too noisy to carry a trend.}
 
-\item{slope.range}{Optional numeric \code{c(min, max)} clamping imputed slopes to a physically
-plausible band (measured values are never clamped, only flagged). \code{NULL} disables clamping.}
+\item{slope.range}{An optional \code{c(min, max)} clamping imputed slopes to a physically plausible band,
+with a warning saying how many were clamped. Measured slopes are left exactly as measured, whether
+or not they fall inside the band - it constrains what the model may invent, not what you observed.
+\code{NULL} disables clamping. Set it from the range your tags have historically produced, so that a
+projection cannot wander somewhere impossible.}
 
-\item{max.extrapolation}{Optional number of years; warn when a slope is projected more than this far
-beyond a tag's calibration range. \code{NULL} disables the warning.}
+\item{max.extrapolation}{An optional number of years beyond a tag's own calibration range after which
+a projection is warned about. \code{NULL} disables the warning. It does not stop the projection; it
+tells you which rows to distrust.}
 
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or
-\code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A data.frame, one row per deployed tag-year, with columns \code{year} (numeric),
-\code{package_id} (character) and \code{slope} (numeric) - directly usable as
-\code{processTagData(paddle.calibration = )} - plus \code{slope_source}
-(\code{"measured"}/\code{"tag-model"}/\code{"baseline"}) and \code{n_calibrations} (the number of
-measured calibrations available for that tag). The estimated degradation rate, its standard error
-and the method are attached as attributes (\code{degradation.rate}, \code{degradation.rate.se},
-\code{method}).
+A data frame with one row per deployed tag-year and columns \code{year}, \code{package_id} and \code{slope},
+usable directly as \code{processTagData(paddle.calibration = )}, plus \code{slope_source} and
+\code{n_calibrations}, the number of measured calibrations available for that tag. The estimated
+degradation rate, its standard error and the method used are attached as attributes
+(\code{degradation.rate}, \code{degradation.rate.se}, \code{method}).
 }
 \description{
-Magnetic paddle-wheel tags estimate swimming speed from the wheel's rotation frequency via a
-tag-specific calibration slope (\code{speed = slope x frequency}, zero intercept), which
-\code{\link{processTagData}} consumes through its \code{paddle.calibration} argument. In
-practice only some deployments are ever calibrated, so the lookup table has gaps. This function
-fills them: it learns how the slope drifts over time (paddle-wheel efficiency declines with age, so
-the slope rises) and projects a slope for every deployed paddle tag and year, returning a gap-free
-table ready to hand straight to \code{\link{processTagData}}.
+A magnetic paddle-wheel tag measures swimming speed from how fast the wheel turns, converted through
+a calibration slope that is specific to the physical tag: \verb{speed = slope x frequency}, with no
+intercept. \code{\link[=processTagData]{processTagData()}} reads those slopes from the table you pass it.
+
+In practice only some tags are ever calibrated, and rarely in every year they were deployed, so the
+table has holes - and a deployment whose slope is missing gets no speed at all. Paddle wheels also
+wear: efficiency declines with age, so the slope rises over time, which means a slope measured three
+years earlier is not the slope that applied.
+
+This function fills the gaps. It learns how the slope drifts with time from the calibrations you do
+have, projects a value for every deployed tag-year, and returns a complete table ready to hand
+straight to \code{\link[=processTagData]{processTagData()}}, with each row labelled by where its number came from.
 }
 \details{
-Degradation is modelled as a linear drift in the slope over calendar time. The default
-\code{method = "shared-rate"} fits a single fixed-slope / per-tag-intercept model
-(\code{lm(slope ~ year + factor(package_id))}) to the measured calibrations: \emph{one} shared
-annual degradation rate, pooled across all tags that were calibrated more than once, plus a
-per-tag baseline level. Each tag is then projected from its own observed level using the shared
-rate; tags that were never calibrated use the global baseline level. This keeps the imputation
-consistent across tags (unlike fitting a separate, noisy line to every tag) while still respecting
-each tag's own measurements.
+\subsection{How the drift is modelled}{
 
-Provenance is preserved: the returned \code{slope_source} column records, per tag-year, whether the
-slope is \code{"measured"} (a real calibration, kept exactly when \code{keep.measured = TRUE}),
-\code{"tag-model"} (imputed for a tag with at least one calibration), or \code{"baseline"} (imputed
-for a tag with none). At the small sample sizes typical of calibration data this projection cannot
-manufacture certainty - it makes the table consistent, reproducible, validated and labelled. Treat
-heavily-extrapolated and baseline slopes as approximate.
+Degradation is treated as a linear drift in the slope over calendar time. The default
+\code{method = "shared-rate"} fits one fixed-slope, per-tag-intercept model to the measured calibrations:
+a single annual degradation rate pooled across every tag calibrated more than once, plus a baseline
+level for each tag. Each tag is then projected forward from its own observed level using the shared
+rate, and a tag that was never calibrated starts from the global baseline.
+
+Pooling the rate while keeping the levels separate is what makes this stable. Fitting an independent
+line to each tag would respect its measurements more closely, but calibration series are short, and a
+rate estimated from two or three points is mostly noise.
+}
+
+\subsection{Knowing which numbers to trust}{
+
+The \code{slope_source} column records where each row's value came from: \code{"measured"} for a real
+calibration, \code{"tag-model"} for a tag with at least one calibration of its own, and \code{"baseline"} for a
+tag with none.
+
+At the sample sizes typical of calibration data, this projection cannot manufacture certainty. What
+it does is make the table consistent, reproducible, checked and labelled. Treat heavily extrapolated
+and baseline slopes as approximate, and remember that a speed error scales the whole reconstructed
+track rather than distorting its shape.
+}
 }
 \examples{
 cal <- data.frame(package_id = c("51", "51", "52", "91"),
@@ -108,5 +128,6 @@ dep <- data.frame(package_id = c("51", "52", "91", "134"),
 imputePaddleCalibration(cal, dep, verbose = FALSE)
 }
 \seealso{
-\code{\link{processTagData}}
+\code{\link[=processTagData]{processTagData()}} for the function that consumes the table; \code{\link[=reconstructTrack]{reconstructTrack()}} for what
+the resulting speed feeds into.
 }

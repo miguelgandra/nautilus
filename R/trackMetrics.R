@@ -2,62 +2,76 @@
 # Movement-path metrics (tortuosity + supporting track statistics) ####################################
 #######################################################################################################
 
-#' Movement-path (track) metrics
+#' Summarise each movement path into trajectory metrics
 #'
 #' @description
-#' Summarises each animal's reconstructed movement path into a set of trajectory metrics - path length,
-#' net displacement, and a family of tortuosity / straightness indices that quantify how convoluted the
-#' path is. It is the reducing step of the track workflow: run it on the pseudo-track produced by
-#' \code{\link{reconstructTrack}} (or any longitude/latitude track) to get one summary row per animal.
+#' A reconstructed track holds thousands of positions, but the questions asked of it are usually
+#' summary ones: how far did the animal travel, how far did it actually get, and how convoluted was the
+#' route in between. The last of these - tortuosity - is a common proxy for behavioural mode, since a
+#' straight transit and a tightly looping search look quite different even when they cover the same
+#' distance.
 #'
-#' Tortuosity captures the complexity of a path - a straight transit versus a tightly looping search -
-#' and is a common proxy for behavioural mode (directed travel vs. area-restricted search).
+#' This function reduces each path to one row of such measures: path length, net displacement, and a
+#' family of tortuosity and straightness indices. Run it on the pseudo-track from [reconstructTrack()],
+#' or on any track carrying longitude, latitude and timestamps.
 #'
-#' @param data A `nautilus_tag` / data.frame track, a (named) list of them (one per individual), a single
-#'   aggregated data.frame with an `id.col` column, or a character vector of paths to `.rds` files. Each
-#'   must carry longitude, latitude and datetime columns.
-#' @param control A \code{\link{trackMetricsControl}} object (or a named list of its fields) selecting the
-#'   metrics and the tortuosity-window sizes.
-#' @param id.col Column name for the animal ID (default `"ID"`).
-#' @param lon.col,lat.col Longitude / latitude column names. Left `NULL` (default), the reconstructed
-#'   track columns `pseudo_lon`/`pseudo_lat` from \code{\link{reconstructTrack}} are used when present,
-#'   otherwise `lon`/`lat`. Pass explicit names to override.
-#' @param datetime.col Column name for the timestamp (default `"datetime"`).
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
-#'
-#' @return A data frame with one row per animal and (depending on the selected metrics) the columns:
-#' \itemize{
-#'   \item \strong{ID}: animal identifier.
-#'   \item \strong{Total_points}: number of position fixes used.
-#'   \item \strong{Track_duration_h}: track duration in hours.
-#'   \item \strong{Total_distance_km}: total path length (sum of great-circle steps).
-#'   \item \strong{Net_displacement_km}: straight-line distance from first to last fix.
-#'   \item \strong{Path_ratio}: total path length / net displacement (1 = straight).
-#'   \item \strong{Fractal_dimension}: divider-method fractal dimension (1 = straight, toward 2 = space-filling).
-#'   \item \strong{Sinuosity}: Bovet & Benhamou (1988) index, `1.18 * sd(turning angle, rad) / sqrt(mean step, km)`.
-#'   \item \strong{Mean_turning_angle}: mean absolute change in bearing (degrees).
-#'   \item \strong{Straightness}: net displacement / total distance (0 = tortuous, 1 = straight).
-#'   \item \strong{Hourly_tortuosity}, \strong{Daily_tortuosity}: mean path/displacement ratio over
-#'     rolling windows of `control$hourly.window.h` and `control$daily.window.h` hours.
-#' }
+#' @param data A tag object or data frame holding a track, a list of them, a single table with an
+#'   `id.col`, or a character vector of `.rds` paths. Each must carry longitude, latitude and timestamp
+#'   columns.
+#' @param control A control object from [trackMetricsControl()] selecting which metrics to compute and
+#'   the rolling-window sizes. Pass `trackMetricsControl(...)` to change it.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param lon.col,lat.col Which columns hold longitude and latitude. Left `NULL` (default), the
+#'   reconstructed columns `pseudo_lon` and `pseudo_lat` are used where present, and `lon`/`lat`
+#'   otherwise. Name them explicitly to summarise a different track, such as the raw satellite fixes.
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default).
 #'
 #' @details
-#' The metrics offer complementary views of path complexity: `Path_ratio` and `Straightness` are global
-#' (start-to-end), whereas `Sinuosity`, `Mean_turning_angle` and `Fractal_dimension` are driven by local
-#' turning. Distances use the haversine great-circle formula; a metric is returned as `NA` when the track
-#' is too short to support it (e.g. the fractal dimension needs at least four fixes).
+#' The measures give complementary views of the same path. `Path_ratio` and `Straightness` are global,
+#' comparing the route to the straight line from start to end, and so say nothing about where the
+#' wandering happened. `Sinuosity` and `Mean_turning_angle` are driven by local turning instead, and
+#' will separate two paths that share the same endpoints but not the same behaviour.
+#' `Hourly_tortuosity` and `Daily_tortuosity` sit between the two, reporting how the
+#' path-to-displacement ratio behaves over rolling windows.
 #'
-#' Run this AFTER \code{\link{reconstructTrack}} (which supplies `pseudo_lon`/`pseudo_lat`). It reduces a track
-#' to a per-animal summary and does not modify the input data.
+#' Distances are computed with the haversine great-circle formula. A metric is returned as `NA` where
+#' the track is too short to support it, rather than guessed.
 #'
-#' @references Bovet, P. & Benhamou, S. (1988) Spatial analysis of animals' movements using a correlated
-#'   random walk model. \emph{Journal of Theoretical Biology}, 131, 419-433.
+#' Run this after [reconstructTrack()], which supplies `pseudo_lon` and `pseudo_lat`. It reduces a track
+#' to a summary and never modifies the input.
 #'
-#' @seealso \code{\link{trackMetricsControl}}, \code{\link{reconstructTrack}}, \code{\link{summarizeTagData}}
+#' @return A data frame with one row per animal, holding whichever of these the selected metrics
+#'   produce:
+#'
+#' - `ID` - the animal identifier.
+#' - `Total_points` - how many positions were used.
+#' - `Track_duration_h` - the span of the track in hours.
+#' - `Total_distance_km` - path length, the sum of the great-circle steps.
+#' - `Net_displacement_km` - straight-line distance from the first position to the last.
+#' - `Path_ratio` - path length divided by net displacement; 1 for a straight path, larger for a
+#'   convoluted one.
+#' - `Sinuosity` - the index of Bovet and Benhamou (1988), `1.18 * sd(turning angle in radians) /
+#'   sqrt(mean step length in km)`.
+#' - `Mean_turning_angle` - the mean absolute change in bearing, in degrees.
+#' - `Straightness` - net displacement divided by path length; 0 for a tortuous path, 1 for a straight
+#'   one.
+#' - `Hourly_tortuosity`, `Daily_tortuosity` - the mean path-to-displacement ratio over rolling windows
+#'   of `control$hourly.window.h` and `control$daily.window.h` hours.
+#'
+#' @references
+#' Bovet P, Benhamou S (1988) Spatial analysis of animals' movements using a correlated random walk
+#' model. *Journal of Theoretical Biology* 131:419-433. \doi{10.1016/S0022-5193(88)80038-9}
+#'
+#' @seealso [trackMetricsControl()] for selecting the metrics; [reconstructTrack()] for producing the
+#'   track; [summarizeTagData()] for a deployment-level overview.
+#'
 #' @examples
 #' \dontrun{
 #' tracks <- reconstructTrack(processed)
-#' # One summary row per animal (uses pseudo_lon/pseudo_lat from the reconstruction automatically)
+#'
+#' # one summary row per animal, using pseudo_lon/pseudo_lat automatically
 #' metrics <- trackMetrics(tracks, control = trackMetricsControl(metrics = "all"))
 #' metrics[, c("ID", "Total_distance_km", "Straightness")]
 #' }
@@ -78,7 +92,7 @@ trackMetrics <- function(data,
 
   metrics <- control$metrics
   if ("all" %in% metrics)
-    metrics <- c("path_ratio", "fractal_dimension", "sinuosity", "turning_angle", "straightness")
+    metrics <- c("path_ratio", "sinuosity", "turning_angle", "straightness")
 
   r <- .resolveInput(data, id.col = id.col)
   if (r$n == 0) return(.emptyTrackMetrics())
@@ -187,9 +201,6 @@ trackMetrics <- function(data,
   if ("path_ratio" %in% metrics)
     results$Path_ratio <- if (net_displacement > 0) total_distance / net_displacement else NA_real_
 
-  if ("fractal_dimension" %in% metrics)
-    results$Fractal_dimension <- .trackFractalDimension(lon, lat)
-
   if ("sinuosity" %in% metrics) {
     # Bovet & Benhamou (1988) sinuosity index: S = 1.18 * sigma / sqrt(q), where sigma is the SD of the
     # turning angles (radians) and q is the mean step length (km). Captures local path wiggliness rather
@@ -217,7 +228,7 @@ trackMetrics <- function(data,
 }
 
 #######################################################################################################
-# Geometry helpers (haversine distance, bearing, turning angle, fractal dimension) ####################
+# Geometry helpers (haversine distance, bearing, turning angle) #######################################
 #######################################################################################################
 
 #' Great-circle distance (km) between two points (haversine).
@@ -273,20 +284,6 @@ trackMetrics <- function(data,
     if (d < -180) d <- d + 360
     d
   }, numeric(1))
-}
-
-#' Fractal dimension of a path via the divider method (compare path length at single vs. doubled step).
-#' @keywords internal
-#' @noRd
-.trackFractalDimension <- function(lon, lat) {
-  n <- length(lon)
-  if (n < 4L) return(NA_real_)
-  total_length <- sum(.trackDistances(lon, lat), na.rm = TRUE)
-  indices <- seq(1L, n, by = 2L)
-  if (length(indices) < 3L) return(NA_real_)
-  doubled_length <- sum(.trackDistances(lon[indices], lat[indices]), na.rm = TRUE)
-  if (doubled_length == 0 || total_length == 0) return(NA_real_)
-  log(total_length / doubled_length) / log(2)
 }
 
 #' Mean path/displacement ratio over rolling windows of `window.hours` hours (NA if the track is shorter).

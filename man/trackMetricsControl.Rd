@@ -2,7 +2,7 @@
 % Please edit documentation in R/control.R
 \name{trackMetricsControl}
 \alias{trackMetricsControl}
-\title{Control settings for trackMetrics()}
+\title{Metric selection and window sizes for trackMetrics()}
 \usage{
 trackMetricsControl(
   metrics = "all",
@@ -12,27 +12,30 @@ trackMetricsControl(
 )
 }
 \arguments{
-\item{metrics}{Character vector of metrics to compute, any of \code{"path_ratio"}, \code{"fractal_dimension"},
-\code{"sinuosity"}, \code{"turning_angle"}, \code{"straightness"}, or \code{"all"} (the default) for all of them.}
+\item{metrics}{Which metrics to compute: any of \code{"path_ratio"}, \code{"sinuosity"}, \code{"turning_angle"} and
+\code{"straightness"}, or \code{"all"} (the default). Narrow it when you only need one or two; the
+local-turning metrics are the more expensive to compute on a long track.}
 
-\item{min.points}{Minimum number of valid position fixes a track needs to be summarised. Tracks with
-fewer are skipped. Default 5.}
+\item{min.points}{The fewest valid positions a track needs before it is summarised at all; shorter
+tracks are skipped. Default \code{5}. Raise it if a handful of positions is not enough for the
+comparison you intend, since a two-point "path" is straight by construction.}
 
-\item{hourly.window.h, daily.window.h}{Window sizes (hours) for the \code{Hourly_tortuosity} and
-\code{Daily_tortuosity} columns - the mean path/displacement ratio over rolling windows of that length.
-Defaults 1 and 24.}
+\item{hourly.window.h, daily.window.h}{The window lengths in hours behind the \code{Hourly_tortuosity} and
+\code{Daily_tortuosity} columns, each the mean path-to-displacement ratio over rolling windows of that
+length. Defaults \code{1} and \code{24}. Choose them to bracket the timescales your animal's behaviour
+actually switches on - a foraging bout and a diel cycle, say - rather than leaving them at values
+that fall between the two.}
 }
 \value{
-A validated \code{nautilus_track_metrics} object for the \code{control} argument of
-\code{\link{trackMetrics}}.
+A validated \code{nautilus_track_metrics} object for the \code{control} argument of \code{\link[=trackMetrics]{trackMetrics()}}.
 }
 \description{
-Selects which movement-path metrics \code{\link{trackMetrics}} computes and the sizes of
-the rolling windows used for the temporal tortuosity columns.
+Selects which movement-path metrics \code{\link[=trackMetrics]{trackMetrics()}} computes and the sizes of the rolling windows
+behind its temporal tortuosity columns, so the main call stays uncluttered.
 }
 \examples{
 trackMetricsControl(metrics = c("path_ratio", "straightness"), min.points = 10)
 }
 \seealso{
-\code{\link{trackMetrics}}
+\code{\link[=trackMetrics]{trackMetrics()}} for the function that consumes it.
 }

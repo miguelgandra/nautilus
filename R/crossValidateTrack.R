@@ -1,67 +1,83 @@
 #######################################################################################################
-# Held-out fix cross-validation of reconstructTrack ###################################################
+# Measure reconstructTrack accuracy by holding out real position fixes ################################
 #######################################################################################################
 
-#' Cross-validate a reconstructed track against its own position fixes
+#' Measure how accurate a reconstructed track actually is
 #'
 #' @description
-#' Quantifies how accurately \code{\link{reconstructTrack}} predicts position, by leave-one-out
-#' cross-validation against the deployment's genuine position fixes. Each fix in turn is withheld, the track
-#' is reconstructed from the remaining anchors (so neither the Verified Position Correction nor the VeDBA
-#' speed calibration sees the withheld fix), and the reconstructed position at that time is compared with the
-#' true fix. The result is a per-fix table of held-out errors - the closest thing to ground-truth accuracy
-#' available for an underwater track, since GPS/Argos fixes are the only true positions and they exist only
-#' at the surface.
+#' A marine pseudo-track has no underwater ground truth. Between surfacings there is nothing to compare
+#' the reconstruction against, so its accuracy cannot be measured directly - which leaves the honest
+#' question of how far to trust it unanswered.
+#'
+#' One thing can be done. Withhold a fix the animal genuinely produced, reconstruct the track from the
+#' remaining anchors alone, and see how close the reconstruction lands to the point it never saw. That
+#' is what this function does, leave-one-out across every fix in the deployment: neither the position
+#' correction nor the speed calibration is allowed to see the withheld fix. The result is a per-fix
+#' table of held-out errors, and the error at a fix `t` seconds from the nearest retained one is a
+#' direct estimate of the track's accuracy over a `t`-second reckoning gap.
+#'
+#' Use it to decide which settings actually help on your own data, and to obtain the drift rate to feed
+#' back into [reconstructTrackControl()].
+#'
+#' @param data The output of [processTagData()]: a tag object, a list of them, a single table with an
+#'   `id.col`, or a character vector of `.rds` paths. Each deployment needs the columns
+#'   [reconstructTrack()] requires, and genuine position fixes beyond the deployment origin.
+#' @param control A control object from [reconstructTrackControl()] - the same settings whose accuracy
+#'   you want to assess. Pass `reconstructTrackControl(...)` to change it.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param plot,plot.file Whether to draw the diagnostic report - the error-against-gap scatter and the
+#'   error distribution - to the active graphics device, and a path to a PDF for it. Defaults `FALSE`
+#'   and `NULL`.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, which adds a progress bar
+#'   across deployments, or `2`/`"detailed"` (default), which streams a per-deployment block of fixes
+#'   validated and median error instead of the bar.
 #'
 #' @details
-#' ## Why this is the headline validation
-#' A marine pseudo-track has no underwater ground truth, so it cannot be validated directly between fixes.
-#' The one thing you *can* do is withhold a known fix and ask how close the reconstruction lands to it using
-#' only the other information - exactly the strategy used to validate dead-reckoned whale tracks against
-#' sparse Fastloc-GPS (Wensveen et al. 2015). The withheld error at a fix `t` seconds from the nearest
-#' retained fix is a direct, honest estimate of the track's accuracy over a `t`-second reckoning gap.
+#' ## Reading the result
 #'
-#' ## What it reports, and how to read it
-#' For every withheld fix the function records the great-circle `error_m` between the reconstructed and the
-#' true position, the `gap_h` (hours to the nearest retained fix), whether the fix was *interpolated*
-#' (retained anchors both before and after) or *extrapolated* (only on one side, e.g. the pop-up), and the
-#' fix's own quality radius for context. The key diagnostic is **error vs gap**: if it grows roughly linearly
-#' with the gap, its slope is an empirical drift rate in **m/h** - divide by 3600 to get the `drift.rate`
-#' (m/s) for \code{\link{reconstructTrackControl}} (the summary line prints this m/s value for you). Run it
-#' with `control` set to different `vpc.method` / `speed.method` and stack the results to see which settings
-#' actually help on *your* data.
+#' For each withheld fix the function records the great-circle `error_m` between the reconstructed and
+#' the true position, the `gap_h` to the nearest retained fix, whether the fix was *interpolated*, with
+#' retained anchors on both sides, or *extrapolated*, with anchors on one side only as at the pop-up,
+#' and the fix's own quality radius for context.
 #'
-#' ## Honest limitations
-#' The held-out error \strong{conflates} heading error, speed error and unmodelled current - it tells you the
-#' pipeline's net accuracy, not which component failed (use the magnetometer-vs-geomagnetic-model and
-#' gyro-vs-magnetometer checks to isolate those). It can only be computed where a deployment has genuine
-#' surfacing fixes beyond the deployment origin; sparse surfacing means few points per deployment, so pool
-#' across the fleet. A withheld fix carries its own measurement error (tens of m for FastGPS, km for coarse
-#' Argos), which sets a floor on the achievable `error_m`.
+#' The key diagnostic is error against gap. Where the error grows roughly linearly with the gap, the
+#' slope is an empirical drift rate in metres per hour; divide by 3600 for the `drift.rate` in m/s that
+#' [reconstructTrackControl()] expects, which the summary line prints for you. Running the function with
+#' different `vpc.method` or `speed.method` settings and stacking the results shows which choices help
+#' on your data rather than in principle.
 #'
-#' @param data The processed data (output of \code{\link{processTagData}}): a `nautilus_tag` / data.frame, a
-#'   (named) list of them, a single aggregated data.frame with an `id.col`, or a character vector of `.rds`
-#'   paths. Must carry the columns \code{\link{reconstructTrack}} needs, and have genuine position fixes.
-#' @param control A \code{\link{reconstructTrackControl}} object (or a named list of its fields); the same
-#'   settings whose accuracy you want to assess.
-#' @param id.col,datetime.col Column names for the animal ID and timestamp. Defaults `"ID"` / `"datetime"`.
-#' @param plot,plot.file Draw the diagnostic report (error-vs-gap scatter + error distribution) to the active
-#'   device and/or a PDF. Defaults `FALSE` / `NULL`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + a live progress
-#'   bar across deployments + summary), or `2`/"detailed" (default; streams a per-deployment block - fixes
-#'   validated, median error - instead of the bar). cli auto-hides the bar for fast runs.
+#' The approach is the one used to validate dead-reckoned whale tracks against sparse Fastloc-GPS
+#' (Wensveen et al. 2015).
 #'
-#' @return A `data.frame`, one row per withheld fix, with columns `id`, `datetime`, `quality`, `error_m`,
-#'   `gap_h`, `interpolated`, `fix_radius_m`, `n_anchors_used`, `speed_method`, `vpc_method`. Empty if no
-#'   deployment has a fix to withhold.
+#' ## What it cannot tell you
+#'
+#' The held-out error conflates heading error, speed error and unmodelled current. It measures the
+#' pipeline's net accuracy, not which component failed. To probe the heading side separately, check the
+#' magnetometer against the geomagnetic model with [calibrateMagnetometer()], and the sensor frame
+#' itself with the accelerometer-against-gyroscope co-registration reported by [applyAxisMapping()].
+#'
+#' It can only be computed where a deployment surfaced often enough to produce fixes beyond the
+#' deployment origin. Sparse surfacing means few points per deployment, so pool across the fleet before
+#' reading a rate off the slope. Finally, a withheld fix carries its own measurement error - tens of
+#' metres for Fastloc-GPS, kilometres for coarse Argos - which sets a floor on the achievable `error_m`.
+#'
+#' @return A data frame with one row per withheld fix and columns `id`, `datetime`, `quality`,
+#'   `error_m`, `gap_h`, `interpolated`, `fix_radius_m`, `n_anchors_used`, `speed_method` and
+#'   `vpc_method`. Empty when no deployment has a fix to withhold.
+#'
 #' @references
 #' Wensveen PJ, Thomas L, Miller PJO (2015) A path reconstruction method integrating dead-reckoning and
-#' position fixes applied to humpback whales. *Movement Ecology*. 3:31. \doi{10.1186/s40462-015-0061-6}
-#' @seealso \code{\link{reconstructTrack}}, \code{\link{reconstructTrackControl}}
+#' position fixes applied to humpback whales. *Movement Ecology* 3:31. \doi{10.1186/s40462-015-0061-6}
+#'
+#' @seealso [reconstructTrack()] for the reconstruction being assessed; [reconstructTrackControl()] for
+#'   the settings to compare.
+#'
 #' @examples
 #' \dontrun{
 #' cv <- crossValidateTrack(processed, plot = TRUE)
-#' # compare correction methods on your own data:
+#'
+#' # compare correction methods on your own data
 #' methods <- c("none", "error_weighted", "scale_rotate")
 #' comp <- do.call(rbind, lapply(methods, function(m)
 #'   crossValidateTrack(processed, reconstructTrackControl(vpc.method = m), verbose = FALSE)))

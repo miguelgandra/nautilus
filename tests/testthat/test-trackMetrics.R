@@ -135,3 +135,15 @@ test_that("trackMetricsControl validates its fields", {
   expect_error(trackMetrics(list(.track(0:9 / 50, rep(0, 10))), control = list(metrics = "nope"), verbose = FALSE))
   expect_s3_class(trackMetricsControl(), "nautilus_track_metrics")
 })
+
+
+# ---- Fractal_dimension was withdrawn ------------------------------------------------------
+
+test_that("the withdrawn fractal dimension is neither computed nor silently accepted", {
+  # the vertex-decimation estimator was not a divider-method fractal dimension: it was unbounded
+  # above and biased on a straight track of even length, so the column was removed rather than patched
+  d <- .track(lon = seq(0, 1, length.out = 64), lat = rep(0, 64))
+  expect_false("Fractal_dimension" %in% names(run_tm(d, "all")))
+  expect_error(trackMetricsControl(metrics = "fractal_dimension"), "invalid value")
+  expect_false(exists(".trackFractalDimension", envir = asNamespace("nautilus"), inherits = FALSE))
+})

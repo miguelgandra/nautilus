@@ -2,7 +2,7 @@
 % Please edit documentation in R/trackMetrics.R
 \name{trackMetrics}
 \alias{trackMetrics}
-\title{Movement-path (track) metrics}
+\title{Summarise each movement path into trajectory metrics}
 \usage{
 trackMetrics(
   data,
@@ -15,70 +15,82 @@ trackMetrics(
 )
 }
 \arguments{
-\item{data}{A \code{nautilus_tag} / data.frame track, a (named) list of them (one per individual), a single
-aggregated data.frame with an \code{id.col} column, or a character vector of paths to \code{.rds} files. Each
-must carry longitude, latitude and datetime columns.}
+\item{data}{A tag object or data frame holding a track, a list of them, a single table with an
+\code{id.col}, or a character vector of \code{.rds} paths. Each must carry longitude, latitude and timestamp
+columns.}
 
-\item{control}{A \code{\link{trackMetricsControl}} object (or a named list of its fields) selecting the
-metrics and the tortuosity-window sizes.}
+\item{control}{A control object from \code{\link[=trackMetricsControl]{trackMetricsControl()}} selecting which metrics to compute and
+the rolling-window sizes. Pass \code{trackMetricsControl(...)} to change it.}
 
-\item{id.col}{Column name for the animal ID (default \code{"ID"}).}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{lon.col, lat.col}{Longitude / latitude column names. Left \code{NULL} (default), the reconstructed
-track columns \code{pseudo_lon}/\code{pseudo_lat} from \code{\link{reconstructTrack}} are used when present,
-otherwise \code{lon}/\code{lat}. Pass explicit names to override.}
+\item{lon.col, lat.col}{Which columns hold longitude and latitude. Left \code{NULL} (default), the
+reconstructed columns \code{pseudo_lon} and \code{pseudo_lat} are used where present, and \code{lon}/\code{lat}
+otherwise. Name them explicitly to summarise a different track, such as the raw satellite fixes.}
 
-\item{datetime.col}{Column name for the timestamp (default \code{"datetime"}).}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default).}
 }
 \value{
-A data frame with one row per animal and (depending on the selected metrics) the columns:
+A data frame with one row per animal, holding whichever of these the selected metrics
+produce:
 \itemize{
-\item \strong{ID}: animal identifier.
-\item \strong{Total_points}: number of position fixes used.
-\item \strong{Track_duration_h}: track duration in hours.
-\item \strong{Total_distance_km}: total path length (sum of great-circle steps).
-\item \strong{Net_displacement_km}: straight-line distance from first to last fix.
-\item \strong{Path_ratio}: total path length / net displacement (1 = straight).
-\item \strong{Fractal_dimension}: divider-method fractal dimension (1 = straight, toward 2 = space-filling).
-\item \strong{Sinuosity}: Bovet & Benhamou (1988) index, \verb{1.18 * sd(turning angle, rad) / sqrt(mean step, km)}.
-\item \strong{Mean_turning_angle}: mean absolute change in bearing (degrees).
-\item \strong{Straightness}: net displacement / total distance (0 = tortuous, 1 = straight).
-\item \strong{Hourly_tortuosity}, \strong{Daily_tortuosity}: mean path/displacement ratio over
-rolling windows of \code{control$hourly.window.h} and \code{control$daily.window.h} hours.
+\item \code{ID} - the animal identifier.
+\item \code{Total_points} - how many positions were used.
+\item \code{Track_duration_h} - the span of the track in hours.
+\item \code{Total_distance_km} - path length, the sum of the great-circle steps.
+\item \code{Net_displacement_km} - straight-line distance from the first position to the last.
+\item \code{Path_ratio} - path length divided by net displacement; 1 for a straight path, larger for a
+convoluted one.
+\item \code{Sinuosity} - the index of Bovet and Benhamou (1988), \verb{1.18 * sd(turning angle in radians) / sqrt(mean step length in km)}.
+\item \code{Mean_turning_angle} - the mean absolute change in bearing, in degrees.
+\item \code{Straightness} - net displacement divided by path length; 0 for a tortuous path, 1 for a straight
+one.
+\item \code{Hourly_tortuosity}, \code{Daily_tortuosity} - the mean path-to-displacement ratio over rolling windows
+of \code{control$hourly.window.h} and \code{control$daily.window.h} hours.
 }
 }
 \description{
-Summarises each animal's reconstructed movement path into a set of trajectory metrics - path length,
-net displacement, and a family of tortuosity / straightness indices that quantify how convoluted the
-path is. It is the reducing step of the track workflow: run it on the pseudo-track produced by
-\code{\link{reconstructTrack}} (or any longitude/latitude track) to get one summary row per animal.
+A reconstructed track holds thousands of positions, but the questions asked of it are usually
+summary ones: how far did the animal travel, how far did it actually get, and how convoluted was the
+route in between. The last of these - tortuosity - is a common proxy for behavioural mode, since a
+straight transit and a tightly looping search look quite different even when they cover the same
+distance.
 
-Tortuosity captures the complexity of a path - a straight transit versus a tightly looping search -
-and is a common proxy for behavioural mode (directed travel vs. area-restricted search).
+This function reduces each path to one row of such measures: path length, net displacement, and a
+family of tortuosity and straightness indices. Run it on the pseudo-track from \code{\link[=reconstructTrack]{reconstructTrack()}},
+or on any track carrying longitude, latitude and timestamps.
 }
 \details{
-The metrics offer complementary views of path complexity: \code{Path_ratio} and \code{Straightness} are global
-(start-to-end), whereas \code{Sinuosity}, \code{Mean_turning_angle} and \code{Fractal_dimension} are driven by local
-turning. Distances use the haversine great-circle formula; a metric is returned as \code{NA} when the track
-is too short to support it (e.g. the fractal dimension needs at least four fixes).
+The measures give complementary views of the same path. \code{Path_ratio} and \code{Straightness} are global,
+comparing the route to the straight line from start to end, and so say nothing about where the
+wandering happened. \code{Sinuosity} and \code{Mean_turning_angle} are driven by local turning instead, and
+will separate two paths that share the same endpoints but not the same behaviour.
+\code{Hourly_tortuosity} and \code{Daily_tortuosity} sit between the two, reporting how the
+path-to-displacement ratio behaves over rolling windows.
 
-Run this AFTER \code{\link{reconstructTrack}} (which supplies \code{pseudo_lon}/\code{pseudo_lat}). It reduces a track
-to a per-animal summary and does not modify the input data.
+Distances are computed with the haversine great-circle formula. A metric is returned as \code{NA} where
+the track is too short to support it, rather than guessed.
+
+Run this after \code{\link[=reconstructTrack]{reconstructTrack()}}, which supplies \code{pseudo_lon} and \code{pseudo_lat}. It reduces a track
+to a summary and never modifies the input.
 }
 \examples{
 \dontrun{
 tracks <- reconstructTrack(processed)
-# One summary row per animal (uses pseudo_lon/pseudo_lat from the reconstruction automatically)
+
+# one summary row per animal, using pseudo_lon/pseudo_lat automatically
 metrics <- trackMetrics(tracks, control = trackMetricsControl(metrics = "all"))
 metrics[, c("ID", "Total_distance_km", "Straightness")]
 }
 }
 \references{
-Bovet, P. & Benhamou, S. (1988) Spatial analysis of animals' movements using a correlated
-random walk model. \emph{Journal of Theoretical Biology}, 131, 419-433.
+Bovet P, Benhamou S (1988) Spatial analysis of animals' movements using a correlated random walk
+model. \emph{Journal of Theoretical Biology} 131:419-433. \doi{10.1016/S0022-5193(88)80038-9}
 }
 \seealso{
-\code{\link{trackMetricsControl}}, \code{\link{reconstructTrack}}, \code{\link{summarizeTagData}}
+\code{\link[=trackMetricsControl]{trackMetricsControl()}} for selecting the metrics; \code{\link[=reconstructTrack]{reconstructTrack()}} for producing the
+track; \code{\link[=summarizeTagData]{summarizeTagData()}} for a deployment-level overview.
 }

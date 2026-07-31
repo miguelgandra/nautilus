@@ -2,7 +2,7 @@
 % Please edit documentation in R/filterLocations.R
 \name{filterLocations}
 \alias{filterLocations}
-\title{Screen implausible GPS/Argos position fixes}
+\title{Screen implausible satellite position fixes}
 \usage{
 filterLocations(
   data,
@@ -28,131 +28,156 @@ filterLocations(
 )
 }
 \arguments{
-\item{data}{A \code{nautilus_tag}/data.frame, a (named) list of them, or a character vector of \code{.rds}
-file paths - the output of \code{\link{importTagData}} (or any later step). A single aggregated
-data.frame is split by \code{id.col}. File paths are loaded one at a time to save memory.}
+\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
+\code{.rds} paths - the output of \code{\link[=importTagData]{importTagData()}} or any later step. Paths are read one deployment at
+a time, so a fleet too large for memory can be processed without ever holding it all.}
 
-\item{metadata}{Optional deployment-metadata table (one row per deployment) supplying the reference
-deployment coordinates for the distance check and the diagnostic map. If \code{NULL} (default), the
-coordinates stored in each tag's metadata (\code{meta$deployment}, populated at import) are used. When
-both are present they are cross-checked and a disagreement is warned about.}
+\item{metadata}{An optional deployment-metadata table, one row per deployment, supplying the
+reference coordinates for the distance check and the diagnostic map. \code{NULL} (default) uses the
+coordinates already stored in each tag's metadata at import. Where both are present they are
+cross-checked and a disagreement is warned about.}
 
-\item{id.col}{Character. Name of the ID column, used to split a single data.frame and to match rows in
-\code{metadata}. Default "ID".}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}); also used to match rows in
+\code{metadata}.}
 
-\item{datetime.col}{Character. Name of the POSIXct datetime column of the sensor data (used only for
-labelling; the position fixes carry their own timestamps). Default "datetime".}
+\item{datetime.col}{Which column holds the timestamps of the sensor data (default \code{"datetime"}).
+Accepted for consistency with the rest of the pipeline but not otherwise used here, since the
+position fixes carry their own timestamps and are what this function screens.}
 
-\item{max.speed.kmh}{Numeric. Maximum plausible sustained speed (km/h) between consecutive fixes for
-the neighbour-consistency speed test. \code{NULL} (default) disables the speed check.}
+\item{max.speed.kmh}{The fastest sustained speed, in km/h, you would believe between two fixes.
+\code{NULL} (default) disables the speed check. Set it from your species' plausible sustained travel
+speed rather than its burst speed, since the test is applied between fixes that may be hours
+apart.}
 
-\item{max.distance.km}{Numeric. Gross-error distance bound (km) from the deployment location; fixes
-farther than this are removed. \code{NULL} (default) disables the distance check. See Details before
-enabling - this is a decoding-error bound, not a movement constraint.}
+\item{max.distance.km}{A gross-error bound, in kilometres, on how far a fix may lie from the
+deployment location. \code{NULL} (default) disables it. Read the Details before enabling: this catches
+decoding errors, and is not a movement constraint.}
 
-\item{min.satellites}{Integer. Minimum satellite count for a Fastloc-GPS fix to be retained. \code{NULL}
-(default) disables the satellite check.}
+\item{min.satellites}{The fewest satellites a Fastloc-GPS fix may be computed from and still be
+kept. \code{NULL} (default) disables the check. Four is the geometric minimum for a position; raising it
+trades fixes for confidence.}
 
-\item{control}{A \code{\link{filterLocationsControl}} object (or a named list of its fields) tuning the
-speed test (minimum time separation, iteration cap, optional direction-reversal spike test). \code{NULL}
-(default) uses the defaults.}
+\item{control}{A control object from \code{\link[=filterLocationsControl]{filterLocationsControl()}} tuning how the speed test is applied
+\itemize{
+\item the minimum time separation, the iteration cap, and the optional direction-reversal test. Pass
+\code{filterLocationsControl(...)} to change it.
+}}
 
-\item{deploy.lon.col, deploy.lat.col}{Character. Names of the deployment longitude/latitude columns in
-\code{metadata}. Defaults "deploy_lon" / "deploy_lat". Ignored when \code{metadata} is \code{NULL}.}
+\item{deploy.lon.col, deploy.lat.col}{Which columns in \code{metadata} hold the deployment longitude and
+latitude. Defaults \code{"deploy_lon"} and \code{"deploy_lat"}. Ignored when \code{metadata} is \code{NULL}.}
 
-\item{plot}{Logical. Draw the diagnostic map (one page per individual with removed fixes) to the active
-graphics device. Default \code{FALSE}.}
+\item{plot}{Whether to draw the diagnostic map, one page per deployment with removed fixes, to the
+active graphics device. Default \code{FALSE}.}
 
-\item{plot.file}{Character. Path to a single multi-page PDF for the diagnostic maps. The parent
-directory must already exist; must end in \code{.pdf}. \code{NULL} (default) writes no file. Independent of
-\code{plot}.}
+\item{plot.file}{Path to a single multi-page PDF for the diagnostic maps. The parent directory must
+exist and the name must end in \code{.pdf}. \code{NULL} (default) writes no file. Independent of \code{plot}.}
 
-\item{basemap}{The diagnostic-map background canvas: \code{"land"} (default; filled coastline over a flat
-sea), \code{"satellite"} (imagery tiles via \pkg{maptiles} - useful for validating coastal fixes), \code{"none"}
-(blank sea), or a pre-fetched \pkg{terra} \code{SpatRaster} from \code{\link{getBasemap}}.}
+\item{basemap}{The background canvas for the diagnostic map: \code{"land"} (default, a filled coastline
+over a flat sea), \code{"satellite"} for imagery tiles, which is useful for judging coastal fixes,
+\code{"none"} for blank sea, or a pre-fetched raster from \code{\link[=getBasemap]{getBasemap()}}.}
 
-\item{coastline}{Which vector coastline to draw: \code{"auto"} (default), \code{"high"}, \code{"low"}, \code{"none"}, or a
-custom coastline (\pkg{sf} object, lon/lat \code{data.frame}/\code{matrix}, or file path). See
-\code{\link{plotTracks}} for the full resolution ladder. Drawn filled under \code{basemap = "land"}, as an
-outline over a raster canvas.}
+\item{coastline}{Which vector coastline to draw: \code{"auto"} (default), \code{"high"}, \code{"low"}, \code{"none"}, or
+a custom coastline as an \pkg{sf} object, a lon/lat table, or a file path. See \code{\link[=plotTracks]{plotTracks()}} for
+the full resolution ladder. It is drawn filled under \code{basemap = "land"} and as an outline over a
+raster canvas.}
 
-\item{basemap.control}{A \code{\link{basemapControl}} object tuning the satellite fetch (provider,
-cache); used only when \code{basemap = "satellite"}.}
+\item{basemap.control}{A control object from \code{\link[=basemapControl]{basemapControl()}} tuning the satellite fetch. Used only
+when \code{basemap = "satellite"}.}
 
-\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
+\item{return.data}{Whether to return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
 function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
+step's \code{data} argument - so a large fleet can be processed without ever holding it all in memory.
 \code{return.data = FALSE} therefore requires an \code{output.dir}.}
 
-\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
-a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+\item{output.dir}{Directory in which to write one \verb{<id>.rds} file per deployment. Providing a
+directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already
+exist.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{output.suffix}{Optional suffix appended to each saved file name, before \code{.rds}, to tag a
+processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is set.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
-(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+\item{compress}{Compression for the saved \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
+\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is set. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (warnings and errors only), \code{TRUE}/\code{1}/"normal" (header,
-one line per individual, summary), or \code{2}/"detailed" (default; adds per-check diagnostics).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default), which adds per-check diagnostics.}
 }
 \value{
-If \code{return.data = TRUE}, a named list of filtered \code{nautilus_tag} objects (one per individual),
-with implausible fixes removed from \code{meta$ancillary$positions}; if \code{return.data = FALSE}, a character
-vector of the written \code{.rds} file paths. Diagnostic maps are a side effect.
+If \code{return.data = TRUE}, a named list of tag objects with the implausible fixes removed from
+their position records. If \code{return.data = FALSE}, a character vector of the written \code{.rds} file
+paths. The diagnostic maps are a side effect of either.
 }
 \description{
-Quality-controls the location channel of a tag record: it screens the Wildlife Computers position
-fixes (Fastloc-GPS and Argos) for implausible detections and removes them from the deployment's
-canonical position record, leaving the sensor time series untouched. This is a data-cleaning step -
-the location analogue of \code{\link{checkSensorQuality}} for the sensor channels - so it belongs in
-the clean / quality-control phase, before any track reconstruction (\code{\link{reconstructTrack}},
-\code{\link{crossValidateTrack}}) or mapping consumes the fixes.
+Satellite fixes are not all equally believable. A Fastloc-GPS position computed from too few
+satellites is geometrically weak, an Argos position can decode to the wrong hemisphere, and either
+can place an animal somewhere it could not possibly have swum to and back from in the time
+available. Left in place, such a fix anchors a reconstructed track to a point the animal never
+visited, and drags the surrounding path with it.
+
+This function screens the position record for those cases and removes the fixes that fail, leaving
+the sensor time series untouched. It is the location-channel counterpart of \code{\link[=checkSensorQuality]{checkSensorQuality()}},
+so it belongs in the cleaning phase, before any track reconstruction or mapping consumes the fixes.
+
+All three checks are opt-in: with the defaults nothing is removed, so choose thresholds that suit
+your species and tag.
 }
 \details{
-The fixes live in the deployment's canonical position record (\code{meta$ancillary$positions}, created
-by \code{\link{importTagData}}); this function reads that record directly, so it can run at any point
-after import. Three independent, opt-in checks are applied, in order, to the automatically-acquired
-fixes only:
+The fixes live in the deployment's position record, created by \code{\link[=importTagData]{importTagData()}}, and this function
+reads that record directly, so it can run at any point after import.
+\subsection{The three checks}{
+
+They are applied in this order, and only to automatically acquired fixes.
 \enumerate{
-\item \strong{Satellite count} (\code{min.satellites}). Fastloc-GPS fixes computed from too few
-satellites are geometrically weak. Fixes whose satellite count (the WC \code{Quality} field) is
-below the threshold are removed. Argos fixes carry no satellite count and are exempt.
-\item \strong{Distance from deployment} (\code{max.distance.km}). A gross-error sanity bound: a fix
-that decoded to an impossible location (e.g. the wrong hemisphere) sits absurdly far from the
-release site. \strong{Off by default}, because - anchored to the deployment and blind to elapsed
-time - it will clip the genuine displacement of a wide-ranging animal if set as a movement
-constraint. Use it only as a loose bound for decoding errors, well beyond the animal's plausible
-range. The deploy and pop-up positions are never removed by it.
-\item \strong{Speed} (\code{max.speed.kmh}). The principled check. Rather than flagging every
-over-threshold step (which cannot tell which of the two fixes is bad), it uses the
-\strong{neighbour-consistency ("root") test} of Freitas et al. (2008), as implemented in
-\code{argosfilter::sda} and \code{aniMotum}: a fix is implausible only when the implied speed to
-\emph{both} its previous and next retained fix exceeds \code{max.speed.kmh}, i.e. it is an isolated
-spike that the track jumps out to and back from. A single genuinely fast segment (fast to one
-neighbour, normal to the other) is kept, since it cannot be attributed to either fix. The most
-egregious spike is removed, the speeds are recomputed against the new neighbours, and the process
-repeats until every remaining fix is plausible (or \code{control$max.iterations} is reached). An
-optional direction-reversal test (\code{control$spike.angle}) additionally catches sharp
-out-and-back spikes at moderate speed.
+\item \strong{Satellite count} (\code{min.satellites}). A Fastloc-GPS fix computed from too few satellites is
+geometrically weak, so fixes below the threshold are removed. Argos fixes carry no satellite count
+and are exempt.
+\item \strong{Distance from the deployment} (\code{max.distance.km}). A sanity bound for gross errors: a fix that
+decoded to an impossible location sits absurdly far from the release site. It is off by default,
+because it is anchored to the deployment and blind to elapsed time, so used as a movement
+constraint it will clip the genuine displacement of a wide-ranging animal. Set it, if at all, well
+beyond the animal's plausible range. The deployment and pop-up positions are never removed by it.
+\item \strong{Speed} (\code{max.speed.kmh}). The principled check, described below.
+}
 }
 
-\strong{What is (and is not) filtered.} Only \code{"FastGPS"} and \code{"Argos"} fixes - the
-automatically-acquired positions that can be spurious - are ever removed. \code{"User"} positions
-(manually curated in the WC Data Portal) are trusted and kept; they still take part in the speed test
-as fixed anchors. The deploy and pop-up positions (canonical in \code{meta$deployment}) are reference
-points and are never touched. All three checks are opt-in: with the defaults nothing is removed, so
-choose thresholds that suit your species and tag.
+\subsection{Why the speed check tests both neighbours}{
 
-Removed fixes are dropped from \code{meta$ancillary$positions}; the counts and thresholds are recorded
-in the processing history (\code{\link{processingHistory}}). Diagnostic maps (\code{plot} /
-\code{plot.file}) show every fix, coloured by outcome (kept, or removed and by which check), the
-chronological path through the retained fixes, and the deployment anchors, for visual review.
+Flagging every over-threshold step does not work, because a single fast segment implicates two fixes
+and cannot say which of them is wrong. This function instead uses the neighbour-consistency, or
+"root", test of Freitas et al. (2008), as implemented in \code{argosfilter::sda} and \pkg{aniMotum}: a fix
+is implausible only when the implied speed to \emph{both} its previous and its next retained fix exceeds
+the threshold - that is, when it is an isolated spike the track jumps out to and back from. A
+genuinely fast segment in the middle of a track, fast to one neighbour and normal to the other, is
+kept, because it cannot be attributed to either fix.
+
+The first and last retained fix are the exception, and necessarily so: an endpoint has only one
+neighbour, so there is nothing for the rule to compare against. There a single implausible segment
+is enough to remove the fix, which is what catches a bad first or last position.
+
+The most egregious spike is removed, the speeds are recomputed against the new neighbours, and the
+process repeats until every remaining fix is plausible or \code{control$max.iterations} is reached. The
+optional direction-reversal test, \code{control$spike.angle}, additionally catches sharp out-and-back
+spikes that travel at moderate speed.
+}
+
+\subsection{What is never removed}{
+
+Only \code{"FastGPS"} and \code{"Argos"} fixes - the automatically acquired positions that can be spurious -
+are ever removed. \code{"User"} positions, curated by hand in the tag manufacturer's data portal, are
+trusted and kept, though they still act as fixed anchors in the speed test. The deployment and pop-up
+positions are reference points and are never touched.
+
+Removed fixes are dropped from the position record, and the counts and thresholds are written to the
+processing history, readable with \code{\link[=processingHistory]{processingHistory()}}. The diagnostic maps show every fix coloured
+by outcome - kept, or removed and by which check - together with the chronological path through the
+retained fixes and the deployment anchors.
+}
 }
 \examples{
 \dontrun{
 imported <- importTagData(folders, metadata = meta)
-# Location QC: drop Fastloc fixes implying > 8 km/h to both neighbours or from < 4 satellites
+
+# drop Fastloc fixes implying more than 8 km/h to both neighbours, or from fewer than 4 satellites
 cleaned <- filterLocations(imported,
                            max.speed.kmh  = 8,
                            min.satellites = 4,
@@ -160,10 +185,11 @@ cleaned <- filterLocations(imported,
 }
 }
 \references{
-Freitas C, Lydersen C, Fedak MA, Kovacs KM (2008) A simple new algorithm to filter marine mammal Argos
-locations. \emph{Marine Mammal Science}. 24:315-325. \doi{10.1111/j.1748-7692.2007.00180.x}
+Freitas C, Lydersen C, Fedak MA, Kovacs KM (2008) A simple new algorithm to filter marine mammal
+Argos locations. \emph{Marine Mammal Science} 24:315-325. \doi{10.1111/j.1748-7692.2007.00180.x}
 }
 \seealso{
-\code{\link{importTagData}}, \code{\link{checkSensorQuality}}, \code{\link{filterLocationsControl}},
-\code{\link{reconstructTrack}}, \code{\link{crossValidateTrack}}.
+\code{\link[=importTagData]{importTagData()}} for the step that creates the position record; \code{\link[=checkSensorQuality]{checkSensorQuality()}} for
+the sensor-channel counterpart; \code{\link[=filterLocationsControl]{filterLocationsControl()}} for tuning the speed test;
+\code{\link[=reconstructTrack]{reconstructTrack()}} and \code{\link[=crossValidateTrack]{crossValidateTrack()}} for what consumes the cleaned fixes.
 }

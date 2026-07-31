@@ -1,139 +1,156 @@
 #######################################################################################################
-# Reconstruct a 3D pseudo-track by dead reckoning + Verified Position Correction #######################
+# Reconstruct a fine-scale movement path by dead reckoning + correction onto known fixes ###############
 #######################################################################################################
 
-#' Reconstruct a 3D pseudo-track from orientation, speed and depth
+#' Reconstruct a fine-scale movement path from orientation, speed and depth
 #'
 #' @description
-#' Reconstructs the fine-scale movement path of a tagged animal by *dead reckoning*: it integrates the
-#' per-sample heading and swimming speed produced upstream by \code{\link{processTagData}} into a
-#' horizontal (east/north) displacement, attaches the measured depth as the vertical axis, and anchors the
-#' accumulating reckoning drift to known positions (deployment, GPS/Argos fixes, pop-up) via Verified
-#' Position Correction (VPC).
+#' Satellite fixes locate a marine animal only when the tag breaks the surface, which for a diving
+#' animal may be minutes or days apart. Between those points the record says nothing about where the
+#' animal went, which is precisely the scale most behavioural questions live at.
 #'
-#' The function is a pure integrator: it consumes the finished `heading` (already tilt-compensated,
-#' paddle-de-noised and declination-corrected by \code{\link{processTagData}}) and is agnostic to how that
-#' heading was obtained. The result is a \strong{pseudo-track} - a reconstruction, not a georeferenced
-#' observation (hence the `pseudo_lon` / `pseudo_lat` columns) - most reliable between closely spaced fixes.
+#' *Dead reckoning*, a term inherited from marine navigation, fills the gaps from the tag's own motion
+#' sensors. At each sample the animal is taken to move `speed x dt` in the direction it is heading, and
+#' these micro-steps are summed into a continuous path. This function does that integration, attaches
+#' the measured depth as a vertical axis, and then reconciles the accumulating drift with the positions
+#' that *are* known - the deployment, any surface fixes, and the pop-up.
+#'
+#' The result is a **pseudo-track**: a plausible reconstruction rather than a georeferenced observation,
+#' which is why its columns are named `pseudo_lon` and `pseudo_lat`. It is most reliable close to a fix
+#' and least reliable midway between two of them, since the correction pins the path at both ends of a
+#' segment. Run it after [processTagData()], which supplies the finished heading; this function is a
+#' pure integrator and is agnostic to how that heading was obtained.
+#'
+#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
+#'   `.rds` paths - the output of [processTagData()]. Paths are read one deployment at a time, so a
+#'   fleet too large for memory can be processed without ever holding it all. Each deployment needs
+#'   `datetime`, `heading` and `pitch`, plus whatever the chosen `speed.method` reads
+#'   (`vertical_velocity`, `paddle_speed` or `vedba`), and `depth` for the three-dimensional output.
+#' @param control A control object from [reconstructTrackControl()] governing where speed comes from and
+#'   how the track is corrected onto the known fixes. Pass `reconstructTrackControl(...)` to change it.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param return.data Whether to return the processed data in memory (default `TRUE`). When `FALSE`, the
+#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
+#'   step's `data` argument - so a large fleet can be processed without ever holding it all in memory.
+#'   `return.data = FALSE` therefore requires an `output.dir`.
+#' @param output.dir Directory in which to write one `<id>.rds` file per deployment. Providing a
+#'   directory is what triggers saving; `NULL` (default) writes nothing. The directory must already
+#'   exist.
+#' @param output.suffix Optional suffix appended to each saved file name, before `.rds`, to tag a
+#'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is set.
+#' @param compress Compression for the saved `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
+#'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is set. See [base::saveRDS()].
+#' @param plot,plot.file Whether to draw the diagnostic report to the active graphics device, and a path
+#'   to a multi-page PDF for it. The report is a worst-first summary page - path length, net
+#'   displacement, fixes and residual drift for each deployment - followed by a detail page for each
+#'   flagged deployment: the corrected track against the raw reckoning and the position fixes, the drift
+#'   the correction absorbed at each fix, the speed source, and the depth profile. A single-deployment
+#'   run always gets its detail page, flagged or not. Defaults `FALSE` and `NULL`.
+#' @param force.plots Whether to draw a detail page for every deployment rather than only the
+#'   high-drift ones. Default `FALSE`. It makes no difference to a single-deployment run, which always
+#'   draws its detail page.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, which adds a progress bar
+#'   across deployments, or `2`/`"detailed"` (default), which streams a per-deployment block of anchors
+#'   and flags instead of the bar.
 #'
 #' @details
-#' ## Dead reckoning in brief
-#' Satellite fixes (Argos, FastGPS) locate a marine animal only when the tag breaks the surface, which for a
-#' diving animal may be minutes to days apart - too coarse to see the actual path. *Dead reckoning*
-#' (a term inherited from marine navigation) fills the gaps by stepping the position forward from the last
-#' known point using the tag's own motion sensors: at each sample the animal is assumed to move a small
-#' distance `speed x dt` in the direction it is `heading`, and these micro-steps are summed into a
-#' continuous path (Wilson et al. 2007; Bidder et al. 2015; Gunner et al. 2021). The reconstruction is
-#' therefore only as good as its speed and heading inputs, and - crucially - small, systematic heading or
-#' speed errors *accumulate*, so the reckoned path slowly drifts away from the truth. That drift is why the
-#' output is a *pseudo*-track and why the correction step below matters.
+#' ## How the reconstruction proceeds
 #'
-#' The reconstruction proceeds in three steps:
-#' \enumerate{
-#'   \item \strong{Speed} (m/s) is assigned at every sample from `control$speed.method` - a constant, a
-#'     VeDBA-based activity model, a paddle-wheel count, or the dive geometry. See
-#'     \code{\link{reconstructTrackControl}} for the trade-offs (speed sets the *scale* of the track; heading
-#'     sets its *shape*).
-#'   \item \strong{Integration}: the horizontal speed (`speed x cos(pitch)`) is projected onto east/north by
-#'     the heading and integrated forward with a spherical (small-angle destination-point) step - latitude
-#'     advancing along the meridian and longitude scaled by the running latitude - so the track stays
-#'     accurate across latitude excursions. The correction below then operates in a local equirectangular
-#'     metre plane about the deployment.
-#'   \item \strong{Verified Position Correction (VPC)}: the raw path is reconciled with the known positions
-#'     (deployment, GPS/Argos fixes, pop-up). The drift accumulated between two successive fixes is
-#'     distributed back across that segment so the corrected path stays continuous and is pulled onto (or
-#'     exactly through) each fix, following the running-correction scheme of Gunner et al. (2021). With
-#'     `vpc.method = "linear"` the track passes exactly through every fix; with `"error_weighted"` (default)
-#'     each fix pulls only as hard as its quality warrants (via `anchor.error.radii`), so a noisy Argos point
-#'     bends the track less than a precise FastGPS one; `"scale_rotate"` instead rescales and rotates each
-#'     reckoned segment onto its bracketing fixes (the Gundog.Tracks correction, better for systematic drift);
-#'     `"none"` returns the uncorrected reckoning. For the additive methods the drift is spread across each
-#'     segment by reckoned distance travelled (`vpc.weighting = "distance"`, default) or by elapsed time.
-#'     Each reconstructed position also carries a 1-sigma uncertainty (`pseudo_error`, metres): it is ~ the
-#'     fix radius at each anchor and swells in between, following the reckoning-error model (`drift.rate`,
-#'     `drift.diffusion`) combined forward-and-backward between the bracketing fixes.
-#' }
+#' 1. **Speed** in m/s is assigned to every sample from `control$speed.method` - a constant, an activity
+#'    model driven by VeDBA, a paddle-wheel count, or the dive geometry. Speed sets the *scale* of the
+#'    track and heading sets its *shape*, so an error in one does not look like an error in the other.
+#'    [reconstructTrackControl()] covers the trade-offs.
+#' 2. **Integration** projects the horizontal speed, `speed x cos(pitch)`, onto east and north by the
+#'    heading and steps the position forward on a sphere: latitude advances along the meridian and
+#'    longitude is scaled by the running latitude, so the track stays accurate across a wide latitude
+#'    range. The correction below then works in a local metre plane about the deployment.
+#' 3. **Correction onto the known fixes** reconciles the reckoned path with the positions that were
+#'    actually observed. The drift accumulated between two successive fixes is distributed back across
+#'    that segment, so the corrected path stays continuous and is pulled onto each fix, following the
+#'    running-correction scheme of Gunner et al. (2021).
 #'
-#' ## The vertical axis (3-D)
-#' Because the tag also records depth, the reconstruction is genuinely three-dimensional: with
-#' `control$include.depth = TRUE` the measured depth is attached as `pseudo_depth`, so `pseudo_lon` /
-#' `pseudo_lat` / `pseudo_depth` describe where the animal was in the water column, not just at the surface.
+#' ## Choosing how the track is corrected
 #'
-#' ## Interpreting the result, and where to go next
-#' A pseudo-track is a plausible reconstruction, not an observation: absolute accuracy is highest just after
-#' each fix and degrades with time/distance since the last one. For downstream analyses that need formal
-#' per-position uncertainty (e.g. utilisation distributions, state-space behavioural models), hand the
-#' corrected track to a continuous-time movement model such as \pkg{aniMotum} (Jonsen et al. 2023) or
-#' \pkg{crawl} (Johnson et al. 2008); `reconstructTrack` is designed to feed such tools, not to replace them.
-#' Track-level summaries (distance, tortuosity, home range) are available via \code{\link{trackMetrics}}.
+#' With `vpc.method = "linear"` the track passes exactly through every fix. With `"error_weighted"`
+#' (default) each fix pulls only as hard as its quality warrants, through `anchor.error.radii`, so a
+#' noisy Argos point bends the track less than a precise Fastloc-GPS one. `"scale_rotate"` instead
+#' rescales and rotates each reckoned segment onto its bracketing fixes, which handles systematic drift
+#' better. `"none"` returns the uncorrected reckoning.
 #'
-#' When a track has \strong{no interior fixes} (only the deployment and pop-up), the two endpoints cannot
-#' constrain a wandering interior. A soft \emph{reconstructability} gate (see
-#' `reconstructTrackControl$reconstructability.min`) flags such a track with a `warning()` and a verdict in
-#' `meta$sensors$reconstructability` when its directedness is too low - the interior geometry should then be
-#' treated with great caution. Use \code{\link{crossValidateTrack}} to quantify accuracy where fixes exist.
+#' For the two additive methods the drift is spread across a segment either by reckoned distance
+#' travelled (`vpc.weighting = "distance"`, the default) or by elapsed time. Distance is the better
+#' default because reckoning error accumulates with movement rather than with the clock.
 #'
-#' @param data A `nautilus_tag` / data.frame, a (named) list of them, a single aggregated data.frame with
-#'   an `id.col` column, or a character vector of paths to `.rds` files (the output of
-#'   \code{\link{processTagData}}). Each must carry `datetime`, `heading` and `pitch` (and, per
-#'   `speed.method`, `vertical_velocity`, `paddle_speed`, or `vedba`; and `depth` for the 3-D output).
-#' @param control A \code{\link{reconstructTrackControl}} object (or a named list of its fields) grouping
-#'   the speed and track-correction settings.
-#' @param id.col,datetime.col Column names for the animal ID and timestamp. Defaults `"ID"`/`"datetime"`.
-#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
-#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
-#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
-#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
-#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
-#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
-#' @param plot,plot.file Draw the diagnostic report to the active device (`plot = TRUE`) and/or a
-#'   multi-page PDF (`plot.file`). The report is a worst-first summary page (per deployment: path length,
-#'   net displacement, fixes, residual drift) followed by a detail page per flagged deployment (or all with
-#'   `force.plots`): a map of the reconstructed track against the raw dead-reckoned path and the position
-#'   fixes, the drift the VPC corrected at each fix, the speed source, and the depth profile. Defaults
-#'   `FALSE` / `NULL`.
-#' @param force.plots Logical. Draw a detail page for every deployment, not only the high-drift ones.
-#'   Default `FALSE`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + a live progress
-#'   bar across deployments + summary), or `2`/"detailed" (default; streams a per-deployment block - anchors,
-#'   flags - instead of the bar). cli auto-hides the bar for fast runs.
+#' Every reconstructed position also carries a one-sigma uncertainty, `pseudo_error`, in metres. It is
+#' roughly the fix radius at each anchor and swells in between, following the reckoning-error model set
+#' by `drift.rate` and `drift.diffusion` and combined forwards and backwards between the bracketing
+#' fixes.
+#'
+#' ## The vertical axis
+#'
+#' Because the tag also records depth, the reconstruction is genuinely three-dimensional. With
+#' `control$include.depth = TRUE` the measured depth is attached as `pseudo_depth`, so `pseudo_lon`,
+#' `pseudo_lat` and `pseudo_depth` together describe where the animal was in the water column rather
+#' than only where it was on the map.
+#'
+#' ## Tracks with no interior fixes
+#'
+#' Where a deployment has only its two endpoints - the deployment and the pop-up - nothing constrains a
+#' wandering interior, and two very different paths can end in the same place. A reconstructability gate
+#' (`reconstructability.min` in [reconstructTrackControl()]) measures how directed the reckoned path is
+#' and raises a warning, with a verdict in `meta$sensors$reconstructability`, when it is too low to
+#' support the interior geometry. Treat such an interior with great caution.
+#'
+#' ## What to do with the result
+#'
+#' A pseudo-track is a plausible reconstruction, not an observation, and its accuracy is highest at the
+#' fixes and worst midway between them. Where an analysis needs formal per-position uncertainty - a
+#' utilisation
+#' distribution, or a behavioural state model - hand the corrected track to a continuous-time movement
+#' model such as \pkg{aniMotum} (Jonsen et al. 2023) or \pkg{crawl} (Johnson et al. 2008);
+#' [exportForSSM()] puts it in the form they expect. This function is designed to feed those tools
+#' rather than to replace them. For track-level summaries such as distance travelled and tortuosity,
+#' see [trackMetrics()], and to find out how accurate the reconstruction actually is on your own data,
+#' see [crossValidateTrack()].
 #'
 #' @return If `return.data = TRUE`, a named list of the input objects with `pseudo_lon`, `pseudo_lat`,
-#'   `speed_dr` (the speed used), `pseudo_error` (the per-sample 1-sigma positional uncertainty in metres)
-#'   and - when `control$include.depth` and a depth channel are present - `pseudo_depth` (the 3-D vertical
-#'   axis) added; if `return.data = FALSE`, a character vector of the written `.rds` file paths.
+#'   `speed_dr` (the speed that was used) and `pseudo_error` (the per-sample one-sigma positional
+#'   uncertainty in metres) added, plus `pseudo_depth` where `control$include.depth` is set and a depth
+#'   channel is present. If `return.data = FALSE`, a character vector of the written `.rds` file paths.
+#'
 #' @references
 #' Wilson RP, Liebsch N, Davies IM, *et al.* (2007) All at sea with animal tracks; methodological and
-#' analytical solutions for the resolution of movement. *Deep Sea Research Part II*. 54:193-210.
+#' analytical solutions for the resolution of movement. *Deep Sea Research Part II* 54:193-210.
 #' \doi{10.1016/j.dsr2.2006.11.017}
 #'
 #' Bidder OR, Walker JS, Jones MW, *et al.* (2015) Step by step: reconstruction of terrestrial animal
-#' movement paths by dead-reckoning. *Movement Ecology*. 3:23. \doi{10.1186/s40462-015-0055-4}
+#' movement paths by dead-reckoning. *Movement Ecology* 3:23. \doi{10.1186/s40462-015-0055-4}
 #'
-#' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal movements in R: a reappraisal
-#' using Gundog.Tracks. *Animal Biotelemetry*. 9:23. \doi{10.1186/s40317-021-00245-z}
+#' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal movements in R: a
+#' reappraisal using Gundog.Tracks. *Animal Biotelemetry* 9:23. \doi{10.1186/s40317-021-00245-z}
 #'
-#' Johnson DS, London JM, Lea MA, Durban JW (2008) Continuous-time correlated random walk model for animal
-#' telemetry data. *Ecology*. 89:1208-1215. \doi{10.1890/07-1032.1}
+#' Johnson DS, London JM, Lea MA, Durban JW (2008) Continuous-time correlated random walk model for
+#' animal telemetry data. *Ecology* 89:1208-1215. \doi{10.1890/07-1032.1}
 #'
 #' Jonsen ID, Grecian WJ, Phillips L, *et al.* (2023) aniMotum, an R package for animal movement data:
-#' rapid quality control, behavioural estimation and simulation. *Methods in Ecology and Evolution*.
+#' rapid quality control, behavioural estimation and simulation. *Methods in Ecology and Evolution*
 #' 14:806-816. \doi{10.1111/2041-210X.14060}
-#' @seealso \code{\link{reconstructTrackControl}}, \code{\link{processTagData}}, \code{\link{trackMetrics}},
-#'   \code{\link{exportForSSM}}
+#'
+#' @seealso [reconstructTrackControl()] for the speed and correction settings; [processTagData()] for
+#'   the step that must come first; [crossValidateTrack()] for measuring the accuracy achieved;
+#'   [trackMetrics()] for path summaries; [exportForSSM()] for handing the track to a state-space model.
+#'
 #' @examples
 #' \dontrun{
 #' processed <- processTagData(imported)
-#' # Dead-reckon the pseudo-track, anchoring accumulated drift to the known position fixes
+#'
+#' # Dead-reckon the pseudo-track, anchoring the accumulated drift to the known fixes
 #' tracks <- reconstructTrack(processed,
 #'                            control = reconstructTrackControl(speed.method = "paddle",
 #'                                                              vpc.method = "error_weighted"),
 #'                            plot = TRUE)
-#' trackMetrics(tracks)   # per-animal path summary
+#' trackMetrics(tracks)   # one path summary per animal
 #' }
 #' @export
 reconstructTrack <- function(data,

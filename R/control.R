@@ -682,21 +682,28 @@ integrityControl <- function(duplication.error        = 0.999,
 }
 
 
-#' Control settings for trackMetrics()
+#' Metric selection and window sizes for trackMetrics()
 #'
-#' @description Selects which movement-path metrics \code{\link{trackMetrics}} computes and the sizes of
-#' the rolling windows used for the temporal tortuosity columns.
+#' @description
+#' Selects which movement-path metrics [trackMetrics()] computes and the sizes of the rolling windows
+#' behind its temporal tortuosity columns, so the main call stays uncluttered.
 #'
-#' @param metrics Character vector of metrics to compute, any of `"path_ratio"`, `"fractal_dimension"`,
-#'   `"sinuosity"`, `"turning_angle"`, `"straightness"`, or `"all"` (the default) for all of them.
-#' @param min.points Minimum number of valid position fixes a track needs to be summarised. Tracks with
-#'   fewer are skipped. Default 5.
-#' @param hourly.window.h,daily.window.h Window sizes (hours) for the `Hourly_tortuosity` and
-#'   `Daily_tortuosity` columns - the mean path/displacement ratio over rolling windows of that length.
-#'   Defaults 1 and 24.
-#' @return A validated `nautilus_track_metrics` object for the `control` argument of
-#'   \code{\link{trackMetrics}}.
-#' @seealso \code{\link{trackMetrics}}
+#' @param metrics Which metrics to compute: any of `"path_ratio"`, `"sinuosity"`, `"turning_angle"` and
+#'   `"straightness"`, or `"all"` (the default). Narrow it when you only need one or two; the
+#'   local-turning metrics are the more expensive to compute on a long track.
+#' @param min.points The fewest valid positions a track needs before it is summarised at all; shorter
+#'   tracks are skipped. Default `5`. Raise it if a handful of positions is not enough for the
+#'   comparison you intend, since a two-point "path" is straight by construction.
+#' @param hourly.window.h,daily.window.h The window lengths in hours behind the `Hourly_tortuosity` and
+#'   `Daily_tortuosity` columns, each the mean path-to-displacement ratio over rolling windows of that
+#'   length. Defaults `1` and `24`. Choose them to bracket the timescales your animal's behaviour
+#'   actually switches on - a foraging bout and a diel cycle, say - rather than leaving them at values
+#'   that fall between the two.
+#'
+#' @return A validated `nautilus_track_metrics` object for the `control` argument of [trackMetrics()].
+#'
+#' @seealso [trackMetrics()] for the function that consumes it.
+#'
 #' @examples
 #' trackMetricsControl(metrics = c("path_ratio", "straightness"), min.points = 10)
 #' @export
@@ -704,7 +711,7 @@ trackMetricsControl <- function(metrics = "all",
                                 min.points = 5,
                                 hourly.window.h = 1,
                                 daily.window.h = 24) {
-  available <- c("path_ratio", "fractal_dimension", "sinuosity", "turning_angle", "straightness")
+  available <- c("path_ratio", "sinuosity", "turning_angle", "straightness")
   if (!is.character(metrics) || !length(metrics))
     .abort("{.arg trackMetrics$metrics} must be a non-empty character vector.")
   bad <- setdiff(metrics, c(available, "all"))
@@ -725,29 +732,34 @@ trackMetricsControl <- function(metrics = "all",
 #' Tuning for the speed check in filterLocations()
 #'
 #' @description
-#' Groups the tuning knobs of the neighbour-consistency ("root") speed test used by
-#' \code{\link{filterLocations}} into one validated object. The primary threshold - the maximum plausible
-#' speed - stays the top-level \code{max.speed.kmh} argument of \code{\link{filterLocations}}; this object
-#' controls only how that test is applied.
+#' Groups the tuning of the neighbour-consistency speed test used by [filterLocations()] into one
+#' validated object. The threshold that matters most - the fastest speed you would believe - stays the
+#' top-level `max.speed.kmh` argument of that function; this object governs only how the test is
+#' applied.
 #'
-#' @param min.time.mins Numeric. Minimum time separation (minutes) between two fixes for the implied speed
-#'   between them to be trusted. Segments closer together in time are not judged, since a sub-threshold
-#'   gap inflates the speed unreliably (a metre of GPS jitter over a few seconds looks like a huge speed).
-#'   Default 0 (judge every segment; the position record already drops exact-duplicate timestamps).
-#' @param max.iterations Integer. Maximum number of removal passes. Each pass removes the single most
-#'   egregious spike and recomputes speeds against the new neighbours; the loop stops early once no fix is
-#'   implausible. Default 50.
-#' @param spike.angle Numeric in \[90, 180\], or `NULL`. Optional direction-reversal test that supplements
-#'   the speed test: an interior fix is also treated as a spike when the track's heading reverses by at
-#'   least this many degrees at that fix (a sharp out-and-back) \emph{and} at least one adjoining segment
-#'   exceeds \code{max.speed.kmh}. Catches sharp spikes at moderate speed that the pure speed test misses.
-#'   `NULL` (default) disables it.
+#' @param min.time.mins The shortest separation, in minutes, between two fixes for the speed implied
+#'   between them to be trusted. Closer pairs are not judged, because a sub-threshold gap inflates the
+#'   apparent speed unreliably: a metre of positional jitter over a few seconds looks like a huge
+#'   speed. Default `0`, which judges every segment, the position record having already dropped
+#'   duplicate timestamps. Raise it if your tag reports bursts of near-simultaneous fixes.
+#' @param max.iterations The most removal passes to make. Each pass removes the single most egregious
+#'   spike and recomputes speeds against the new neighbours, and the loop stops early once no fix is
+#'   implausible. Default `50`. It is a runaway guard rather than a tuning knob; reaching it usually
+#'   means the threshold is too tight for the data.
+#' @param spike.angle An optional direction-reversal test, in degrees between 90 and 180, that
+#'   supplements the speed test: an interior fix is also treated as a spike when the track's heading
+#'   reverses by at least this much there *and* at least one adjoining segment exceeds
+#'   `max.speed.kmh`. It catches the sharp out-and-back spikes that travel slowly enough to pass the
+#'   speed test alone. `NULL` (default) disables it; around 160 degrees is a reasonable starting point.
+#'
 #' @return A validated `nautilus_filter_locations` object for the `control` argument of
-#'   \code{\link{filterLocations}}.
-#' @seealso \code{\link{filterLocations}}
+#'   [filterLocations()].
+#'
+#' @seealso [filterLocations()] for the function that consumes it.
+#'
 #' @examples
-#' filterLocationsControl(min.time.mins = 2)              # ignore fix pairs less than 2 min apart
-#' filterLocationsControl(spike.angle = 160)             # also flag sharp out-and-back spikes
+#' filterLocationsControl(min.time.mins = 2)     # ignore fix pairs less than 2 min apart
+#' filterLocationsControl(spike.angle = 160)     # also flag sharp out-and-back spikes
 #' @export
 filterLocationsControl <- function(min.time.mins = 0,
                                    max.iterations = 50,
@@ -769,7 +781,7 @@ filterLocationsControl <- function(min.time.mins = 0,
 #'
 #' @details
 #' Dead reckoning integrates a *speed* and a *heading* forward in time to reconstruct a movement path (see
-#' the "Dead reckoning in brief" section of \code{\link{reconstructTrack}}). Heading is produced upstream by
+#' the "How the reconstruction proceeds" section of \code{\link{reconstructTrack}}). Heading is produced upstream by
 #' \code{\link{processTagData}}; this control object governs the two remaining ingredients - the **speed**
 #' used at each step, and the **Verified Position Correction (VPC)** that ties the path back to known fixes.
 #'

@@ -213,7 +213,7 @@ metrics <- trackMetrics(
 With `lon.col`/`lat.col` left `NULL`, `trackMetrics()` automatically uses `reconstructTrack()`'s
 `pseudo_lon`/`pseudo_lat`. It returns `Total_distance_km` and `Net_displacement_km` alongside
 `Path_ratio`, `Straightness` (net / total), `Sinuosity` (the Bovet & Benhamou index),
-`Fractal_dimension`, `Mean_turning_angle`, and rolling `Hourly_tortuosity` /
+`Mean_turning_angle`, and rolling `Hourly_tortuosity` /
 `Daily_tortuosity` (window sizes set on the control). Metrics a track is too short to support
 are returned as `NA` rather than guessed.
 

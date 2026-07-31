@@ -2,7 +2,7 @@
 % Please edit documentation in R/crossValidateTrack.R
 \name{crossValidateTrack}
 \alias{crossValidateTrack}
-\title{Cross-validate a reconstructed track against its own position fixes}
+\title{Measure how accurate a reconstructed track actually is}
 \usage{
 crossValidateTrack(
   data,
@@ -15,72 +15,81 @@ crossValidateTrack(
 )
 }
 \arguments{
-\item{data}{The processed data (output of \code{\link{processTagData}}): a \code{nautilus_tag} / data.frame, a
-(named) list of them, a single aggregated data.frame with an \code{id.col}, or a character vector of \code{.rds}
-paths. Must carry the columns \code{\link{reconstructTrack}} needs, and have genuine position fixes.}
+\item{data}{The output of \code{\link[=processTagData]{processTagData()}}: a tag object, a list of them, a single table with an
+\code{id.col}, or a character vector of \code{.rds} paths. Each deployment needs the columns
+\code{\link[=reconstructTrack]{reconstructTrack()}} requires, and genuine position fixes beyond the deployment origin.}
 
-\item{control}{A \code{\link{reconstructTrackControl}} object (or a named list of its fields); the same
-settings whose accuracy you want to assess.}
+\item{control}{A control object from \code{\link[=reconstructTrackControl]{reconstructTrackControl()}} - the same settings whose accuracy
+you want to assess. Pass \code{reconstructTrackControl(...)} to change it.}
 
-\item{id.col, datetime.col}{Column names for the animal ID and timestamp. Defaults \code{"ID"} / \code{"datetime"}.}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{plot, plot.file}{Draw the diagnostic report (error-vs-gap scatter + error distribution) to the active
-device and/or a PDF. Defaults \code{FALSE} / \code{NULL}.}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + a live progress
-bar across deployments + summary), or \code{2}/"detailed" (default; streams a per-deployment block - fixes
-validated, median error - instead of the bar). cli auto-hides the bar for fast runs.}
+\item{plot, plot.file}{Whether to draw the diagnostic report - the error-against-gap scatter and the
+error distribution - to the active graphics device, and a path to a PDF for it. Defaults \code{FALSE}
+and \code{NULL}.}
+
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, which adds a progress bar
+across deployments, or \code{2}/\code{"detailed"} (default), which streams a per-deployment block of fixes
+validated and median error instead of the bar.}
 }
 \value{
-A \code{data.frame}, one row per withheld fix, with columns \code{id}, \code{datetime}, \code{quality}, \code{error_m},
-\code{gap_h}, \code{interpolated}, \code{fix_radius_m}, \code{n_anchors_used}, \code{speed_method}, \code{vpc_method}. Empty if no
-deployment has a fix to withhold.
+A data frame with one row per withheld fix and columns \code{id}, \code{datetime}, \code{quality},
+\code{error_m}, \code{gap_h}, \code{interpolated}, \code{fix_radius_m}, \code{n_anchors_used}, \code{speed_method} and
+\code{vpc_method}. Empty when no deployment has a fix to withhold.
 }
 \description{
-Quantifies how accurately \code{\link{reconstructTrack}} predicts position, by leave-one-out
-cross-validation against the deployment's genuine position fixes. Each fix in turn is withheld, the track
-is reconstructed from the remaining anchors (so neither the Verified Position Correction nor the VeDBA
-speed calibration sees the withheld fix), and the reconstructed position at that time is compared with the
-true fix. The result is a per-fix table of held-out errors - the closest thing to ground-truth accuracy
-available for an underwater track, since GPS/Argos fixes are the only true positions and they exist only
-at the surface.
+A marine pseudo-track has no underwater ground truth. Between surfacings there is nothing to compare
+the reconstruction against, so its accuracy cannot be measured directly - which leaves the honest
+question of how far to trust it unanswered.
+
+One thing can be done. Withhold a fix the animal genuinely produced, reconstruct the track from the
+remaining anchors alone, and see how close the reconstruction lands to the point it never saw. That
+is what this function does, leave-one-out across every fix in the deployment: neither the position
+correction nor the speed calibration is allowed to see the withheld fix. The result is a per-fix
+table of held-out errors, and the error at a fix \code{t} seconds from the nearest retained one is a
+direct estimate of the track's accuracy over a \code{t}-second reckoning gap.
+
+Use it to decide which settings actually help on your own data, and to obtain the drift rate to feed
+back into \code{\link[=reconstructTrackControl]{reconstructTrackControl()}}.
 }
 \details{
-\subsection{Why this is the headline validation}{
+\subsection{Reading the result}{
 
-A marine pseudo-track has no underwater ground truth, so it cannot be validated directly between fixes.
-The one thing you \emph{can} do is withhold a known fix and ask how close the reconstruction lands to it using
-only the other information - exactly the strategy used to validate dead-reckoned whale tracks against
-sparse Fastloc-GPS (Wensveen et al. 2015). The withheld error at a fix \code{t} seconds from the nearest
-retained fix is a direct, honest estimate of the track's accuracy over a \code{t}-second reckoning gap.
+For each withheld fix the function records the great-circle \code{error_m} between the reconstructed and
+the true position, the \code{gap_h} to the nearest retained fix, whether the fix was \emph{interpolated}, with
+retained anchors on both sides, or \emph{extrapolated}, with anchors on one side only as at the pop-up,
+and the fix's own quality radius for context.
+
+The key diagnostic is error against gap. Where the error grows roughly linearly with the gap, the
+slope is an empirical drift rate in metres per hour; divide by 3600 for the \code{drift.rate} in m/s that
+\code{\link[=reconstructTrackControl]{reconstructTrackControl()}} expects, which the summary line prints for you. Running the function with
+different \code{vpc.method} or \code{speed.method} settings and stacking the results shows which choices help
+on your data rather than in principle.
+
+The approach is the one used to validate dead-reckoned whale tracks against sparse Fastloc-GPS
+(Wensveen et al. 2015).
 }
 
-\subsection{What it reports, and how to read it}{
+\subsection{What it cannot tell you}{
 
-For every withheld fix the function records the great-circle \code{error_m} between the reconstructed and the
-true position, the \code{gap_h} (hours to the nearest retained fix), whether the fix was \emph{interpolated}
-(retained anchors both before and after) or \emph{extrapolated} (only on one side, e.g. the pop-up), and the
-fix's own quality radius for context. The key diagnostic is \strong{error vs gap}: if it grows roughly linearly
-with the gap, its slope is an empirical drift rate in \strong{m/h} - divide by 3600 to get the \code{drift.rate}
-(m/s) for \code{\link{reconstructTrackControl}} (the summary line prints this m/s value for you). Run it
-with \code{control} set to different \code{vpc.method} / \code{speed.method} and stack the results to see which settings
-actually help on \emph{your} data.
-}
+The held-out error conflates heading error, speed error and unmodelled current. It measures the
+pipeline's net accuracy, not which component failed. To probe the heading side separately, check the
+magnetometer against the geomagnetic model with \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}, and the sensor frame
+itself with the accelerometer-against-gyroscope co-registration reported by \code{\link[=applyAxisMapping]{applyAxisMapping()}}.
 
-\subsection{Honest limitations}{
-
-The held-out error \strong{conflates} heading error, speed error and unmodelled current - it tells you the
-pipeline's net accuracy, not which component failed (use the magnetometer-vs-geomagnetic-model and
-gyro-vs-magnetometer checks to isolate those). It can only be computed where a deployment has genuine
-surfacing fixes beyond the deployment origin; sparse surfacing means few points per deployment, so pool
-across the fleet. A withheld fix carries its own measurement error (tens of m for FastGPS, km for coarse
-Argos), which sets a floor on the achievable \code{error_m}.
+It can only be computed where a deployment surfaced often enough to produce fixes beyond the
+deployment origin. Sparse surfacing means few points per deployment, so pool across the fleet before
+reading a rate off the slope. Finally, a withheld fix carries its own measurement error - tens of
+metres for Fastloc-GPS, kilometres for coarse Argos - which sets a floor on the achievable \code{error_m}.
 }
 }
 \examples{
 \dontrun{
 cv <- crossValidateTrack(processed, plot = TRUE)
-# compare correction methods on your own data:
+
+# compare correction methods on your own data
 methods <- c("none", "error_weighted", "scale_rotate")
 comp <- do.call(rbind, lapply(methods, function(m)
   crossValidateTrack(processed, reconstructTrackControl(vpc.method = m), verbose = FALSE)))
@@ -89,8 +98,9 @@ aggregate(error_m ~ vpc_method, comp, median)
 }
 \references{
 Wensveen PJ, Thomas L, Miller PJO (2015) A path reconstruction method integrating dead-reckoning and
-position fixes applied to humpback whales. \emph{Movement Ecology}. 3:31. \doi{10.1186/s40462-015-0061-6}
+position fixes applied to humpback whales. \emph{Movement Ecology} 3:31. \doi{10.1186/s40462-015-0061-6}
 }
 \seealso{
-\code{\link{reconstructTrack}}, \code{\link{reconstructTrackControl}}
+\code{\link[=reconstructTrack]{reconstructTrack()}} for the reconstruction being assessed; \code{\link[=reconstructTrackControl]{reconstructTrackControl()}} for
+the settings to compare.
 }
