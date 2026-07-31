@@ -658,9 +658,12 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 # STEP 12. Estimate tail-beat frequencies                                      #
 ################################################################################
 
-# calculateTailBeats() estimates the tail-beat frequency from a motion channel. The default "peaks"
-# method returns per-beat frequency (tbf_hz), amplitude (tbf_amplitude, an effort proxy) and a
-# swimming/gliding flag (tbf_swimming).
+# calculateTailBeats() estimates the tail-beat frequency from a motion channel. Each backend names its
+# own output, so provenance travels with the value: "peaks" returns tbf_hz_peaks and
+# tbf_amplitude_peaks, "wavelet" returns tbf_hz_wavelet and tbf_amplitude_wavelet. Both amplitudes are
+# the peak-to-trough excursion, so they are directly comparable. The swimming/gliding flag
+# (tbf_swimming) is shared by the backends and so carries no suffix. Use tailBeatColumn() if you want
+# code that works whichever backend was run.
 #
 # Choosing the axis: for lateral swimmers (most sharks and teleosts) tail beats are cleanest on the
 # lateral 'sway' axis; other taxa (e.g. cetaceans, rays) may need the vertical 'heave' axis. Using an
@@ -730,7 +733,7 @@ plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", f
 # way to spot among-individual variation and multimodal behaviour that a mean would hide - and it
 # returns the per-deployment distribution summary invisibly, for tables and stats.
 dist_summary <- plotDistributions(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
-                                  metrics   = c("tbf_hz", "paddle_speed"),
+                                  metrics   = c("tbf_hz_peaks", "paddle_speed"),
                                   order.by  = "id",
                                   min.n     = 30,         # ignore deployments with too few samples for a metric
                                   plot      = FALSE,

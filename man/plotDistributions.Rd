@@ -27,7 +27,7 @@ data.frame, or a list of them (see \link{processTagData}).}
 
 \item{metrics}{Character vector of metric columns to plot (one panel each), in order. \code{NULL} (default)
 auto-selects the kinematic / effort metrics present in the data
-(\code{tbf_hz}, \code{paddle_speed}, \code{speed}, \code{vedba}, \code{odba}, \code{vertical_velocity}).}
+(whichever \verb{tbf_hz_*} backends ran, \code{paddle_speed}, \code{speed}, \code{vedba}, \code{odba}, \code{vertical_velocity}).}
 
 \item{labels}{Named character vector mapping a metric to its axis label. Any metric not named here
 falls back to a built-in label (e.g. \code{"Tail-beat frequency (Hz)"}) or the column name.}
@@ -87,7 +87,7 @@ id is read from each object's metadata.
 \dontrun{
 # Compare tail-beat frequency and swimming speed across the cohort, into a PDF
 plotDistributions(list.files("./processed", full.names = TRUE),
-                  metrics = c("tbf_hz", "paddle_speed"),
+                  metrics = c("tbf_hz_peaks", "paddle_speed"),
                   plot = FALSE, plot.file = "./plots/distributions.pdf")
 }
 }

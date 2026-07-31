@@ -15,7 +15,7 @@
 #' @param data Data annotated by \code{\link{detectDives}}: `.rds` paths, a `nautilus_tag` /
 #'   data.frame, or a list of them.
 #' @param variables Character vector of per-sample columns to summarise per dive (e.g.
-#'   `c("temp", "odba", "tbf_hz")`). `NULL` (default) adds none. Each costs 2 columns, or 8 with
+#'   `c("temp", "odba", "tbf_hz_peaks")`). `NULL` (default) adds none. Each costs 2 columns, or 8 with
 #'   `by.phase = TRUE`.
 #' @param circular.variables Character. Which of `variables` are angles in degrees, summarised as a
 #'   mean angle and a mean resultant length. Default `c("heading", "roll")`, matching

@@ -23,7 +23,7 @@
 #'   data.frame, or a list of them (see \link{processTagData}).
 #' @param metrics Character vector of metric columns to plot (one panel each), in order. `NULL` (default)
 #'   auto-selects the kinematic / effort metrics present in the data
-#'   (`tbf_hz`, `paddle_speed`, `speed`, `vedba`, `odba`, `vertical_velocity`).
+#'   (whichever `tbf_hz_*` backends ran, `paddle_speed`, `speed`, `vedba`, `odba`, `vertical_velocity`).
 #' @param labels Named character vector mapping a metric to its axis label. Any metric not named here
 #'   falls back to a built-in label (e.g. `"Tail-beat frequency (Hz)"`) or the column name.
 #' @param order.by How to order deployments down the y-axis (one order, shared by every panel):
@@ -57,7 +57,7 @@
 #' \dontrun{
 #' # Compare tail-beat frequency and swimming speed across the cohort, into a PDF
 #' plotDistributions(list.files("./processed", full.names = TRUE),
-#'                   metrics = c("tbf_hz", "paddle_speed"),
+#'                   metrics = c("tbf_hz_peaks", "paddle_speed"),
 #'                   plot = FALSE, plot.file = "./plots/distributions.pdf")
 #' }
 #' @export
@@ -113,7 +113,7 @@ plotDistributions <- function(data,
 
   first_cols <- names(data.table::as.data.table(src$get(1)))
   if (is.null(metrics)) {
-    metrics <- intersect(.distAutoMetrics(), first_cols)
+    metrics <- intersect(.distAutoMetrics(first_cols), first_cols)
     if (!length(metrics))
       .abort(c("No kinematic / effort metrics found to plot.",
                "i" = "Provide {.arg metrics} explicitly (available numeric columns include {.val {utils::head(setdiff(first_cols, c(id.col, 'datetime')), 8)}})."))
@@ -250,19 +250,33 @@ plotDistributions <- function(data,
 #' The metrics auto-selected when `metrics = NULL` (kinematic / effort, not environmental).
 #' @keywords internal
 #' @noRd
-.distAutoMetrics <- function() c("tbf_hz", "paddle_speed", "speed", "vedba", "odba", "vertical_velocity")
+.distAutoMetrics <- function(cols = NULL) {
+  base <- c("paddle_speed", "speed", "vedba", "odba", "vertical_velocity")
+  # Tail-beat estimates are named after the backend that produced them, so the auto list cannot be a
+  # fixed string. Take whichever backends actually ran: with both, both panels appear, which is the
+  # honest default for a function whose job is to show distributions.
+  tb <- if (is.null(cols)) "tbf_hz" else grep("^tbf_hz_", cols, value = TRUE)
+  c(tb, base)
+}
 
 #' Axis label for a metric: an explicit `labels` entry, else a built-in default, else the column name.
 #' @keywords internal
 #' @noRd
 .distLabel <- function(metric, labels = NULL) {
+  # a backend suffix is stripped for the lookup and appended to the label, so tbf_hz_wavelet reads as
+  # "Tail-beat frequency (Hz), wavelet" rather than falling through to the raw column name
+  backend <- sub("^tbf_(hz|amplitude)_", "", metric)
+  if (!identical(backend, metric)) metric <- sub(paste0("_", backend, "$"), "", metric)
+  else backend <- NA_character_
   known <- c(tbf_hz = "Tail-beat frequency (Hz)", tbf_amplitude = "Tail-beat amplitude",
              paddle_speed = "Paddle speed (m/s)", speed = "Speed (m/s)", vedba = "VeDBA (g)",
              odba = "ODBA (g)", vertical_velocity = "Vertical velocity (m/s)",
              depth = "Depth (m)", temp = "Temperature (\u00b0C)")
-  if (!is.null(labels) && metric %in% names(labels)) unname(labels[[metric]])
-  else if (metric %in% names(known)) unname(known[metric])
-  else metric
+  lab <- if (!is.null(labels) && metric %in% names(labels)) unname(labels[[metric]])
+         else if (metric %in% names(known)) unname(known[metric])
+         else metric
+  if (!is.na(backend)) lab <- paste0(lab, ", ", backend)
+  lab
 }
 
 #' One tidy distribution-summary row for a deployment x metric (NA statistics when empty).

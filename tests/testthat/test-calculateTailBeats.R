@@ -153,10 +153,11 @@ test_that(".tailBeatsPeaks recovers a different frequency (0.5 Hz)", {
 test_that("the peaks method recovers frequency + amplitude and adds the expected columns", {
   skip_if_not_installed("signal")
   out <- run_tb(list(A01 = .sway(freq = 1.0)), method = "peaks")$A01
-  expect_true(all(c("tbf_hz", "tbf_amplitude", "tbf_swimming") %in% names(out)))
-  expect_equal(median(out$tbf_hz, na.rm = TRUE), 1.0, tolerance = 0.1)
-  expect_gt(median(out$tbf_amplitude, na.rm = TRUE), 0)
-  expect_false("tbf_hz_alt" %in% names(out))            # one backend named -> no cross-check
+  # a single backend is still named in the column, so provenance never depends on the call
+  expect_true(all(c("tbf_hz_peaks", "tbf_amplitude_peaks", "tbf_swimming") %in% names(out)))
+  expect_equal(median(out$tbf_hz_peaks, na.rm = TRUE), 1.0, tolerance = 0.1)
+  expect_gt(median(out$tbf_amplitude_peaks, na.rm = TRUE), 0)
+  expect_false(any(grepl("wavelet|_alt$", names(out))))  # one backend named -> no cross-check
   # QC stats recorded in the audit trail
   step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
   expect_equal(step$method, "peaks"); expect_equal(step$axis, "sway")
@@ -166,9 +167,11 @@ test_that("the peaks method recovers frequency + amplitude and adds the expected
 test_that("naming both backends runs both and cross-checks them", {
   skip_if_not_installed("signal")
   out <- run_tb(list(A01 = .sway(freq = 1.0)))$A01          # the default names both
-  expect_true(all(c("tbf_hz", "tbf_hz_alt", "tbf_agree") %in% names(out)))
-  expect_equal(median(out$tbf_hz, na.rm = TRUE), 1.0, tolerance = 0.1)
-  expect_equal(median(out$tbf_hz_alt, na.rm = TRUE), 1.0, tolerance = 0.1)
+  expect_true(all(c("tbf_hz_peaks", "tbf_hz_wavelet", "tbf_agree") %in% names(out)))
+  expect_equal(median(out$tbf_hz_peaks, na.rm = TRUE), 1.0, tolerance = 0.1)
+  expect_equal(median(out$tbf_hz_wavelet, na.rm = TRUE), 1.0, tolerance = 0.1)
+  # both backends now retain an amplitude, on the same measurand
+  expect_true(all(c("tbf_amplitude_peaks", "tbf_amplitude_wavelet") %in% names(out)))
   expect_gt(mean(out$tbf_agree, na.rm = TRUE), 0.9)        # a clean tone: the two should agree
   step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
   expect_equal(step$method, "peaks + wavelet")
@@ -208,9 +211,10 @@ test_that("a beat well inside the band does not trip edge occupancy", {
 test_that("the wavelet method recovers frequency and now also amplitude", {
   skip_if_not_installed("signal")
   out <- run_tb(list(A01 = .sway(freq = 1.0)), method = "wavelet")$A01
-  expect_true(all(c("tbf_hz", "tbf_amplitude") %in% names(out)))
-  expect_equal(median(out$tbf_hz, na.rm = TRUE), 1.0, tolerance = 0.1)
-  expect_equal(median(out$tbf_amplitude, na.rm = TRUE), 1.0, tolerance = 0.15)  # unit sine in
+  expect_true(all(c("tbf_hz_wavelet", "tbf_amplitude_wavelet") %in% names(out)))
+  expect_equal(median(out$tbf_hz_wavelet, na.rm = TRUE), 1.0, tolerance = 0.1)
+  # peak-to-trough for BOTH backends now: a unit sine spans 2.0, not 1.0
+  expect_equal(median(out$tbf_amplitude_wavelet, na.rm = TRUE), 2.0, tolerance = 0.3)
   expect_false("tbf_power_ratio" %in% names(out))   # amplitude-invariant and knob-dependent: removed
 })
 
@@ -228,7 +232,7 @@ test_that("the wavelet amplitude is corrected for band-pass attenuation at the b
   invisible(capture.output(suppressWarnings(
     out <- calculateTailBeats(d, motion.col = "sway", min.freq.Hz = 0.2, max.freq.Hz = 3,
                               method = "wavelet", ridge.prominence = 0, verbose = FALSE)[[1]])))
-  expect_equal(median(out$tbf_amplitude, na.rm = TRUE), 1.0, tolerance = 0.05)
+  expect_equal(median(out$tbf_amplitude_wavelet, na.rm = TRUE), 2.0, tolerance = 0.1)
 })
 
 test_that("by default a tone sitting ON the band floor is withheld, not reported", {
@@ -259,8 +263,10 @@ test_that("both methods emit the same core columns", {
   skip_if_not_installed("signal")
   d <- list(A01 = .sway(freq = 1.0))
   cols <- function(m) names(run_tb(d, method = m)$A01)
-  expect_true(all(c("tbf_hz", "tbf_amplitude") %in% cols("peaks")))
-  expect_true(all(c("tbf_hz", "tbf_amplitude") %in% cols("wavelet")))
+  expect_true(all(c("tbf_hz_peaks", "tbf_amplitude_peaks") %in% cols("peaks")))
+  expect_true(all(c("tbf_hz_wavelet", "tbf_amplitude_wavelet") %in% cols("wavelet")))
+  # tbf_swimming is shared, so it is unsuffixed in both
+  expect_true("tbf_swimming" %in% cols("peaks")); expect_true("tbf_swimming" %in% cols("wavelet"))
 })
 
 test_that("the wavelet band-pass fallback runs on a short series (no undefined-variable crash)", {
@@ -284,7 +290,7 @@ test_that("arguments removed with the WaveletComp engine are rejected, not silen
 test_that("a different frequency is recovered (0.5 Hz)", {
   skip_if_not_installed("signal")
   out <- run_tb(list(A01 = .sway(freq = 0.5)))$A01
-  expect_equal(median(out$tbf_hz, na.rm = TRUE), 0.5, tolerance = 0.1)
+  expect_equal(median(out$tbf_hz_peaks, na.rm = TRUE), 0.5, tolerance = 0.1)
 })
 
 test_that("argument validation errors clearly", {
@@ -353,8 +359,9 @@ test_that("an individual with no usable motion still gets the full schema, an au
   out <- NULL
   invisible(capture.output(suppressWarnings(
     out <- calculateTailBeats(list(A01 = d), motion.col = "sway", verbose = FALSE, output.dir = dir)$A01)))
-  # full schema, not just tbf_hz
-  expect_true(all(c("tbf_hz", "tbf_amplitude", "tbf_swimming", "tbf_hz_alt", "tbf_agree") %in% names(out)))
+  # the full schema for the backends that were requested, so a skipped deployment stays row-bindable
+  expect_true(all(c("tbf_hz_peaks", "tbf_amplitude_peaks", "tbf_hz_wavelet", "tbf_amplitude_wavelet",
+                    "tbf_swimming", "tbf_agree") %in% names(out)))
   # an audit-trail entry exists and is marked
   step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
   expect_equal(step$note, "no valid motion data")
@@ -447,9 +454,10 @@ test_that("the per-deployment block groups statistics by backend, in primary-the
   # each backend's own statistics sit BETWEEN its heading and the next one, not interleaved
   sub <- function(from, to) lines[(from + 1L):(to - 1L)]
   expect_true(any(grepl("frequency:", sub(i_pk, i_wv))))
-  expect_true(any(grepl("amplitude:", sub(i_pk, i_wv))))    # only the primary retains an amplitude
   expect_true(any(grepl("frequency:", sub(i_wv, i_ag))))
-  expect_false(any(grepl("amplitude:", sub(i_wv, i_ag))))
+  # both backends now report an amplitude, on the same measurand, so both sections carry one
+  expect_true(any(grepl("amplitude:", sub(i_pk, i_wv))))
+  expect_true(any(grepl("amplitude:", sub(i_wv, i_ag))))
   # the agreement sub-line is subordinate to the agreement line, not to a backend
   expect_match(lines[i_ag + 1L], "typical difference:")
 })
@@ -1084,4 +1092,91 @@ test_that("the peaks backend reports an unresolved share, as the wavelet backend
                        min.freq.Hz = 0.2, max.freq.Hz = 3, verbose = "detailed"))))
   hist <- processingHistory(run_tb(list(A01 = d), method = "peaks")$A01)
   expect_match(hist$details[hist$step == "calculateTailBeats"], "pct_unresolved")
+})
+
+
+#######################################################################################################
+# Backend-named outputs, and the amplitude the two backends now share ##################################
+#######################################################################################################
+
+test_that("both backends report the SAME amplitude measure, peak-to-trough", {
+  skip_if_not_installed("signal")
+  # The defect this replaced: tbf_amplitude was the peak-to-trough excursion when peaks ran and the
+  # semi-amplitude when the wavelet ran - one column name, a factor of two, decided only by which
+  # backend the caller named first. Measured 4.00 vs 2.00 on this exact signal before the fix.
+  fs <- 20; A <- 2                                          # semi-amplitude 2 -> peak-to-trough 4
+  mk <- function() { set.seed(1); t <- seq(0, 600, by = 1 / fs)
+    d <- data.table::data.table(ID = "A01", datetime = as.POSIXct("2020-01-01", tz = "UTC") + t,
+                                sway = A * sin(2 * pi * 0.5 * t) + stats::rnorm(length(t), 0, 0.02))
+    data.table::setattr(d, "nautilus.version", "test"); d }
+  out <- run_tb(list(A01 = mk()))$A01
+  expect_equal(median(out$tbf_amplitude_peaks,   na.rm = TRUE), 2 * A, tolerance = 0.1)
+  expect_equal(median(out$tbf_amplitude_wavelet, na.rm = TRUE), 2 * A, tolerance = 0.1)
+  expect_equal(median(out$tbf_amplitude_peaks,   na.rm = TRUE),
+               median(out$tbf_amplitude_wavelet, na.rm = TRUE), tolerance = 0.05)
+})
+
+test_that("backend-specific outputs are suffixed and shared ones are not", {
+  skip_if_not_installed("signal")
+  d <- list(A01 = .sway(freq = 1.0, fs = 20, dur = 200))
+  both <- run_tb(d)$A01
+  expect_true(all(c("tbf_hz_peaks", "tbf_hz_wavelet",
+                    "tbf_amplitude_peaks", "tbf_amplitude_wavelet") %in% names(both)))
+  # shared quantities keep bare names: tbf_swimming comes from the band-passed signal both backends
+  # use, and tbf_agree is a property of the pair
+  expect_true(all(c("tbf_swimming", "tbf_agree") %in% names(both)))
+  expect_false(any(grepl("^tbf_(swimming|agree)_", names(both))))
+  # and no method-agnostic alias survives
+  expect_false(any(c("tbf_hz", "tbf_amplitude", "tbf_hz_alt") %in% names(both)))
+})
+
+test_that("the audit trail records which backend was primary and the cross-check's own median", {
+  skip_if_not_installed("signal")
+  out <- run_tb(list(A01 = .sway(freq = 1.0, fs = 20, dur = 200)))$A01
+  step <- Filter(function(p) identical(p$step, "calculateTailBeats"),
+                 nautilus:::.getMeta(out)$processing)[[1]]
+  expect_equal(step$primary_method, "peaks")
+  expect_equal(step$cross_check_method, "wavelet")
+  expect_true(is.finite(step$median_tbf_hz_crosscheck))
+})
+
+
+#######################################################################################################
+# Resolving which backend to read #####################################################################
+#######################################################################################################
+
+test_that("tailBeatColumn resolves from the DATA, not from metadata", {
+  skip_if_not_installed("signal")
+  # NOTE: a fresh table per call. calculateTailBeats() writes its columns into the object it is given
+  # and returns that same object (data.table reference semantics), so reusing one input across two runs
+  # would leave the second result carrying the first run's columns too.
+  fresh <- function() list(A01 = .sway(freq = 1.0, fs = 20, dur = 200))
+  both <- run_tb(fresh())$A01
+  wav  <- run_tb(fresh(), method = "wavelet")$A01
+
+  expect_equal(tailBeatColumn(both), "tbf_hz_peaks")            # documented tie-break
+  expect_equal(tailBeatColumn(wav),  "tbf_hz_wavelet")          # only one backend ran
+  expect_equal(tailBeatColumn(both, method = "wavelet"), "tbf_hz_wavelet")
+  expect_equal(tailBeatColumn(both, quantity = "amplitude"), "tbf_amplitude_peaks")
+
+  # metadata is deliberately NOT consulted: it does not survive rbind / CSV / dplyr::mutate, so a
+  # stripped object must still resolve correctly from its columns alone
+  stripped <- data.table::as.data.table(as.data.frame(wav))
+  attr(stripped, "nautilus") <- NULL
+  expect_equal(tailBeatColumn(stripped), "tbf_hz_wavelet")
+})
+
+test_that("tailBeatColumn returns NULL when no backend ran, and errors on a backend that produced nothing", {
+  skip_if_not_installed("signal")
+  expect_null(tailBeatColumn(.sway(freq = 1.0, fs = 20, dur = 60)))
+  wav <- run_tb(list(A01 = .sway(freq = 1.0, fs = 20, dur = 200)), method = "wavelet")$A01   # fresh input
+  # a typo must fail loudly rather than quietly resolving to the other backend
+  expect_error(tailBeatColumn(wav, method = "peaks"), "tbf_hz_peaks")
+  expect_error(tailBeatColumn(wav, method = "peaks"), "wavelet")   # names what IS available
+})
+
+test_that("an all-NA backend column does not win the resolution", {
+  # presence is not enough - a deployment that produced nothing must not capture the resolver
+  dt <- data.frame(tbf_hz_peaks = rep(NA_real_, 5), tbf_hz_wavelet = c(1, 1, NA, 1, 1))
+  expect_equal(tailBeatColumn(dt), "tbf_hz_wavelet")
 })

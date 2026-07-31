@@ -6,7 +6,7 @@
   set.seed(seed)
   t0 <- as.POSIXct("2021-01-01", tz = "UTC")
   d <- data.table::data.table(ID = id, datetime = t0 + seq_len(n),
-                              tbf_hz = rlnorm(n, log(tbf_med), 0.4), vedba = rlnorm(n, log(0.1), 0.5))
+                              tbf_hz_peaks = rlnorm(n, log(tbf_med), 0.4), vedba = rlnorm(n, log(0.1), 0.5))
   if (!is.na(spd_med)) d[, paddle_speed := rlnorm(n, log(spd_med), 0.5)]
   d
 }
@@ -21,29 +21,29 @@
 }
 
 test_that("returns a tidy per-deployment x metric summary with the canonical schema", {
-  out <- .to_pdf(.cohort(), metrics = c("tbf_hz", "paddle_speed"))
+  out <- .to_pdf(.cohort(), metrics = c("tbf_hz_peaks", "paddle_speed"))
   s <- out$res
   expect_s3_class(s, "data.frame")
   expect_named(s, c("id", "metric", "n", "mean", "median", "sd", "q05", "q25", "q75", "q95", "min", "max"))
   expect_equal(nrow(s), 3L * 2L)                               # 3 deployments x 2 metrics (rectangular)
-  expect_setequal(unique(s$metric), c("tbf_hz", "paddle_speed"))
+  expect_setequal(unique(s$metric), c("tbf_hz_peaks", "paddle_speed"))
   expect_true(out$size > 0)                                    # a PDF was written
 })
 
 test_that("a deployment missing a metric appears as an n = 0 row with NA statistics", {
-  s <- .to_pdf(.cohort(), metrics = c("tbf_hz", "paddle_speed"))$res
+  s <- .to_pdf(.cohort(), metrics = c("tbf_hz_peaks", "paddle_speed"))$res
   gap <- s[s$id == "A02" & s$metric == "paddle_speed", ]
   expect_equal(gap$n, 0L)
   expect_true(is.na(gap$median) && is.na(gap$mean))
   # a present metric is summarised correctly
-  present <- s[s$id == "A02" & s$metric == "tbf_hz", ]
+  present <- s[s$id == "A02" & s$metric == "tbf_hz_peaks", ]
   expect_gt(present$n, 0L); expect_true(is.finite(present$median))
 })
 
 test_that("the summary statistics match a direct computation", {
   co <- .cohort()
-  s <- .to_pdf(co, metrics = "tbf_hz")$res
-  x <- co$A03$tbf_hz
+  s <- .to_pdf(co, metrics = "tbf_hz_peaks")$res
+  x <- co$A03$tbf_hz_peaks
   row <- s[s$id == "A03", ]
   expect_equal(row$median, stats::median(x), tolerance = 1e-8)
   expect_equal(row$mean, mean(x), tolerance = 1e-8)
@@ -52,13 +52,13 @@ test_that("the summary statistics match a direct computation", {
 
 test_that("metrics = NULL auto-detects the kinematic/effort columns present", {
   s <- .to_pdf(.cohort())$res                                  # no `metrics` -> auto
-  expect_setequal(unique(s$metric), c("tbf_hz", "paddle_speed", "vedba"))
+  expect_setequal(unique(s$metric), c("tbf_hz_peaks", "paddle_speed", "vedba"))
 })
 
 test_that("order.by controls deployment order without changing the summary rows", {
   co <- .cohort()
-  s_id  <- .to_pdf(co, metrics = "tbf_hz", order.by = "id")$res
-  s_med <- .to_pdf(co, metrics = "tbf_hz", order.by = "median")$res
+  s_id  <- .to_pdf(co, metrics = "tbf_hz_peaks", order.by = "id")$res
+  s_med <- .to_pdf(co, metrics = "tbf_hz_peaks", order.by = "median")$res
   expect_setequal(s_id$id, s_med$id)                           # same content
   # .distOrder: median-descending puts the highest-median deployment first
   vals <- list(A01 = 1:10, A02 = 101:110, A03 = 51:60)
@@ -70,13 +70,13 @@ test_that("order.by controls deployment order without changing the summary rows"
 test_that("marginal / reference toggles and a single deployment render without error", {
   co <- .cohort()
   expect_no_error(.to_pdf(co, metrics = "vedba", show.marginal = FALSE, reference = NULL))
-  expect_no_error(.to_pdf(co, metrics = "tbf_hz", reference = c("median", "mean")))
-  expect_no_error(.to_pdf(co[1], metrics = "tbf_hz"))          # single deployment (no 'margins too large')
+  expect_no_error(.to_pdf(co, metrics = "tbf_hz_peaks", reference = c("median", "mean")))
+  expect_no_error(.to_pdf(co[1], metrics = "tbf_hz_peaks"))          # single deployment (no 'margins too large')
 })
 
 test_that("plot.file writes a PDF and leaves no device open", {
   if (!is.null(grDevices::dev.list())) grDevices::graphics.off()
-  out <- .to_pdf(.cohort(), metrics = c("tbf_hz", "vedba"))
+  out <- .to_pdf(.cohort(), metrics = c("tbf_hz_peaks", "vedba"))
   expect_true(out$size > 0)
   expect_null(grDevices::dev.list())                           # the file device was closed on exit
 })
@@ -85,16 +85,16 @@ test_that("plot = TRUE restores the caller's device and par (no leak)", {
   caller <- tempfile(fileext = ".pdf"); grDevices::pdf(caller)  # a stand-in 'caller' device (headless-safe)
   on.exit({ grDevices::dev.off(); unlink(caller) }, add = TRUE)
   cur <- grDevices::dev.cur(); before <- graphics::par(no.readonly = TRUE)
-  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz", plot = TRUE, verbose = FALSE))
+  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz_peaks", plot = TRUE, verbose = FALSE))
   expect_identical(grDevices::dev.cur(), cur)                  # caller's device restored as current
   expect_identical(graphics::par(no.readonly = TRUE), before)  # caller's par restored
 })
 
 test_that("argument validation aborts clearly", {
   co <- .cohort()
-  expect_error(plotDistributions(co, metrics = "tbf_hz", trim = 1.5, plot = FALSE, plot.file = tempfile(fileext = ".pdf")),
+  expect_error(plotDistributions(co, metrics = "tbf_hz_peaks", trim = 1.5, plot = FALSE, plot.file = tempfile(fileext = ".pdf")),
                "trim", ignore.case = TRUE)
-  expect_error(plotDistributions(co, metrics = "tbf_hz", plot = FALSE, verbose = FALSE), "Nothing to plot", ignore.case = TRUE)
+  expect_error(plotDistributions(co, metrics = "tbf_hz_peaks", plot = FALSE, verbose = FALSE), "Nothing to plot", ignore.case = TRUE)
   expect_error(plotDistributions(co, metrics = "nope_col", order.metric = "other", plot = FALSE,
                                  plot.file = tempfile(fileext = ".pdf")), "order.metric", ignore.case = TRUE)
 })
@@ -121,16 +121,16 @@ test_that("theme replaces the old colors/cex arguments entirely", {
 
 test_that("a bad theme is rejected by name rather than failing deep inside the drawing code", {
   pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
-  expect_error(plotDistributions(.cohort(), metrics = "tbf_hz", theme = plotTheme(cex = 0),
+  expect_error(plotDistributions(.cohort(), metrics = "tbf_hz_peaks", theme = plotTheme(cex = 0),
                                  plot = FALSE, plot.file = pf, verbose = FALSE), "cex")
-  expect_error(plotDistributions(.cohort(), metrics = "tbf_hz", theme = list(panel = "not-a-colour"),
+  expect_error(plotDistributions(.cohort(), metrics = "tbf_hz_peaks", theme = list(panel = "not-a-colour"),
                                  plot = FALSE, plot.file = pf, verbose = FALSE), "panel")
 })
 
 test_that("a list of overrides is coerced like every other control object", {
   pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf))
   expect_silent(suppressMessages(
-    plotDistributions(.cohort(), metrics = "tbf_hz", theme = list(cex = 1.4),
+    plotDistributions(.cohort(), metrics = "tbf_hz_peaks", theme = list(cex = 1.4),
                       plot = FALSE, plot.file = pf, verbose = FALSE)))
   expect_true(file.size(pf) > 1000)
 })
@@ -145,7 +145,7 @@ test_that("the theme actually reaches the drawing layer, values and all", {
     seen <<- list(cex = cex, theme = theme, fill = fill); invisible(NULL)
   }
   testthat::local_mocked_bindings(.drawViolinPanel = cap, .package = "nautilus")
-  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz", theme = plotTheme(panel = "#123456"),
+  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz_peaks", theme = plotTheme(panel = "#123456"),
                                      plot = FALSE, plot.file = pf, verbose = FALSE))
   expect_false(is.null(seen))
   # the legacy 1.15 base is folded in, so theme$cex = 1 reproduces the tuned figure
@@ -154,7 +154,7 @@ test_that("the theme actually reaches the drawing layer, values and all", {
   expect_equal(seen$fill, .themePalette(plotTheme()$palette, 1L))   # fills come from the palette
 
   # ...and theme$cex scales it rather than being ignored
-  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz", theme = plotTheme(cex = 2),
+  suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz_peaks", theme = plotTheme(cex = 2),
                                      plot = FALSE, plot.file = pf, verbose = FALSE))
   expect_equal(seen$cex, 2.3)
 })
@@ -169,7 +169,7 @@ test_that("the panel chrome the theme specifies is what actually gets painted", 
       fills <<- c(fills, as.character(col %||% NA)); invisible(NULL)
     },
     .package = "graphics",
-    suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz",
+    suppressMessages(plotDistributions(.cohort(), metrics = "tbf_hz_peaks",
                                        theme = plotTheme(panel = "#123456"),
                                        plot = FALSE, plot.file = pf, verbose = FALSE)))
   expect_true("#123456" %in% fills)          # the panel really is painted the theme's colour

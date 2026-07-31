@@ -69,10 +69,20 @@ tags <- calculateTailBeats(
 )
 ```
 
-The `"peaks"` method adds `tbf_hz` (per-beat frequency) and `tbf_amplitude` (a beat-effort
-proxy, in the units of the motion axis); `method = "wavelet"` tracks the strongest in-band
-oscillation through a Morlet wavelet transform and returns the same two on the same footing.
-It also adds `tbf_swimming`, but this is `NA` unless you supply a `min.amplitude` reference:
+Each backend names its own output, so a value's provenance always travels with it: `"peaks"`
+adds `tbf_hz_peaks` and `tbf_amplitude_peaks`, and `"wavelet"` adds `tbf_hz_wavelet` and
+`tbf_amplitude_wavelet`. There is no method-agnostic `tbf_hz`. Both amplitudes are the
+peak-to-trough excursion in the units of the motion axis, so the two are directly comparable.
+Use `tailBeatColumn()` when you want backend-agnostic code:
+
+```{r tbf-resolve, eval = FALSE}
+col <- tailBeatColumn(tags[[1]])        # "tbf_hz_peaks" by default
+mean(tags[[1]][[col]], na.rm = TRUE)
+```
+
+The function also adds `tbf_swimming`, which is *not* suffixed -- it comes from the band-passed
+signal both backends share, so it is the same whichever ran. It is `NA` unless you supply a
+`min.amplitude` reference:
 whether an oscillation is active swimming rather than gliding (or, on a towed tag, flow and
 tether motion) cannot be told reliably from the sway signal alone, so the function reports the
 frequency and amplitude and leaves the behavioural call to you. The two methods fail in

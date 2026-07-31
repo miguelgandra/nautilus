@@ -9,6 +9,7 @@ summarizeTagData(
   extra.metadata = NULL,
   deployments = NULL,
   error.stat = "sd",
+  tbf.method = NULL,
   verbose = "detailed"
 )
 }
@@ -35,6 +36,12 @@ roster). The reason for exclusion is not inferred here; see \link{issues}. Defau
 \item{error.stat}{Error statistic for the display-only population row: \code{"sd"} (standard deviation,
 default) or \code{"se"} (standard error).}
 
+\item{tbf.method}{Which tail-beat backend to summarise, e.g. \code{"wavelet"}. \code{NULL} (default) resolves it
+per deployment from the data -- whichever \verb{tbf_hz_*} columns carry values, with the package's
+documented order (\code{peaks}, then \code{wavelet}) breaking a tie. The backend actually used is reported as
+\code{tbf_method}, so a cohort pooled from deployments that ran different backends stays visible rather
+than silently blended. See \code{\link{tailBeatColumn}}.}
+
 \item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
 \code{2}/"detailed" (default): additionally reports per-metric coverage across the processed deployments
 and shows a live progress bar while the tags are read (cli auto-hides it for fast runs).}
@@ -48,6 +55,7 @@ recorded data span - the true on-animal window once the data have been deploymen
 \item \strong{sampling_hz}: original sampling rate (Hz).
 \item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (°C).
 \item \strong{vedba_mean}, \strong{odba_mean} (g): mean activity (dynamic body acceleration).
+\item \strong{tbf_method}: which tail-beat backend \code{tbf_mean} came from (\code{"peaks"}/\code{"wavelet"}).
 \item \strong{tbf_mean} (Hz): mean tail-beat frequency over beating samples; \strong{pct_swimming}
 (\%): share of time actively swimming - both present only after \link{calculateTailBeats}.
 \item \strong{paddle_wheel} (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).

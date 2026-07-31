@@ -12,7 +12,7 @@
   if (withdepth) { d[, depth := seq(0, 50, length.out = n)]; d[, temp := seq(18, 22, length.out = n)] }
   if (withkin)   { d[, vedba := seq(0, 0.5, length.out = n)]; d[, odba := seq(0, 0.6, length.out = n)]
                    d[, vertical_velocity := sin(seq_len(n))] }     # spans descent (+) and ascent (-)
-  if (withtbf)   { d[, tbf_hz := ifelse(seq_len(n) %% 2 == 0, 0.8, NA_real_)]   # beating (0.8 Hz) half the time
+  if (withtbf)   { d[, tbf_hz_peaks := ifelse(seq_len(n) %% 2 == 0, 0.8, NA_real_)]   # beating (0.8 Hz) half the time
                    d[, tbf_swimming := as.integer(seq_len(n) %% 2 == 0)] }
   if (withpos)   d[, position_type := rep(c(NA, "FastGPS", "User"), length.out = n)]
   m <- nautilus:::.newNautilusMeta()
@@ -490,4 +490,25 @@ test_that("dive_id WITHOUT dive_phase yields no dive columns, matching diveMetri
   # diveMetrics() skips such a deployment too, so a silent summary is the MATCHING behaviour, not a loss
   expect_warning(dm <- diveMetrics(x, verbose = FALSE), "skipped")
   expect_equal(nrow(dm), 0L)
+})
+
+
+test_that("the summary states which backend its tail-beat mean came from", {
+  # the resolved backend travels with the value, so a cohort pooled from deployments that used
+  # different backends is visible in the summary rather than silently blended
+  a <- .mk("A", withtbf = TRUE)
+  b <- data.table::copy(a); b[, ID := "B"]
+  data.table::setnames(b, "tbf_hz_peaks", "tbf_hz_wavelet")
+  out <- .run(list(A = a, B = b))
+  expect_true("tbf_method" %in% names(out))
+  expect_equal(out$tbf_method, c("peaks", "wavelet"))
+  expect_equal(out$tbf_mean, c(0.8, 0.8), tolerance = 1e-6)
+  # tbf.method forces one backend for the whole cohort
+  forced <- .run(list(A = a), tbf.method = "peaks")
+  expect_equal(forced$tbf_method, "peaks")
+})
+
+test_that("a deployment with no tail-beat columns reports NA for both value and backend", {
+  out <- .run(list(B = .mk("B")))
+  expect_true(is.na(out$tbf_mean)); expect_true(is.na(out$tbf_method))
 })

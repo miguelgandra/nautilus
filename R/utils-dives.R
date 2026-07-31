@@ -826,6 +826,12 @@
     for (v in variables) {
       circ <- v %in% circular.variables
       if (!v %in% names(x)) {
+        # An absent channel yields a full block of NA, silently: that is the deliberate contract here,
+        # because a mixed cohort legitimately lacks channels in some deployments. The one exception is a
+        # bare tail-beat name, which no longer exists - those columns are named after the backend that
+        # produced them - so a script written against the old name would otherwise get a plausible-looking
+        # table of nothing. That case, and only that case, is worth a word.
+        .warnRenamedTailBeatVar(v, names(x))
         nms <- if (circ) c(paste0(v, "_mean_angle"), paste0(v, "_mrl")) else paste0(v, "_", statistics)
         for (nm in nms) row[[nm]] <- NA_real_
         if (by.phase) for (q in c("descent", "bottom", "ascent"))
@@ -1060,3 +1066,27 @@
   }
   .renderToDevices(draw, plot = plot, plot.file = plot.file, width = 11, height = 8.5, cairo = TRUE)
 }
+
+
+#' Warn once per variable that a requested per-dive column is a bare tail-beat name, which no longer
+#' exists, when a backend-suffixed sibling is present to point at.
+#'
+#' Deliberately narrow. `diveMetrics()` NA-fills any absent variable in silence, which is the right
+#' contract for a cohort whose deployments carry different channels. But `tbf_hz` and `tbf_amplitude`
+#' were real column names until the backends began naming their own output, so a script carrying the old
+#' name is a migration error rather than a missing channel, and it is worth distinguishing.
+#' @keywords internal
+#' @noRd
+.warnRenamedTailBeatVar <- local({
+  seen <- character(0)
+  function(v, have) {
+    if (!grepl("^tbf_(hz|amplitude)$", v) || v %in% seen) return(invisible(NULL))
+    sib <- grep(paste0("^", v, "_"), have, value = TRUE)
+    if (!length(sib)) return(invisible(NULL))
+    seen <<- c(seen, v)
+    cli::cli_warn(c("{.field {v}} is not a column: tail-beat estimates are named after the backend that produced them.",
+                    "i" = "Available here: {.field {sib}}.",
+                    "i" = "{.fn tailBeatColumn} resolves the right one for backend-agnostic code."))
+    invisible(NULL)
+  }
+})

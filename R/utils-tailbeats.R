@@ -522,7 +522,8 @@
 #' @noRd
 .runPeaks <- function(dt, animal_id, datetime.col, motion.col, fs, min.freq, max.freq,
                       bandpass, filter.low, filter.high, filter.order, min.amplitude, smooth.window,
-                      min.periodicity = 0.15, draw.devices = integer(0), lvl = 1L) {
+                      min.periodicity = 0.15, suffix = "peaks",
+                      draw.devices = integer(0), lvl = 1L) {
 
   if (!data.table::is.data.table(dt)) dt <- data.table::as.data.table(dt)
 
@@ -566,8 +567,9 @@
   tbf[glide] <- NA_real_
   amp[glide] <- NA_real_
 
-  data.table::set(dt, j = "tbf_hz", value = tbf)
-  data.table::set(dt, j = "tbf_amplitude", value = amp)
+  # Backend-specific quantities carry the backend's name; tbf_swimming does not (see .runCWT).
+  data.table::set(dt, j = paste0("tbf_hz_", suffix), value = tbf)
+  data.table::set(dt, j = paste0("tbf_amplitude_", suffix), value = amp)
   data.table::set(dt, j = "tbf_swimming", value = g$swimming)
 
   # diagnostic panel (one page per requested device)
@@ -631,4 +633,84 @@
   graphics::plot(pd$t[ds], pd$amplitude[ds], type = "l", col = col_amp, lwd = 0.8, xlab = "Time",
                  ylab = "amplitude (peak-to-trough)", las = 1, cex.axis = 0.8, cex.lab = 0.9)
   invisible(NULL)
+}
+
+
+#######################################################################################################
+# Resolving which backend's estimate to use ###########################################################
+#######################################################################################################
+
+#' The tail-beat backends this package knows, in the documented tie-break order.
+#'
+#' The order is a reporting convention, not a claim that one backend is better. It exists so that a
+#' record carrying both estimates resolves the same way every time, on every machine.
+#' @keywords internal
+#' @noRd
+.tbBackends <- function() c("peaks", "wavelet")
+
+
+#' Which backend's column should a downstream function read?
+#'
+#' Resolution is made FROM THE DATA -- which `tbf_<quantity>_*` columns actually carry values -- and never
+#' from the object's metadata. That is a deliberate choice, and it is measured rather than assumed: the
+#' `nautilus` attribute is destroyed by `rbind`, `rbindlist`, a CSV round trip, `dplyr::mutate` and
+#' `dplyr::select`, which are precisely the operations a cohort analysis performs. Worse than being
+#' absent, it can be wrong -- pooling deployments keeps the first one's record and applies it to rows the
+#' other backend produced. Column contents survive all of it, and a pooled table's contents describe each
+#' row honestly.
+#'
+#' Note this resolves per TABLE. Called on a per-deployment object it gives that deployment's backend;
+#' called on a pooled table where deployments used different backends, both columns are populated and the
+#' tie-break applies. That is why summaries record the backend alongside the value.
+#'
+#' @param x A data.frame/data.table, or a character vector of column names.
+#' @param quantity Which quantity to resolve: `"hz"` or `"amplitude"`.
+#' @param method Force a backend. Errors if that backend's column is absent or empty, naming what is
+#'   available, so a typo fails loudly instead of silently resolving to the other one.
+#' @return The column name, or `NULL` when no backend produced this quantity.
+#' @keywords internal
+#' @noRd
+.tbfResolve <- function(x, quantity = "hz", method = NULL, announce = FALSE, lvl = 0L) {
+  cols <- if (is.character(x)) x else names(x)
+  pre <- paste0("tbf_", quantity, "_")
+  present <- cols[startsWith(cols, pre)]
+  populated <- function(nm) {
+    if (is.character(x)) return(TRUE)          # names only: presence is all we can check
+    v <- x[[nm]]
+    !is.null(v) && any(!is.na(v))
+  }
+
+  if (!is.null(method)) {
+    .assert_string(method, "method")
+    want <- paste0(pre, method)
+    if (!want %in% present || !populated(want)) {
+      have <- present[vapply(present, populated, logical(1))]
+      .abort(c("No {.field {want}} values in {.arg data}.",
+               "i" = if (length(have)) "Available: {.field {have}}."
+                     else "No tail-beat estimates at all; run {.fn calculateTailBeats} first."))
+    }
+    return(want)
+  }
+
+  live <- present[vapply(present, populated, logical(1))]
+  if (!length(live)) return(NULL)
+  if (length(live) == 1L) return(live)
+
+  # Several backends produced this quantity. Fall back to the documented order rather than aborting:
+  # running both backends is the DEFAULT, so an abort here would fire on the ordinary path.
+  ranked <- paste0(pre, .tbBackends())
+  pick <- c(ranked[ranked %in% live], live)[1]
+  if (isTRUE(announce))
+    .log_detail(lvl, sprintf("tail beats: %d backends present, reporting %s", length(live),
+                             sub(pre, "", pick, fixed = TRUE)))
+  pick
+}
+
+
+#' The backend name embedded in a resolved column, or NA.
+#' @keywords internal
+#' @noRd
+.tbfMethodOf <- function(col, quantity = "hz") {
+  if (is.null(col) || !length(col) || is.na(col)) return(NA_character_)
+  sub(paste0("^tbf_", quantity, "_"), "", col)
 }

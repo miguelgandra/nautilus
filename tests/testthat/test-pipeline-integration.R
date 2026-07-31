@@ -94,6 +94,6 @@ test_that("pipeline stages skip a channel-less deployment and process the rest",
   tags <- lapply(files, readRDS); names(tags) <- tools::file_path_sans_ext(basename(files))
   tb <- suppressWarnings(suppressMessages(calculateTailBeats(tags, verbose = 0, return.data = TRUE)))
   expect_length(tb, 3L)
-  expect_true("tbf_hz" %in% names(tb$B_NOACC))
-  expect_true(all(is.na(tb$B_NOACC$tbf_hz)))
+  expect_true("tbf_hz_peaks" %in% names(tb$B_NOACC))
+  expect_true(all(is.na(tb$B_NOACC$tbf_hz_peaks)))
 })

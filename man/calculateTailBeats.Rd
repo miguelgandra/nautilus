@@ -40,8 +40,8 @@ files are loaded sequentially to optimize memory use. The output of the \link{pr
 is strongly recommended, as it formats the data appropriately for all downstream analysis.}
 
 \item{method}{Character. One or both estimation backends. Naming both (the default) runs both and
-cross-checks them: the first fills \code{tbf_hz}, the second \code{tbf_hz_alt}, and their per-row
-agreement becomes \code{tbf_agree}. Name a single backend to skip the cross-check.
+cross-checks them: each fills its own \code{tbf_hz_<backend>} column and their per-row agreement
+becomes \code{tbf_agree}. Name a single backend to skip the cross-check.
 \itemize{
 \item \code{"peaks"}: detects individual beats as peak/trough oscillations in the band-passed
 signal, yielding per-beat frequency, amplitude and timing. Fast and interpretable.
@@ -139,14 +139,18 @@ bars). Defaults to \code{"detailed"}.}
 \value{
 If \code{return.data = TRUE} (default), the input data with added per-row columns:
 \itemize{
-\item \code{tbf_hz}: estimated tail-beat frequency (Hz), NA where the animal is not beating.
-\item \code{tbf_amplitude}: an effort proxy in the units of \code{motion.col} -- the peak-to-trough
-excursion for \code{"peaks"}, the semi-amplitude of the dominant in-band oscillation for
-\code{"wavelet"}. Corrected for the band-pass attenuation.
+\item \code{tbf_hz_peaks} / \code{tbf_hz_wavelet}: estimated tail-beat frequency (Hz), NA where the
+animal is not beating. One column per backend that ran, named after it -- there is no
+method-agnostic \code{tbf_hz}, so a value's provenance always travels with it. Use
+\code{\link{tailBeatColumn}} to resolve which to read in backend-agnostic code.
+\item \code{tbf_amplitude_peaks} / \code{tbf_amplitude_wavelet}: an effort proxy in the units of
+\code{motion.col}, as the \strong{peak-to-trough excursion} for both backends, corrected for
+the band-pass attenuation. The two are therefore directly comparable.
 \item \code{tbf_swimming}: logical swimming/gliding flag when \code{min.amplitude} is supplied,
-otherwise \code{NA} (see Details).
-\item When both backends run: \code{tbf_hz_alt} (the second backend's frequency) and
-\code{tbf_agree} (whether the two agree within 10\%).
+otherwise \code{NA} (see Details). Unsuffixed: it is derived from the band-passed signal the
+backends share, so it is identical whichever of them ran.
+\item When both backends run: \code{tbf_agree} (whether the two agree within 10\%). Also unsuffixed:
+it is a property of the pair, not of either backend.
 }
 \code{tbf_agree} reads as a certificate, not an error flag: where the two backends agree they are
 rarely both wrong, but where they disagree nothing identifies which one to distrust, so \code{FALSE}
@@ -265,9 +269,8 @@ Accordingly, with \code{min.amplitude = NULL} (the default) \code{tbf_swimming} 
 honest answer. Supplying \code{min.amplitude} -- an absolute envelope threshold, ideally calibrated
 for a species/tag combination or from validated footage -- turns the classification on: samples whose
 band-passed amplitude envelope exceeds it are swimming (with hysteresis and a minimum-bout filter),
-and \code{tbf_hz}/\code{tbf_amplitude} are then set to \code{NA} on gliding rows. \code{tbf_hz} and
-\code{tbf_amplitude} are always reported when unclassified: a frequency is measurable even where a
-behavioural call is not.
+and the frequency/amplitude columns are then set to \code{NA} on gliding rows. They are always
+reported when unclassified: a frequency is measurable even where a behavioural call is not.
 
 \strong{Smoothing.} A centred moving average of \code{smooth.window} seconds is applied to the per-row
 frequency (and, for peak detection, amplitude) series to suppress sample-to-sample jitter while

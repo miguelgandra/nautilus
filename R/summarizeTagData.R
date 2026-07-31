@@ -34,6 +34,11 @@
 #'   gets a row, and a `status` column marks each as `"included"` (processed data present, full metrics)
 #'   or `"excluded"` (in the roster but absent from `data` - NA metrics, identity filled from the
 #'   roster). The reason for exclusion is not inferred here; see \link{issues}. Default `NULL`.
+#' @param tbf.method Which tail-beat backend to summarise, e.g. `"wavelet"`. `NULL` (default) resolves it
+#'   per deployment from the data -- whichever `tbf_hz_*` columns carry values, with the package's
+#'   documented order (`peaks`, then `wavelet`) breaking a tie. The backend actually used is reported as
+#'   `tbf_method`, so a cohort pooled from deployments that ran different backends stays visible rather
+#'   than silently blended. See \code{\link{tailBeatColumn}}.
 #' @param error.stat Error statistic for the display-only population row: `"sd"` (standard deviation,
 #'   default) or `"se"` (standard error).
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
@@ -48,6 +53,7 @@
 #'   \item \strong{sampling_hz}: original sampling rate (Hz).
 #'   \item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (°C).
 #'   \item \strong{vedba_mean}, \strong{odba_mean} (g): mean activity (dynamic body acceleration).
+#'   \item \strong{tbf_method}: which tail-beat backend `tbf_mean` came from (`"peaks"`/`"wavelet"`).
 #'   \item \strong{tbf_mean} (Hz): mean tail-beat frequency over beating samples; \strong{pct_swimming}
 #'     (%): share of time actively swimming - both present only after \link{calculateTailBeats}.
 #'   \item \strong{paddle_wheel} (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).
@@ -93,12 +99,14 @@ summarizeTagData <- function(data,
                              extra.metadata = NULL,
                              deployments = NULL,
                              error.stat = "sd",
+                             tbf.method = NULL,
                              verbose = "detailed") {
 
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
   error.stat <- tolower(error.stat)
   .assert_choice(error.stat, "error.stat", c("sd", "se"))
+  .assert_string(tbf.method, "tbf.method", null_ok = TRUE)
   if (!is.null(deployments)) {
     if (!inherits(deployments, "nautilus_deployments"))
       .abort("{.arg deployments} must be a {.cls nautilus_deployments} object from {.fn checkDeploymentMetadata}.")
@@ -116,7 +124,7 @@ summarizeTagData <- function(data,
   # per-deployment summaries (the same engine that backs summary.nautilus_tag). Empty/malformed deployments
   # come back NULL (.summarize warns per case); report the omissions here rather than letting them vanish.
   pb      <- .log_progress_start(lvl, r$n, "Summarising")           # live bar at detailed verbosity (lvl >= 2)
-  parts   <- lapply(seq_len(r$n), function(i) { .log_progress_step(pb); .summarize(r$get(i)) })
+  parts   <- lapply(seq_len(r$n), function(i) { .log_progress_step(pb); .summarize(r$get(i), tbf.method) })
   .log_progress_done(pb)
   dropped <- vapply(parts, is.null, logical(1))
   if (any(dropped))
@@ -256,7 +264,7 @@ summarizeTagData <- function(data,
 #' @keywords internal
 #' @noRd
 
-.summarize <- function(data_individual) {
+.summarize <- function(data_individual, tbf.method = NULL) {
 
   if (is.null(data_individual) || nrow(data_individual) == 0) return(NULL)
   dt <- data_individual
@@ -309,8 +317,13 @@ summarizeTagData <- function(data,
     pos <- pos[!is.na(pos$datetime) & pos$datetime >= record_start & pos$datetime <= record_end, , drop = FALSE]
   n_positions <- if (has_positions) nrow(pos) else NA_integer_
   vv_min <- cstat("vertical_velocity", min)               # most negative vertical speed = fastest ascent
-  # tail-beat metrics (NA unless calculateTailBeats() has run). tbf_hz is NA while not beating, so its
-  # mean is already over beating samples; pct_swimming is the share of time actively swimming.
+  # Tail-beat metrics (NA unless calculateTailBeats() has run). The estimate columns are named after the
+  # backend that produced them, so the one to report is resolved from the data - which tbf_hz_* columns
+  # actually carry values - and never from the metadata, which does not survive rbind, a CSV round trip
+  # or dplyr::mutate. The resolved backend is reported alongside the value as `tbf_method`, so a cohort
+  # pooled from deployments that used different backends is visible rather than silently blended.
+  tbf_col    <- .tbfResolve(dt, "hz", method = tbf.method)
+  tbf_method <- .tbfMethodOf(tbf_col)
   pct_swimming <- if ("tbf_swimming" %in% names(dt)) {
     sw <- dt[["tbf_swimming"]]; sw <- sw[!is.na(sw)]
     if (length(sw)) 100 * mean(as.numeric(sw)) else NA_real_
@@ -333,7 +346,8 @@ summarizeTagData <- function(data,
     temp_max              = cstat("temp", max),
     vedba_mean            = cstat("vedba", mean),
     odba_mean             = cstat("odba", mean),
-    tbf_mean              = cstat("tbf_hz", mean),
+    tbf_mean              = if (is.null(tbf_col)) NA_real_ else cstat(tbf_col, mean),
+    tbf_method            = tbf_method,
     pct_swimming          = pct_swimming,
     paddle_wheel          = s_lgl(meta$tag$paddle_wheel),
     speed_mean            = cstat("paddle_speed", mean),
@@ -457,7 +471,8 @@ summarizeTagData <- function(data,
              record_start = ps, record_end = ps, record_duration_h = numeric(0), n_samples = integer(0),
              sampling_hz = numeric(0), depth_mean = numeric(0), depth_max = numeric(0), temp_mean = numeric(0),
              temp_min = numeric(0), temp_max = numeric(0), vedba_mean = numeric(0), odba_mean = numeric(0),
-             tbf_mean = numeric(0), pct_swimming = numeric(0), paddle_wheel = logical(0), speed_mean = numeric(0),
+             tbf_mean = numeric(0), tbf_method = character(0), pct_swimming = numeric(0),
+             paddle_wheel = logical(0), speed_mean = numeric(0),
              speed_max = numeric(0), descent_rate_max = numeric(0), ascent_rate_max = numeric(0),
              n_positions = integer(0), stringsAsFactors = FALSE, check.names = FALSE)
 }
@@ -567,7 +582,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     depth_mean = "Mean depth (m)", depth_max = "Max depth (m)",
     temp_mean = "Mean temp. (\u00b0C)", temp_min = "Min temp. (\u00b0C)", temp_max = "Max temp. (\u00b0C)",
     vedba_mean = "Mean VeDBA (g)", odba_mean = "Mean ODBA (g)",
-    tbf_mean = "Mean tail-beat freq. (Hz)", pct_swimming = "Time swimming (%)", paddle_wheel = "Paddle wheel",
+    tbf_mean = "Mean tail-beat freq. (Hz)", tbf_method = "TBF backend", pct_swimming = "Time swimming (%)", paddle_wheel = "Paddle wheel",
     speed_mean = "Mean speed (m/s)", speed_max = "Max speed (m/s)",
     descent_rate_max = "Max descent rate (m/s)", ascent_rate_max = "Max ascent rate (m/s)",
     n_positions = "Positions (n)",
@@ -582,7 +597,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     depth_mean = "Mean depth (m)", depth_max = "Max depth (m)",
     temp_mean = "Mean temp. (\u00b0C)", temp_min = "Min temp. (\u00b0C)", temp_max = "Max temp. (\u00b0C)",
     vedba_mean = "Mean VeDBA (g)", odba_mean = "Mean ODBA (g)",
-    tbf_mean = "Mean TBF (Hz)", pct_swimming = "Swimming (%)", paddle_wheel = "Paddle wheel",
+    tbf_mean = "Mean TBF (Hz)", tbf_method = "TBF backend", pct_swimming = "Swimming (%)", paddle_wheel = "Paddle wheel",
     speed_mean = "Mean speed (m s\u207b\u00b9)", speed_max = "Max speed (m s\u207b\u00b9)",
     descent_rate_max = "Max descent (m s\u207b\u00b9)", ascent_rate_max = "Max ascent (m s\u207b\u00b9)",
     n_positions = "Positions (n)",

@@ -21,8 +21,8 @@
 #' files are loaded sequentially to optimize memory use. The output of the \link{processTagData} function
 #' is strongly recommended, as it formats the data appropriately for all downstream analysis.
 #' @param method Character. One or both estimation backends. Naming both (the default) runs both and
-#'   cross-checks them: the first fills \code{tbf_hz}, the second \code{tbf_hz_alt}, and their per-row
-#'   agreement becomes \code{tbf_agree}. Name a single backend to skip the cross-check.
+#'   cross-checks them: each fills its own \code{tbf_hz_<backend>} column and their per-row agreement
+#'   becomes \code{tbf_agree}. Name a single backend to skip the cross-check.
 #'   \itemize{
 #'     \item \code{"peaks"}: detects individual beats as peak/trough oscillations in the band-passed
 #'       signal, yielding per-beat frequency, amplitude and timing. Fast and interpretable.
@@ -96,14 +96,18 @@
 #'
 #' @return If \code{return.data = TRUE} (default), the input data with added per-row columns:
 #' \itemize{
-#'   \item \code{tbf_hz}: estimated tail-beat frequency (Hz), NA where the animal is not beating.
-#'   \item \code{tbf_amplitude}: an effort proxy in the units of \code{motion.col} -- the peak-to-trough
-#'         excursion for \code{"peaks"}, the semi-amplitude of the dominant in-band oscillation for
-#'         \code{"wavelet"}. Corrected for the band-pass attenuation.
+#'   \item \code{tbf_hz_peaks} / \code{tbf_hz_wavelet}: estimated tail-beat frequency (Hz), NA where the
+#'         animal is not beating. One column per backend that ran, named after it -- there is no
+#'         method-agnostic \code{tbf_hz}, so a value's provenance always travels with it. Use
+#'         \code{\link{tailBeatColumn}} to resolve which to read in backend-agnostic code.
+#'   \item \code{tbf_amplitude_peaks} / \code{tbf_amplitude_wavelet}: an effort proxy in the units of
+#'         \code{motion.col}, as the \strong{peak-to-trough excursion} for both backends, corrected for
+#'         the band-pass attenuation. The two are therefore directly comparable.
 #'   \item \code{tbf_swimming}: logical swimming/gliding flag when \code{min.amplitude} is supplied,
-#'         otherwise \code{NA} (see Details).
-#'   \item When both backends run: \code{tbf_hz_alt} (the second backend's frequency) and
-#'         \code{tbf_agree} (whether the two agree within 10%).
+#'         otherwise \code{NA} (see Details). Unsuffixed: it is derived from the band-passed signal the
+#'         backends share, so it is identical whichever of them ran.
+#'   \item When both backends run: \code{tbf_agree} (whether the two agree within 10%). Also unsuffixed:
+#'         it is a property of the pair, not of either backend.
 #' }
 #' \code{tbf_agree} reads as a certificate, not an error flag: where the two backends agree they are
 #' rarely both wrong, but where they disagree nothing identifies which one to distrust, so \code{FALSE}
@@ -211,9 +215,8 @@
 #' honest answer. Supplying \code{min.amplitude} -- an absolute envelope threshold, ideally calibrated
 #' for a species/tag combination or from validated footage -- turns the classification on: samples whose
 #' band-passed amplitude envelope exceeds it are swimming (with hysteresis and a minimum-bout filter),
-#' and \code{tbf_hz}/\code{tbf_amplitude} are then set to \code{NA} on gliding rows. \code{tbf_hz} and
-#' \code{tbf_amplitude} are always reported when unclassified: a frequency is measurable even where a
-#' behavioural call is not.
+#' and the frequency/amplitude columns are then set to \code{NA} on gliding rows. They are always
+#' reported when unclassified: a frequency is measurable even where a behavioural call is not.
 #'
 #' \strong{Smoothing.} A centred moving average of \code{smooth.window} seconds is applied to the per-row
 #' frequency (and, for peak detection, amplitude) series to suppress sample-to-sample jitter while
@@ -281,8 +284,8 @@ calculateTailBeats <- function(data,
   start.time <- Sys.time()
 
   # resolve the estimation method (peaks = default; wavelet = optional CWT)
-  # `method` may name one backend or both. Naming both runs both: the first fills tbf_hz, the second
-  # tbf_hz_alt, and their per-row agreement becomes tbf_agree. The two are methodologically
+  # `method` may name one backend or both. Naming both runs both: each fills its own tbf_hz_<backend>
+  # column and their per-row agreement becomes tbf_agree. The two are methodologically
   # independent, so agreement between them is worth more than either estimate alone.
   # match.arg(several.ok = TRUE) DISCARDS anything it cannot match rather than complaining, so a typo in
   # one element would silently drop that backend and take the cross-check with it
@@ -618,8 +621,11 @@ calculateTailBeats <- function(data,
     if (is.na(axis) || all(is.na(individual_data[[axis]]))) {
       .log_skip(lvl, id, "  no valid motion data ", cli::symbol$bullet, " skipped")
       if (!data.table::is.data.table(individual_data)) individual_data <- data.table::as.data.table(individual_data)
-      for (col in c("tbf_hz", "tbf_amplitude", "tbf_swimming")) data.table::set(individual_data, j = col, value = NA_real_)
-      if (length(methods) > 1L) for (col in c("tbf_hz_alt", "tbf_agree")) data.table::set(individual_data, j = col, value = NA_real_)
+      # the full schema for the requested backends, so a skipped deployment is still row-bindable
+      for (m in methods) for (q in c("tbf_hz_", "tbf_amplitude_"))
+        data.table::set(individual_data, j = paste0(q, m), value = NA_real_)
+      data.table::set(individual_data, j = "tbf_swimming", value = NA_real_)
+      if (length(methods) > 1L) data.table::set(individual_data, j = "tbf_agree", value = NA_real_)
       res_i <- .ensureMeta(individual_data)
       meta <- .getMeta(res_i)
       if (!is.null(meta)) {
@@ -699,7 +705,8 @@ calculateTailBeats <- function(data,
         min.freq = min.freq.Hz, max.freq = max.freq.Hz, bandpass = bandpass.filter,
         filter.low = filter.low.freq, filter.high = filter.high.freq, filter.order = filter.order,
         min.amplitude = min.amplitude, smooth.window = smooth.window,
-        min.periodicity = min.periodicity, draw.devices = draw_devices, lvl = lvl)
+        min.periodicity = min.periodicity, suffix = method,
+        draw.devices = draw_devices, lvl = lvl)
     } else {
       data_list[[i]] <- .runCWT(
         dt = individual_data, animal_id = id, id.col = id.col, datetime.col = datetime.col, motion.col = axis,
@@ -708,8 +715,10 @@ calculateTailBeats <- function(data,
         min.amplitude = min.amplitude, smooth.window = smooth.window, max.interp.gap = max.interp.gap,
         ridge.prominence = ridge.prominence,
         plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
-        fs = fs_i, draw.devices = draw_devices, lvl = lvl)
+        fs = fs_i, suffix = method, draw.devices = draw_devices, lvl = lvl)
     }
+    col_hz  <- paste0("tbf_hz_", method)          # this deployment's primary columns, named per backend
+    col_amp <- paste0("tbf_amplitude_", method)
 
     # Cross-check against the second backend. The two are methodologically independent -- one works in
     # the time domain, one in the frequency domain -- so they fail on different signals, and where they
@@ -733,7 +742,7 @@ calculateTailBeats <- function(data,
                   bandpass = bandpass.filter, filter.low = filter.low.freq, filter.high = filter.high.freq,
                   filter.order = filter.order, min.amplitude = min.amplitude,
                   smooth.window = smooth.window, min.periodicity = min.periodicity,
-                  draw.devices = draw_devices, lvl = 0L)
+                  suffix = methods[2], draw.devices = draw_devices, lvl = 0L)
       else
         .runCWT(dt = alt_dt, animal_id = id, id.col = id.col,
                 datetime.col = datetime.col, motion.col = axis, min.freq.Hz = min.freq.Hz,
@@ -743,12 +752,19 @@ calculateTailBeats <- function(data,
                 smooth.window = smooth.window, max.interp.gap = max.interp.gap,
                 ridge.prominence = ridge.prominence,
                 plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
-                fs = fs_i, draw.devices = draw_devices, lvl = 0L)
+                fs = fs_i, suffix = methods[2], draw.devices = draw_devices, lvl = 0L)
       alt_edge <- attr(alt, "tb_ridge_edge", exact = TRUE)
       alt_unres <- attr(alt, "tb_unresolved", exact = TRUE)
-      data.table::set(data_list[[i]], j = "tbf_hz_alt", value = alt$tbf_hz)
+      # Both backends' estimates travel under their own names, including the cross-check's amplitude,
+      # which used to be computed and discarded. Now that the two report the same measurand they are
+      # directly comparable, so keeping it costs one column and answers a question the user could not
+      # previously ask.
+      alt_hz  <- paste0("tbf_hz_", methods[2])
+      alt_amp <- paste0("tbf_amplitude_", methods[2])
+      data.table::set(data_list[[i]], j = alt_hz,  value = alt[[alt_hz]])
+      data.table::set(data_list[[i]], j = alt_amp, value = alt[[alt_amp]])
       data.table::set(data_list[[i]], j = "tbf_agree",
-                      value = .tbAgreement(data_list[[i]]$tbf_hz, alt$tbf_hz))
+                      value = .tbAgreement(data_list[[i]][[col_hz]], alt[[alt_hz]]))
     }
     names(data_list)[i] <- id
 
@@ -756,11 +772,11 @@ calculateTailBeats <- function(data,
     res_i <- .ensureMeta(data_list[[i]])
     # default to a numeric NA when a column is absent: stats::median(NULL) returns NULL, and round(NULL)
     # would error ("non-numeric argument to mathematical function"), so guard the summary up front.
-    tbf_v <- res_i$tbf_hz %||% NA_real_
-    amp_v <- res_i$tbf_amplitude
+    tbf_v <- res_i[[col_hz]] %||% NA_real_
+    amp_v <- res_i[[col_amp]]
     # NA unless the caller supplied a min.amplitude to classify against: swimming is not inferred from
     # the signal by default (see .classifyActivity), so pct_swimming is genuinely "not determined", not
-    # zero. Never fall back to mean(!is.na(tbf_hz)) -- that is a detection mask, not a behavioural rate.
+    # zero. Never fall back to mean(!is.na(frequency)) -- that is a detection mask, not a behavioural rate.
     swim  <- mean(res_i$tbf_swimming, na.rm = TRUE)
     if (!is.finite(swim)) swim <- NA_real_
 
@@ -773,7 +789,7 @@ calculateTailBeats <- function(data,
     # implies an out-of-band frequency. Only the former leaves a pile-up to find, so looking at the
     # primary alone would miss it whenever peak detection is primary.
     edges <- c(.tbEdgeOccupancy(tbf_v, min.freq.Hz, max.freq.Hz),
-               if (!is.null(res_i$tbf_hz_alt)) .tbEdgeOccupancy(res_i$tbf_hz_alt, min.freq.Hz, max.freq.Hz),
+               if (length(methods) > 1L) .tbEdgeOccupancy(res_i[[paste0("tbf_hz_", methods[2])]], min.freq.Hz, max.freq.Hz),
                # the wavelet's own pre-mask ridge, whichever run produced it (primary or cross-check)
                attr(data_list[[i]], "tb_ridge_edge", exact = TRUE), alt_edge)
     edges <- edges[is.finite(edges)]                  # neither track estimated anything: nothing to judge
@@ -786,9 +802,10 @@ calculateTailBeats <- function(data,
     # The cross-check backend's own median and the per-sample gap are collected here rather than inside
     # the detailed-verbosity block, because the SUMMARY reports them at "normal" verbosity too.
     co_freq[i]   <- stats::median(tbf_v, na.rm = TRUE)
-    if (!is.null(res_i$tbf_hz_alt)) {
-      co_freq2[i] <- stats::median(res_i$tbf_hz_alt, na.rm = TRUE)
-      co_diff[i]  <- stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
+    if (length(methods) > 1L) {
+      alt_v <- res_i[[paste0("tbf_hz_", methods[2])]]
+      co_freq2[i] <- stats::median(alt_v, na.rm = TRUE)
+      co_diff[i]  <- stats::median(abs(tbf_v - alt_v), na.rm = TRUE)
     }
     co_axis[i]   <- axis
     co_reason[i] <- sel$reason
@@ -815,6 +832,9 @@ calculateTailBeats <- function(data,
                                 axis_harmonic_alt = sel$harmonic_alt %||% NA_character_,
                                 median_tbf_hz = round(stats::median(tbf_v, na.rm = TRUE), 3),
                                 median_amplitude = if (!is.null(amp_v)) round(stats::median(amp_v, na.rm = TRUE), 3) else NA_real_,
+                                primary_method = method,
+                                cross_check_method = if (length(methods) > 1L) methods[2] else NA_character_,
+                                median_tbf_hz_crosscheck = if (is.na(co_freq2[i])) NA_real_ else round(co_freq2[i], 3),
                                 pct_swimming = round(100 * swim, 1),
                                 pct_edge = round(100 * edge_occ, 1),
                                 pct_unresolved = if (is.na(co_unres[i])) NA_real_ else round(100 * co_unres[i], 1),
@@ -839,13 +859,15 @@ calculateTailBeats <- function(data,
         # that validates it, then their agreement. Interleaving them by statistic instead (one frequency
         # line per method, then one amplitude line) made the reader hop between methods to assemble
         # either answer. Only the primary retains an amplitude -- the cross-check keeps frequency only.
-        has_alt <- length(methods) > 1L && !is.null(res_i$tbf_hz_alt) && any(!is.na(res_i$tbf_hz_alt))
+        has_alt <- length(methods) > 1L && any(!is.na(res_i[[paste0("tbf_hz_", methods[2])]]))
         # the unit follows the axis: hardcoding "g" mislabels a gyro channel as an accelerometer one
         u <- .tbAxisUnits(axis)
         sections <- list(list(name = method, freq = tbf_v, amp = amp_v,
                               unresolved = unres_by[[method]], units = u))
         if (has_alt)
-          sections <- c(sections, list(list(name = methods[2], freq = res_i$tbf_hz_alt, amp = NULL,
+          sections <- c(sections, list(list(name = methods[2],
+                                            freq = res_i[[paste0("tbf_hz_", methods[2])]],
+                                            amp  = res_i[[paste0("tbf_amplitude_", methods[2])]],
                                             unresolved = unres_by[[methods[2]]], units = u)))
         .logTailBeatMethods(lvl, sections,
                             agree = if (has_alt) agree else NA_real_,
@@ -1090,7 +1112,7 @@ calculateTailBeats <- function(data,
 # Per-individual driver for the CWT method ############################################################
 #######################################################################################################
 
-#' Run the Morlet CWT tail-beat method on one individual; writes tbf_hz / tbf_amplitude, draws the
+#' Run the Morlet CWT tail-beat method on one individual; writes tbf_hz_<suffix> / tbf_amplitude_<suffix>, draws the
 #' diagnostic pages (if requested), and returns the data.table for the driver to save.
 #'
 #' The transform itself lives in `.cwtRidge` (R/utils-cwt.R), which batches internally with guard bands
@@ -1099,13 +1121,15 @@ calculateTailBeats <- function(data,
 #' @inheritParams calculateTailBeats
 #' @param dt Input data.table for one individual. @param animal_id ID of the current individual.
 #' @param draw.devices Open device numbers to draw on. @param lvl Verbosity level.
-#' @return The input data.table with `tbf_hz` and `tbf_amplitude` added.
+#' @param suffix Backend name appended to the columns this run writes.
+#' @return The input data.table with `tbf_hz_<suffix>` and `tbf_amplitude_<suffix>` added.
 #' @keywords internal
 #' @noRd
 .runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col, ridge.prominence = 2,
                     min.freq.Hz, max.freq.Hz, bandpass.filter, filter.low.freq,
                     filter.high.freq, filter.order, min.amplitude, smooth.window, max.interp.gap,
-                    plot.wavelet, plot.diagnostic, fs = NULL, draw.devices = integer(0), lvl = 1L) {
+                    plot.wavelet, plot.diagnostic, fs = NULL, suffix = "wavelet",
+                    draw.devices = integer(0), lvl = 1L) {
 
   # `fs` is normally supplied by the driver, which has already resolved it from the deployment's
   # metadata. It matters when this runs as the cross-check, where the input carries only the two columns
@@ -1115,8 +1139,8 @@ calculateTailBeats <- function(data,
 
   if (!any(is.finite(motion))) {
     cli::cli_warn("No finite {.val {motion.col}} data for ID {.val {animal_id}}; returning NA.")
-    data.table::set(dt, j = "tbf_hz", value = NA_real_)
-    data.table::set(dt, j = "tbf_amplitude", value = NA_real_)
+    data.table::set(dt, j = paste0("tbf_hz_", suffix), value = NA_real_)
+    data.table::set(dt, j = paste0("tbf_amplitude_", suffix), value = NA_real_)
     return(dt)
   }
 
@@ -1151,6 +1175,14 @@ calculateTailBeats <- function(data,
     gain <- .bandpassPowerGain(gain_at, fs, filter.low.freq, filter.high.freq, filter.order)
     amp_raw <- amp_raw / stats::approx(gain_at, gain, xout = r$freq, rule = 2)$y
   }
+  # .cwtRidge reports the SEMI-amplitude of the dominant oscillation (A in A*cos(wt)), which is the
+  # natural output of the transform. Peak detection reports the peak-to-trough excursion, which is 2A.
+  # Doubling here puts both backends on the same measurand, so `tbf_amplitude_peaks` and
+  # `tbf_amplitude_wavelet` are directly comparable. Measured before this line: a tone of semi-amplitude
+  # 2 gave 4.00 from peaks and 2.00 from the wavelet, under one column name whose meaning depended only
+  # on which backend the caller happened to name first. The conversion lives here rather than in
+  # .cwtRidge so that primitive stays a faithful CWT and keeps reporting what the transform measures.
+  amp_raw <- 2 * amp_raw
 
   freq <- .smoothSeries(r$freq, smooth.window, fs)
   amp <- .smoothSeries(amp_raw, smooth.window, fs)
@@ -1170,8 +1202,11 @@ calculateTailBeats <- function(data,
   freq[glide] <- NA_real_
   amp[glide] <- NA_real_
 
-  data.table::set(dt, j = "tbf_hz", value = freq)
-  data.table::set(dt, j = "tbf_amplitude", value = amp)
+  # Backend-specific quantities carry the backend's name; tbf_swimming does not, because
+  # .classifyActivity() runs on the shared band-passed signal and is bit-identical whichever backend
+  # computed it - a suffix there would assert a dependence that does not exist.
+  data.table::set(dt, j = paste0("tbf_hz_", suffix), value = freq)
+  data.table::set(dt, j = paste0("tbf_amplitude_", suffix), value = amp)
   data.table::set(dt, j = "tbf_swimming", value = g$swimming)
 
   if (length(draw.devices) > 0) {

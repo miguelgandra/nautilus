@@ -21,7 +21,7 @@ diveMetrics(
 data.frame, or a list of them.}
 
 \item{variables}{Character vector of per-sample columns to summarise per dive (e.g.
-\code{c("temp", "odba", "tbf_hz")}). \code{NULL} (default) adds none. Each costs 2 columns, or 8 with
+\code{c("temp", "odba", "tbf_hz_peaks")}). \code{NULL} (default) adds none. Each costs 2 columns, or 8 with
 \code{by.phase = TRUE}.}
 
 \item{circular.variables}{Character. Which of \code{variables} are angles in degrees, summarised as a
