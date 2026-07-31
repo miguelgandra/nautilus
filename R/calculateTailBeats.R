@@ -476,7 +476,9 @@ calculateTailBeats <- function(data,
   # per-deployment stats, filled in the loop and rolled up into the final SUMMARY block (NA where a
   # deployment produced no estimate). Vectors, index-aligned with the deployment order.
   co_id     <- rep(NA_character_, n_animals)   # deployment ID (for the grouped end-of-run warnings)
-  co_freq   <- rep(NA_real_,      n_animals)   # median tail-beat frequency
+  co_freq   <- rep(NA_real_,      n_animals)   # median tail-beat frequency (primary backend)
+  co_freq2  <- rep(NA_real_,      n_animals)   # median tail-beat frequency (cross-check backend)
+  co_diff   <- rep(NA_real_,      n_animals)   # median |primary - cross-check| per sample
   co_axis   <- rep(NA_character_, n_animals)   # selected motion axis
   co_reason <- rep(NA_character_, n_animals)   # how the axis was chosen ("consensus" / "power")
   co_harm   <- rep(NA_character_, n_animals)   # a flagged 2f-harmonic alternative, if any
@@ -772,8 +774,14 @@ calculateTailBeats <- function(data,
     # NOTE: edge occupancy is only RECORDED here. The diagnosis and the fix are identical for every
     # affected deployment, so they are raised once after the loop (see below) instead of once per tag.
 
-    # record this deployment's stats for the cohort roll-up (median is NA when nothing was estimated)
+    # record this deployment's stats for the cohort roll-up (median is NA when nothing was estimated).
+    # The cross-check backend's own median and the per-sample gap are collected here rather than inside
+    # the detailed-verbosity block, because the SUMMARY reports them at "normal" verbosity too.
     co_freq[i]   <- stats::median(tbf_v, na.rm = TRUE)
+    if (!is.null(res_i$tbf_hz_alt)) {
+      co_freq2[i] <- stats::median(res_i$tbf_hz_alt, na.rm = TRUE)
+      co_diff[i]  <- stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
+    }
     co_axis[i]   <- axis
     co_reason[i] <- sel$reason
     co_harm[i]   <- sel$harmonic_alt %||% NA_character_
@@ -833,9 +841,7 @@ calculateTailBeats <- function(data,
                                             unresolved = unres_by[[methods[2]]], units = u)))
         .logTailBeatMethods(lvl, sections,
                             agree = if (has_alt) agree else NA_real_,
-                            agree.diff = if (has_alt)
-                              stats::median(abs(res_i$tbf_hz - res_i$tbf_hz_alt), na.rm = TRUE)
-                              else NA_real_)
+                            agree.diff = if (has_alt) co_diff[i] else NA_real_)
         # `swim` is NA exactly when no classification ran (min.amplitude unset) - a run-wide fact already
         # stated once in the header, so nothing is reported per deployment in that case. It stays a
         # top-level line: both backends share one classifier, so it belongs to neither section.
@@ -906,7 +912,8 @@ calculateTailBeats <- function(data,
   # final summary: the outcome tally and a cohort roll-up of the results, then the output/runtime footer
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .reportTailBeatCohort(lvl, n_animals, co_freq, co_axis, co_reason, co_harm, co_agree, co_swim, co_edge, methods)
+    .reportTailBeatCohort(lvl, n_animals, co_freq, co_freq2, co_axis, co_reason, co_harm,
+                          co_agree, co_diff, co_swim, co_edge, methods)
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
@@ -977,20 +984,27 @@ calculateTailBeats <- function(data,
 
 #' Roll up a batch of tail-beat results into the final SUMMARY block.
 #'
-#' The outcome tally and the cohort frequency distribution are always shown; the axis-usage tally, method
-#' agreement, swimming, and the QC-flag rollup appear only when they apply - so a clean run stays short and
-#' a messy one surfaces exactly what needs a look. Counts, not IDs: the grouped end-of-run warnings already
-#' name the affected tags, so this is the cohort overview, not a repeat.
+#' The outcome tally and the cohort frequency distribution are always shown; the axis-usage tally,
+#' swimming, and the QC-flag rollup appear only when they apply - so a clean run stays short and a messy
+#' one surfaces exactly what needs a look. Counts, not IDs: the grouped end-of-run warnings already name
+#' the affected tags, so this is the cohort overview, not a repeat.
+#'
+#' Grouped the same way as the per-deployment block: one frequency line per backend, then the
+#' cross-check beneath them, so the summary reads as the same shape at cohort scale.
 #'
 #' @param n_total Number of deployments the run was asked to process.
-#' @param freq,agree,swim,edge Per-deployment numeric vectors (median frequency; method-agreement fraction;
-#'   swimming fraction; band-edge-occupancy fraction), NA where a deployment produced nothing.
+#' @param freq,freq2 Per-deployment median frequency for the primary and the cross-check backend
+#'   (`freq2` all-NA for a single-backend run), NA where a deployment produced nothing.
+#' @param agree,diff,swim,edge Per-deployment numeric vectors (method-agreement fraction; median
+#'   per-sample frequency gap; swimming fraction; band-edge-occupancy fraction).
 #' @param axis,reason,harm Per-deployment character vectors: the selected axis, how it was chosen
 #'   ("consensus"/"power"), and a flagged 2f-harmonic alternative (NA when none).
-#' @param methods The requested method vector (its length decides whether the agreement line shows).
+#' @param methods The requested method vector, primary first (its length decides whether the
+#'   cross-check block shows).
 #' @keywords internal
 #' @noRd
-.reportTailBeatCohort <- function(lvl, n_total, freq, axis, reason, harm, agree, swim, edge, methods) {
+.reportTailBeatCohort <- function(lvl, n_total, freq, freq2, axis, reason, harm, agree, diff,
+                                  swim, edge, methods) {
   if (lvl < 1L) return(invisible(NULL))
   b <- "\u00b7"                                        # middot separator
   sep <- paste0(" ", b, " ")
@@ -1005,14 +1019,24 @@ calculateTailBeats <- function(data,
                            n_total, if (n_total != 1) "s" else "", b, n_est, n_total - n_est))
   }
 
-  # cohort frequency distribution (across the tags that produced an estimate)
-  if (n_est == 1L) {
-    .log_arrow(lvl, sprintf("tail-beat frequency: %.2f Hz", freq[has_est]))
-  } else if (n_est > 1L) {
-    q   <- stats::quantile(freq[has_est], c(0.25, 0.5, 0.75), names = FALSE)
-    rng <- range(freq[has_est])
-    .log_arrow(lvl, sprintf("tail-beat frequency: median %.2f Hz (IQR %.2f\u2013%.2f, range %.2f\u2013%.2f Hz)",
-                            q[2], q[1], q[3], rng[1], rng[2]))
+  # One cohort distribution per backend, labelled by the backend that produced it. Both lines are padded
+  # to a common width so the medians line up under each other, which is the only reason they go through
+  # the verbatim variant - cli_text would collapse the padding.
+  labs <- paste0(methods, " frequency:")
+  w <- max(nchar(labs))
+  for (k in seq_along(methods)) {
+    v <- if (k == 1L) freq else freq2
+    ok <- is.finite(v)
+    if (!any(ok)) next
+    lab <- sprintf("%-*s ", w, labs[k])
+    if (sum(ok) == 1L) {
+      .log_arrow_aligned(lvl, lab, sprintf("%.2f Hz", v[ok]))
+    } else {
+      q   <- stats::quantile(v[ok], c(0.25, 0.5, 0.75), names = FALSE)
+      rng <- range(v[ok])
+      .log_arrow_aligned(lvl, lab, sprintf("median %.2f Hz (IQR %.2f\u2013%.2f, range %.2f\u2013%.2f Hz)",
+                                           q[2], q[1], q[3], rng[1], rng[2]))
+    }
   }
 
   # axis usage - only when the cohort genuinely used more than one axis
@@ -1022,10 +1046,15 @@ calculateTailBeats <- function(data,
     .log_arrow(lvl, "axis used: ", paste(sprintf("%s %d", names(tb), as.integer(tb)), collapse = sep))
   }
 
-  # method agreement - only when two backends ran
-  if (length(methods) > 1L && any(is.finite(agree))) {
-    .log_arrow(lvl, sprintf("method agreement: median %.0f%% (%s vs %s)",
-                            100 * stats::median(agree, na.rm = TRUE), methods[1], methods[2]))
+  # the cross-check, beneath the two estimates it compares - only when two backends ran
+  if (length(methods) > 1L && (any(is.finite(agree)) || any(is.finite(diff)))) {
+    .log_arrow(lvl, "cross-check")
+    if (any(is.finite(agree)))
+      .log_subdetail(lvl, sprintf("agreement: median %.0f%%", 100 * stats::median(agree, na.rm = TRUE)),
+                     min_level = 1L)
+    if (any(is.finite(diff)))
+      .log_subdetail(lvl, sprintf("typical difference: median %.2f Hz", stats::median(diff, na.rm = TRUE)),
+                     min_level = 1L)
   }
 
   # swimming - only when classification was enabled (a min.amplitude was supplied)

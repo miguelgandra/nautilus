@@ -186,12 +186,14 @@
   invisible(NULL)
 }
 
-#' An indented sub-line beneath a `.log_detail()` line (level >= 2): supporting evidence subordinate to
-#' the finding above it, marked with a corner arrow so it reads as detail, not a peer.
+#' An indented sub-line beneath a `.log_detail()` line (level >= 2 by default): supporting evidence
+#' subordinate to the finding above it, marked with a corner arrow so it reads as detail, not a peer.
+#' `min_level` lowers the gate for a block that itself shows at "normal" verbosity - the SUMMARY, whose
+#' heading would otherwise be left dangling above suppressed sub-lines.
 #' @keywords internal
 #' @noRd
-.log_subdetail <- function(lvl, ...) {
-  if (lvl < 2L) return(invisible(NULL))
+.log_subdetail <- function(lvl, ..., min_level = 2L) {
+  if (lvl < min_level) return(invisible(NULL))
   txt <- paste0("\u21b3 ", paste0(...))
   cli::cli_bullets(stats::setNames("{txt}", " "))   # blank-name bullet = indent, no marker; {txt} keeps literal braces literal
   invisible(NULL)
@@ -224,6 +226,18 @@
 #' @noRd
 .log_arrow <- function(lvl, ...) {
   if (lvl >= 1L) cli::cli_text("{cli::symbol$arrow_right} {paste0(...)}")
+  invisible(NULL)
+}
+
+#' `.log_arrow()` for rows whose columns must line up.
+#'
+#' Same glyph, but routed through `cli_verbatim` for the reason given at
+#' `.log_subdetail_aligned()`: `cli_text` normalises runs of whitespace for prose, so any padding used
+#' to align values into a column is silently collapsed.
+#' @keywords internal
+#' @noRd
+.log_arrow_aligned <- function(lvl, ...) {
+  if (lvl >= 1L) cli::cli_verbatim(paste0(cli::symbol$arrow_right, " ", paste0(...)))
   invisible(NULL)
 }
 
