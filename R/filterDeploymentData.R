@@ -2,36 +2,54 @@
 # Function to identify and extract deployment periods #################################################
 #######################################################################################################
 
-#' Filter deployment periods from a given dataset
+#' Trim a record to the period the tag was on the animal
 #'
 #' @description
-#' This function identifies and extracts actual deployment periods from high-resolution biologging data.
-#' It offers two primary methods for defining these periods: an **automated depth-based approach**
-#' or the option to **supply custom start and end times** for each individual.
+#' A tag records from the moment it is switched on. That usually means hours on a boat deck before
+#' deployment and, after release, a period drifting at the surface or sitting in a recovery bag before
+#' the data are downloaded. Those stretches look like data but describe no animal, and left in place they
+#' distort everything computed from the record: surface time, activity budgets, temperature ranges, and
+#' the baseline any dive detector calibrates against.
 #'
-#' When using the automated depth-based approach, the function analyzes changes in depth data
-#' using binary segmentation (`cpt.meanvar`) to detect change points in both mean and variance.
-#' It then extracts the periods between the pre-deployment and post-deployment phases
-#' based on the specified depth and variance thresholds.
+#' `filterDeploymentData()` trims each record to the period the tag was actually on the animal. It can
+#' find that period from the depth trace, which changes character sharply when a tag enters the water and
+#' again when it leaves, or you can supply the times yourself where they are known from the field notes.
 #'
-#' For datasets with a sampling frequency greater than 1 Hz, the function automatically
-#' downsamples the data to 1 Hz. This is achieved by rounding datetime values to the nearest second
-#' and computing the mean for each second, significantly improving processing speed and
-#' preventing memory bottlenecks when handling large datasets.
+#' Run it early - before the record is placed on a regular time grid - so that no later step spends
+#' effort on data that will be discarded.
 #'
-#' The function also provides robust options to visualize the identified deployment periods
-#' with custom plot options, including additional behavioral metrics, to aid in visual review and validation.
+#' @details
+#' ## Finding the deployment period from depth
+#' The on-animal period differs from the periods either side of it in both its mean depth and its
+#' variability: a tag on deck reads a near-constant value, while a tag on a diving animal does not.
+#' Detection uses binary segmentation to locate change points in mean and variance together, and takes
+#' the interval between the pre- and post-deployment phases. The depth and variance thresholds that
+#' decide what counts as a change are yours to set, since they depend on how the animal behaves and on
+#' how noisy the sensor is at the surface.
 #'
-#' @param data A list of data.tables/data.frames, one for each individual; a single aggregated data.table/data.frame
-#' containing data from multiple animals (with an 'ID' column); or a character vector of file paths pointing to
-#' `.rds` files, each containing data for a single individual. When a character vector is provided,
-#' files are loaded sequentially to optimize memory use. The output of the \link{processTagData} function
-#' is strongly recommended, as it formats the data appropriately for all downstream analysis.
-#' @param id.col A string representing the column name for the ID field (default is "ID").
-#' @param datetime.col A string specifying the name of the column that contains timestamps for each observation.
-#' This column must be in "POSIXct" format for proper processing (default is "datetime").
-#' @param depth.col A string specifying the name of the column that contains depth measurements. Depth data is
-#' used for detecting deployment periods (default is "depth").
+#' Records sampled faster than 1 Hz are averaged to one value per second for detection only. Change
+#' points in a deployment-scale signal are not resolved any better at 20 Hz, and the reduction keeps the
+#' search tractable on multi-day records. The returned data keep their original resolution.
+#'
+#' ## When to supply the times instead
+#' Automatic detection assumes the depth trace changes character at both ends. It will struggle where a
+#' tag was attached to an animal already at depth, where the animal remained at the surface throughout,
+#' or where the tag was recovered at sea and continued recording in water. Supply
+#' `custom.deployment.times` for those deployments; you can mix the two, giving explicit times for the
+#' awkward records and letting the rest be detected.
+#'
+#' ## Reviewing the result
+#' The diagnostic plots show each record with its detected boundaries marked, which is the practical way
+#' to confirm a boundary before committing to it. Additional metrics can be overlaid to help judge
+#' whether a boundary falls where the animal's behaviour actually begins.
+#'
+#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
+#'   `.rds` paths. Paths are read one deployment at a time, so a fleet too large for memory can be
+#'   processed without ever holding it all.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param depth.col Which column holds depth (default `"depth"`). This is the channel detection reads,
+#'   so it must be present unless you supply the deployment times yourself.
 #' @param custom.deployment.times An optional `data.frame` or `data.table` with three columns: the ID column
 #' (named as given by `id.col`, default "ID"), `start`, and `end`.
 #' This allows users to manually specify deployment periods for each individual, overriding or supplementing the depth-based detection.
@@ -79,7 +97,7 @@
 #' an error, not silently created). Must end in `.pdf`. If `NULL` (default), no file is written.
 #' Independent of `plot`: set `plot.file` to save without displaying, or set both to do both.
 #' @param plot.metrics An optional character vector of column names indicating additional metrics
-#' (e.g., acceleration or temperature) to include in the visualization. These metrics are plotted
+#' (e.g., acceleration or temperature) to include in the plot. These metrics are plotted
 #' alongside the depth data to aid in visually reviewing the deployment period assignments.
 #' Required only if `plot` is `TRUE` or `plot.file` is set. If NULL (default) and plots are requested,
 #' defaults to `c("temp", "ax")`. Must be length 2 if provided. These are cosmetic, not required for
@@ -87,7 +105,8 @@
 #' was available) is simply omitted from that individual's panel rather than causing an error.
 #' @param plot.metrics.labels An optional character vector of axis labels for the two `plot.metrics`.
 #' If NULL (default), labels are generated automatically as "Name (unit)" for recognised nautilus
-#' channels (e.g. "Temperature (°C)", "Acc X (g)", "Depth (m)"), falling back to the raw column
+#' channels (for example a temperature channel labelled in degrees Celsius, or `"Acc X (g)"` and
+#' `"Depth (m)"`), falling back to the raw column
 #' name for any unrecognised or user-derived column. Provide this only to override the automatic
 #' labels (e.g. for bespoke columns); must be length 2 if given. Ignored unless plots are generated.
 #' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the

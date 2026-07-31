@@ -26,7 +26,7 @@ individual), a single aggregated data.table/data.frame with an \code{id.col}, or
 \code{.rds} file paths (loaded lazily). The output of \link{importTagData} is expected.}
 
 \item{sensors}{A named list mapping each channel to screen (e.g. \code{depth}, \code{temp}) to an
-\link{anomalyControl} object (or a named list of its fields) carrying that channel's thresholds.
+\code{\link[=anomalyControl]{anomalyControl()}} object (or a named list of its fields) carrying that channel's thresholds.
 Channels absent from a given deployment are skipped for that individual.}
 
 \item{apply}{Logical. If \code{FALSE} (default), the function only reports the detected anomalies (the data
@@ -83,43 +83,53 @@ spikes only), \code{n_corrected}, \code{spikes}, \code{blocks}, \code{pct_affect
 }
 }
 \description{
-Screens one or more sensor channels (e.g. depth, temperature) for transient signal-quality anomalies
-and, optionally, repairs them. Two kinds are detected per channel: \strong{isolated outliers} - single
-spikes whose rate of change exceeds a threshold (accounting for sensor resolution), replaced with
-\code{NA} or linear interpolation - and \strong{sensor-malfunction periods} - clusters of outliers, or prolonged
-runs of constant readings (stalls), which are removed as blocks (with any small stranded islands of
-valid data between them) and never interpolated.
+Sensors glitch. A pressure transducer records a single impossible spike, a thermistor sticks at one
+value for an hour, a channel drops out and returns. These are transient faults in an otherwise sound
+sensor, and left in place a single spike is enough to invent a dive, distort a maximum depth, or pull
+a mean off course.
 
-This is the signal-quality half of the sensor-QC pair. It repairs the recorded time series of a valid
-channel; \link{checkSensorIntegrity} is its structural counterpart, which validates whether a channel
-is a trustworthy instance of its sensor at all. Run \link{checkSensorIntegrity} first, so that
-structurally corrupt channels are excluded before their symptoms are cosmetically repaired here.
+\code{checkSensorQuality()} finds them and, if you ask it to, repairs them. It distinguishes isolated
+spikes, which can be interpolated from their neighbours, from sustained malfunctions, which cannot -
+a stretch where the sensor was not measuring has no value to recover, so it is removed rather than
+invented.
+
+This is the signal-quality half of the sensor-QC pair. Run \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}} first: it asks
+whether a channel is trustworthy at all, and there is no point repairing the symptoms of a channel
+that should be discarded.
 }
 \details{
-Two kinds of anomaly are detected per channel:
-\itemize{
-\item \strong{Isolated outliers} (\code{info}) - single spikes whose sample-to-sample rate of change
+\subsection{What is detected}{
+
+\describe{
+\item{Isolated outliers (\code{info})}{Single spikes whose sample-to-sample rate of change
 exceeds the channel's \code{rate.threshold}, gated by its \code{sensor.resolution} so ordinary quantisation
 noise is not flagged. These are transient glitches; with \code{interpolate = TRUE} they are linearly
-interpolated from their neighbours, otherwise left as \code{NA}.
-\item \strong{Malfunction / stall periods} (\code{warning}) - clusters of outliers within \code{outlier.window}
+interpolated from their neighbours, otherwise left as \code{NA}.}
+\item{Malfunction and stall periods (\code{warning})}{Clusters of outliers within \code{outlier.window}
 minutes of one another, or prolonged runs of a constant non-zero reading longer than
 \code{stall.threshold} minutes (a stuck sensor). These signal a sustained sensor failure and are removed
-as whole blocks (together with any small islands of valid data stranded between them); they are
-never interpolated.
+as whole blocks, together with any small islands of valid data stranded between them, and are
+never interpolated.}
 }
-All thresholds are supplied per channel via \link{anomalyControl}.
+All thresholds are set per channel through \code{\link[=anomalyControl]{anomalyControl()}}.
+}
 
-\strong{Report vs. repair.} Like \link{checkSensorIntegrity}, the function is report-first: with
+\subsection{Reporting and repairing}{
+
+Like \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, the function reports first: with
 \code{apply = FALSE} (default) it only \emph{detects} the anomalies and returns them in \code{issues}, leaving the data
 untouched; with \code{apply = TRUE} it additionally \emph{writes} the repairs into the returned/saved data. This
 lets you review what would change before committing to it.
+}
 
-\strong{Diagnostic report.} When \code{plot} or \code{plot.file} is set, an overview page tables every tag and its
+\subsection{The diagnostic report}{
+
+When \code{plot} or \code{plot.file} is set, an overview page tables every tag and its
 anomaly count per channel (sorted worst-first), followed by one page per tag with a stall/malfunction
 block - each anomalous channel's trace with the removed spikes (red), interpolated values (cyan) and
 shaded block spans, plus an interpretation note. Tags with only isolated spikes appear in the overview
 but do not get their own page.
+}
 }
 \section{Known limitation - the rate gate is sampling-rate dependent}{
 
@@ -149,5 +159,5 @@ quality$issues
 }
 }
 \seealso{
-\link{checkSensorIntegrity}, \link{anomalyControl}, \link{importTagData}.
+\code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, \code{\link[=anomalyControl]{anomalyControl()}}, \link{importTagData}.
 }

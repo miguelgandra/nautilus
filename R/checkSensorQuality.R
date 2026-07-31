@@ -5,39 +5,43 @@
 #' Detect and repair signal-quality anomalies in sensor channels
 #'
 #' @description
-#' Screens one or more sensor channels (e.g. depth, temperature) for transient signal-quality anomalies
-#' and, optionally, repairs them. Two kinds are detected per channel: **isolated outliers** - single
-#' spikes whose rate of change exceeds a threshold (accounting for sensor resolution), replaced with
-#' `NA` or linear interpolation - and **sensor-malfunction periods** - clusters of outliers, or prolonged
-#' runs of constant readings (stalls), which are removed as blocks (with any small stranded islands of
-#' valid data between them) and never interpolated.
+#' Sensors glitch. A pressure transducer records a single impossible spike, a thermistor sticks at one
+#' value for an hour, a channel drops out and returns. These are transient faults in an otherwise sound
+#' sensor, and left in place a single spike is enough to invent a dive, distort a maximum depth, or pull
+#' a mean off course.
 #'
-#' This is the signal-quality half of the sensor-QC pair. It repairs the recorded time series of a valid
-#' channel; \link{checkSensorIntegrity} is its structural counterpart, which validates whether a channel
-#' is a trustworthy instance of its sensor at all. Run \link{checkSensorIntegrity} first, so that
-#' structurally corrupt channels are excluded before their symptoms are cosmetically repaired here.
+#' `checkSensorQuality()` finds them and, if you ask it to, repairs them. It distinguishes isolated
+#' spikes, which can be interpolated from their neighbours, from sustained malfunctions, which cannot -
+#' a stretch where the sensor was not measuring has no value to recover, so it is removed rather than
+#' invented.
+#'
+#' This is the signal-quality half of the sensor-QC pair. Run [checkSensorIntegrity()] first: it asks
+#' whether a channel is trustworthy at all, and there is no point repairing the symptoms of a channel
+#' that should be discarded.
 #'
 #' @details
-#' Two kinds of anomaly are detected per channel:
-#' \itemize{
-#'   \item \strong{Isolated outliers} (`info`) - single spikes whose sample-to-sample rate of change
+#' ## What is detected
+#' \describe{
+#'   \item{Isolated outliers (`info`)}{Single spikes whose sample-to-sample rate of change
 #'     exceeds the channel's `rate.threshold`, gated by its `sensor.resolution` so ordinary quantisation
 #'     noise is not flagged. These are transient glitches; with `interpolate = TRUE` they are linearly
-#'     interpolated from their neighbours, otherwise left as `NA`.
-#'   \item \strong{Malfunction / stall periods} (`warning`) - clusters of outliers within `outlier.window`
+#'     interpolated from their neighbours, otherwise left as `NA`.}
+#'   \item{Malfunction and stall periods (`warning`)}{Clusters of outliers within `outlier.window`
 #'     minutes of one another, or prolonged runs of a constant non-zero reading longer than
 #'     `stall.threshold` minutes (a stuck sensor). These signal a sustained sensor failure and are removed
-#'     as whole blocks (together with any small islands of valid data stranded between them); they are
-#'     never interpolated.
+#'     as whole blocks, together with any small islands of valid data stranded between them, and are
+#'     never interpolated.}
 #' }
-#' All thresholds are supplied per channel via \link{anomalyControl}.
+#' All thresholds are set per channel through [anomalyControl()].
 #'
-#' \strong{Report vs. repair.} Like \link{checkSensorIntegrity}, the function is report-first: with
+#' ## Reporting and repairing
+#' Like [checkSensorIntegrity()], the function reports first: with
 #' `apply = FALSE` (default) it only *detects* the anomalies and returns them in `issues`, leaving the data
 #' untouched; with `apply = TRUE` it additionally *writes* the repairs into the returned/saved data. This
 #' lets you review what would change before committing to it.
 #'
-#' \strong{Diagnostic report.} When `plot` or `plot.file` is set, an overview page tables every tag and its
+#' ## The diagnostic report
+#' When `plot` or `plot.file` is set, an overview page tables every tag and its
 #' anomaly count per channel (sorted worst-first), followed by one page per tag with a stall/malfunction
 #' block - each anomalous channel's trace with the removed spikes (red), interpolated values (cyan) and
 #' shaded block spans, plus an interpretation note. Tags with only isolated spikes appear in the overview
@@ -47,7 +51,7 @@
 #'   individual), a single aggregated data.table/data.frame with an `id.col`, or a character vector of
 #'   `.rds` file paths (loaded lazily). The output of \link{importTagData} is expected.
 #' @param sensors A named list mapping each channel to screen (e.g. `depth`, `temp`) to an
-#'   \link{anomalyControl} object (or a named list of its fields) carrying that channel's thresholds.
+#'   [anomalyControl()] object (or a named list of its fields) carrying that channel's thresholds.
 #'   Channels absent from a given deployment are skipped for that individual.
 #' @param apply Logical. If `FALSE` (default), the function only reports the detected anomalies (the data
 #'   passes through unchanged). If `TRUE`, the repairs are written into the returned/saved data (isolated
@@ -104,7 +108,7 @@
 #' rate test as a tripwire for gross failure rather than a fine screen, and set `sensor.resolution`
 #' from the channel's true quantum.
 #'
-#' @seealso \link{checkSensorIntegrity}, \link{anomalyControl}, \link{importTagData}.
+#' @seealso [checkSensorIntegrity()], [anomalyControl()], \link{importTagData}.
 #' @examples
 #' \dontrun{
 #' checked <- checkSensorIntegrity(regularized, apply = TRUE)$curated_data

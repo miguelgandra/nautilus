@@ -87,12 +87,25 @@ for the next step.`
 - Lists: markdown `-`. Use `\describe{}` only for genuine term-and-definition blocks.
 - Maths: `\eqn{}` / `\deqn{}`, which stay ASCII.
 
-**Source files are ASCII.** No em dashes, no `µ`, no curly quotes. Write `-` for a dash, `\eqn{\mu}T`
-for microtesla. Check with:
+**Keep source ASCII wherever a plain equivalent exists.** Write `-` for a dash, not an em dash, and
+`\eqn{\mu}T` rather than the micro sign. Check with:
 
 ```
 perl -ne 'print if /[^[:ascii:]]/' R/*.R
 ```
+
+This applies to the whole of `R/`, roxygen included. `R CMD check` reports non-ASCII in R files, and a
+literal symbol in a string also makes the value locale-dependent, which breaks tests under
+`R CMD check` even when they pass under `pkgload`.
+
+The escape differs by context, and mixing them up is easy:
+
+- In R **code**, write `"\u00b0"`. R parses the escape at load time and the string carries the symbol.
+- In **roxygen**, `\uXXXX` does not work - Rd does not interpret it, and `R CMD check` reports
+  `unknown macro`. Use an Rd escape such as `\eqn{\mu}`, or rephrase to avoid the symbol.
+
+Be careful editing files where the same text appears in both a roxygen line and a code string: a global
+search-and-replace will silently convert a correct code escape into a literal.
 
 ---
 

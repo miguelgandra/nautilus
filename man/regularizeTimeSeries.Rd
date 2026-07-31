@@ -2,7 +2,7 @@
 % Please edit documentation in R/regularizeTimeSeries.R
 \name{regularizeTimeSeries}
 \alias{regularizeTimeSeries}
-\title{Regularize irregular high-frequency biologging time series}
+\title{Place a record on a regular time grid}
 \usage{
 regularizeTimeSeries(
   data,
@@ -23,26 +23,22 @@ regularizeTimeSeries(
 )
 }
 \arguments{
-\item{data}{Input data, which can be either:
-\itemize{
-\item A list of data frames/tables (each containing sensor data for one individual)
-\item A single data frame/table
-\item Character vector of paths to RDS files containing sensor data
-}}
+\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
+\code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
+processed without ever holding it all.}
 
-\item{id.col}{Character. Name of the column containing unique identifier for each tag/animal.
-Used when input is a single data.frame that needs splitting. Default "ID".}
+\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
 
-\item{datetime.col}{Character. Name of the datetime column. Must contain POSIXct values.
-Default "datetime".}
+\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
 
-\item{time.threshold}{Numeric. Maximum allowed deviation (in seconds) from regular
-intervals. If \code{NULL} (default), automatically calculates as half of the nominal
-sampling interval. Records beyond this threshold won't be assigned to regular times.}
+\item{time.threshold}{How far, in seconds, a sample may sit from a grid point and still be assigned
+to it. \code{NULL} (default) uses half the nominal sampling interval, so every sample belongs to exactly
+one grid point. Widen it only where a tag's timestamps are known to be coarse; too wide and distinct
+samples compete for the same slot.}
 
-\item{gap.threshold}{Numeric. Maximum gap duration (in seconds) for interpolation.
-Gaps \eqn{\le} this value will be interpolated; larger gaps remain NA. Set to 0 to disable
-interpolation. Default is 5 seconds.}
+\item{gap.threshold}{The longest gap, in seconds, that will be interpolated (default 5). Gaps beyond
+it stay missing. Choose it from what your sensor and animal can change over: a value that spans a
+whole dive will invent one. Set \code{0} to interpolate nothing.}
 
 \item{interpolation.method}{Character. Interpolation method for small gaps. One of:
 \itemize{
@@ -96,17 +92,42 @@ vector of file paths; if \code{return.data = FALSE}, a character vector of the w
 file paths.
 }
 \description{
-\code{regularizeTimeSeries} processes high-frequency time series data from biologging sensors to
-address irregularities such as time gaps and jitter. The function performs several key steps:
-\enumerate{
-\item Detects and quantifies time gaps and temporal jitter within the series.
-\item Regularizes the time series to a consistent sampling interval.
-\item Assigns original records to the nearest regular timestamp within a defined threshold.
-\item Applies gap-filling strategies (e.g., linear, spline, LOCF interpolation) for
-short gaps, while leaving larger gaps as \code{NA}.
-}
+Archival tags rarely produce the perfectly even series their nominal sampling rate implies. Clocks
+drift, buffers flush late, and power saving or memory pressure drops samples outright, so the interval
+between consecutive records wanders and occasionally jumps.
+
+Most of what follows in an analysis assumes even spacing. Anything working in the frequency domain -
+tail-beat estimation, spectral checks - reads an uneven series as if it were even and returns a
+distorted answer; dead-reckoning integrates over assumed time steps; dive detection measures durations
+in samples. Irregularity does not announce itself in any of these, which is what makes it worth
+removing first.
+
+\code{regularizeTimeSeries()} places each record on an even grid at its nominal rate, assigns the original
+samples to the nearest grid point, and fills only gaps short enough to be filled honestly. Longer gaps
+stay missing, because a gap is information: the tag was not recording, and inventing values across it
+would hide that from every later step.
 }
 \details{
+\subsection{What happens to a sample}{
+
+Each original record is assigned to the nearest timestamp on the regular grid, provided it falls
+within \code{time.threshold} of it. A record further away than that is not forced onto a grid point it does
+not belong to; the grid point is left empty and treated as a gap.
+}
+
+\subsection{Which gaps are filled}{
+
+Gaps up to \code{gap.threshold} are interpolated; anything longer is left missing. The distinction matters
+because the two are different events. A dropped sample or two is a recording artefact, and
+interpolating across it restores a series the sensor would have produced anyway. A gap of minutes is a
+period with no measurement, and filling it fabricates behaviour - a dive that was never recorded, a
+stretch of level swimming that never happened. Set \code{gap.threshold = 0} to fill nothing.
+
+Channels sampled more slowly than the sensor grid - depth on some tags, temperature on most - are
+recognised as such and are not densified onto every grid point, which would otherwise turn a
+once-per-second measurement into a spuriously high-resolution one.
+}
+
 The regularization algorithm proceeds as follows for each individual's dataset:
 \enumerate{
 \item The \strong{median sampling interval} is calculated from the observed \code{datetime}

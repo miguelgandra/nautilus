@@ -261,40 +261,40 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
 }
 
 
-#' Per-channel anomaly-detection settings for checkSensorQuality()
+#' Anomaly-detection settings for one sensor channel
 #'
 #' @description
-#' Bundles the outlier-detection thresholds for one sensor channel, so \code{\link{checkSensorQuality}}
-#' can screen several channels (each with its own settings) in a single call.
+#' What counts as an impossible jump depends entirely on the channel. Depth can change by metres per
+#' second during a dive; temperature cannot change by degrees per second anywhere in the ocean. A single
+#' threshold across channels would either miss real faults or flag ordinary behaviour.
 #'
-#' @param rate.threshold Numeric. Rate-of-change threshold (units per second) beyond which a value is
-#'   flagged as an outlier. Required.
-#' @param sensor.resolution Numeric. The channel's resolution - the smallest change it can actually
-#'   express - used to gate the rate of change so ordinary quantisation is not flagged as an event.
-#'   Required, and deliberately so. It used to default to `0.5`, which is the World-Ocean archive DEPTH
-#'   quantum in metres, silently applied to every channel: a temperature channel left at the default got
-#'   a 0.5 degree floor, an order of magnitude too coarse (this package's own example passes `0.05`),
-#'   and a CATS depth channel got eight times its 0.0622 m quantum. A resolution belongs to an
-#'   instrument and a channel, and the package has no basis for guessing it - the same reason
-#'   `rate.threshold` is required.
+#' `anomalyControl()` describes one channel, so [checkSensorQuality()] can screen several in a single
+#' call, each judged on its own terms.
 #'
-#'   Deriving it from the data was tried and rejected: the modal non-zero first difference recovers a
-#'   known quantum exactly when the quantum is coarse relative to the noise (0.5, 0.0622 and 0.05 all
-#'   recovered), but fails when it is finer (a true 0.01 under noise of sd 0.3 estimated as 0.08),
-#'   because a dithered series steps by many quanta at a time. On real processed records it returned
-#'   `0.01` for both depth and temperature - the storage rounding, not the instrument - because the
-#'   zero-offset correction subtracts a continuously varying value and destroys the sensor's grid
-#'   before rounding ever happens. An estimator that is right only when you did not need it is worse
-#'   than an argument you must fill in.
-#' @param sensor.accuracy.fixed,sensor.accuracy.percent Numeric. The sensor's accuracy, as a fixed value
-#'   (same units as the channel) or a percentage of the reading. Provide at most one. Recorded for
-#'   provenance; the rate gate uses `sensor.resolution` only. Defaults `NULL`.
-#' @param outlier.window Numeric. Time window (minutes) within which consecutive outliers are grouped and
-#'   treated as one anomaly period (a sensor-malfunction block). Default 5.
-#' @param stall.threshold Numeric. Duration (minutes) beyond which a run of constant, non-zero readings
-#'   is flagged as a stalled sensor. Default 5.
-#' @return A validated `nautilus_anomaly` object for a `sensors` entry of \code{\link{checkSensorQuality}}.
-#' @seealso \code{\link{checkSensorQuality}}
+#' @param rate.threshold How fast the channel can plausibly change, in units per second. A
+#'   sample-to-sample change beyond this is treated as a spike rather than a measurement. Set it from
+#'   what the animal and the environment allow, with some headroom: too low and normal behaviour is
+#'   flagged, too high and real spikes survive into your analysis. Required.
+#' @param sensor.resolution The smallest change the channel can express - its quantisation step. It stops
+#'   ordinary rounding from registering as a rate of change, which otherwise makes a coarsely-quantised
+#'   channel look full of spikes.
+#'
+#'   Required, with no default, because resolution is a property of a particular instrument and channel
+#'   and the package has no basis for guessing it: a value suited to depth in metres is an order of
+#'   magnitude too coarse for temperature in degrees. Take it from the tag's specification, or from the
+#'   smallest non-zero difference between consecutive raw readings.
+#' @param sensor.accuracy.fixed,sensor.accuracy.percent The sensor's stated accuracy, as a fixed value in
+#'   the channel's units or as a percentage of the reading. Supply at most one. Recorded with the results
+#'   for provenance; detection itself uses `sensor.resolution`. Defaults `NULL`.
+#' @param outlier.window How close together, in minutes, outliers must fall to be treated as one
+#'   malfunction period rather than as separate spikes. Default 5. Widen it where a failing sensor
+#'   glitches intermittently over a longer stretch.
+#' @param stall.threshold How long a run of identical, non-zero readings must last, in minutes, before
+#'   the sensor is judged to have stalled. Default 5. Raise it for a channel that legitimately holds
+#'   steady - a temperature record from an animal resting in a thermally uniform layer, for instance.
+#' @return A validated `nautilus_anomaly` object, for one entry of [checkSensorQuality()]'s `sensors`
+#'   argument.
+#' @seealso [checkSensorQuality()]
 #' @examples
 #' anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, sensor.accuracy.percent = 1)
 #' @export
@@ -497,20 +497,24 @@ ocrControl <- function(model = "cam",
 #' Detection thresholds for checkSensorIntegrity()
 #'
 #' @description
-#' Bundles the tunable thresholds of the sensor-integrity checks run by \code{\link{checkSensorIntegrity}}
-#' into one object, so the main call stays uncluttered and every knob is documented and adjustable in one
-#' place. The defaults are calibrated against real whale-shark deployments; adjust them for other species
-#' or tag systems.
+#' Sets the thresholds at which [checkSensorIntegrity()] grades a finding, so the main call stays
+#' readable and every threshold is documented in one place. The defaults suit large marine vertebrates
+#' carrying multi-sensor archival tags; a different species or tag system may warrant different ones.
 #'
-#' Every field is a CLASSIFICATION THRESHOLD: the value of a check's metric at which the finding is
-#' graded \code{"info"}, \code{"warning"} or \code{"error"}, named \code{<check>.<severity>} so the
-#' grade a number produces is readable from its name. Severity is therefore a property of the MEASUREMENT,
-#' not of the check type: 1% clipping and 99% clipping are the same check but different grades. Not every
-#' check supports every grade - a metric has to be sharply bimodal for an automatic \code{"error"} to be
-#' defensible (see \code{\link{checkSensorIntegrity}} Details), so continuous metrics expose a warning
-#' threshold only. Parameters governing HOW a metric is computed (spectral search bands, robustness
-#' floors) are deliberately internal: they are implementation details rather than scientific choices, and
-#' keeping them private leaves the algorithms free to improve without an API change.
+#' @details
+#' Every field is a classification threshold: the value of a check's metric at which a finding is graded
+#' `"info"`, `"warning"` or `"error"`. Fields are named `<check>.<severity>`, so the grade a number
+#' produces can be read from its name.
+#'
+#' Severity is therefore a property of the measurement rather than of the check: 1% clipping and 99%
+#' clipping come from the same check but are graded differently. Not every check offers every grade,
+#' because an automatic error verdict is only defensible where a broken channel is clearly separated
+#' from a healthy one; checks whose metric varies continuously expose a warning threshold only. See the
+#' Details of [checkSensorIntegrity()].
+#'
+#' Settings that govern how a metric is computed - spectral search bands, robustness floors - are
+#' deliberately not exposed. They are implementation choices rather than scientific ones, and keeping
+#' them internal leaves the algorithms free to improve without changing this interface.
 #'
 #' @param duplication.error Duplication: a gyroscope or magnetometer triplet is a copy of the
 #'   accelerometer when the per-axis \code{|r|} exceeds this on all three axes. Default 0.999. (A copied
@@ -524,28 +528,26 @@ ocrControl <- function(model = "cam",
 #'   (warning); a large one is a scaling or unit error - e.g. acceleration left in m/s^2 - rather than a
 #'   calibration offset (error). Defaults 0.20 and 0.50.
 #' @param mag.plausibility.warning Magnetometer plausibility: the robust coefficient of variation of the
-#'   hard-iron-centred field magnitude \code{|B|} (a stable field is near-constant). Default 0.4. Warning
-#'   only - across a 52-deployment fleet this metric is continuous, with no break separating a degraded
-#'   magnetometer from the tail of normal variation, so no automatic error grade is defensible.
-#' @param mag.break.warning Magnetometer break: the rank SEPARATION between the field magnitude before
-#'   and after the best candidate break - the Mann-Whitney probability of superiority between the two
-#'   segments' window medians, in \[0.5, 1\]. 1 means the two levels do not overlap at all; 0.5 means they
-#'   are indistinguishable. Default 0.96. Warning only, and deliberately a separation rather than a step
-#'   SIZE: on the same 52-deployment fleet a best-split difference in median \code{|m|} does not separate a
-#'   real break from a healthy record, because a contaminated magnetometer's \code{|m|} varies with heading,
-#'   so an animal that keeps turning swings it between levels all deployment and any unbalanced swing
-#'   produces a large median gap (13 deployments outranked the one known true positive). Separation asks
-#'   instead whether the level changed and did NOT come back, which is what a contamination event does.
-#'   Raise it towards 1 to flag only near-perfect separations.
+#'   hard-iron-centred field magnitude (a stable field is near-constant). Default 0.4. Warning only: this
+#'   metric varies continuously between deployments, with no break separating a degraded magnetometer
+#'   from the tail of normal variation, so no automatic error grade would be defensible.
+#' @param mag.break.warning Magnetometer break: how completely the field magnitude before and after the
+#'   best candidate break separate - the Mann-Whitney probability of superiority between the two
+#'   segments' window medians, from 0.5 (indistinguishable) to 1 (no overlap at all). Default 0.96,
+#'   warning only. Deliberately a separation rather than a step size: a contaminated magnetometer's field
+#'   magnitude varies with heading, so a turning animal swings it between levels throughout, and step
+#'   size alone flags many sound records. Separation instead asks whether the level changed and did not
+#'   come back, which is what contamination attaching or shedding actually does. Raise it towards 1 to
+#'   flag only near-complete separations.
 #' @param gyro.bias.info Gyroscope bias: the largest per-axis median offset, as a fraction of the
 #'   rotational signal scale. Default 0.3. Info only.
 #' @param paddle.warning Paddle-wheel contamination: the prominence (peak / median band power) of a
 #'   narrow-band peak in the magnetometer spectrum. Default 30. Warning only.
 #' @param dropout.info Dropout: the fraction of the deployment for which a channel is missing (NA).
 #'   Default 0.5. Info only.
-#' @return A validated `nautilus_integrity` object for the `control` argument of
-#'   \code{\link{checkSensorIntegrity}}.
-#' @seealso \code{\link{checkSensorIntegrity}}
+#' @return A validated `nautilus_integrity` object, for the `control` argument of
+#'   [checkSensorIntegrity()].
+#' @seealso [checkSensorIntegrity()], whose Details explain each check and what its metric measures.
 #' @examples
 #' integrityControl(saturation.error = 0.1)          # stricter: 10% clipping is already an error
 #' integrityControl(mag.plausibility.warning = 0.5)  # more tolerant of an unstable field

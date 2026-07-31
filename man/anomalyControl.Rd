@@ -2,7 +2,7 @@
 % Please edit documentation in R/control.R
 \name{anomalyControl}
 \alias{anomalyControl}
-\title{Per-channel anomaly-detection settings for checkSensorQuality()}
+\title{Anomaly-detection settings for one sensor channel}
 \usage{
 anomalyControl(
   rate.threshold,
@@ -14,47 +14,47 @@ anomalyControl(
 )
 }
 \arguments{
-\item{rate.threshold}{Numeric. Rate-of-change threshold (units per second) beyond which a value is
-flagged as an outlier. Required.}
+\item{rate.threshold}{How fast the channel can plausibly change, in units per second. A
+sample-to-sample change beyond this is treated as a spike rather than a measurement. Set it from
+what the animal and the environment allow, with some headroom: too low and normal behaviour is
+flagged, too high and real spikes survive into your analysis. Required.}
 
-\item{sensor.resolution}{Numeric. The channel's resolution - the smallest change it can actually
-express - used to gate the rate of change so ordinary quantisation is not flagged as an event.
-Required, and deliberately so. It used to default to \code{0.5}, which is the World-Ocean archive DEPTH
-quantum in metres, silently applied to every channel: a temperature channel left at the default got
-a 0.5 degree floor, an order of magnitude too coarse (this package's own example passes \code{0.05}),
-and a CATS depth channel got eight times its 0.0622 m quantum. A resolution belongs to an
-instrument and a channel, and the package has no basis for guessing it - the same reason
-\code{rate.threshold} is required.
+\item{sensor.resolution}{The smallest change the channel can express - its quantisation step. It stops
+ordinary rounding from registering as a rate of change, which otherwise makes a coarsely-quantised
+channel look full of spikes.
 
-Deriving it from the data was tried and rejected: the modal non-zero first difference recovers a
-known quantum exactly when the quantum is coarse relative to the noise (0.5, 0.0622 and 0.05 all
-recovered), but fails when it is finer (a true 0.01 under noise of sd 0.3 estimated as 0.08),
-because a dithered series steps by many quanta at a time. On real processed records it returned
-\code{0.01} for both depth and temperature - the storage rounding, not the instrument - because the
-zero-offset correction subtracts a continuously varying value and destroys the sensor's grid
-before rounding ever happens. An estimator that is right only when you did not need it is worse
-than an argument you must fill in.}
+Required, with no default, because resolution is a property of a particular instrument and channel
+and the package has no basis for guessing it: a value suited to depth in metres is an order of
+magnitude too coarse for temperature in degrees. Take it from the tag's specification, or from the
+smallest non-zero difference between consecutive raw readings.}
 
-\item{sensor.accuracy.fixed, sensor.accuracy.percent}{Numeric. The sensor's accuracy, as a fixed value
-(same units as the channel) or a percentage of the reading. Provide at most one. Recorded for
-provenance; the rate gate uses \code{sensor.resolution} only. Defaults \code{NULL}.}
+\item{sensor.accuracy.fixed, sensor.accuracy.percent}{The sensor's stated accuracy, as a fixed value in
+the channel's units or as a percentage of the reading. Supply at most one. Recorded with the results
+for provenance; detection itself uses \code{sensor.resolution}. Defaults \code{NULL}.}
 
-\item{outlier.window}{Numeric. Time window (minutes) within which consecutive outliers are grouped and
-treated as one anomaly period (a sensor-malfunction block). Default 5.}
+\item{outlier.window}{How close together, in minutes, outliers must fall to be treated as one
+malfunction period rather than as separate spikes. Default 5. Widen it where a failing sensor
+glitches intermittently over a longer stretch.}
 
-\item{stall.threshold}{Numeric. Duration (minutes) beyond which a run of constant, non-zero readings
-is flagged as a stalled sensor. Default 5.}
+\item{stall.threshold}{How long a run of identical, non-zero readings must last, in minutes, before
+the sensor is judged to have stalled. Default 5. Raise it for a channel that legitimately holds
+steady - a temperature record from an animal resting in a thermally uniform layer, for instance.}
 }
 \value{
-A validated \code{nautilus_anomaly} object for a \code{sensors} entry of \code{\link{checkSensorQuality}}.
+A validated \code{nautilus_anomaly} object, for one entry of \code{\link[=checkSensorQuality]{checkSensorQuality()}}'s \code{sensors}
+argument.
 }
 \description{
-Bundles the outlier-detection thresholds for one sensor channel, so \code{\link{checkSensorQuality}}
-can screen several channels (each with its own settings) in a single call.
+What counts as an impossible jump depends entirely on the channel. Depth can change by metres per
+second during a dive; temperature cannot change by degrees per second anywhere in the ocean. A single
+threshold across channels would either miss real faults or flag ordinary behaviour.
+
+\code{anomalyControl()} describes one channel, so \code{\link[=checkSensorQuality]{checkSensorQuality()}} can screen several in a single
+call, each judged on its own terms.
 }
 \examples{
 anomalyControl(rate.threshold = 7, sensor.resolution = 0.5, sensor.accuracy.percent = 1)
 }
 \seealso{
-\code{\link{checkSensorQuality}}
+\code{\link[=checkSensorQuality]{checkSensorQuality()}}
 }

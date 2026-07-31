@@ -33,20 +33,18 @@ static-acceleration magnitude from 1 g (in g). A small departure suggests an imp
 calibration offset (error). Defaults 0.20 and 0.50.}
 
 \item{mag.plausibility.warning}{Magnetometer plausibility: the robust coefficient of variation of the
-hard-iron-centred field magnitude \code{|B|} (a stable field is near-constant). Default 0.4. Warning
-only - across a 52-deployment fleet this metric is continuous, with no break separating a degraded
-magnetometer from the tail of normal variation, so no automatic error grade is defensible.}
+hard-iron-centred field magnitude (a stable field is near-constant). Default 0.4. Warning only: this
+metric varies continuously between deployments, with no break separating a degraded magnetometer
+from the tail of normal variation, so no automatic error grade would be defensible.}
 
-\item{mag.break.warning}{Magnetometer break: the rank SEPARATION between the field magnitude before
-and after the best candidate break - the Mann-Whitney probability of superiority between the two
-segments' window medians, in [0.5, 1]. 1 means the two levels do not overlap at all; 0.5 means they
-are indistinguishable. Default 0.96. Warning only, and deliberately a separation rather than a step
-SIZE: on the same 52-deployment fleet a best-split difference in median \code{|m|} does not separate a
-real break from a healthy record, because a contaminated magnetometer's \code{|m|} varies with heading,
-so an animal that keeps turning swings it between levels all deployment and any unbalanced swing
-produces a large median gap (13 deployments outranked the one known true positive). Separation asks
-instead whether the level changed and did NOT come back, which is what a contamination event does.
-Raise it towards 1 to flag only near-perfect separations.}
+\item{mag.break.warning}{Magnetometer break: how completely the field magnitude before and after the
+best candidate break separate - the Mann-Whitney probability of superiority between the two
+segments' window medians, from 0.5 (indistinguishable) to 1 (no overlap at all). Default 0.96,
+warning only. Deliberately a separation rather than a step size: a contaminated magnetometer's field
+magnitude varies with heading, so a turning animal swings it between levels throughout, and step
+size alone flags many sound records. Separation instead asks whether the level changed and did not
+come back, which is what contamination attaching or shedding actually does. Raise it towards 1 to
+flag only near-complete separations.}
 
 \item{gyro.bias.info}{Gyroscope bias: the largest per-axis median offset, as a fraction of the
 rotational signal scale. Default 0.3. Info only.}
@@ -58,24 +56,28 @@ narrow-band peak in the magnetometer spectrum. Default 30. Warning only.}
 Default 0.5. Info only.}
 }
 \value{
-A validated \code{nautilus_integrity} object for the \code{control} argument of
-\code{\link{checkSensorIntegrity}}.
+A validated \code{nautilus_integrity} object, for the \code{control} argument of
+\code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}.
 }
 \description{
-Bundles the tunable thresholds of the sensor-integrity checks run by \code{\link{checkSensorIntegrity}}
-into one object, so the main call stays uncluttered and every knob is documented and adjustable in one
-place. The defaults are calibrated against real whale-shark deployments; adjust them for other species
-or tag systems.
+Sets the thresholds at which \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}} grades a finding, so the main call stays
+readable and every threshold is documented in one place. The defaults suit large marine vertebrates
+carrying multi-sensor archival tags; a different species or tag system may warrant different ones.
+}
+\details{
+Every field is a classification threshold: the value of a check's metric at which a finding is graded
+\code{"info"}, \code{"warning"} or \code{"error"}. Fields are named \verb{<check>.<severity>}, so the grade a number
+produces can be read from its name.
 
-Every field is a CLASSIFICATION THRESHOLD: the value of a check's metric at which the finding is
-graded \code{"info"}, \code{"warning"} or \code{"error"}, named \code{<check>.<severity>} so the
-grade a number produces is readable from its name. Severity is therefore a property of the MEASUREMENT,
-not of the check type: 1\% clipping and 99\% clipping are the same check but different grades. Not every
-check supports every grade - a metric has to be sharply bimodal for an automatic \code{"error"} to be
-defensible (see \code{\link{checkSensorIntegrity}} Details), so continuous metrics expose a warning
-threshold only. Parameters governing HOW a metric is computed (spectral search bands, robustness
-floors) are deliberately internal: they are implementation details rather than scientific choices, and
-keeping them private leaves the algorithms free to improve without an API change.
+Severity is therefore a property of the measurement rather than of the check: 1\% clipping and 99\%
+clipping come from the same check but are graded differently. Not every check offers every grade,
+because an automatic error verdict is only defensible where a broken channel is clearly separated
+from a healthy one; checks whose metric varies continuously expose a warning threshold only. See the
+Details of \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}.
+
+Settings that govern how a metric is computed - spectral search bands, robustness floors - are
+deliberately not exposed. They are implementation choices rather than scientific ones, and keeping
+them internal leaves the algorithms free to improve without changing this interface.
 }
 \examples{
 integrityControl(saturation.error = 0.1)          # stricter: 10\% clipping is already an error
@@ -83,5 +85,5 @@ integrityControl(mag.plausibility.warning = 0.5)  # more tolerant of an unstable
 integrityControl(mag.break.warning = 0.99)        # only near-perfect separation counts as a break
 }
 \seealso{
-\code{\link{checkSensorIntegrity}}
+\code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, whose Details explain each check and what its metric measures.
 }

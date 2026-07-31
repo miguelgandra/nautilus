@@ -24,7 +24,7 @@ checkSensorIntegrity(
 \arguments{
 \item{data}{Sensor data in any of the pipeline forms: a list of \code{nautilus_tag} objects (one per
 individual), a single aggregated data.table/data.frame with an \code{id.col}, or a character vector of
-\code{.rds} file paths (loaded lazily). The output of \link{importTagData} (optionally regularized) is
+\code{.rds} file paths (loaded lazily). The output of \code{\link[=importTagData]{importTagData()}} (optionally regularized) is
 expected.}
 
 \item{checks}{Character vector of integrity checks to run. Defaults to the two high-confidence,
@@ -41,7 +41,7 @@ record), \code{"gyro.bias"} (a persistent gyroscope offset), \code{"paddle.conta
 magnetometer peak suggesting an undocumented paddle wheel) and \code{"dropout"} (a channel missing for
 most of the deployment).}
 
-\item{control}{An \code{\link{integrityControl}} object (or a named list of its fields) bundling the
+\item{control}{An \code{\link[=integrityControl]{integrityControl()}} object (or a named list of its fields) bundling the
 per-check detection thresholds. Defaults to \code{integrityControl()} (values calibrated on real
 whale-shark deployments).}
 
@@ -97,47 +97,57 @@ and \code{message}.
 }
 \description{
 Screens each deployment's sensor channels for structural, hardware/firmware-level faults - as opposed
-to per-sample signal glitches, which are the job of \link{checkSensorQuality}. It answers a single
+to per-sample signal glitches, which are the job of \code{\link[=checkSensorQuality]{checkSensorQuality()}}. It answers a single
 question per channel: \emph{is this a trustworthy instance of the sensor it claims to be?} Faulty channels
 are reported (and, with \code{apply = TRUE}, dropped) rather than repaired, since interpolating a corrupt
 channel would only hide the fault.
 
 This is the data-driven complement to the metadata \code{exclude_sensors} catalogue handled at import:
 the catalogue records \emph{known}-bad channels, while this function \emph{detects} them from the data, catching
-undocumented cases. Run it after \link{regularizeTimeSeries} and before \link{checkSensorQuality} and
-\link{checkTagMapping}, so corrupt channels are removed before any repair, orientation or downstream
+undocumented cases. Run it after \code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}} and before \code{\link[=checkSensorQuality]{checkSensorQuality()}} and
+\code{\link[=checkTagMapping]{checkTagMapping()}}, so corrupt channels are removed before any repair, orientation or downstream
 analysis sees them.
 }
 \details{
-\strong{Severity is graded from the measurement, not fixed by the check.} Each check computes a metric,
+\subsection{How severity is decided}{
+
+Severity is graded from the measurement, not fixed by the check. Each check computes a metric,
 and that metric is classified \code{"info"} / \code{"warning"} / \code{"error"} against the thresholds in
-\code{\link{integrityControl}}, named \verb{<check>.<severity>}. So the same check reports different grades
+\code{\link[=integrityControl]{integrityControl()}}, named \verb{<check>.<severity>}. So the same check reports different grades
 for different magnitudes: an accelerometer clipping on 1\% of samples is a \code{"warning"} worth a look,
 while one clipping on 99\% is an \code{"error"} - it has lost the dynamic range that orientation, dynamic
 acceleration and tail-beat detection all depend on. This is what separates a minor blemish from a
 compromised channel, which a per-check severity cannot do.
+}
 
-\strong{Not every check can be graded to \code{"error"}.} An automatic error verdict is only defensible when
-the metric is sharply bimodal - when a broken channel is orders of magnitude away from a healthy one.
-Calibrated on a 52-deployment whale-shark fleet (462 channels): the clipped fraction is bimodal, with
-the worst healthy channel at 1.05\% and the one faulty channel at 98.7\% (a 94-fold gap, nothing in
-between), and the static-acceleration magnitude likewise (worst healthy deviation 0.11 g, the faulty
-tag 3.10 g). Both therefore offer an error grade. The magnetometer field CV, by contrast, is continuous
-across the same fleet (0.155-0.460, no break), so \code{mag.plausibility} exposes a warning threshold only -
-any error cut-off would be false precision. \code{dead} and \code{duplication} are degenerate by definition (a
-constant or copied channel carries no information at all) and are always \code{"error"}.
+\subsection{Why some checks cannot report an error}{
 
-\strong{Classification is separate from action.} A grade describes the finding; \code{apply} and
+An automatic error verdict is defensible only where a broken channel is clearly separated from a
+healthy one, rather than sitting at one end of a continuum. Clipping and static-acceleration magnitude
+behave that way - faulty channels stand well apart from sound ones - so both offer an error grade.
+Magnetometer field variability does not: it varies continuously between deployments, so
+\code{mag.plausibility} exposes a warning threshold only, and any error cut-off would be false precision.
+\code{dead} and \code{duplication} are degenerate by definition - a constant or copied channel carries no
+information at all - and are always graded error.
+}
+
+\subsection{Classification is separate from action}{
+
+A grade describes the finding; \code{apply} and
 \code{apply.severity} decide what happens. Nothing is modified unless \code{apply = TRUE}, and findings at or
-above \code{apply.severity} then have their channels excluded. Error-severity findings are ALWAYS warned
+above \code{apply.severity} then have their channels excluded. Error-severity findings are always warned
 about, whether or not \code{apply} acted, so a compromised channel cannot pass through unmentioned.
-One exception, by design: \code{mag.break} describes the RECORD (one calibration cannot span it) rather
-than the trustworthiness of a channel, so \code{apply} never drops anything on its account at any
-\code{apply.severity} - the magnetometer is fine and the data before the break is fully usable.
 
-Four checks run by default (\code{duplication}, \code{dead}, \code{accel.scale}, \code{saturation}); the rest are opt-in via
-\code{checks}. Every threshold lives in \code{\link{integrityControl}}; the reported \code{metric} is noted in
-parentheses below.
+One exception, by design: \code{mag.break} describes the record - one calibration cannot span it - rather
+than the trustworthiness of a channel, so \code{apply} never drops anything on its account at any
+\code{apply.severity}. The magnetometer is sound, and the data before the break is fully usable.
+}
+
+\subsection{The checks}{
+
+Four run by default - \code{duplication}, \code{dead}, \code{accel.scale} and \code{saturation}; the rest are opt-in via
+\code{checks}. Every threshold lives in \code{\link[=integrityControl]{integrityControl()}}, and the metric each check reports is noted in
+parentheses.
 
 \strong{duplication} (error). A gyroscope or magnetometer triplet whose three axes are each a near-exact
 copy of the accelerometer (per-axis \code{|r| > duplication.error} on all three). Distinct sensor families cannot
@@ -158,7 +168,7 @@ fraction of samples (\code{> saturation.warning}, escalating to an error above \
 the signal is clipping against the sensor's dynamic-range rail,
 so the true values beyond it are lost. Typically a mis-set measurement range or an over-driven (e.g.
 mis-scaled) channel. Like every check here it covers the accelerometer, gyroscope and magnetometer
-only - depth and temperature are screened for physical-range faults by \code{\link{checkSensorQuality}}
+only - depth and temperature are screened for physical-range faults by \code{\link[=checkSensorQuality]{checkSensorQuality()}}
 instead, which is the right place for them (a depth channel resting at the surface is not clipping).
 (metric: the clipped fraction.)
 
@@ -175,12 +185,12 @@ single calibration cannot serve the whole record. Detection only; nothing is cor
 and the finding never excludes a channel. The message names the time of the break, so the record can
 be split, re-calibrated per segment, or the affected part excluded by hand.
 
-The metric is a rank SEPARATION, not a step size, and that distinction is what makes the check usable.
-A contaminated magnetometer's \code{|m|} varies with heading, so an animal that keeps turning swings it
-between levels for the whole deployment; any unbalanced swing then produces a large difference between
-the two halves' medians. Calibrated on a 52-deployment fleet, 13 deployments outranked the one known
-true positive on step size. What actually marks a break is that the level changes and \emph{does not
-come back}, so the metric is the Mann-Whitney probability of superiority between the two segments'
+The metric is a rank separation, not a step size, and that distinction is what makes the check usable.
+A contaminated magnetometer's field magnitude varies with heading, so an animal that keeps turning
+swings it between levels for the whole deployment, and any unbalanced swing produces a large
+difference between the two halves' medians - which is why step size alone flags far more deployments
+than have genuinely broken. What marks a break is that the level changes and \emph{does not come back}, so
+the metric is the Mann-Whitney probability of superiority between the two segments'
 window medians (1 = the levels never overlap, 0.5 = indistinguishable). Being rank-based it is
 unit-free and independent of the noise amplitude, and a repeatedly-oscillating record scores near 0.5
 however large its swings - the worst oscillator in the fleet scores 0.74, stable to within 0.01 across
@@ -191,9 +201,9 @@ Warning only: below the flagged group the metric runs continuously from 0.94 dow
 automatic error grade would be false precision - the same reasoning applied to \code{mag.plausibility}.
 
 Two limits are structural rather than incidental. Each side of a break must be at least 15\% of the
-record for it to count as persistent, so \strong{a break in the first or last 15\% cannot be seen}; and
-a record yielding fewer than 30 ten-minute windows (about 5 h) makes the check \strong{abstain} rather
-than guess - 13 of the 52 fleet deployments abstain on that rule. (metric: the separation, in
+record for it to count as persistent, so \strong{a break in the first or last 15\% cannot be seen}; and a
+record yielding fewer than 30 ten-minute windows - about 5 hours - makes the check \strong{abstain} rather
+than guess, which is common on short deployments. (metric: the separation, in
 [0.5, 1].)
 
 \strong{accel.scale} (warning / error). Checks whether the overall accelerometer magnitude is consistent with
@@ -211,28 +221,32 @@ axes in addition to this summary metric. (metric: the median static magnitude, g
 should have a near-zero median. A persistent offset that is both a large fraction of the rotational
 scale (\code{> gyro.bias.info}) and absolutely meaningful (against an internal floor) is a sensor bias.
 Gyroscope bias is not explicitly corrected. The default orientation algorithm in
-\code{\link{processTagData}} (\code{"tilt_compass"}) does not use the gyroscope, so gyroscope bias does
+\code{\link[=processTagData]{processTagData()}} (\code{"tilt_compass"}) does not use the gyroscope, so gyroscope bias does
 not affect it. The \code{"madgwick"} algorithm does use the gyroscope; small biases are largely absorbed
 by the accelerometer and magnetometer, but larger biases may affect orientation estimates and should be
 inspected before relying on derived movement metrics. (metric: the largest \code{|median|}, rad/s.)
 
 \strong{paddle.contamination} (warning). A magnetic paddle wheel spins with the animal's speed and
 induces a narrow-band peak in the magnetometer at its rotation frequency. The check scans the
-magnetometer spectrum for such a peak, but only ABOVE the tail-beat fundamental and its harmonics (a
-swimming animal's body oscillation modulates the magnetometer at ~0.2-0.5 Hz and would otherwise be
-flagged as a paddle) and BELOW Nyquist (to reject aliasing); see \code{\link{integrityControl}}. It
-fires only when the deployment is not already marked as carrying a paddle wheel - i.e. an UNDOCUMENTED
-paddle effect - and a hit is worth confirming against the spectrum panel. (metric: the peak prominence,
+magnetometer spectrum for such a peak, but only above the tail-beat fundamental and its harmonics - a
+swimming animal's body oscillation modulates the magnetometer at around 0.2-0.5 Hz and would otherwise
+be flagged as a paddle - and below the Nyquist frequency, to reject aliasing; see \code{\link[=integrityControl]{integrityControl()}}.
+It fires only where the deployment is not already recorded as carrying a paddle wheel, so a hit means
+an undocumented paddle effect, worth confirming against the spectrum panel. (metric: the peak prominence,
 peak / median band power.)
 
 \strong{dropout} (info). A channel missing (NA) for more than \code{dropout.info} of the deployment, so
 effectively absent. (metric: the missing fraction.)
+}
 
-\strong{Diagnostic report.} When \code{plot} or \code{plot.file} is set, the function draws an overview page
+\subsection{The diagnostic report}{
+
+When \code{plot} or \code{plot.file} is set, the function draws an overview page
 tabling every tag and the checks it triggered (sorted worst-first), then one page per flagged
 (warning/error) tag aggregating a diagnostic panel for each of that tag's findings - each panel with a
 coloured status border and a short interpretation note. Tags with only \code{info}-level findings appear in
 the overview but do not get their own page.
+}
 }
 \examples{
 \dontrun{
@@ -249,5 +263,5 @@ checkSensorIntegrity(regularized,
 }
 }
 \seealso{
-\link{checkSensorQuality}, \link{checkDeploymentMetadata}, \link{checkTagMapping}.
+\code{\link[=checkSensorQuality]{checkSensorQuality()}}, \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}, \code{\link[=checkTagMapping]{checkTagMapping()}}.
 }
