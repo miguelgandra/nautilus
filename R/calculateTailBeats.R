@@ -708,26 +708,34 @@ calculateTailBeats <- function(data,
         min.amplitude = min.amplitude, smooth.window = smooth.window, max.interp.gap = max.interp.gap,
         ridge.prominence = ridge.prominence,
         plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
-        draw.devices = draw_devices, lvl = lvl)
+        fs = fs_i, draw.devices = draw_devices, lvl = lvl)
     }
 
     # Cross-check against the second backend. The two are methodologically independent -- one works in
     # the time domain, one in the frequency domain -- so they fail on different signals, and where they
-    # agree that agreement is evidence. Runs on a copy: the backends write their columns into the table
-    # they are given.
+    # agree that agreement is evidence.
+    #
+    # The backends write their columns into the table they are given, so the cross-check cannot be handed
+    # the deployment itself: it would overwrite the primary's estimate. It used to receive a full copy,
+    # which on the largest records meant duplicating ~800 MB to read two columns from it. It now receives
+    # only the two columns either backend actually reads - the motion axis and the timestamps - which
+    # holds peak memory flat and costs nothing in accuracy: the vectors are the same objects, and `fs`
+    # comes from the driver, so nothing is re-derived from a table that no longer carries the metadata.
     if (length(methods) > 1L) {
+      alt_dt <- data.table::data.table(individual_data[[datetime.col]], individual_data[[axis]])
+      data.table::setnames(alt_dt, c(datetime.col, axis))
       # Each backend draws its own diagnostic panel when plotting is on -- the wavelet spectrogram comes
       # only from .runCWT, so under the default (peaks primary) it would otherwise never appear. The
       # secondary logs nothing (lvl = 0L) to avoid duplicating the per-step console block.
       alt <- if (methods[2] == "peaks")
-        .runPeaks(dt = data.table::copy(individual_data), animal_id = id, datetime.col = datetime.col,
+        .runPeaks(dt = alt_dt, animal_id = id, datetime.col = datetime.col,
                   motion.col = axis, fs = fs_i, min.freq = min.freq.Hz, max.freq = max.freq.Hz,
                   bandpass = bandpass.filter, filter.low = filter.low.freq, filter.high = filter.high.freq,
                   filter.order = filter.order, min.amplitude = min.amplitude,
                   smooth.window = smooth.window, min.periodicity = min.periodicity,
                   draw.devices = draw_devices, lvl = 0L)
       else
-        .runCWT(dt = data.table::copy(individual_data), animal_id = id, id.col = id.col,
+        .runCWT(dt = alt_dt, animal_id = id, id.col = id.col,
                 datetime.col = datetime.col, motion.col = axis, min.freq.Hz = min.freq.Hz,
                 max.freq.Hz = max.freq.Hz, bandpass.filter = bandpass.filter,
                 filter.low.freq = filter.low.freq, filter.high.freq = filter.high.freq,
@@ -735,7 +743,7 @@ calculateTailBeats <- function(data,
                 smooth.window = smooth.window, max.interp.gap = max.interp.gap,
                 ridge.prominence = ridge.prominence,
                 plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
-                draw.devices = draw_devices, lvl = 0L)
+                fs = fs_i, draw.devices = draw_devices, lvl = 0L)
       alt_edge <- attr(alt, "tb_ridge_edge", exact = TRUE)
       alt_unres <- attr(alt, "tb_unresolved", exact = TRUE)
       data.table::set(data_list[[i]], j = "tbf_hz_alt", value = alt$tbf_hz)
@@ -1097,9 +1105,12 @@ calculateTailBeats <- function(data,
 .runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col, ridge.prominence = 2,
                     min.freq.Hz, max.freq.Hz, bandpass.filter, filter.low.freq,
                     filter.high.freq, filter.order, min.amplitude, smooth.window, max.interp.gap,
-                    plot.wavelet, plot.diagnostic, draw.devices = integer(0), lvl = 1L) {
+                    plot.wavelet, plot.diagnostic, fs = NULL, draw.devices = integer(0), lvl = 1L) {
 
-  fs <- .tagFs(dt, datetime.col)
+  # `fs` is normally supplied by the driver, which has already resolved it from the deployment's
+  # metadata. It matters when this runs as the cross-check, where the input carries only the two columns
+  # the backend reads and so has no metadata to resolve it from.
+  if (is.null(fs)) fs <- .tagFs(dt, datetime.col)
   motion <- dt[[motion.col]]
 
   if (!any(is.finite(motion))) {

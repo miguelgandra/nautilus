@@ -116,10 +116,37 @@ test_that("freq_raw keeps the unmasked ridge, so band-placement QC survives the 
   expect_equal(r$freq[keep], r$freq_raw[keep])
 })
 
-test_that(".cwtScaleBackground medians away a single-scale peak but follows a slope", {
+test_that(".cwtScaleBackgroundAt medians away a single-scale peak but follows a slope", {
   # a spike on a flat background is removed; a monotone ramp is reproduced (so a slope is NOT a peak)
   LP <- matrix(0, 41, 3); LP[21, ] <- 10
-  expect_equal(max(.cwtScaleBackground(LP, 1:41, 21L)), 0)
+  expect_equal(max(.cwtScaleBackgroundAt(LP, 1:41, 21L, rep(21L, 3))), 0)
   ramp <- matrix(rep(seq_len(41), 3), 41, 3)
-  expect_equal(.cwtScaleBackground(ramp, 1:41, 21L)[21, 1], 21)
+  expect_equal(.cwtScaleBackgroundAt(ramp, 1:41, 21L, rep(21L, 3))[1], 21)
+})
+
+test_that(".cwtScaleBackgroundAt is identical to the full running median it replaces", {
+  # The optimisation is only legitimate if it reproduces runmed(endrule = "median") EXACTLY, including
+  # the reshaped rows at both ends, so this pins it against the reference at every row of the surface.
+  full <- function(LP, band, k) {
+    B <- LP[band, , drop = FALSE]
+    kk <- min(k, nrow(B) - 1L + (nrow(B) %% 2L)); if (kk %% 2L == 0L) kk <- kk - 1L
+    apply(B, 2L, stats::runmed, k = kk, endrule = "median")
+  }
+  set.seed(4)
+  for (nb in c(41L, 93L)) {
+    LP <- matrix(stats::rnorm(nb * 60) + rep(seq_len(nb) / 5, 60), nb, 60)   # noise on a slope
+    ref <- full(LP, seq_len(nb), 21L)
+    for (r in seq_len(nb)) {                       # every row, including both end zones
+      got <- .cwtScaleBackgroundAt(LP, seq_len(nb), 21L, rep(r, 60))
+      expect_identical(got, ref[r, ], label = sprintf("nb = %d, row = %d", nb, r))
+    }
+  }
+})
+
+test_that(".cwtScaleBackgroundAt handles a single column and a degenerate window", {
+  LP <- matrix(c(3, 1, 2, 9, 4), 5, 1)
+  expect_identical(.cwtScaleBackgroundAt(LP, 1:5, 3L, 3L),
+                   stats::runmed(LP[, 1], 3L, endrule = "median")[3])
+  # k below 3 disables the filter: the raw value is returned
+  expect_identical(.cwtScaleBackgroundAt(LP, 1:5, 1L, 4L), 9)
 })
