@@ -43,9 +43,10 @@ sea), \code{"bathymetry"} (a shaded depth relief painting the sea, with land dra
 path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
 \code{basemap = "bathymetry"} and \code{bathy.contours} compose, as relief plus isobaths, and share one download.}
 
-\item{coastline}{Which vector coastline to draw (used when \code{basemap = "land"}). A keyword selecting a
+\item{coastline}{Which vector coastline to draw over whichever canvas you chose - only
+\code{basemap = "none"} skips it. A keyword selecting a
 bundled source by resolution -- \code{"auto"} (default: the highest-resolution installed source,
-\verb{\pkg{mapdata}}'s \code{worldHires} if present, else the coarse \code{maps::world} with a one-time hint),
+\pkg{mapdata}'s \code{worldHires} if present, else the coarse \code{maps::world} with a one-time hint),
 \code{"high"} (force \code{worldHires}; errors if \pkg{mapdata} is absent), \code{"low"} (force \code{maps::world}),
 \code{"none"} -- OR a custom coastline: an \pkg{sf} object, a two-column lon/lat \code{data.frame}/\code{matrix}
 (NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
@@ -68,7 +69,8 @@ scale (\code{cex}) and the sequential ramp used for \code{color.by}. Default \co
 each map \emph{element}, which is a different thing from \code{theme$palette}, the qualitative series palette
 for telling categories apart. Recognised names: \code{fastgps}, \code{argos},
 \code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{sea.deep}, \code{land}, \code{land.border}, \code{bathymetry},
-\code{uncertainty}. (\code{sea}/\code{sea.deep} are the shallow/deep ends of the \code{basemap = "bathymetry"} ramp.)
+\code{uncertainty}, \code{start}, \code{end}. (\code{sea}/\code{sea.deep} are the shallow and deep ends of the
+\code{basemap = "bathymetry"} ramp; \code{start}/\code{end} are the track's first and last position markers.)
 Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
 their defaults. Default \code{NULL}.}
 

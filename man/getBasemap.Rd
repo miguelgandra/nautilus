@@ -18,8 +18,8 @@ getBasemap(
 \code{data} you would pass to \code{\link[=plotTracks]{plotTracks()}}.}
 
 \item{type}{Character. The basemap kind: \code{"satellite"} (imagery tiles, via \pkg{maptiles}) or
-\code{"bathymetry"} (a depth grid, via \pkg{marmap}). Both are returned ready to pass straight back as
-\verb{basemap =}.}
+\code{"bathymetry"} (a depth grid, via \pkg{marmap}). Either can be passed straight back to
+\code{\link[=plotTracks]{plotTracks()}} as \verb{basemap =}; only \code{"satellite"} is accepted by \code{\link[=filterLocations]{filterLocations()}}.}
 
 \item{control}{A \code{\link[=basemapControl]{basemapControl()}} object (provider + cache).}
 
@@ -38,9 +38,12 @@ figure is drawn. That is slow, it fails offline, and it makes the figure depend 
 still serving the same tiles - which is a poor foundation for a published map.
 
 This function performs the fetch once, for the geographic extent of your deployments, and hands back
-the raster. Save it with \code{saveRDS()} and pass it to \code{\link[=plotTracks]{plotTracks()}} or \code{\link[=filterLocations]{filterLocations()}} as
-\code{basemap}, and the map becomes reproducible and offline. It is the raster counterpart to supplying
-your own \code{coastline}.
+the raster. Save it with \code{saveRDS()} and pass it back as \code{basemap}, and the map becomes reproducible
+and offline. It is the raster counterpart to supplying your own \code{coastline}.
+
+\code{\link[=plotTracks]{plotTracks()}} takes either kind. \code{\link[=filterLocations]{filterLocations()}} takes imagery only, and rejects a bathymetry
+grid with an error: its diagnostic maps are for judging which fixes are plausible, not for
+presentation.
 }
 \details{
 The extent is the union of every deployment's surface fixes, dead-reckoned pseudo-track and

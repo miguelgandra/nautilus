@@ -23,7 +23,8 @@
 #' @param palette Qualitative palette for groups: a vector of colours, or the name of an
 #'   [grDevices::hcl.colors()] palette (e.g. `"viridis"`).
 #' @param sequential Continuous ramp (>= 2 colours) for a variable mapped to colour -- currently the
-#'   `color.by` trace in [plotDepthProfiles()]. The default spans blue to dark red through
+#'   `color.by` trace in [plotDepthProfiles()], the `color.by` track in [plotTracks()], and the
+#'   heatmaps in [plotTimeAtDepth()]. The default spans blue to dark red through
 #'   cyan, green, yellow and orange, which is what makes a temperature gradient legible at a glance
 #'   across a page of small multiples; a monochrome ramp collapses that variation into one hue. Note it
 #'   is chosen for discriminability rather than for monotonic lightness, so for a figure that must

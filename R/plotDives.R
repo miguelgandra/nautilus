@@ -313,8 +313,10 @@
 #' @param metrics Character. Columns to draw, one panel each. `NULL` (default) uses
 #'   `c("amplitude_m", "duration_s")`.
 #' @param labels Named character mapping a metric to its axis label, overriding the built-in ones.
-#' @param group.by Grouping for the deployments: a column name (resolved from the table or the tag
-#'   metadata), a named `id -> group` vector, or a two-column `data.frame`. `NULL` (default) draws one
+#' @param group.by Grouping for the deployments: the name of a column in the metrics table, a named
+#'   `id -> group` vector, or a two-column `data.frame`. A trait held only in the tag metadata, such as
+#'   species or sex, is not reachable from here - [diveMetrics()] returns a plain table - so pass it as
+#'   a vector or a `data.frame`. `NULL` (default) draws one
 #'   ungrouped block. Deployments the grouping does not cover are drawn in a trailing `(ungrouped)`
 #'   block rather than dropped - see Details.
 #' @param order.by How to order the deployment slots - one order, shared by every panel:

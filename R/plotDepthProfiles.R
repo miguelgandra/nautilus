@@ -37,8 +37,8 @@
 #'   night). Requires deployment coordinates in the metadata; panels without them are left unshaded. The
 #'   shading greys are fixed rather than taken from the theme's `day`/`night` colours: this panel carries
 #'   a colour-mapped trace across its whole area, so the background must stay neutral and pale or it
-#'   competes with (and, at night, swallows) the data. A Day / Twilight / Night key is drawn beside the
-#'   colour bar when a shared legend is shown.
+#'   competes with (and, at night, swallows) the data. A Day / Twilight / Night key is drawn beneath
+#'   the colour bar when a shared legend is shown.
 #' @param geom Character. How each dive trace is drawn: `"line"` (default) maps the colour onto a continuous
 #'   line that traces the dive shape (broken across recording gaps); `"points"` draws coloured samples only;
 #'   `"both"` overlays points on the line. A line reads most clearly for a smoothly-varying colour variable

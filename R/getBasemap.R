@@ -10,9 +10,12 @@
 #' still serving the same tiles - which is a poor foundation for a published map.
 #'
 #' This function performs the fetch once, for the geographic extent of your deployments, and hands back
-#' the raster. Save it with `saveRDS()` and pass it to [plotTracks()] or [filterLocations()] as
-#' `basemap`, and the map becomes reproducible and offline. It is the raster counterpart to supplying
-#' your own `coastline`.
+#' the raster. Save it with `saveRDS()` and pass it back as `basemap`, and the map becomes reproducible
+#' and offline. It is the raster counterpart to supplying your own `coastline`.
+#'
+#' [plotTracks()] takes either kind. [filterLocations()] takes imagery only, and rejects a bathymetry
+#' grid with an error: its diagnostic maps are for judging which fixes are plausible, not for
+#' presentation.
 #'
 #' @details The extent is the union of every deployment's surface fixes, dead-reckoned pseudo-track and
 #' deploy/pop-up anchors (with a small margin), exactly as [plotTracks()] frames its maps.
@@ -23,8 +26,8 @@
 #' @param data A `nautilus_tag`, a list of them, an aggregated data.frame, or `.rds` file paths - the same
 #'   `data` you would pass to [plotTracks()].
 #' @param type Character. The basemap kind: `"satellite"` (imagery tiles, via \pkg{maptiles}) or
-#'   `"bathymetry"` (a depth grid, via \pkg{marmap}). Both are returned ready to pass straight back as
-#'   `basemap =`.
+#'   `"bathymetry"` (a depth grid, via \pkg{marmap}). Either can be passed straight back to
+#'   [plotTracks()] as `basemap =`; only `"satellite"` is accepted by [filterLocations()].
 #' @param control A [basemapControl()] object (provider + cache).
 #' @param id.col,datetime.col Column names, matching [plotTracks()]. Defaults `"ID"`/`"datetime"`.
 #' @param verbose Logical/character verbosity, as elsewhere. Default `TRUE`.

@@ -175,3 +175,18 @@ test_that("the panel chrome the theme specifies is what actually gets painted", 
   expect_true("#123456" %in% fills)          # the panel really is painted the theme's colour
   expect_false("grey97" %in% fills)          # ...and not the literal it replaced
 })
+
+
+test_that("an explicit label for the column as it is actually named wins over the backend suffix", {
+  # .distAutoMetrics() selects tbf_hz_peaks / tbf_hz_wavelet, and the examples use those names, so a
+  # user's labels entry keyed on the real column name must not be discarded by the suffix strip
+  expect_identical(nautilus:::.distLabel("tbf_hz_peaks", c(tbf_hz_peaks = "My label")), "My label")
+  expect_identical(nautilus:::.distLabel("tbf_amplitude_wavelet", c(tbf_amplitude_wavelet = "Z")), "Z")
+
+  # the convenience path is untouched: a stem key still gets the backend appended
+  expect_identical(nautilus:::.distLabel("tbf_hz_peaks", c(tbf_hz = "Stem")), "Stem, peaks")
+  # and with no labels at all the built-in label is used, backend and all
+  expect_identical(nautilus:::.distLabel("tbf_hz_wavelet"), "Tail-beat frequency (Hz), wavelet")
+  # a non-tail-beat metric is unaffected
+  expect_identical(nautilus:::.distLabel("vedba", c(vedba = "Effort")), "Effort")
+})

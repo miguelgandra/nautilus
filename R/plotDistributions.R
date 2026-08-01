@@ -263,8 +263,11 @@ plotDistributions <- function(data,
 #' @keywords internal
 #' @noRd
 .distLabel <- function(metric, labels = NULL) {
-  # a backend suffix is stripped for the lookup and appended to the label, so tbf_hz_wavelet reads as
-  # "Tail-beat frequency (Hz), wavelet" rather than falling through to the raw column name
+  # an explicit label for the column as it is actually named wins outright: that is the key the
+  # examples use and the one .distAutoMetrics() produces, so stripping first would silently ignore it.
+  if (!is.null(labels) && metric %in% names(labels)) return(unname(labels[[metric]]))
+  # otherwise a backend suffix is stripped for the lookup and appended to the label, so tbf_hz_wavelet
+  # reads as "Tail-beat frequency (Hz), wavelet" rather than falling through to the raw column name
   backend <- sub("^tbf_(hz|amplitude)_", "", metric)
   if (!identical(backend, metric)) metric <- sub(paste0("_", backend, "$"), "", metric)
   else backend <- NA_character_

@@ -34,7 +34,8 @@ panel), or \code{"classic"} (greyscale, print-journal look).}
 \code{\link[grDevices:hcl.colors]{grDevices::hcl.colors()}} palette (e.g. \code{"viridis"}).}
 
 \item{sequential}{Continuous ramp (>= 2 colours) for a variable mapped to colour -- currently the
-\code{color.by} trace in \code{\link[=plotDepthProfiles]{plotDepthProfiles()}}. The default spans blue to dark red through
+\code{color.by} trace in \code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, the \code{color.by} track in \code{\link[=plotTracks]{plotTracks()}}, and the
+heatmaps in \code{\link[=plotTimeAtDepth]{plotTimeAtDepth()}}. The default spans blue to dark red through
 cyan, green, yellow and orange, which is what makes a temperature gradient legible at a glance
 across a page of small multiples; a monochrome ramp collapses that variation into one hue. Note it
 is chosen for discriminability rather than for monotonic lightness, so for a figure that must

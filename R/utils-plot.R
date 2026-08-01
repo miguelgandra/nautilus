@@ -180,10 +180,10 @@
 
 #' Resolve and validate the `basemap` canvas keyword.
 #'
-#' Phase 1 implements the vector canvases only: `"land"` (filled coastline + sea) and `"none"` (blank
-#' sea). The raster canvases (`"bathymetry"`, `"satellite"`) and a user-supplied raster are reserved and
-#' error cleanly, pointing at the vector features that ARE available. `choices` differs by function
-#' (`filterLocations` does not offer a bathymetry canvas).
+#' Resolves the vector canvases (`"land"`, `"none"`), the raster ones (`"bathymetry"`, `"satellite"`)
+#' and a user-supplied raster, all of which are live. The only aborts are a missing suggested package
+#' (marmap, maptiles) and a raster of the wrong class, each pointing at `getBasemap()`. `choices`
+#' differs by function - `filterLocations` does not offer a bathymetry canvas.
 #' @keywords internal
 #' @noRd
 .resolveBasemap <- function(basemap, choices) {

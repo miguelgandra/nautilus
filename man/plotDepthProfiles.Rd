@@ -52,8 +52,8 @@ each panel is scaled to its own maximum depth.}
 night). Requires deployment coordinates in the metadata; panels without them are left unshaded. The
 shading greys are fixed rather than taken from the theme's \code{day}/\code{night} colours: this panel carries
 a colour-mapped trace across its whole area, so the background must stay neutral and pale or it
-competes with (and, at night, swallows) the data. A Day / Twilight / Night key is drawn beside the
-colour bar when a shared legend is shown.}
+competes with (and, at night, swallows) the data. A Day / Twilight / Night key is drawn beneath
+the colour bar when a shared legend is shown.}
 
 \item{geom}{Character. How each dive trace is drawn: \code{"line"} (default) maps the colour onto a continuous
 line that traces the dive shape (broken across recording gaps); \code{"points"} draws coloured samples only;

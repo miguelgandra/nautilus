@@ -55,8 +55,10 @@ comparable across group facets (the comparison the faceting exists to support). 
 flatter than the others - at the cost of equal-length bars meaning different values. Depth and
 temperature always keep separate scales.}
 
-\item{coords}{For \code{diel}: a \code{c(lon, lat)}, a named \code{id -> c(lon,lat)} list, or a
-\code{data.frame(id, lon, lat)}. If \code{NULL}, longitude/latitude are read from the data or tag metadata.}
+\item{coords}{For \code{diel}, a fallback position: a \code{c(lon, lat)}, a named \code{id -> c(lon,lat)} list, or
+a \code{data.frame(id, lon, lat)}. It is consulted only where the data carries no usable \code{lon}/\code{lat}
+columns of its own, which take precedence; the tag metadata is the last resort. Supply it for
+deployments that never produced a position.}
 
 \item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object (or a list of overrides) controlling the visual style.}
 

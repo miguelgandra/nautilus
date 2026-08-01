@@ -61,9 +61,10 @@
 #'   `basemap = "bathymetry"` and `bathy.contours` compose, as relief plus isobaths, and share one download.
 #' @param basemap.control A [basemapControl()] object tuning the satellite fetch (tile
 #'   `provider`, `cache`). Used only when `basemap = "satellite"`; ignored for a pre-fetched raster.
-#' @param coastline Which vector coastline to draw (used when `basemap = "land"`). A keyword selecting a
+#' @param coastline Which vector coastline to draw over whichever canvas you chose - only
+#'   `basemap = "none"` skips it. A keyword selecting a
 #'   bundled source by resolution -- `"auto"` (default: the highest-resolution installed source,
-#'   `\pkg{mapdata}`'s `worldHires` if present, else the coarse `maps::world` with a one-time hint),
+#'   \pkg{mapdata}'s `worldHires` if present, else the coarse `maps::world` with a one-time hint),
 #'   `"high"` (force `worldHires`; errors if \pkg{mapdata} is absent), `"low"` (force `maps::world`),
 #'   `"none"` -- OR a custom coastline: an \pkg{sf} object, a two-column lon/lat `data.frame`/`matrix`
 #'   (NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
@@ -80,7 +81,8 @@
 #'   each map *element*, which is a different thing from `theme$palette`, the qualitative series palette
 #'   for telling categories apart. Recognised names: `fastgps`, `argos`,
 #'   `user`, `track`, `deploy`, `popup`, `sea`, `sea.deep`, `land`, `land.border`, `bathymetry`,
-#'   `uncertainty`. (`sea`/`sea.deep` are the shallow/deep ends of the `basemap = "bathymetry"` ramp.)
+#'   `uncertainty`, `start`, `end`. (`sea`/`sea.deep` are the shallow and deep ends of the
+#'   `basemap = "bathymetry"` ramp; `start`/`end` are the track's first and last position markers.)
 #'   Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
 #'   their defaults. Default `NULL`.
 #' @param max.points Integer. Per-track cap on the number of pseudo-track points actually drawn (the track
@@ -138,7 +140,7 @@ plotTracks <- function(data,
 
   if (!is.null(color.by)) .assert_choice(color.by, "color.by", c("depth", "speed"))
   .assert_flag(show.uncertainty, "show.uncertainty")
-  # canvas: "land"/"none"/"satellite"(+ a pre-fetched raster) are live; "bathymetry" is reserved
+  # canvas: "land", "none", "bathymetry", "satellite", or a pre-fetched raster passed straight in
   basemap.control <- .as_control(basemap.control, basemapControl, "nautilus_basemap", "basemap.control")
   bm <- .resolveBasemap(basemap, c("land", "bathymetry", "satellite", "none"))
   # bathymetry contour overlay: FALSE | TRUE (auto isobaths) | numeric depths (explicit isobaths)
@@ -563,9 +565,6 @@ plotTracks <- function(data,
   }, error = function(e) { .log_skip(lvl, "bathymetry unavailable: ", conditionMessage(e)); NULL })
 }
 
-# Draw bathymetry contours in lon/lat over the current panel (so they co-register with the data).
-#' @keywords internal
-#' @noRd
 #' Draw a shaded/coloured bathymetric relief as the panel canvas, from a marmap grid.
 #'
 #' The depth CANVAS, as opposed to `.drawBathy()`'s contour OVERLAY - the same grid serves both, so a
@@ -573,7 +572,8 @@ plotTracks <- function(data,
 #' only the sea is painted and the coastline draws filled land on top. `graphics::image()` takes lon/lat
 #' vectors with z as a `[lon, lat]` matrix - exactly marmap's own layout (and `.drawBathy`'s) - so the
 #' relief co-registers with the data without any transposition or flip.
-#' @param bathy A marmap `bathy` object. @param xlim,ylim Panel extent (lon/lat).
+#' @param bathy A marmap `bathy` object.
+#' @param xlim,ylim Panel extent (lon/lat).
 #' @param shallow,deep The two ends of the depth ramp (shallow water -> deep water).
 #' @keywords internal
 #' @noRd

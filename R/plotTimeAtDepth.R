@@ -48,8 +48,10 @@
 #'   `FALSE` lets each panel autoscale, which resolves detail in a group whose time budget is much
 #'   flatter than the others - at the cost of equal-length bars meaning different values. Depth and
 #'   temperature always keep separate scales.
-#' @param coords For `diel`: a `c(lon, lat)`, a named `id -> c(lon,lat)` list, or a
-#'   `data.frame(id, lon, lat)`. If `NULL`, longitude/latitude are read from the data or tag metadata.
+#' @param coords For `diel`, a fallback position: a `c(lon, lat)`, a named `id -> c(lon,lat)` list, or
+#'   a `data.frame(id, lon, lat)`. It is consulted only where the data carries no usable `lon`/`lat`
+#'   columns of its own, which take precedence; the tag metadata is the last resort. Supply it for
+#'   deployments that never produced a position.
 #' @param theme A [plotTheme()] object (or a list of overrides) controlling the visual style.
 #' @param plot Logical. Draw to the active device. Default `TRUE`.
 #' @param plot.file Character. Path to a PDF to draw into. Default `NULL`.
@@ -477,7 +479,6 @@ plotTimeAtDepth <- function(data,
 #' @noRd
 .tadTitle <- function(v) switch(v, depth = "time-at-depth", temp = "time-at-temperature", sprintf("time-at-%s", v))
 
-#' Spelled-out variable name for prose (console summary): "temp" is a column name, not a word.
 #' Seconds-since-epoch for a deployment's time column, or abort naming the column.
 #'
 #' The bin weights are elapsed SECONDS. `as.numeric()` was applied blind, so a Date column (days) came
@@ -506,6 +507,7 @@ plotTimeAtDepth <- function(data,
 #' @noRd
 .tadCap1 <- function(s) { substr(s, 1, 1) <- toupper(substr(s, 1, 1)); s }
 
+#' Spelled-out variable name for prose (console summary): "temp" is a column name, not a word.
 #' @keywords internal
 #' @noRd
 .tadVarName <- function(v) switch(v, depth = "depth", temp = "temperature", v)
