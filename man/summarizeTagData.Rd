@@ -16,31 +16,35 @@ summarizeTagData(
 \arguments{
 \item{data}{Processed deployments, in any of the forms used across the pipeline: a list of datasets
 (one per individual), a single aggregated data.table/data.frame with an \code{ID} column, or a character
-vector of \code{.rds} file paths (loaded lazily, one per deployment). The output of \link{processTagData}
-(optionally after \link{calculateTailBeats}) is expected.}
+vector of \code{.rds} file paths (loaded lazily, one per deployment). The output of \code{\link[=processTagData]{processTagData()}}
+(optionally after \code{\link[=calculateTailBeats]{calculateTailBeats()}}) is expected.}
 
-\item{extra.metadata}{Optional data frame of EXTERNAL per-animal covariates to attach (e.g. \code{sex},
+\item{extra.metadata}{Optional data frame of external per-animal covariates to attach (e.g. \code{sex},
 \code{size}). Must contain an \code{ID} column. Multiple rows per ID are collapsed (distinct values joined
 by "/"). Fields already captured in the tag metadata (tag model/type, attachment site, sampling
 rate) are filled automatically and need not be provided here. This is also the route for any
-external per-deployment metric, e.g. total video duration from \link{getVideoMetadata}:
+external per-deployment metric, e.g. total video duration from \code{\link[=getVideoMetadata]{getVideoMetadata()}}:
 \verb{v <- aggregate(duration ~ ID, getVideoMetadata(...), sum); v$duration <- v$duration / 3600} and
 pass \code{v} (renamed) as a covariate. Default \code{NULL}.}
 
-\item{deployments}{Optional \code{nautilus_deployments} object from \link{checkDeploymentMetadata}. When
+\item{deployments}{Optional \code{nautilus_deployments} object from \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}. When
 supplied, the summary is completed into the full study roster: every deployment in \code{deployments}
 gets a row, and a \code{status} column marks each as \code{"included"} (processed data present, full metrics)
 or \code{"excluded"} (in the roster but absent from \code{data} - NA metrics, identity filled from the
-roster). The reason for exclusion is not inferred here; see \link{issues}. Default \code{NULL}.}
+roster). The reason for exclusion is not inferred here; see \code{\link[=issues]{issues()}}. Default \code{NULL}. Supply it
+when reporting a study, so the table accounts for every animal tagged rather than only those whose
+data survived.}
 
-\item{error.stat}{Error statistic for the display-only population row: \code{"sd"} (standard deviation,
-default) or \code{"se"} (standard error).}
+\item{error.stat}{Which error statistic the display-only population row shows: \code{"sd"} (standard
+deviation, the default) describes the spread across deployments, while \code{"se"} (standard error)
+describes how well their mean is pinned down. They answer different questions, and the first is
+usually what a reader of a cohort table wants.}
 
 \item{tbf.method}{Which tail-beat backend to summarise, e.g. \code{"wavelet"}. \code{NULL} (default) resolves it
 per deployment from the data -- whichever \verb{tbf_hz_*} columns carry values, with the package's
 documented order (\code{peaks}, then \code{wavelet}) breaking a tie. The backend actually used is reported as
 \code{tbf_method}, so a cohort pooled from deployments that ran different backends stays visible rather
-than silently blended. See \code{\link{tailBeatColumn}}.}
+than silently blended. See \code{\link[=tailBeatColumn]{tailBeatColumn()}}.}
 
 \item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
 \code{2}/"detailed" (default): additionally reports per-metric coverage across the processed deployments
@@ -53,11 +57,11 @@ A \code{nautilus_summary} data frame, one row per deployment, with (where availa
 \item \strong{record_start}, \strong{record_end}, \strong{record_duration_h}, \strong{n_samples}: the
 recorded data span - the true on-animal window once the data have been deployment-filtered.
 \item \strong{sampling_hz}: original sampling rate (Hz).
-\item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (°C).
+\item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (degrees Celsius).
 \item \strong{vedba_mean}, \strong{odba_mean} (g): mean activity (dynamic body acceleration).
 \item \strong{tbf_method}: which tail-beat backend \code{tbf_mean} came from (\code{"peaks"}/\code{"wavelet"}).
 \item \strong{tbf_mean} (Hz): mean tail-beat frequency over beating samples; \strong{pct_swimming}
-(\%): share of time actively swimming - both present only after \link{calculateTailBeats}.
+(\%): share of time actively swimming - both present only after \code{\link[=calculateTailBeats]{calculateTailBeats()}}.
 \item \strong{paddle_wheel} (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).
 \item \strong{speed_mean}, \strong{speed_max} (m/s): paddle-wheel speed, when available.
 \item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).
@@ -66,36 +70,45 @@ recorded data span - the true on-animal window once the data have been deploymen
 \item \strong{n_dives}; \strong{dive_duration_median_min}, \strong{dive_duration_max_min} (min);
 \strong{dive_depth_median_m}, \strong{dive_depth_max_m} (m, per-dive maximum depths);
 \strong{dives_incomplete}, \strong{dives_truncated}, \strong{dives_gapped}: the dive block -
-present only for deployments annotated by \link{detectDives}, and computed with the same reducer
-\link{diveMetrics} uses (see Details).
+present only for deployments annotated by \code{\link[=detectDives]{detectDives()}}, and computed with the same reducer
+\code{\link[=diveMetrics]{diveMetrics()}} uses (see Details).
 }
 }
 \description{
-Builds a tidy, one-row-per-deployment summary of processed archival-tag data: the recording window,
-key acquisition metadata (sampling rate, tag model), and headline environmental and kinematic metrics
-(depth, temperature, activity, tail-beats, speed, vertical speed).
-Descriptive fields are read directly from the consolidated tag metadata, so they do not need to be
-supplied again; an optional \code{extra.metadata} table can attach external per-animal covariates (sex,
-size, ...) that are not part of the tag metadata.
+Every study built on archival tags needs the same table: one row per deployment, giving how long the
+tag recorded, at what rate, and the headline figures for depth, temperature, activity and swimming.
+Assembling it by hand across a fleet is tedious and easy to get subtly wrong, particularly where
+deployments differ in which processing steps they have been through.
+
+This function builds that table. The descriptive fields come from each tag's own metadata, so they
+need not be supplied again, and an optional \code{extra.metadata} table attaches per-animal covariates
+such as sex or size that the tag never recorded.
 
 The returned object is a \strong{typed} data frame (numeric columns stay numeric, datetimes stay
 POSIXct), meant for downstream analysis. Its \code{print} method renders a formatted table and, for more
-than one deployment, appends a population \verb{mean ± error} row for display only. To export that same
+than one deployment, appends a population \verb{mean +/- error} row for display only. To export that same
 formatted table (for a report or paper), call \code{format()} on the result and write it out, e.g.
 \code{write.csv(format(summary), "summary.csv", row.names = FALSE)}.
 }
 \details{
-\strong{The dive block.} When the data carry a \code{dive_id} column, the summary gains a per-deployment
-dive block. Its numbers are not recomputed here: the deployment is reduced by the very engine behind
-\link{diveMetrics}, so a dive count or median duration quoted from the summary is by construction the
-one the per-dive table gives - at the canonical \code{datetime} / \code{depth} columns, which is what the
-pipeline produces and what this block requires to be present. Note that the printed cohort line
-reports a median of per-deployment medians, not a pooled median over all dives; the per-deployment
-columns are exact, and a pooled figure is one \code{\link{diveMetrics}} call away. \code{dives_incomplete} counts the dives whose extent was set by the record
-rather than by the animal, split into \code{dives_truncated} (the tag started or stopped mid-dive) and
-\code{dives_gapped} (an interruption in time, or a depth channel that went dark, bounds the dive); a dive
-can be both. Deployments that have not been through \link{detectDives} simply have no dive columns,
-and in a mixed cohort they come back \code{NA}, as for any absent metric.
+\subsection{The dive block}{
+
+Where the data carry a \code{dive_id} column, the summary gains a per-deployment dive block. Its numbers
+are not recomputed here: the deployment is reduced by the same engine that sits behind
+\code{\link[=diveMetrics]{diveMetrics()}}, so a dive count or median duration quoted from the summary is by construction the
+one the per-dive table gives. It reads the canonical \code{datetime} and \code{depth} columns, which is what
+the pipeline produces and what this block requires.
+
+One figure is not quite what it appears: the printed cohort line reports a median of per-deployment
+medians, not a pooled median over every dive. The per-deployment columns are exact, and a pooled
+figure is one \code{\link[=diveMetrics]{diveMetrics()}} call away.
+
+\code{dives_incomplete} counts the dives whose extent was set by the record rather than by the animal,
+split into \code{dives_truncated}, where the tag started or stopped mid-dive, and \code{dives_gapped}, where
+an interruption in time or a depth channel that went dark bounds the dive. A dive can be both.
+Deployments that have not been through \code{\link[=detectDives]{detectDives()}} simply have no dive columns, and in a mixed
+cohort they come back \code{NA}, as for any absent metric.
+}
 }
 \examples{
 \dontrun{
@@ -110,5 +123,5 @@ summarizeTagData(list.files("./tailbeats", full.names = TRUE),
 }
 }
 \seealso{
-\link{processTagData}, \link{filterDeploymentData}, \link{detectDives}, \link{diveMetrics}.
+\code{\link[=processTagData]{processTagData()}}, \code{\link[=filterDeploymentData]{filterDeploymentData()}}, \code{\link[=detectDives]{detectDives()}}, \code{\link[=diveMetrics]{diveMetrics()}}.
 }

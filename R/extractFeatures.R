@@ -4,27 +4,45 @@
 
 #' Extract windowed features from sensor data
 #'
-#' Summarises selected variables over rolling time windows, producing one column per
-#' variable-and-metric pair - the feature matrix used for behavioural classification and machine
-#' learning. Windows either slide sample by sample (retaining the input's temporal resolution) or
-#' tile the record without overlap (`aggregate = TRUE`).
+#' @description
+#' A classifier cannot learn a behaviour from one sample. What distinguishes a burst of feeding from
+#' steady swimming is not the acceleration at any instant but its character over a few seconds - how
+#' variable it is, how fast it changes, how directed the animal's heading stays.
+#'
+#' This function turns the sample-by-sample record into that description: it summarises the variables
+#' you choose over rolling time windows, producing one column per variable-and-metric pair. The result
+#' is the feature matrix a behavioural classifier is trained on, with the labels from [annotateData()]
+#' supplying the response.
+#'
+#' Windows either slide sample by sample, keeping the input's temporal resolution, or tile the record
+#' without overlap.
 #'
 #' @param data A list of tables/data frames (one per individual), a single aggregated data table/data frame,
 #' or a character vector of file paths to RDS files containing sensor data.
-#' @param variables (Optional) A character vector of column names from `data` for which to calculate metrics.
-#' If `parameter.grid` is supplied, this argument is ignored.
-#' @param metrics (Optional) A character vector specifying the metrics to calculate.
-#' @param parameter.grid (Optional) A data frame with columns: `variable`, `metric`, and optionally `window_seconds`.
-#' If `window_seconds` is not provided, uses the global `window.size` parameter.
-#' @param enhanced.features Logical. If TRUE, includes complex ecological features. Default FALSE.
-#' @param id.col A character string specifying the column containing individual IDs.
-#' @param datetime.col A character string specifying the column in `data` containing datetime information.
-#' @param window.size An integer specifying the default size of the sliding or aggregation window, in seconds.
-#' @param aggregate Logical. If TRUE, uses non-overlapping windows for initial feature extraction.
+#' @param variables Which columns to summarise. Every metric in `metrics` is computed for every
+#'   variable named here, so the two together define a full grid; use `parameter.grid` instead when you
+#'   want particular pairings. Ignored when `parameter.grid` is supplied.
+#' @param metrics Which summaries to compute over each window. The available metrics differ between
+#'   linear and circular variables, listed below.
+#' @param parameter.grid An explicit table of `variable` and `metric` pairs, and optionally a
+#'   `window_seconds` per row. Use it in place of `variables` and `metrics` when the full grid would
+#'   be wasteful, or when different variables want different window lengths - a tail beat and a dive
+#'   are not described on the same timescale. Rows without `window_seconds` use `window.size`.
+#' @param enhanced.features Whether to add the composite ecological descriptors listed below (default
+#'   `FALSE`; requires the \pkg{zoo} package). They are more interpretable than raw moments but most
+#'   apply to one variable only, and one of them can cost every row of a short deployment.
+#' @param id.col Which column identifies the animal (default `"ID"`).
+#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
+#' @param window.size The default window length, in seconds. Choose it from the timescale of the
+#'   behaviour you are trying to separate: too short and the summary is dominated by noise, too long
+#'   and two different behaviours are averaged into one row.
+#' @param aggregate Whether to tile the record into non-overlapping windows (`TRUE`) rather than
+#'   sliding one sample at a time. Tiling gives far fewer rows, and rows that are statistically
+#'   independent of each other - which matters if you intend to cross-validate.
 #' @param downsample.to Target output rate in Hz (e.g. `1` for one feature row per second), or `NULL`
-#'   (default) to leave the feature rows at their native rate. This is a FREQUENCY, matching
-#'   \link{processTagData}: the row interval is `1/downsample.to` seconds. Feature columns are
-#'   aggregated within each output bin by arithmetic mean.
+#'   (default) to leave the feature rows at their native rate. It is a frequency, matching
+#'   [processTagData()], so the row interval is `1/downsample.to` seconds. Feature columns are
+#'   averaged within each output bin.
 #' @param response.col (Optional) A character string specifying the column containing response labels.
 #' @param circular.variables Character vector specifying variables that should be treated as circular.
 #' @param response.aggregation Method to aggregate `response.col`: "majority" or "any".
@@ -44,89 +62,146 @@
 #'   bar over the feature grid and per-deployment diagnostics). Defaults to `"normal"`.
 #'
 #' @details
-#' \strong{Windows.} `window.size` is a duration in SECONDS, converted per deployment to a whole number
-#' of samples using that deployment's own sampling rate - so the same call gives comparable features
-#' across records sampled at different rates, but the number of samples per window (and hence the
-#' variance of every metric) differs between them. Sliding windows are CENTRED, so roughly half a window
-#' at each end of a record has no complete span and yields `NA`. Those rows are then removed (see
-#' \emph{Rows}), which means the leading and trailing half-window of every deployment is systematically
-#' absent from the output. With `aggregate = TRUE` the record is tiled into non-overlapping windows
-#' instead, and each output row is timestamped at the START of its window.
+#' ## Windows
 #'
-#' \strong{Which metrics apply to which variables.} Variables named in `circular.variables` are angles
-#' in degrees and are summarised with circular statistics; everything else is treated linearly. The two
-#' sets are NOT interchangeable, and requesting a linear-only metric for a circular variable is an
+#' `window.size` is a duration in seconds, converted per deployment to a whole number of samples from
+#' that deployment's own sampling rate. The same call therefore gives comparable features across
+#' records sampled at different rates - but the number of samples per window, and hence the variance
+#' of every metric, differs between them.
+#'
+#' Sliding windows are centred, so roughly half a window at each end of a record has no complete span
+#' and yields `NA`. Those rows are then removed, described below, which means the leading and trailing
+#' half-window of every deployment is systematically absent from the output. With `aggregate = TRUE`
+#' the record is tiled instead, and each output row is timestamped at the start of its window.
+#'
+#' ## Which metrics apply to which variables
+#'
+#' Variables named in `circular.variables` are angles in degrees and are summarised with circular
+#' statistics; everything else is treated linearly. The two sets are not interchangeable - the mean of
+#' 350 and 10 degrees is 0, not 180 - so requesting a linear-only metric for a circular variable is an
 #' error rather than a silent miscalculation:
 #' \itemize{
-#'   \item \strong{linear}: `mean`, `median`, `sd`, `range`, `min`, `max`, `iqr`, `mad`, `sum`, `rate`,
+#'   \item **linear**: `mean`, `median`, `sd`, `range`, `min`, `max`, `iqr`, `mad`, `sum`, `rate`,
 #'         `energy`, `skewness`, `kurtosis`, `entropy`
-#'   \item \strong{circular}: `mean`, `median`, `sd`, `range`, `iqr`, `mrl`, `rate`
+#'   \item **circular**: `mean`, `median`, `sd`, `range`, `iqr`, `mrl`, `rate`
 #' }
 #' A circular `mean` or `median` reports an absolute direction and is therefore affected by whether the
 #' heading is referenced to magnetic or geographic north; the remaining circular metrics are built from
-#' angle differences and are unaffected. See \code{\link{processTagData}} for that distinction.
+#' angle differences and are unaffected. See [processTagData()] for that distinction.
 #'
-#' \strong{Output schema.} One row per retained window and one column per grid row, named
-#' `<variable>_<metric>` (for example `depth_mean`, `heading_mrl`). The identifier and datetime columns
-#' come first. When `parameter.grid` supplies per-row `window_seconds`, the window is appended to the
-#' name so that the same metric at several scales stays distinguishable.
+#' ## Output schema
 #'
-#' \strong{Rows.} Any row still carrying an `NA` in any feature column is DROPPED before the table is
-#' returned. This keeps the matrix usable by learners that cannot accept missing values, but it is not a
-#' neutral operation: the loss is concentrated at the record edges (above) and at any gap in the input,
-#' so it is systematic rather than random. The number of rows lost is reported per deployment and
+#' One row per retained window and one column per grid row, with the identifier and datetime columns
+#' first. A column is named `<variable>_<metric>` - `depth_mean`, `heading_mrl` - except where the
+#' metric already carries its variable's name, in which case the repetition is stripped: the enhanced
+#' metrics listed below give their exact column names for that reason.
+#'
+#' A window is appended to the name only where that grid row's `window_seconds` **differs from**
+#' `window.size`, so that the same metric at several scales stays distinguishable. A row whose
+#' `window_seconds` happens to equal `window.size` is not suffixed, even though the grid named it
+#' explicitly - so build expected column names from that rule rather than from the presence of a
+#' `window_seconds` column.
+#'
+#' ## Which rows survive
+#'
+#' Any row still carrying an `NA` in any feature column is dropped before the table is returned. That
+#' keeps the matrix usable by learners which cannot accept missing values, but it is not a neutral
+#' operation: the loss is concentrated at the record edges, as above, and at any gap in the input, so
+#' it is systematic rather than random. The number of rows lost is reported per deployment and
 #' summarised in a warning. A deployment shorter than the widest requested window loses every row.
 #'
-#' \strong{Surface substitution.} Where `depth == 0`, the distribution-shape metrics are replaced with
-#' their neutral values - `skewness = 0`, `kurtosis = 3`, `entropy = 0` - rather than left as the
-#' undefined results a constant or near-constant signal produces. This is a deliberate assumption
-#' (a stationary tag at the surface is not a distribution worth describing), not a computation.
+#' ## Surface substitution
 #'
-#' \strong{Enhanced features} (`enhanced.features = TRUE`, requires the \pkg{zoo} package). These are
-#' composite descriptors rather than standard summary statistics, and most are specific to a variable:
-#' \itemize{
-#'   \item `net_heading_change` - absolute angular difference between the window's leading and lagging
-#'         halves (degrees). Heading only.
-#'   \item `cumulative_heading_change` - sum of absolute wrap-corrected step changes (degrees). Heading only.
-#'   \item `circular_variance_heading` - `1 - R`, where `R` is the mean resultant length (0 = perfectly
-#'         directed, 1 = uniformly scattered). Heading only.
-#'   \item `turning_rate_variability` - coefficient of variation of the absolute turning rate. Heading only.
-#'   \item `circling_behavior` - net rotation accumulated over the window (degrees); large values indicate
-#'         sustained circling. Heading only.
-#'   \item `uturn_flag` - 1 where the heading reverses by more than 120 degrees within the window, else 0.
-#'         Heading only. The 120-degree cut-off is fixed, not a parameter.
-#'   \item `heading_autocorr_avg` - mean autocorrelation over lags 1-5 of the UNWRAPPED heading, so the
-#'         result does not depend on the animal's absolute bearing. Heading only.
-#'   \item `oscillation_regularity` - coefficient of variation of the interval between peaks within the
-#'         window; low values indicate metronomic oscillation. \strong{Requires at least three peaks
-#'         inside a single window}: if the window is shorter than about three cycles of the signal the
-#'         result is `NA` throughout, and the deployment can lose every row.
-#'   \item `movement_jerk` - windowed RMS of the input's first difference (its jerk when the input is an
-#'         acceleration channel). Distinct from the rotation-invariant `jerk` channel produced by
-#'         \code{\link{processTagData}}, which is computed at native rate before downsampling.
-#'   \item `movement_smoothness` - windowed RMS of the input's SECOND difference. Note the sense: a
-#'         HIGHER value means a LESS smooth signal.
-#'   \item `movement_predictability` - rolling coefficient of variation (`sd / |mean|`). Note the sense:
-#'         a HIGHER value means MORE variable, i.e. LESS predictable.
-#'   \item `movement_consistency` - rolling coefficient of variation of the rolling mean.
-#'   \item `posture_stability` - `1 / (1 + rolling sd)` of the supplied posture variable; approaches 1
-#'         for a steadily-held posture.
-#'   \item `activity_index` - summed rate of change across the supplied activity variable.
-#'   \item `rolling_autocorrelation` - lag-1 autocorrelation within the window.
-#'   \item `zero_crossing_rate` - proportion of consecutive samples that change sign.
-#'   \item `depth_change_rate`, `depth_change_consistency` - mean absolute rate of depth change, and its
-#'         coefficient of variation. Depth only.
+#' Where `depth == 0`, the distribution-shape metrics are replaced with their neutral values -
+#' `skewness = 0`, `kurtosis = 3`, `entropy = 0` - rather than left as the undefined results a
+#' constant or near-constant signal produces. This is a deliberate assumption, that a stationary tag
+#' at the surface is not a distribution worth describing, and not a computation.
+#'
+#' It reaches only the columns named exactly `depth_<metric>` and `vertical_speed_<metric>`. A
+#' distribution-shape metric on any other variable is left undefined, and so is one on depth itself
+#' if the grid gave that row a non-default window, since the column is then named with a window
+#' suffix. Because undefined values are dropped with their rows, that can cost a surfaced deployment
+#' every row.
+#'
+#' ## Enhanced features
+#'
+#' With `enhanced.features = TRUE`, which requires the \pkg{zoo} package. These are composite
+#' descriptors rather than standard summary statistics, and most apply to one variable only.
+#'
+#' Two of them, `posture_stability` and `activity_index`, are unusual: the variable you pair them with
+#' in the grid is a **sentinel name, not an input**. Name them against a variable called exactly
+#' `posture` and `activity` respectively - a column of that name must exist, or the run aborts - but the
+#' values in that column are never read. Both descriptors are computed from the orientation channels
+#' instead, as noted below.
+#'
+#' The output column names are given here because several differ from the metric name: where a metric
+#' already carries its variable, the redundancy is stripped, so `net_heading_change` on `heading`
+#' becomes `heading_net_change` rather than `heading_net_heading_change`.
+#'
+#' \describe{
+#'   \item{`net_heading_change` -> `heading_net_change`}{Absolute angular difference between the
+#'     window's leading and lagging halves, in degrees. Heading only.}
+#'   \item{`cumulative_heading_change` -> `heading_cumulative_change`}{Sum of absolute wrap-corrected
+#'     step changes, in degrees. Heading only.}
+#'   \item{`circular_variance_heading` -> `heading_circular_variance`}{`1 - R`, where `R` is the mean
+#'     resultant length: 0 for a perfectly held course, 1 for uniformly scattered headings. Heading
+#'     only.}
+#'   \item{`turning_rate_variability` -> `heading_turning_variability`}{Coefficient of variation of the
+#'     absolute turning rate. Heading only.}
+#'   \item{`circling_behavior` -> `heading_circling`}{Total absolute heading change divided by the net
+#'     change over the window, as `total / (net + 1)`. It is a dimensionless ratio, not an angle, and it
+#'     is **large when the net rotation is small** - which is the point: an animal that turns a great
+#'     deal while ending up where it started is circling. A straight transit scores near 1. Heading
+#'     only, and note that the numerator is not wrap-corrected, so each 360-degree crossing inside a
+#'     window adds to it.}
+#'   \item{`uturn_flag` -> `heading_uturn`}{1 where the heading reverses by more than 120 degrees within
+#'     the window, else 0. Heading only. The cut-off is fixed, not a parameter.}
+#'   \item{`heading_autocorr_avg` -> `heading_autocorr_avg`}{Mean autocorrelation over lags 1 to 5 of
+#'     the *unwrapped* heading, so the result does not depend on the animal's absolute bearing. Heading
+#'     only.}
+#'   \item{`oscillation_regularity`}{Coefficient of variation of the interval between peaks within the
+#'     window; low values indicate metronomic oscillation. **Requires at least three peaks inside a
+#'     single window**: where the window is shorter than about three cycles of the signal the result is
+#'     `NA` throughout, and the deployment can lose every row.}
+#'   \item{`movement_jerk`}{Windowed RMS of the input's first difference - its jerk, when the input is
+#'     an acceleration channel. Distinct from the rotation-invariant `jerk` channel [processTagData()]
+#'     produces, which is computed at native rate before any downsampling.}
+#'   \item{`movement_smoothness`}{Windowed RMS of the input's *second* difference. Note the sense: a
+#'     higher value means a *less* smooth signal.}
+#'   \item{`movement_predictability`}{Coefficient of variation of the *rolling mean* series - that is,
+#'     of the smoothed signal, not of the raw samples in the window. Note the sense: a higher value
+#'     means *more* variable, and so *less* predictable.}
+#'   \item{`movement_consistency`}{Coefficient of variation of the *rolling standard deviation* series.
+#'     It asks whether the signal's variability is itself steady, which is a different question from
+#'     `movement_predictability` above; the two take different inputs.}
+#'   \item{`posture_stability` -> `posture_stability`}{`1 / (1 + rolling sd(pitch) + rolling sd(roll))`,
+#'     approaching 1 for a steadily held posture. Requires `pitch` and `roll` columns. Pair it with the
+#'     sentinel variable `posture`, whose own values are ignored.}
+#'   \item{`activity_index` -> `activity_index`}{Rolling mean of the summed absolute rates of change of
+#'     `pitch`, `roll` and heading, the last wrap-corrected. Requires all three columns. Pair it with
+#'     the sentinel variable `activity`, whose own values are ignored.}
+#'   \item{`rolling_autocorrelation`}{Lag-1 autocorrelation within the window.}
+#'   \item{`zero_crossing_rate`}{Proportion of consecutive samples that cross the window's own **mean**,
+#'     not zero. That distinction matters, because the natural inputs here - VeDBA, ODBA, depth - are
+#'     non-negative and would score exactly 0 under a true zero-crossing count.}
+#'   \item{`depth_change_rate` -> `depth_change_rate`}{Absolute first difference of depth,
+#'     **per sample**. Unlike every other feature here it is not windowed and not divided by the sample
+#'     interval, so its magnitude depends on the sampling rate and is not comparable between records
+#'     sampled differently. Depth only.}
+#'   \item{`depth_change_consistency` -> `depth_change_consistency`}{Coefficient of variation of that
+#'     rate over the window. Depth only.}
 #' }
+#'
 #' The `movement_smoothness` and `movement_predictability` names describe the inverse of what they
 #' measure; they are kept for compatibility and the sense is stated above rather than silently assumed.
 #'
 #' @return If `return.data = TRUE`, a named list with one `data.table` per deployment: the identifier
 #'   and datetime columns followed by one `<variable>_<metric>` column per grid row, with rows carrying
-#'   any `NA` removed (see \emph{Rows} in Details). Each table carries an `extractFeatures` entry in its
+#'   any `NA` removed (see *Rows* in Details). Each table carries an `extractFeatures` entry in its
 #'   processing history recording the grid, window and row count. If `return.data = FALSE`, a character
 #'   vector of the written `.rds` file paths instead.
-#' @seealso \code{\link{processTagData}} for the derived channels most of these features summarise,
-#'   \code{\link{detectDives}} and \code{\link{diveMetrics}} for dive-resolved descriptors.
+#' @seealso [processTagData()] for the derived channels most of these features summarise,
+#'   [detectDives()] and [diveMetrics()] for dive-resolved descriptors.
 #' @examples
 #' # Minimal single deployment: one numeric sensor column sampled at 1 Hz. Pass a
 #' # named list of per-individual tables (a bare data.frame is read as columns).
