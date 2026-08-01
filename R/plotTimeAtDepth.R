@@ -563,9 +563,12 @@ plotTimeAtDepth <- function(data,
   }
   lay <- .tadPanelGrid(n_var, n_grp)
   # data region grows with bins; chrome (axes + panel titles) is roughly constant per row
-  data_in <- min(max(2.30, 0.135 * nb_max), 4.5)
-  row_in  <- data_in + 1.30
-  list(width  = max(1.1 + 3.4 * lay$nc, banner_in) * s,
+  # The data region is what the reader looks at, so it gets the growth: ~30% taller bars and a wider
+  # panel, with the per-row chrome allowance trimmed so the figure itself grows by less than the panel
+  # does and the layout does not turn spindly.
+  data_in <- min(max(2.99, 0.176 * nb_max), 5.85)
+  row_in  <- data_in + 1.18
+  list(width  = max(1.1 + 3.6 * lay$nc, banner_in) * s,
        height = (0.9 + row_in * lay$nr) * s)
 }
 
@@ -646,7 +649,7 @@ plotTimeAtDepth <- function(data,
     key <- graphics::legend(0, 0, c("Night", "Day"), fill = c(theme$night, theme$day), horiz = TRUE,
                             bty = "n", cex = 1.02 * theme$cex, plot = FALSE)
     graphics::legend(max(0.5, 0.985 - key$rect$w), 0.94, c("Night", "Day"), fill = c(theme$night, theme$day),
-                     border = c(theme$bar.border, theme$day.border), horiz = TRUE, bty = "n",
+                     border = c(.darkenColor(theme$night), theme$day.border), horiz = TRUE, bty = "n",
                      cex = 1.02 * theme$cex, text.col = theme$axis)
   }
 
@@ -694,16 +697,22 @@ plotTimeAtDepth <- function(data,
   # mar is CONSTANT across every panel of a figure - varying it by which axes get drawn made the plot
   # regions different sizes, so the same bin was a different physical height in adjacent panels and the
   # frames did not line up. Only the drawing calls below are gated on y.axis / x.axis.
-  graphics::par(mar = c(3.8, 5.4, 2.7, 1.8), mgp = c(3, 0.55, 0), tcl = -0.22)      # mgp[1] unused: titles are mtext-placed
+  # Margins trimmed to hand the width to the panel. The figure's own width is floored by the banner
+  # strip (see .tadFigSize), so on a single-variable figure the only way to widen the data region is
+  # to take it back from the chrome. The left margin still clears the widest bin label.
+  graphics::par(mar = c(3.5, 4.6, 1.9, 0.9), mgp = c(3, 0.55, 0), tcl = -0.22)      # mgp[1] unused: titles are mtext-placed
   graphics::plot(NA, xlim = xlim, ylim = c(nb + 0.5, 0.5), axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i")
   gx <- pretty(c(0, xmax), 4); gx <- gx[gx <= xmax]                                  # pretty() overshoots xlim
   at <- if (diel) sort(unique(c(-gx, gx))) else gx                                   # sorted, no duplicated 0
   graphics::rect(xlim[1], 0.5, xlim[2], nb + 0.5, col = theme$panel, border = NA)
   graphics::abline(v = at[at != 0], col = theme$grid, lwd = 0.6)                     # subtle grid
+  # Each bar is outlined in a darker shade of its OWN fill. A contrasting border (white, grey) reads as
+  # a separate element and fragments the stack; a border in the same hue reads as definition and keeps
+  # the profile cohesive. `day.border` stays the documented override for the day bar.
   bar <- function(x0, x1, b, col, bord) graphics::rect(x0, b - 0.5, x1, b + 0.5, col = grDevices::adjustcolor(col, theme$bar.alpha), border = bord, lwd = 0.6)
   for (b in seq_len(nb)) {
-    if (diel) { bar(-L$mean[b], 0, b, theme$night, theme$bar.border); bar(0, R$mean[b], b, theme$day, theme$day.border) }
-    else bar(0, R$mean[b], b, fill, theme$bar.border)
+    if (diel) { bar(-L$mean[b], 0, b, theme$night, .darkenColor(theme$night)); bar(0, R$mean[b], b, theme$day, theme$day.border) }
+    else bar(0, R$mean[b], b, fill, .darkenColor(fill))
   }
   # SE whiskers, drawn as conventional T-bars (stem + a cap at each end). Bins with no spread are SKIPPED
   # rather than drawn as a bare cap on the bar's edge, which would read as a measured zero-width interval
@@ -713,10 +722,13 @@ plotTimeAtDepth <- function(data,
     if (!any(ok)) return(invisible(NULL))
     y  <- seq_len(nb)[ok]
     lo <- sgn * pmax(0, (m - se)[ok]); hi <- sgn * (m + se)[ok]
-    cap <- 0.16                                              # half-height of the caps, in bin units
-    graphics::segments(lo, y, hi, y, col = theme$ink, lwd = 1.1)
-    graphics::segments(lo, y - cap, lo, y + cap, col = theme$ink, lwd = 1.1)
-    graphics::segments(hi, y - cap, hi, y + cap, col = theme$ink, lwd = 1.1)
+    # Lighter and thinner than the bar edges: the whiskers qualify the estimate, they are not the
+    # measurement, and at full ink weight they out-shouted the bars they belong to.
+    cap <- 0.14                                              # half-height of the caps, in bin units
+    ec  <- grDevices::adjustcolor(theme$ink, 0.50)
+    graphics::segments(lo, y, hi, y, col = ec, lwd = 0.9)
+    graphics::segments(lo, y - cap, lo, y + cap, col = ec, lwd = 0.9)
+    graphics::segments(hi, y - cap, hi, y + cap, col = ec, lwd = 0.9)
   }
   if (diel) { err(L$mean, L$se, -1); err(R$mean, R$se, 1) } else err(R$mean, R$se, 1)
   if (diel) graphics::abline(v = 0, col = theme$axis, lwd = 1.2)
@@ -729,7 +741,9 @@ plotTimeAtDepth <- function(data,
     # nb was even, leaving the deepest stratum anonymous.
     graphics::axis(2, at = seq_len(nb), labels = .binLabels(breaks), las = 1, col = NA,
                    col.ticks = theme$axis, col.axis = theme$axis, cex.axis = 0.72 * cex)
-    graphics::mtext(ylab, 2, line = 4.2, col = theme$ink, cex = 0.95 * cex, font = 2)
+    # line 3.6, not 4.2: the left margin was trimmed to widen the panel, and a title placed at the old
+    # offset is centred beyond the canvas edge and loses its first character.
+    graphics::mtext(ylab, 2, line = 3.6, col = theme$ink, cex = 0.95 * cex, font = 2)
   }
   if (x.axis) graphics::mtext(xlab, 1, line = 2.4, col = theme$axis, cex = 0.95 * cex)
   if (!is.null(title))

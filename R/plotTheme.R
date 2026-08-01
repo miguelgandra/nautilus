@@ -2,6 +2,21 @@
 # Plot theme (a shared, publication-ready visual style; one object customises every nautilus plot) ###
 #######################################################################################################
 
+#' Darken a colour toward black by a multiplicative factor.
+#'
+#' Used to give a filled bar an outline in its own hue rather than a contrasting one: a border drawn
+#' from the fill reads as definition, while a white or grey border reads as a separate element and
+#' fragments a stack of bars. 0.72 is dark enough to hold an edge against the fill at print size
+#' without turning into a black keyline.
+#' @param col Any colour R understands.
+#' @param factor Multiplier applied to each RGB channel; below 1 darkens.
+#' @keywords internal
+#' @noRd
+.darkenColor <- function(col, factor = 0.72) {
+  rgb <- grDevices::col2rgb(col, alpha = FALSE) / 255
+  grDevices::rgb(rgb[1, ] * factor, rgb[2, ] * factor, rgb[3, ] * factor)
+}
+
 #' Visual theme for nautilus plots
 #'
 #' @description
@@ -30,7 +45,12 @@
 #'   is chosen for discriminability rather than for monotonic lightness, so for a figure that must
 #'   survive greyscale printing or that is read by value rather than by pattern, pass a perceptually
 #'   uniform ramp instead, e.g. `sequential = hcl.colors(9, "Viridis")`.
-#' @param day,night,day.border Colours for the diel-split (day / night) bars and the day-bar border.
+#' @param day,night Fill colours for the diel-split day and night bars. The defaults pair a warm day
+#'   with a cool night, so the two sides of a mirrored profile read as two categories rather than one
+#'   variable at two intensities.
+#' @param day.border Outline for the day bar. Left `NULL` while `day` is supplied, it is derived as a
+#'   darker shade of `day`, so a restyled fill keeps a matching outline; name it to override. The
+#'   night and pooled bars always derive their outline from their own fill.
 #' @param bar.alpha Fill opacity for bars (0-1).
 #' @param bar.border Bar border colour.
 #' @param font.family Font family (e.g. `""`/`"sans"`, `"serif"`).
@@ -60,6 +80,9 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
   # 'invalid value specified for graphical parameter "cex.axis"'
   if (th$cex <= 0) .abort("{.arg cex} in {.fn plotTheme} must be greater than zero.")
   .assert_string(th$font.family, "font.family")
+  # a caller who restyles `day` but not `day.border` gets a border derived from their own colour,
+  # so the two never drift apart; naming both keeps the explicit value.
+  if (!is.null(day) && is.null(day.border)) th$day.border <- .darkenColor(th$day)
   for (nm in c("panel", "grid", "ink", "axis", "subtitle", "day", "night", "day.border", "bar.border"))
     if (!.isColour(th[[nm]])) .abort("{.arg {nm}} in {.fn plotTheme} must be a single valid colour.")
   if (length(th$sequential) < 2 || !all(vapply(th$sequential, .isColour, logical(1))))
@@ -95,11 +118,11 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
                  bar.alpha = 1, font.family = "", cex = 1)
   switch(preset,
     light   = c(list(panel = "grey97", grid = "grey88", ink = "#1B1F27", axis = "#586074",
-                     subtitle = "#9AA1B0", day = "#DCEAF6", night = "#294763", day.border = "#AFC9E0",
-                     bar.border = "#FFFFFF"), common),
+                     subtitle = "#9AA1B0", day = "#F6D2AE", night = "#294763",
+                     day.border = .darkenColor("#F6D2AE"), bar.border = "#FFFFFF"), common),
     minimal = c(list(panel = "#FFFFFF", grid = "#E7E9EE", ink = "#1B1F27", axis = "#586074",
-                     subtitle = "#9AA1B0", day = "#DCEAF6", night = "#294763", day.border = "#AFC9E0",
-                     bar.border = "#FFFFFF"), common),
+                     subtitle = "#9AA1B0", day = "#F6D2AE", night = "#294763",
+                     day.border = .darkenColor("#F6D2AE"), bar.border = "#FFFFFF"), common),
     classic = c(list(panel = "#EDEDED", grid = "#FFFFFF", ink = "#000000", axis = "#333333",
                      subtitle = "#666666", day = "#FFFFFF", night = "#4D4D4D", day.border = "#333333",
                      bar.border = "#4D4D4D"),

@@ -42,7 +42,13 @@ is chosen for discriminability rather than for monotonic lightness, so for a fig
 survive greyscale printing or that is read by value rather than by pattern, pass a perceptually
 uniform ramp instead, e.g. \code{sequential = hcl.colors(9, "Viridis")}.}
 
-\item{day, night, day.border}{Colours for the diel-split (day / night) bars and the day-bar border.}
+\item{day, night}{Fill colours for the diel-split day and night bars. The defaults pair a warm day
+with a cool night, so the two sides of a mirrored profile read as two categories rather than one
+variable at two intensities.}
+
+\item{day.border}{Outline for the day bar. Left \code{NULL} while \code{day} is supplied, it is derived as a
+darker shade of \code{day}, so a restyled fill keeps a matching outline; name it to override. The
+night and pooled bars always derive their outline from their own fill.}
 
 \item{bar.alpha}{Fill opacity for bars (0-1).}
 
