@@ -296,15 +296,20 @@
 #' Compare deployments on per-dive metrics
 #'
 #' @description
-#' Draws every dive as a point in its deployment's column, with a median and interquartile marker over
-#' it, for one or more metrics from \code{\link{diveMetrics}}.
+#' Comparing deployments on how deep or how long they dived usually collapses to a bar of means, which
+#' hides both the spread and the individual dives that produced it - and dive metrics are skewed often
+#' enough that the mean is rarely the interesting number.
 #'
-#' It is not a per-sample distribution plot (\code{\link{plotDistributions}}), not a time budget
-#' (\code{\link{plotTimeAtDepth}}), not a depth trace (\code{\link{plotDepthProfiles}}) and not detector
-#' QC (\code{\link{detectDives}}'s `plot.file`). Nothing it draws is computed here that
-#' \code{\link{diveMetrics}} did not already compute.
+#' This function draws every dive as a point in its deployment's column, with a median and
+#' interquartile marker over the top, for one or more metrics from [diveMetrics()]. The cohort
+#' comparison and the raw material behind it are then visible together.
 #'
-#' @param data A `nautilus_dive_metrics` table from \code{\link{diveMetrics}}, or a list of them.
+#' It computes nothing [diveMetrics()] has not already computed. For a per-sample distribution see
+#' [plotDistributions()], for a time budget [plotTimeAtDepth()], for the depth trace itself
+#' [plotDepthProfiles()], and for detector quality control the `plot.file` argument of
+#' [detectDives()].
+#'
+#' @param data A `nautilus_dive_metrics` table from [diveMetrics()], or a list of them.
 #' @param metrics Character. Columns to draw, one panel each. `NULL` (default) uses
 #'   `c("amplitude_m", "duration_s")`.
 #' @param labels Named character mapping a metric to its axis label, overriding the built-in ones.
@@ -319,21 +324,21 @@
 #'   (default) uses the first entry of `metrics`.
 #' @param trim Numeric in (0, 1]. Upper quantile bounding the value axis; `1` shows the full range.
 #'   Points beyond it are pinned to the axis edge and counted in a panel note, never dropped silently.
-#'   Defaults to `0.95`, NOT the `0.995` the rest of the plotting family uses, because per-dive metrics
+#'   Defaults to `0.95`, rather than the `0.995` the rest of the plotting family uses, because per-dive metrics
 #'   are far more skewed than the per-sample kinematics that default was chosen for: on a real cohort
 #'   `amplitude_m` had a median of 12.2 m against a maximum of 1414.1 m. At `0.995` the axis reached
 #'   417 m and every median and IQR in the figure collapsed onto the baseline; at `0.95` it reaches
 #'   92.8 m and the between-deployment differences the plot exists to show become legible. The 5% that
 #'   moves is pinned and counted, and the untrimmed extremes remain in the returned `max` column.
 #' @param min.n Integer. Dives needed before a median/IQR marker is drawn. Points are always drawn.
-#' @param theme A \link{plotTheme} object, or a list of overrides.
+#' @param theme A [plotTheme()] object, or a list of overrides.
 #' @param plot Logical. Draw to the active device.
 #' @param plot.file Character. Path to a PDF.
 #' @param id.col Character. Deployment id column.
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
 #'
 #' @details
-#' \strong{Why `amplitude_m` is the default and `max_depth_m` is not.} `amplitude_m` is measured from
+#' **Why `amplitude_m` is the default and `max_depth_m` is not.** `amplitude_m` is measured from
 #' the dive's own baseline, so it means the same thing under `reference = "surface"`, under
 #' `reference = "baseline"` and under `direction = "up"` - one number, one code path, every taxon.
 #' `max_depth_m` is an absolute depth: for a surface-referenced air-breather it is the depth of the
@@ -344,12 +349,12 @@
 #' other way. The median absolute difference between the two columns was 6.01 m under baseline and
 #' exactly 0 under surface: that difference is seabed, not diving.
 #'
-#' \strong{Every dive is a point; the marker is only a marker.} No bar is drawn. A bar encodes
+#' **Every dive is a point; the marker is only a marker.** No bar is drawn. A bar encodes
 #' magnitude as a length from a true zero, which under `reference = "baseline"` does not exist, and a
 #' per-individual maximum is an extreme whose expectation grows with n - which ranged from 1 to 424
 #' dives per deployment in that cohort. The median is drawn only once `min.n` dives support it.
 #'
-#' \strong{Censoring is applied per metric.} `inter_dive_s` is included on `!inter_dive_censored`;
+#' **Censoring is applied per metric.** `inter_dive_s` is included on `!inter_dive_censored`;
 #' every other metric on `complete`. Excluded dives are drawn in outline and counted; there is no
 #' argument to fold them back into the statistics. A separate and usually larger loss is reported
 #' separately: dives whose phase structure did not support the metric at all.
@@ -358,7 +363,7 @@
 #'   `n_dives`, `n_used`, `n_censored`, `n_unsupported`, `median`, `q25`, `q75`, `min`, `max`,
 #'   `reference`, `direction`, `drawn`, plus `n_trimmed` and `axis_max` recording how many dives `trim`
 #'   pinned to the axis edge and where that edge fell - so the figure can be reproduced from the table.
-#' @seealso \link{diveMetrics}, \link{detectDives}, \link{plotDistributions}, \link{plotTimeAtDepth}
+#' @seealso [diveMetrics()], [detectDives()], [plotDistributions()], [plotTimeAtDepth()]
 #' @examples
 #' \dontrun{
 #' tag <- detectDives(processed, control = diveControl(depth.threshold = 5))

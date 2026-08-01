@@ -21,7 +21,7 @@ plotDives(
 )
 }
 \arguments{
-\item{data}{A \code{nautilus_dive_metrics} table from \code{\link{diveMetrics}}, or a list of them.}
+\item{data}{A \code{nautilus_dive_metrics} table from \code{\link[=diveMetrics]{diveMetrics()}}, or a list of them.}
 
 \item{metrics}{Character. Columns to draw, one panel each. \code{NULL} (default) uses
 \code{c("amplitude_m", "duration_s")}.}
@@ -42,7 +42,7 @@ median first, on \code{order.metric}).}
 
 \item{trim}{Numeric in (0, 1]. Upper quantile bounding the value axis; \code{1} shows the full range.
 Points beyond it are pinned to the axis edge and counted in a panel note, never dropped silently.
-Defaults to \code{0.95}, NOT the \code{0.995} the rest of the plotting family uses, because per-dive metrics
+Defaults to \code{0.95}, rather than the \code{0.995} the rest of the plotting family uses, because per-dive metrics
 are far more skewed than the per-sample kinematics that default was chosen for: on a real cohort
 \code{amplitude_m} had a median of 12.2 m against a maximum of 1414.1 m. At \code{0.995} the axis reached
 417 m and every median and IQR in the figure collapsed onto the baseline; at \code{0.95} it reaches
@@ -51,7 +51,7 @@ moves is pinned and counted, and the untrimmed extremes remain in the returned \
 
 \item{min.n}{Integer. Dives needed before a median/IQR marker is drawn. Points are always drawn.}
 
-\item{theme}{A \link{plotTheme} object, or a list of overrides.}
+\item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object, or a list of overrides.}
 
 \item{plot}{Logical. Draw to the active device.}
 
@@ -68,13 +68,18 @@ Invisibly, a \code{data.frame} with one row per deployment and metric: \code{id}
 pinned to the axis edge and where that edge fell - so the figure can be reproduced from the table.
 }
 \description{
-Draws every dive as a point in its deployment's column, with a median and interquartile marker over
-it, for one or more metrics from \code{\link{diveMetrics}}.
+Comparing deployments on how deep or how long they dived usually collapses to a bar of means, which
+hides both the spread and the individual dives that produced it - and dive metrics are skewed often
+enough that the mean is rarely the interesting number.
 
-It is not a per-sample distribution plot (\code{\link{plotDistributions}}), not a time budget
-(\code{\link{plotTimeAtDepth}}), not a depth trace (\code{\link{plotDepthProfiles}}) and not detector
-QC (\code{\link{detectDives}}'s \code{plot.file}). Nothing it draws is computed here that
-\code{\link{diveMetrics}} did not already compute.
+This function draws every dive as a point in its deployment's column, with a median and
+interquartile marker over the top, for one or more metrics from \code{\link[=diveMetrics]{diveMetrics()}}. The cohort
+comparison and the raw material behind it are then visible together.
+
+It computes nothing \code{\link[=diveMetrics]{diveMetrics()}} has not already computed. For a per-sample distribution see
+\code{\link[=plotDistributions]{plotDistributions()}}, for a time budget \code{\link[=plotTimeAtDepth]{plotTimeAtDepth()}}, for the depth trace itself
+\code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, and for detector quality control the \code{plot.file} argument of
+\code{\link[=detectDives]{detectDives()}}.
 }
 \details{
 \strong{Why \code{amplitude_m} is the default and \code{max_depth_m} is not.} \code{amplitude_m} is measured from
@@ -107,5 +112,5 @@ plotDives(dm, metrics = "max_depth_m", plot = FALSE, plot.file = "./plots/dives.
 }
 }
 \seealso{
-\link{diveMetrics}, \link{detectDives}, \link{plotDistributions}, \link{plotTimeAtDepth}
+\code{\link[=diveMetrics]{diveMetrics()}}, \code{\link[=detectDives]{detectDives()}}, \code{\link[=plotDistributions]{plotDistributions()}}, \code{\link[=plotTimeAtDepth]{plotTimeAtDepth()}}
 }

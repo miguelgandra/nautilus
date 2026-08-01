@@ -23,7 +23,7 @@ plotDistributions(
 }
 \arguments{
 \item{data}{Processed data: a character vector of \code{.rds} file paths, a single \code{nautilus_tag} /
-data.frame, or a list of them (see \link{processTagData}).}
+data.frame, or a list of them (see \code{\link[=processTagData]{processTagData()}}).}
 
 \item{metrics}{Character vector of metric columns to plot (one panel each), in order. \code{NULL} (default)
 auto-selects the kinematic / effort metrics present in the data
@@ -55,7 +55,7 @@ row is left blank (but still summarised). Default \code{30}.}
 \item{plot.file}{Character. Path to a PDF to draw into (independent of \code{plot}; set either or both).
 The function manages the device itself. Default \code{NULL}.}
 
-\item{theme}{A \link{plotTheme} object, or a list of overrides, controlling the visual style.}
+\item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object, or a list of overrides, controlling the visual style.}
 
 \item{id.col}{Character. Name of the deployment id column. Default \code{"ID"}.}
 
@@ -69,15 +69,15 @@ Invisibly, a tidy data frame with one row per deployment and metric and columns 
 the side-effect plot). Deployments lacking a metric appear with \code{n = 0} and \code{NA} statistics.
 }
 \description{
-Summarises and plots the DISTRIBUTION of one or more per-sample metrics (tail-beat frequency, swimming
-speed, activity, ...) across a cohort of deployments. Each metric becomes a column: a stack of
-per-individual horizontal violins (one row per deployment), a pooled "population" density strip on
-top, and a reference line (the population median by default). This surfaces the multimodal, long-tailed
-structure that a single mean hides - the natural companion to the scalar summaries from
-\link{summarizeTagData}.
+A mean tail-beat frequency, or a mean swimming speed, describes a cohort badly. These quantities are
+typically multimodal and long-tailed - an animal alternates between gaits, and rare bursts sit far
+from the middle - so one number per deployment can hide the very structure the analysis is about.
 
-Where \link{summarizeTagData} returns one number per deployment, \code{plotDistributions()} shows the whole
-shape and returns a tidy per-deployment, per-metric distribution summary (invisibly) alongside the plot.
+This function shows the whole shape instead. Each metric becomes a column holding a stack of
+per-deployment violins, a pooled population strip across the top, and a reference line at the
+population median. Where \code{\link[=summarizeTagData]{summarizeTagData()}} returns a number per deployment, this returns the
+distribution behind it - and, invisibly, a tidy per-deployment summary of that distribution
+alongside the plot.
 
 Like the other workflow functions, \code{data} accepts the package's canonical input forms - a character
 vector of \code{.rds} paths, a single \code{nautilus_tag} / data.frame, or a list of them - and the deployment
@@ -92,6 +92,6 @@ plotDistributions(list.files("./processed", full.names = TRUE),
 }
 }
 \seealso{
-\link{plotDives}, \link{plotTimeAtDepth}, \link{summarizeTagData},
-\link{calculateTailBeats}, \link{processTagData}
+\code{\link[=plotDives]{plotDives()}}, \code{\link[=plotTimeAtDepth]{plotTimeAtDepth()}}, \code{\link[=summarizeTagData]{summarizeTagData()}},
+\code{\link[=calculateTailBeats]{calculateTailBeats()}}, \code{\link[=processTagData]{processTagData()}}
 }

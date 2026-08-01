@@ -5,28 +5,33 @@
 #' Plot time-at-depth and time-at-temperature
 #'
 #' @description
-#' Shows HOW a cohort allocates time across the depth (or temperature) envelope. The variable is binned
-#' and each bin's share of time is drawn as a horizontal **profile** - the ecological complement to the
-#' scalar min / mean / max of \link{summarizeTagData} and the raw traces of \link{plotDepthProfiles}.
+#' Knowing that an animal reached 300 m says little about how it used the water column. It may have
+#' touched that depth once and spent the deployment at 20 m, or lived at 250 m throughout. The
+#' distinction is ecological, and a minimum, mean and maximum cannot express it.
+#'
+#' This function shows where the time actually went. The depth or temperature range is binned, and each
+#' bin's share of the record is drawn as a horizontal profile, so the shape of the occupancy is the
+#' thing you read. It complements the scalar summaries of [summarizeTagData()] and the raw traces of
+#' [plotDepthProfiles()].
 #'
 #' One composable geometry covers the common needs, so the API stays small:
 #' \itemize{
-#'   \item \strong{variable} - `"depth"`, `"temp"`, or both (`c("depth","temp")`) side by side.
-#'   \item \strong{group.by} - split the cohort by a metadata factor (species, sex, ...); each group becomes
+#'   \item **variable** - `"depth"`, `"temp"`, or both (`c("depth","temp")`) side by side.
+#'   \item **group.by** - split the cohort by a metadata factor (species, sex, ...); each group becomes
 #'     a faceted panel of the group mean +/- SE across its individuals. `NULL` pools all individuals.
-#'   \item \strong{diel} - `TRUE` mirrors each bin into night (left) vs day (right) back-to-back bars.
+#'   \item **diel** - `TRUE` mirrors each bin into night (left) vs day (right) back-to-back bars.
 #' }
 #'
 #' Time is weighted by each sample's TRUE duration (not row counts), with long gaps capped, so irregular
 #' or gappy records are not distorted (a gap is credited only the record's median sampling interval).
 #' Depth bins default to a surface-fine, deep-coarse scheme (most animals spend most time near the
 #' surface); every bin is drawn as an equal-height band so all strata stay legible regardless of width.
-#' The look is set by a shared \link{plotTheme} object.
+#' The look is set by a shared [plotTheme()] object.
 #'
 #' @param data Processed data: `.rds` paths, a single `nautilus_tag` / data.frame, or a list of them.
 #' @param variable Character. `"depth"` (default), `"temp"`, or `c("depth","temp")` for both.
 #' @param group.by Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
-#'   at import via \link{metadataColumns}), a named `id -> group` vector, or a two-column
+#'   at import via [metadataColumns()]), a named `id -> group` vector, or a two-column
 #'   `data.frame(id, group)`. `NULL` (default) pools all individuals into one profile.
 #' @param diel Logical. Split each bin into night vs day back-to-back bars (needs coordinates; see
 #'   `coords`). Default `FALSE`. Ignored by `style = "heatmap"`.
@@ -45,7 +50,7 @@
 #'   temperature always keep separate scales.
 #' @param coords For `diel`: a `c(lon, lat)`, a named `id -> c(lon,lat)` list, or a
 #'   `data.frame(id, lon, lat)`. If `NULL`, longitude/latitude are read from the data or tag metadata.
-#' @param theme A \link{plotTheme} object (or a list of overrides) controlling the visual style.
+#' @param theme A [plotTheme()] object (or a list of overrides) controlling the visual style.
 #' @param plot Logical. Draw to the active device. Default `TRUE`.
 #' @param plot.file Character. Path to a PDF to draw into. Default `NULL`.
 #' @param id.col,datetime.col Column names for the deployment id and datetime.
@@ -57,8 +62,8 @@
 #'   `id`, `group`, `variable`, `phase`, `bin_min`, `bin_max`, `bin_mid`, `hours`, `pct` (percent of that
 #'   deployment/phase's time; sums to 100 per `id`/`variable`/`phase`).
 #'
-#' @seealso \link{plotTheme}, \link{summarizeTagData}, \link{plotDepthProfiles},
-#'   \link{plotDistributions}, \link{plotDives}
+#' @seealso [plotTheme()], [summarizeTagData()], [plotDepthProfiles()],
+#'   [plotDistributions()], [plotDives()]
 #' @examples
 #' \dontrun{
 #' files <- list.files("./processed", full.names = TRUE)

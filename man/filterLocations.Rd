@@ -8,7 +8,6 @@ filterLocations(
   data,
   metadata = NULL,
   id.col = "ID",
-  datetime.col = "datetime",
   max.speed.kmh = NULL,
   max.distance.km = NULL,
   min.satellites = NULL,
@@ -39,10 +38,6 @@ cross-checked and a disagreement is warned about.}
 
 \item{id.col}{Which column identifies the animal (default \code{"ID"}); also used to match rows in
 \code{metadata}.}
-
-\item{datetime.col}{Which column holds the timestamps of the sensor data (default \code{"datetime"}).
-Accepted for consistency with the rest of the pipeline but not otherwise used here, since the
-position fixes carry their own timestamps and are what this function screens.}
 
 \item{max.speed.kmh}{The fastest sustained speed, in km/h, you would believe between two fixes.
 \code{NULL} (default) disables the speed check. Set it from your species' plausible sustained travel

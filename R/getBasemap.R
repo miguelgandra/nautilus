@@ -4,32 +4,34 @@
 
 #' Pre-fetch a raster basemap for a set of deployments
 #'
-#' @description Fetches a raster basemap - satellite imagery (via \pkg{maptiles}, reprojected to WGS84
-#' lon/lat so it co-registers with the package's maps) or a bathymetric depth grid (via \pkg{marmap}) -
-#' covering the geographic extent of `data`.
-#' Pass the returned raster straight back to \code{\link{plotTracks}} or \code{\link{filterLocations}} as
-#' `basemap = <raster>`: this turns a live network fetch into a saved, reproducible, offline asset - the
-#' recommended pattern for publication figures (fetch once, `saveRDS()` it, reuse). It is the raster twin
-#' of supplying your own `coastline`.
+#' @description
+#' Asking a plotting function for satellite imagery or bathymetry means a network fetch every time the
+#' figure is drawn. That is slow, it fails offline, and it makes the figure depend on a tile server
+#' still serving the same tiles - which is a poor foundation for a published map.
+#'
+#' This function performs the fetch once, for the geographic extent of your deployments, and hands back
+#' the raster. Save it with `saveRDS()` and pass it to [plotTracks()] or [filterLocations()] as
+#' `basemap`, and the map becomes reproducible and offline. It is the raster counterpart to supplying
+#' your own `coastline`.
 #'
 #' @details The extent is the union of every deployment's surface fixes, dead-reckoned pseudo-track and
-#' deploy/pop-up anchors (with a small margin), exactly as \code{\link{plotTracks}} frames its maps.
+#' deploy/pop-up anchors (with a small margin), exactly as [plotTracks()] frames its maps.
 #' Tile zoom and the bathymetry grid resolution are both derived from that extent; provider and caching
-#' are set via \code{\link{basemapControl}} (imagery only). Satellite needs \pkg{maptiles}, \pkg{terra}
+#' are set via [basemapControl()] (imagery only). Satellite needs \pkg{maptiles}, \pkg{terra}
 #' and \pkg{sf}; bathymetry needs \pkg{marmap}. Both are network downloads.
 #'
 #' @param data A `nautilus_tag`, a list of them, an aggregated data.frame, or `.rds` file paths - the same
-#'   `data` you would pass to \code{\link{plotTracks}}.
+#'   `data` you would pass to [plotTracks()].
 #' @param type Character. The basemap kind: `"satellite"` (imagery tiles, via \pkg{maptiles}) or
 #'   `"bathymetry"` (a depth grid, via \pkg{marmap}). Both are returned ready to pass straight back as
 #'   `basemap =`.
-#' @param control A \code{\link{basemapControl}} object (provider + cache).
-#' @param id.col,datetime.col Column names, matching \code{\link{plotTracks}}. Defaults `"ID"`/`"datetime"`.
+#' @param control A [basemapControl()] object (provider + cache).
+#' @param id.col,datetime.col Column names, matching [plotTracks()]. Defaults `"ID"`/`"datetime"`.
 #' @param verbose Logical/character verbosity, as elsewhere. Default `TRUE`.
 #' @return For `type = "satellite"`, a \pkg{terra} `SpatRaster` (RGB, lon/lat) carrying a
 #'   `nautilus.credit` attribute with the provider attribution; for `type = "bathymetry"`, a \pkg{marmap}
 #'   `bathy` depth grid. Either is ready to pass as `plotTracks(..., basemap = <this>)`.
-#' @seealso \code{\link{plotTracks}}, \code{\link{basemapControl}}
+#' @seealso [plotTracks()], [basemapControl()]
 #' @examples
 #' \donttest{
 #' # requires maptiles + internet:

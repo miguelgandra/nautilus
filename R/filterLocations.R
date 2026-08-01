@@ -27,9 +27,6 @@
 #'   cross-checked and a disagreement is warned about.
 #' @param id.col Which column identifies the animal (default `"ID"`); also used to match rows in
 #'   `metadata`.
-#' @param datetime.col Which column holds the timestamps of the sensor data (default `"datetime"`).
-#'   Accepted for consistency with the rest of the pipeline but not otherwise used here, since the
-#'   position fixes carry their own timestamps and are what this function screens.
 #' @param max.speed.kmh The fastest sustained speed, in km/h, you would believe between two fixes.
 #'   `NULL` (default) disables the speed check. Set it from your species' plausible sustained travel
 #'   speed rather than its burst speed, since the test is applied between fixes that may be hours
@@ -149,7 +146,6 @@
 filterLocations <- function(data,
                             metadata = NULL,
                             id.col = "ID",
-                            datetime.col = "datetime",
                             max.speed.kmh = NULL,
                             max.distance.km = NULL,
                             min.satellites = NULL,
@@ -186,7 +182,7 @@ filterLocations <- function(data,
 
   # validate scalar arguments
   .assert_flag(return.data, "return.data"); .assert_flag(plot, "plot")
-  .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
+  .assert_string(id.col, "id.col")
   .assert_string(deploy.lon.col, "deploy.lon.col"); .assert_string(deploy.lat.col, "deploy.lat.col")
   .assert_number(max.speed.kmh, "max.speed.kmh", min = 0, null_ok = TRUE)
   .assert_number(max.distance.km, "max.distance.km", min = 0, null_ok = TRUE)

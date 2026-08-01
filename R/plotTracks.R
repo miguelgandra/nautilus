@@ -5,59 +5,61 @@
 #' Plot reconstructed movement tracks
 #'
 #' @description
-#' Draws a per-animal grid of maps showing each deployment's movement in space: the genuine surface
-#' position fixes (Fastloc-GPS, Argos and user-entered), the deployment and pop-up anchors, and - when
-#' present - the dead-reckoned pseudo-track from \code{\link{reconstructTrack}}. It is the horizontal
-#' (spatial) counterpart to \code{\link{plotDepthProfiles}} (the vertical view), and the terminal
-#' visualization step of the movement-tracks branch (\code{reconstructTrack()} ->
-#' \code{crossValidateTrack()}/\code{trackMetrics()} -> \code{plotTracks()}).
+#' A reconstructed track is a table of coordinates, and coordinates are hard to judge. Whether the
+#' reconstruction is plausible - whether it crosses land, doubles back implausibly, or wanders where
+#' the fixes say it should not - is a question the eye answers immediately and a summary statistic
+#' does not.
+#'
+#' This function draws that picture: one map per deployment, showing the genuine surface fixes, the
+#' deployment and pop-up anchors, and, where present, the dead-reckoned track between them. It is the
+#' horizontal counterpart to [plotDepthProfiles()], and the last step of the movement-track branch.
 #'
 #' @details
 #' Everything is drawn in a single WGS84 longitude/latitude coordinate system with a latitude-corrected
 #' equal-aspect projection, so points, track and coastline co-register exactly. The background is composed
-#' of three orthogonal layers: a \emph{canvas} (\code{basemap}), the \emph{coastline} vector
-#' (\code{coastline}), and optional \emph{overlays} that compose on top (\code{show.uncertainty},
-#' \code{bathy.contours}). The default canvas is a lightweight bundled vector coastline that degrades to a
+#' of three orthogonal layers: a *canvas* (`basemap`), the *coastline* vector
+#' (`coastline`), and optional *overlays* that compose on top (`show.uncertainty`,
+#' `bathy.contours`). The default canvas is a lightweight bundled vector coastline that degrades to a
 #' silent no-op when \pkg{maps}/\pkg{mapdata} are absent (no tile server, no Java, no network). For
-#' fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use \code{coastline = "high"}
-#' (or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
-#' \code{coastline}. The two raster canvases are opt-in: \code{basemap = "bathymetry"} paints a shaded
-#' depth relief (\pkg{marmap}) under filled land, and \code{basemap = "satellite"} draws imagery tiles
-#' (\pkg{maptiles}) under an outlined coastline. Because the depth CANVAS and the depth CONTOURS
-#' (\code{bathy.contours}) are separate layers over one grid, they compose freely - relief alone, isobaths
-#' over any canvas, or relief with isobaths on top - and asking for both costs a single download, fetched
-#' once for the whole run and reused across panels.
+#' fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use `coastline = "high"`
+#' (or the default `"auto"`, which prefers it), or pass your own high-resolution coastline via
+#' `coastline`. The two raster canvases are opt-in: `basemap = "bathymetry"` paints a shaded
+#' depth relief (\pkg{marmap}) under filled land, and `basemap = "satellite"` draws imagery tiles
+#' (\pkg{maptiles}) under an outlined coastline. Because the depth canvas and the depth contours
+#' (`bathy.contours`) are separate layers over one grid, they compose freely - relief alone, isobaths
+#' over any canvas, or relief with isobaths on top - and asking for both costs a single download,
+#' fetched once for the whole run and reused across panels.
 #'
-#' \strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
-#' anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as
-#' \code{pseudo_error} (per-sample 1-sigma positional uncertainty, metres); with \code{show.uncertainty =
-#' TRUE} it is drawn as a translucent corridor around the track, so a segment that passes close to a fix
+#' **Uncertainty.** A dead-reckoned track is a best estimate whose confidence shrinks at each
+#' anchoring fix and grows in the gaps between them. `reconstructTrack` quantifies this as
+#' `pseudo_error` (per-sample 1-sigma positional uncertainty, metres); with `show.uncertainty = TRUE`
+#' it is drawn as a translucent corridor around the track, so a segment that passes close to a fix
 #' is visibly tighter than one that has drifted mid-gap. The pseudo-track is never drawn with more visual
 #' weight than the genuine fixes it interpolates between.
 #'
-#' \strong{Colouring.} With \code{color.by = "depth"} or \code{"speed"} the track is coloured by
-#' \code{pseudo_depth} or \code{speed_dr} on a scale shared across all panels (with a compact colour bar),
+#' **Colouring.** With `color.by = "depth"` or `"speed"` the track is coloured by
+#' `pseudo_depth` or `speed_dr` on a scale shared across all panels (with a compact colour bar),
 #' revealing where the animal was in the water column or how fast it moved.
 #'
-#' Position fixes are read from each tag's canonical record (\code{meta$ancillary$positions}); the deploy
-#' and pop-up coordinates from \code{meta$deployment}. A deployment with neither a pseudo-track nor any
+#' Position fixes are read from each tag's canonical record (`meta$ancillary$positions`); the deploy
+#' and pop-up coordinates from `meta$deployment`. A deployment with neither a pseudo-track nor any
 #' fix is skipped (and reported).
 #'
 #' @param data A `nautilus_tag`/data.frame, a (named) list of them, or a character vector of `.rds`
-#'   file paths - typically the output of \code{\link{reconstructTrack}} (its `pseudo_lon`/`pseudo_lat`
+#'   file paths - typically the output of [reconstructTrack()] (its `pseudo_lon`/`pseudo_lat`
 #'   columns drive the track). A single aggregated data.frame is split by `id.col`.
 #' @param color.by Colour the pseudo-track by a variable: `NULL` (default, a single colour), `"depth"`
 #'   (`pseudo_depth`) or `"speed"` (`speed_dr`). Ignored for deployments without that column.
 #' @param show.uncertainty Logical. Draw the `pseudo_error` uncertainty corridor around the pseudo-track.
 #'   Default `TRUE`.
-#' @param basemap The background canvas (choose ONE): `"land"` (default; filled coastline over a flat
+#' @param basemap The background canvas, of which there is one at a time: `"land"` (default, a filled coastline over a flat
 #'   sea), `"bathymetry"` (a shaded depth relief painting the sea, with land drawn on top; via
 #'   \pkg{marmap}), `"satellite"` (imagery tiles via \pkg{maptiles} - a network download, cached),
-#'   `"none"` (blank sea), OR a pre-fetched canvas from \code{\link{getBasemap}} - a \pkg{terra}
+#'   `"none"` (blank sea), OR a pre-fetched canvas from [getBasemap()] - a \pkg{terra}
 #'   `SpatRaster` (imagery) or a \pkg{marmap} `bathy` grid (depth), drawn as-is: the reproducible/offline
 #'   path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
-#'   `basemap = "bathymetry"` and `bathy.contours` compose (relief + isobaths) and share ONE download.
-#' @param basemap.control A \code{\link{basemapControl}} object tuning the satellite fetch (tile
+#'   `basemap = "bathymetry"` and `bathy.contours` compose, as relief plus isobaths, and share one download.
+#' @param basemap.control A [basemapControl()] object tuning the satellite fetch (tile
 #'   `provider`, `cache`). Used only when `basemap = "satellite"`; ignored for a pre-fetched raster.
 #' @param coastline Which vector coastline to draw (used when `basemap = "land"`). A keyword selecting a
 #'   bundled source by resolution -- `"auto"` (default: the highest-resolution installed source,
@@ -71,12 +73,12 @@
 #'   metres), e.g. `c(-50, -200, -1000)` or `seq(-200, -4000, by = -200)` for a regular interval. Needs
 #'   \pkg{marmap} (a one-off NOAA download for the whole run); the grid resolution is chosen automatically
 #'   from the map extent.
-#' @param theme A \code{\link{plotTheme}} object (or a named list of its fields) controlling the shared
+#' @param theme A [plotTheme()] object (or a named list of its fields) controlling the shared
 #'   look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
 #'   scale (`cex`) and the sequential ramp used for `color.by`. Default `plotTheme()`.
-#' @param colors Optional named character vector overriding individual entries of the semantic MAP
-#'   palette - the colour of each map *element*, which is a different concept from `theme$palette` (a
-#'   qualitative series palette for telling `n` categories apart). Recognised names: `fastgps`, `argos`,
+#' @param colors Optional named vector overriding individual entries of the map palette - the colour of
+#'   each map *element*, which is a different thing from `theme$palette`, the qualitative series palette
+#'   for telling categories apart. Recognised names: `fastgps`, `argos`,
 #'   `user`, `track`, `deploy`, `popup`, `sea`, `sea.deep`, `land`, `land.border`, `bathymetry`,
 #'   `uncertainty`. (`sea`/`sea.deep` are the shallow/deep ends of the `basemap = "bathymetry"` ramp.)
 #'   Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
@@ -96,8 +98,8 @@
 #'
 #' @return Invisibly, a data.frame with one row per input deployment (`id`, `n_fix`, `n_track`, `drawn`).
 #'   Called for its side effect: the maps drawn to the active device and/or the multi-page `plot.file`.
-#' @seealso \code{\link{reconstructTrack}}, \code{\link{crossValidateTrack}}, \code{\link{trackMetrics}},
-#'   \code{\link{filterLocations}}, \code{\link{plotDepthProfiles}}, \code{\link{exportForSSM}}.
+#' @seealso [reconstructTrack()], [crossValidateTrack()], [trackMetrics()],
+#'   [filterLocations()], [plotDepthProfiles()], [exportForSSM()].
 #' @examples
 #' \dontrun{
 #' tracks <- reconstructTrack(list.files("./data interim/oriented", full.names = TRUE))

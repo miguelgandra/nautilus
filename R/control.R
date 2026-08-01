@@ -76,20 +76,34 @@ calibrationControl <- function(hard.iron = TRUE, soft.iron = TRUE, use.stored = 
 }
 
 
-#' Control settings for a fetched raster basemap (\code{basemap = "satellite"})
+#' Tile-fetch settings for a satellite basemap
 #'
-#' @description Tunes how a raster basemap canvas is fetched and cached by \code{\link{plotTracks}} /
-#' \code{\link{filterLocations}} when \code{basemap = "satellite"}. It governs only the \emph{auto-fetch}
-#' path; a pre-fetched raster passed directly as \code{basemap} (see \code{\link{getBasemap}}) ignores it.
-#' Tile zoom and grid resolution are deliberately not exposed -- both are derived from the map extent, and
-#' exact control is available by pre-fetching a raster and passing it in.
+#' @description
+#' Tunes how satellite imagery is fetched and cached when [plotTracks()] or [filterLocations()] is asked
+#' for `basemap = "satellite"`.
 #'
-#' @param provider Character. The \pkg{maptiles} tile provider id. Default `"Esri.WorldImagery"` (satellite
-#'   imagery). Any provider \pkg{maptiles} knows works (e.g. `"Esri.WorldTopoMap"`, `"OpenStreetMap"`).
-#' @param cache Cache fetched tiles for offline reuse: `TRUE` (default, a persistent per-user cache via
-#'   \code{\link[tools]{R_user_dir}}), `FALSE` (session temp dir only), or a directory path.
-#' @return A `nautilus_basemap` control object.
-#' @seealso \code{\link{plotTracks}}, \code{\link{getBasemap}}
+#' It governs the automatic fetch only. A raster you pre-fetched yourself with [getBasemap()] and passed
+#' in as `basemap` is drawn as given, and ignores everything here.
+#'
+#' @param provider Which tile provider to draw from. Default `"Esri.WorldImagery"`, which is satellite
+#'   imagery; any provider \pkg{maptiles} knows will work, such as `"Esri.WorldTopoMap"` for a
+#'   topographic canvas or `"OpenStreetMap"` for a street map. Providers differ in coverage and licence,
+#'   so check the terms before publishing a figure drawn on one.
+#' @param cache Whether to keep fetched tiles for reuse: `TRUE` (default) uses a persistent per-user
+#'   cache, `FALSE` keeps them only for the session, and a directory path caches them there. Leave it on
+#'   unless disk space is tight - it makes a redrawn figure instant and works offline.
+#'
+#' @details
+#' Tile zoom and grid resolution are deliberately not exposed. Both are derived from the map extent, and
+#' where you genuinely need exact control the better route is to pre-fetch a raster with [getBasemap()]
+#' and pass it in, which also makes the figure reproducible.
+#'
+#' @return A validated `nautilus_basemap` object for the `basemap.control` argument of [plotTracks()] and
+#'   [filterLocations()].
+#'
+#' @seealso [plotTracks()] and [filterLocations()] for the functions that consume it; [getBasemap()] for
+#'   pre-fetching a raster instead.
+#'
 #' @examples
 #' basemapControl(provider = "Esri.WorldTopoMap")
 #' @export

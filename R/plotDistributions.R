@@ -5,22 +5,22 @@
 #' Plot per-individual distributions of kinematic and effort metrics
 #'
 #' @description
-#' Summarises and plots the DISTRIBUTION of one or more per-sample metrics (tail-beat frequency, swimming
-#' speed, activity, ...) across a cohort of deployments. Each metric becomes a column: a stack of
-#' per-individual horizontal violins (one row per deployment), a pooled "population" density strip on
-#' top, and a reference line (the population median by default). This surfaces the multimodal, long-tailed
-#' structure that a single mean hides - the natural companion to the scalar summaries from
-#' \link{summarizeTagData}.
+#' A mean tail-beat frequency, or a mean swimming speed, describes a cohort badly. These quantities are
+#' typically multimodal and long-tailed - an animal alternates between gaits, and rare bursts sit far
+#' from the middle - so one number per deployment can hide the very structure the analysis is about.
 #'
-#' Where \link{summarizeTagData} returns one number per deployment, `plotDistributions()` shows the whole
-#' shape and returns a tidy per-deployment, per-metric distribution summary (invisibly) alongside the plot.
+#' This function shows the whole shape instead. Each metric becomes a column holding a stack of
+#' per-deployment violins, a pooled population strip across the top, and a reference line at the
+#' population median. Where [summarizeTagData()] returns a number per deployment, this returns the
+#' distribution behind it - and, invisibly, a tidy per-deployment summary of that distribution
+#' alongside the plot.
 #'
 #' Like the other workflow functions, `data` accepts the package's canonical input forms - a character
 #' vector of `.rds` paths, a single `nautilus_tag` / data.frame, or a list of them - and the deployment
 #' id is read from each object's metadata.
 #'
 #' @param data Processed data: a character vector of `.rds` file paths, a single `nautilus_tag` /
-#'   data.frame, or a list of them (see \link{processTagData}).
+#'   data.frame, or a list of them (see [processTagData()]).
 #' @param metrics Character vector of metric columns to plot (one panel each), in order. `NULL` (default)
 #'   auto-selects the kinematic / effort metrics present in the data
 #'   (whichever `tbf_hz_*` backends ran, `paddle_speed`, `speed`, `vedba`, `odba`, `vertical_velocity`).
@@ -38,7 +38,7 @@
 #'   right tails do not compress the bulk. Default `0.995`; set `1` for the full range.
 #' @param min.n Integer. Minimum finite samples a deployment needs for a violin to be drawn; below it the
 #'   row is left blank (but still summarised). Default `30`.
-#' @param theme A \link{plotTheme} object, or a list of overrides, controlling the visual style.
+#' @param theme A [plotTheme()] object, or a list of overrides, controlling the visual style.
 #' @param plot Logical. If `TRUE` (default), draw to the active graphics device.
 #' @param plot.file Character. Path to a PDF to draw into (independent of `plot`; set either or both).
 #'   The function manages the device itself. Default `NULL`.
@@ -51,8 +51,8 @@
 #'   `metric`, `n`, `mean`, `median`, `sd`, `q05`, `q25`, `q75`, `q95`, `min`, `max` (called mainly for
 #'   the side-effect plot). Deployments lacking a metric appear with `n = 0` and `NA` statistics.
 #'
-#' @seealso \link{plotDives}, \link{plotTimeAtDepth}, \link{summarizeTagData},
-#'   \link{calculateTailBeats}, \link{processTagData}
+#' @seealso [plotDives()], [plotTimeAtDepth()], [summarizeTagData()],
+#'   [calculateTailBeats()], [processTagData()]
 #' @examples
 #' \dontrun{
 #' # Compare tail-beat frequency and swimming speed across the cohort, into a PDF

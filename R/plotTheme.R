@@ -6,7 +6,7 @@
 #'
 #' @description
 #' A small style object controlling the shared look of the nautilus plotting functions
-#' (\link{plotTimeAtDepth}, \link{plotDistributions}, ...). Pass it as their `theme` argument. Start
+#' ([plotTimeAtDepth()], [plotDistributions()], ...). Pass it as their `theme` argument. Start
 #' from a `preset` and override individual fields as needed - so figures are publication-ready by default
 #' but trivially adapted to your own palette, transparency, or typography without touching plotting code.
 #'
@@ -21,9 +21,9 @@
 #' @param panel,grid Panel background and gridline colours.
 #' @param ink,axis,subtitle Colours for titles, axis text/ticks, and subtitles.
 #' @param palette Qualitative palette for groups: a vector of colours, or the name of an
-#'   \code{\link[grDevices]{hcl.colors}} palette (e.g. `"viridis"`).
+#'   [grDevices::hcl.colors()] palette (e.g. `"viridis"`).
 #' @param sequential Continuous ramp (>= 2 colours) for a variable mapped to colour -- currently the
-#'   `color.by` trace in \code{\link{plotDepthProfiles}}. The default spans blue to dark red through
+#'   `color.by` trace in [plotDepthProfiles()]. The default spans blue to dark red through
 #'   cyan, green, yellow and orange, which is what makes a temperature gradient legible at a glance
 #'   across a page of small multiples; a monochrome ramp collapses that variation into one hue. Note it
 #'   is chosen for discriminability rather than for monotonic lightness, so for a figure that must
@@ -35,7 +35,7 @@
 #' @param font.family Font family (e.g. `""`/`"sans"`, `"serif"`).
 #' @param cex Master text-scaling factor.
 #' @return A `nautilus_theme` object.
-#' @seealso \link{plotTimeAtDepth}
+#' @seealso [plotTimeAtDepth()]
 #' @examples
 #' # Build a theme object to pass as the `theme` argument of a nautilus plotter
 #' th <- plotTheme("light")

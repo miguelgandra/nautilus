@@ -5,9 +5,14 @@
 #' Plot depth profiles, coloured by an environmental variable
 #'
 #' @description
-#' Draws one depth-vs-time profile per deployment, with points coloured by a chosen variable
-#' (temperature by default) and a diel (day / twilight / night) background shading. Deployments are
-#' laid out in a grid, paginated automatically when they do not fit on one page.
+#' The depth record is where a deployment's behaviour is most legible: dive shape, diel structure and
+#' the transition between them are all visible at a glance, and all but invisible in a table of
+#' summary statistics.
+#'
+#' This function draws one depth-against-time profile per deployment, coloured by a variable of your
+#' choosing - temperature by default, so the animal's position in the water column can be read against
+#' the thermal structure it was moving through - over a day, twilight and night background. Deployments
+#' are laid out in a grid and paginated automatically.
 #'
 #' Like the other workflow functions, `data` accepts the package's canonical input forms - a character
 #' vector of `.rds` file paths, a single `nautilus_tag` / data.frame, or a list of them - and the
@@ -15,13 +20,13 @@
 #' separate metadata table is required.
 #'
 #' @param data Depth data: a character vector of `.rds` file paths, a single `nautilus_tag` /
-#'   data.frame, or a list of them (see \code{\link{processTagData}}).
+#'   data.frame, or a list of them (see [processTagData()]).
 #' @param color.by Character. Name of the column mapped to colour. Default `"temp"`.
 #' @param color.label Character. Legend title for `color.by`. `NULL` (default) derives a sensible label
 #'   (e.g. a degree-Celsius temperature label for `"temp"`).
 #' @param color.pal Character vector of colours for the mapped variable, overriding the theme. `NULL`
 #'   (default) builds the ramp from the theme's `sequential` colours, weighted to give extra resolution
-#'   to the upper range. This is a DATA mapping rather than chrome, so it stays user-settable
+#'   to the upper range. This maps data rather than styling the panel, so it stays settable
 #'   independently of `theme`: a figure may well need a domain-specific temperature scale while keeping
 #'   the rest of the family's look.
 #' @param same.color.scale Logical. If `TRUE` (default), all panels share one colour scale and a single
@@ -45,7 +50,7 @@
 #'   Independent of `plot`: set either or both. The function manages the device itself. Default `NULL`.
 #' @param ncols,nrows Integer. Grid columns / rows per page. If `NULL` (default) both are chosen
 #'   automatically (up to 2 columns and 5 rows per page).
-#' @param theme A \link{plotTheme} object, or a list of overrides, controlling the visual style: text
+#' @param theme A [plotTheme()] object, or a list of overrides, controlling the visual style: text
 #'   scaling (`cex`), font family, the ink / axis colours of the panel chrome, and the `sequential` ramp
 #'   used for `color.by` when `color.pal` is `NULL`.
 #' @param point.size Numeric. Plotting-character size (`cex`) for the depth points, used when `geom` draws
@@ -59,7 +64,7 @@
 #'   the colour variable or coordinates) and shows a live progress bar while the tags are read.
 #'
 #' @return Invisibly `NULL`; called for its side effect (the plot).
-#' @seealso \code{\link{processTagData}}, \code{\link{summarizeTagData}}
+#' @seealso [processTagData()], [summarizeTagData()]
 #' @examples
 #' \dontrun{
 #' # Draw to a multi-page PDF, coloured by temperature
@@ -460,7 +465,7 @@ plotDepthProfiles <- function(data,
 #' Occupies the reserved last grid cell (see .depthProfileLayout(legend = TRUE)). The bar spans the central
 #' ~75% of the cell width and a slim band, so it reads as a legend rather than a fourth panel; the freed
 #' space below carries a small Day / Twilight / Night key when diel shading was drawn - the grey bands are
-#' meaningless without it. The swatch fills come from \code{.dielFills()} (fixed, see there); only their
+#' meaningless without it. The swatch fills come from `.dielFills()` (fixed, see there); only their
 #' outline and the surrounding text follow the theme.
 #' @keywords internal
 #' @noRd

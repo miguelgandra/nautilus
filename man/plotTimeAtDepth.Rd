@@ -31,7 +31,7 @@ plotTimeAtDepth(
 \item{variable}{Character. \code{"depth"} (default), \code{"temp"}, or \code{c("depth","temp")} for both.}
 
 \item{group.by}{Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
-at import via \link{metadataColumns}), a named \code{id -> group} vector, or a two-column
+at import via \code{\link[=metadataColumns]{metadataColumns()}}), a named \code{id -> group} vector, or a two-column
 \code{data.frame(id, group)}. \code{NULL} (default) pools all individuals into one profile.}
 
 \item{diel}{Logical. Split each bin into night vs day back-to-back bars (needs coordinates; see
@@ -58,7 +58,7 @@ temperature always keep separate scales.}
 \item{coords}{For \code{diel}: a \code{c(lon, lat)}, a named \code{id -> c(lon,lat)} list, or a
 \code{data.frame(id, lon, lat)}. If \code{NULL}, longitude/latitude are read from the data or tag metadata.}
 
-\item{theme}{A \link{plotTheme} object (or a list of overrides) controlling the visual style.}
+\item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object (or a list of overrides) controlling the visual style.}
 
 \item{plot}{Logical. Draw to the active device. Default \code{TRUE}.}
 
@@ -76,9 +76,14 @@ Invisibly, a tidy data frame with one row per deployment x variable x diel-phase
 deployment/phase's time; sums to 100 per \code{id}/\code{variable}/\code{phase}).
 }
 \description{
-Shows HOW a cohort allocates time across the depth (or temperature) envelope. The variable is binned
-and each bin's share of time is drawn as a horizontal \strong{profile} - the ecological complement to the
-scalar min / mean / max of \link{summarizeTagData} and the raw traces of \link{plotDepthProfiles}.
+Knowing that an animal reached 300 m says little about how it used the water column. It may have
+touched that depth once and spent the deployment at 20 m, or lived at 250 m throughout. The
+distinction is ecological, and a minimum, mean and maximum cannot express it.
+
+This function shows where the time actually went. The depth or temperature range is binned, and each
+bin's share of the record is drawn as a horizontal profile, so the shape of the occupancy is the
+thing you read. It complements the scalar summaries of \code{\link[=summarizeTagData]{summarizeTagData()}} and the raw traces of
+\code{\link[=plotDepthProfiles]{plotDepthProfiles()}}.
 
 One composable geometry covers the common needs, so the API stays small:
 \itemize{
@@ -92,7 +97,7 @@ Time is weighted by each sample's TRUE duration (not row counts), with long gaps
 or gappy records are not distorted (a gap is credited only the record's median sampling interval).
 Depth bins default to a surface-fine, deep-coarse scheme (most animals spend most time near the
 surface); every bin is drawn as an equal-height band so all strata stay legible regardless of width.
-The look is set by a shared \link{plotTheme} object.
+The look is set by a shared \code{\link[=plotTheme]{plotTheme()}} object.
 }
 \examples{
 \dontrun{
@@ -102,6 +107,6 @@ plotTimeAtDepth(files, group.by = "species", plot.file = "./plots/tad.pdf")    #
 }
 }
 \seealso{
-\link{plotTheme}, \link{summarizeTagData}, \link{plotDepthProfiles},
-\link{plotDistributions}, \link{plotDives}
+\code{\link[=plotTheme]{plotTheme()}}, \code{\link[=summarizeTagData]{summarizeTagData()}}, \code{\link[=plotDepthProfiles]{plotDepthProfiles()}},
+\code{\link[=plotDistributions]{plotDistributions()}}, \code{\link[=plotDives]{plotDives()}}
 }

@@ -235,3 +235,13 @@ test_that("a deployment with no fixes reports a plain skip, not a warning marker
     filterLocations(list(s = tg), max.speed.kmh = 10, verbose = "detailed"))), collapse = "\n")
   expect_match(txt, "skipped - no position fixes")
 })
+
+
+test_that("datetime.col is not an argument: it screens the position record, not the sensor clock", {
+  # it was accepted and validated but never read - the fixes carry their own timestamps - so a caller
+  # passing it was silently doing nothing. Removed rather than wired up; this locks that decision.
+  f <- fx(0:3, "FastGPS", lon = c(0, 0.01, 0.02, 0.03), lat = 0)
+  expect_error(filterLocations(list(shark01 = make_tag(f)), datetime.col = "datetime", verbose = FALSE),
+               "unused argument")
+  expect_false("datetime.col" %in% names(formals(filterLocations)))
+})

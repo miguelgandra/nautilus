@@ -2,30 +2,40 @@
 % Please edit documentation in R/control.R
 \name{basemapControl}
 \alias{basemapControl}
-\title{Control settings for a fetched raster basemap (\code{basemap = "satellite"})}
+\title{Tile-fetch settings for a satellite basemap}
 \usage{
 basemapControl(provider = "Esri.WorldImagery", cache = TRUE)
 }
 \arguments{
-\item{provider}{Character. The \pkg{maptiles} tile provider id. Default \code{"Esri.WorldImagery"} (satellite
-imagery). Any provider \pkg{maptiles} knows works (e.g. \code{"Esri.WorldTopoMap"}, \code{"OpenStreetMap"}).}
+\item{provider}{Which tile provider to draw from. Default \code{"Esri.WorldImagery"}, which is satellite
+imagery; any provider \pkg{maptiles} knows will work, such as \code{"Esri.WorldTopoMap"} for a
+topographic canvas or \code{"OpenStreetMap"} for a street map. Providers differ in coverage and licence,
+so check the terms before publishing a figure drawn on one.}
 
-\item{cache}{Cache fetched tiles for offline reuse: \code{TRUE} (default, a persistent per-user cache via
-\code{\link[tools]{R_user_dir}}), \code{FALSE} (session temp dir only), or a directory path.}
+\item{cache}{Whether to keep fetched tiles for reuse: \code{TRUE} (default) uses a persistent per-user
+cache, \code{FALSE} keeps them only for the session, and a directory path caches them there. Leave it on
+unless disk space is tight - it makes a redrawn figure instant and works offline.}
 }
 \value{
-A \code{nautilus_basemap} control object.
+A validated \code{nautilus_basemap} object for the \code{basemap.control} argument of \code{\link[=plotTracks]{plotTracks()}} and
+\code{\link[=filterLocations]{filterLocations()}}.
 }
 \description{
-Tunes how a raster basemap canvas is fetched and cached by \code{\link{plotTracks}} /
-\code{\link{filterLocations}} when \code{basemap = "satellite"}. It governs only the \emph{auto-fetch}
-path; a pre-fetched raster passed directly as \code{basemap} (see \code{\link{getBasemap}}) ignores it.
-Tile zoom and grid resolution are deliberately not exposed -- both are derived from the map extent, and
-exact control is available by pre-fetching a raster and passing it in.
+Tunes how satellite imagery is fetched and cached when \code{\link[=plotTracks]{plotTracks()}} or \code{\link[=filterLocations]{filterLocations()}} is asked
+for \code{basemap = "satellite"}.
+
+It governs the automatic fetch only. A raster you pre-fetched yourself with \code{\link[=getBasemap]{getBasemap()}} and passed
+in as \code{basemap} is drawn as given, and ignores everything here.
+}
+\details{
+Tile zoom and grid resolution are deliberately not exposed. Both are derived from the map extent, and
+where you genuinely need exact control the better route is to pre-fetch a raster with \code{\link[=getBasemap]{getBasemap()}}
+and pass it in, which also makes the figure reproducible.
 }
 \examples{
 basemapControl(provider = "Esri.WorldTopoMap")
 }
 \seealso{
-\code{\link{plotTracks}}, \code{\link{getBasemap}}
+\code{\link[=plotTracks]{plotTracks()}} and \code{\link[=filterLocations]{filterLocations()}} for the functions that consume it; \code{\link[=getBasemap]{getBasemap()}} for
+pre-fetching a raster instead.
 }

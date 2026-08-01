@@ -26,7 +26,7 @@ plotTracks(
 }
 \arguments{
 \item{data}{A \code{nautilus_tag}/data.frame, a (named) list of them, or a character vector of \code{.rds}
-file paths - typically the output of \code{\link{reconstructTrack}} (its \code{pseudo_lon}/\code{pseudo_lat}
+file paths - typically the output of \code{\link[=reconstructTrack]{reconstructTrack()}} (its \code{pseudo_lon}/\code{pseudo_lat}
 columns drive the track). A single aggregated data.frame is split by \code{id.col}.}
 
 \item{color.by}{Colour the pseudo-track by a variable: \code{NULL} (default, a single colour), \code{"depth"}
@@ -35,13 +35,13 @@ columns drive the track). A single aggregated data.frame is split by \code{id.co
 \item{show.uncertainty}{Logical. Draw the \code{pseudo_error} uncertainty corridor around the pseudo-track.
 Default \code{TRUE}.}
 
-\item{basemap}{The background canvas (choose ONE): \code{"land"} (default; filled coastline over a flat
+\item{basemap}{The background canvas, of which there is one at a time: \code{"land"} (default, a filled coastline over a flat
 sea), \code{"bathymetry"} (a shaded depth relief painting the sea, with land drawn on top; via
 \pkg{marmap}), \code{"satellite"} (imagery tiles via \pkg{maptiles} - a network download, cached),
-\code{"none"} (blank sea), OR a pre-fetched canvas from \code{\link{getBasemap}} - a \pkg{terra}
+\code{"none"} (blank sea), OR a pre-fetched canvas from \code{\link[=getBasemap]{getBasemap()}} - a \pkg{terra}
 \code{SpatRaster} (imagery) or a \pkg{marmap} \code{bathy} grid (depth), drawn as-is: the reproducible/offline
 path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
-\code{basemap = "bathymetry"} and \code{bathy.contours} compose (relief + isobaths) and share ONE download.}
+\code{basemap = "bathymetry"} and \code{bathy.contours} compose, as relief plus isobaths, and share one download.}
 
 \item{coastline}{Which vector coastline to draw (used when \code{basemap = "land"}). A keyword selecting a
 bundled source by resolution -- \code{"auto"} (default: the highest-resolution installed source,
@@ -51,7 +51,7 @@ bundled source by resolution -- \code{"auto"} (default: the highest-resolution i
 (NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
 the \code{data.frame}/\code{matrix} form; \pkg{sf} is needed for \code{sf} objects and most file paths.}
 
-\item{basemap.control}{A \code{\link{basemapControl}} object tuning the satellite fetch (tile
+\item{basemap.control}{A \code{\link[=basemapControl]{basemapControl()}} object tuning the satellite fetch (tile
 \code{provider}, \code{cache}). Used only when \code{basemap = "satellite"}; ignored for a pre-fetched raster.}
 
 \item{bathy.contours}{Bathymetric contour overlay (composes with any \code{basemap}). \code{FALSE} (default) is
@@ -60,13 +60,13 @@ metres), e.g. \code{c(-50, -200, -1000)} or \code{seq(-200, -4000, by = -200)} f
 \pkg{marmap} (a one-off NOAA download for the whole run); the grid resolution is chosen automatically
 from the map extent.}
 
-\item{theme}{A \code{\link{plotTheme}} object (or a named list of its fields) controlling the shared
+\item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object (or a named list of its fields) controlling the shared
 look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
 scale (\code{cex}) and the sequential ramp used for \code{color.by}. Default \code{plotTheme()}.}
 
-\item{colors}{Optional named character vector overriding individual entries of the semantic MAP
-palette - the colour of each map \emph{element}, which is a different concept from \code{theme$palette} (a
-qualitative series palette for telling \code{n} categories apart). Recognised names: \code{fastgps}, \code{argos},
+\item{colors}{Optional named vector overriding individual entries of the map palette - the colour of
+each map \emph{element}, which is a different thing from \code{theme$palette}, the qualitative series palette
+for telling categories apart. Recognised names: \code{fastgps}, \code{argos},
 \code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{sea.deep}, \code{land}, \code{land.border}, \code{bathymetry},
 \code{uncertainty}. (\code{sea}/\code{sea.deep} are the shallow/deep ends of the \code{basemap = "bathymetry"} ramp.)
 Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
@@ -95,12 +95,14 @@ Invisibly, a data.frame with one row per input deployment (\code{id}, \code{n_fi
 Called for its side effect: the maps drawn to the active device and/or the multi-page \code{plot.file}.
 }
 \description{
-Draws a per-animal grid of maps showing each deployment's movement in space: the genuine surface
-position fixes (Fastloc-GPS, Argos and user-entered), the deployment and pop-up anchors, and - when
-present - the dead-reckoned pseudo-track from \code{\link{reconstructTrack}}. It is the horizontal
-(spatial) counterpart to \code{\link{plotDepthProfiles}} (the vertical view), and the terminal
-visualization step of the movement-tracks branch (\code{reconstructTrack()} ->
-\code{crossValidateTrack()}/\code{trackMetrics()} -> \code{plotTracks()}).
+A reconstructed track is a table of coordinates, and coordinates are hard to judge. Whether the
+reconstruction is plausible - whether it crosses land, doubles back implausibly, or wanders where
+the fixes say it should not - is a question the eye answers immediately and a summary statistic
+does not.
+
+This function draws that picture: one map per deployment, showing the genuine surface fixes, the
+deployment and pop-up anchors, and, where present, the dead-reckoned track between them. It is the
+horizontal counterpart to \code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, and the last step of the movement-track branch.
 }
 \details{
 Everything is drawn in a single WGS84 longitude/latitude coordinate system with a latitude-corrected
@@ -113,15 +115,15 @@ fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use 
 (or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
 \code{coastline}. The two raster canvases are opt-in: \code{basemap = "bathymetry"} paints a shaded
 depth relief (\pkg{marmap}) under filled land, and \code{basemap = "satellite"} draws imagery tiles
-(\pkg{maptiles}) under an outlined coastline. Because the depth CANVAS and the depth CONTOURS
+(\pkg{maptiles}) under an outlined coastline. Because the depth canvas and the depth contours
 (\code{bathy.contours}) are separate layers over one grid, they compose freely - relief alone, isobaths
-over any canvas, or relief with isobaths on top - and asking for both costs a single download, fetched
-once for the whole run and reused across panels.
+over any canvas, or relief with isobaths on top - and asking for both costs a single download,
+fetched once for the whole run and reused across panels.
 
 \strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
 anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as
-\code{pseudo_error} (per-sample 1-sigma positional uncertainty, metres); with \code{show.uncertainty =
-TRUE} it is drawn as a translucent corridor around the track, so a segment that passes close to a fix
+\code{pseudo_error} (per-sample 1-sigma positional uncertainty, metres); with \code{show.uncertainty = TRUE}
+it is drawn as a translucent corridor around the track, so a segment that passes close to a fix
 is visibly tighter than one that has drifted mid-gap. The pseudo-track is never drawn with more visual
 weight than the genuine fixes it interpolates between.
 
@@ -143,6 +145,6 @@ plotTracks(tracks, theme = plotTheme(cex = 1.2, font.family = "serif"), colors =
 }
 }
 \seealso{
-\code{\link{reconstructTrack}}, \code{\link{crossValidateTrack}}, \code{\link{trackMetrics}},
-\code{\link{filterLocations}}, \code{\link{plotDepthProfiles}}, \code{\link{exportForSSM}}.
+\code{\link[=reconstructTrack]{reconstructTrack()}}, \code{\link[=crossValidateTrack]{crossValidateTrack()}}, \code{\link[=trackMetrics]{trackMetrics()}},
+\code{\link[=filterLocations]{filterLocations()}}, \code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, \code{\link[=exportForSSM]{exportForSSM()}}.
 }
