@@ -26,3 +26,8 @@ DESIGN_INGESTION.md
 /nautilus.Rcheck/
 # local plot output (review images, scratch renders)
 plots/
+
+# Working figures rendered while tuning a plot default. Only root-level images are ignored:
+# the package's own artwork lives in inst/resources/, man/figures/ and vignettes/.
+/*.png
+/*.pdf

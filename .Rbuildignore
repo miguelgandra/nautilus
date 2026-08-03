@@ -8,6 +8,7 @@
 ^\.claude$
 ^AUDIT\.md$
 ^REVIEW\.md$
+^ISSUES\.md$
 ^AXIS_MAPPING_PLAN\.md$
 ^Rplots\.pdf$
 ^Circling_Events_Detection\.R$
