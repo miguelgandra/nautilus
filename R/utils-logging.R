@@ -90,7 +90,7 @@
 #' Strings are inserted as values (injection-safe), so paths with odd characters are fine.
 #' @keywords internal
 #' @noRd
-.log_header <- function(lvl, title, intro, bullets = NULL, arrow = NULL, sub = NULL) {
+.log_header <- function(lvl, title, intro, bullets = NULL, arrow = NULL, sub = NULL, close = TRUE) {
   if (lvl < 1L) return(invisible(NULL))
   .log_frame(lvl)
   .log_h1(lvl, title)
@@ -102,6 +102,19 @@
   # the text is built first so braces in a value stay literal.
   for (s in sub) { txt <- paste0(cli::symbol$arrow_right, " ", s); cli::cli_bullets(stats::setNames("{txt}", " ")) }
   for (a in arrow) cli::cli_text("{cli::symbol$arrow_right} {a}")
+  # `close = FALSE` leaves the frame open so the caller can add a section that is only knowable after
+  # it has looked at the data - a settings block whose values are derived from the cohort, say. Any
+  # progress bar drawn in between erases itself, so the rendered header still reads as one unit.
+  if (close) .log_header_close(lvl)
+  invisible(NULL)
+}
+
+#' Close a header opened with `close = FALSE`.
+#' @param lvl Resolved verbosity.
+#' @keywords internal
+#' @noRd
+.log_header_close <- function(lvl) {
+  if (lvl < 1L) return(invisible(NULL))
   cli::cli_text("")                                       # blank: body -> bottom frame
   .log_frame(lvl)
   cli::cli_text("")                                       # blank: header -> first block

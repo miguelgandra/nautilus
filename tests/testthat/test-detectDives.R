@@ -399,16 +399,20 @@ test_that("reference = 'auto' requires the record to visit the surface band, not
   deep <- 50 + 10 * sin(seq(0, 12 * pi, length.out = 3000))
   tag  <- .diveTag("DEEP", deep, zoc = TRUE)
 
-  res <- detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
-                                                      surface.band = 2, min.duration = 10),
-                     verbose = FALSE)
+  # this fixture legitimately trips the median-baseline caution (its excursions fill the record), and
+  # that warning now fires irrespective of `verbose` - see the test below
+  res <- suppressWarnings(
+    detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
+                                                 surface.band = 2, min.duration = 10),
+                verbose = FALSE))
   expect_identical(.diveProv(res[[1]])$reference, "baseline")
 
   # the same record with the occupancy requirement switched off resolves the old way, to "surface"
-  res0 <- detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
-                                                       surface.band = 2, min.duration = 10,
-                                                       min.surface.occupancy = 0),
-                      verbose = FALSE)
+  res0 <- suppressWarnings(
+    detectDives(list(tag), control = diveControl(reference = "auto", depth.threshold = 5,
+                                                 surface.band = 2, min.duration = 10,
+                                                 min.surface.occupancy = 0),
+                verbose = FALSE))
   expect_identical(.diveProv(res0[[1]])$reference, "surface")
 })
 
@@ -463,4 +467,44 @@ test_that("wiggle.amplitude changes the reversal count diveMetrics() reports", {
   expect_gt(n_rev(1), n_rev(5))
   # at a 5 m bar the 2 m wiggles are gone and only the dive's own apex survives as a reversal
   expect_identical(n_rev(5), 1L)
+})
+
+
+# ---------------------------------------------------------------------------
+# verbose reporting: grouped warnings, and a summary that reports outcomes
+# ---------------------------------------------------------------------------
+
+test_that("the baseline caution is raised once for the cohort, not once per deployment", {
+  # excursions filling the record: every one of these trips the median-baseline caution
+  set.seed(2)
+  deep <- function(id) .diveTag(id, 50 + 10 * sin(seq(0, 12 * pi, length.out = 3000)), zoc = FALSE)
+  tags <- list(A = deep("A"), B = deep("B"), C = deep("C"))
+  ctl  <- diveControl(reference = "baseline", depth.threshold = 5, surface.band = 2, min.duration = 10)
+
+  w <- testthat::capture_warnings(detectDives(tags, control = ctl, verbose = FALSE))
+  expect_length(w, 1L)                                   # one warning, not three
+  expect_match(w, "3 of 3 deployments")                  # and it says how many it covers
+  expect_match(w, "A|B|C")                               # naming the deployments inline
+})
+
+test_that("a data-quality caution is not silenced by verbose = FALSE", {
+  # `verbose` governs progress reporting, not correctness signals: the old code gated this warning on
+  # the verbosity level, so a quiet run silently dropped it
+  set.seed(3)
+  tags <- list(A = .diveTag("A", 50 + 10 * sin(seq(0, 12 * pi, length.out = 3000)), zoc = FALSE))
+  ctl  <- diveControl(reference = "baseline", depth.threshold = 5, surface.band = 2, min.duration = 10)
+  expect_warning(detectDives(tags, control = ctl, verbose = FALSE), "running median baseline")
+})
+
+test_that("the summary reports deployments with and without dives in plain words", {
+  grab <- function(...) paste(cli::cli_fmt(suppressWarnings(detectDives(...))), collapse = "\n")
+  flat <- .diveTag("FLAT", rep(0, 600))                  # no excursions at all -> no dives
+  out  <- grab(list(A = .diveTag("A", .diveTrain), FLAT = flat), control = .diveCtl(), verbose = 2)
+
+  expect_match(out, "Detection settings")                # settings live in the header now
+  expect_match(out, "Depth threshold:")
+  expect_match(out, "Deployments with dives:")
+  expect_match(out, "Deployments without dives:")
+  expect_false(grepl("applied_no_dives", out))           # the raw status string is not user-facing
+  expect_false(grepl("non-standard outcomes", out))
 })

@@ -142,10 +142,12 @@ detectDives <- function(data,
 
   src <- .resolveInput(data, id.col)
 
+  # The header frame is left OPEN: half the detection settings are derived from the cohort by the scan
+  # below, so they cannot be reported until it has run. The progress bar drawn in between erases itself,
+  # so the finished header still reads as one block.
   .log_header(lvl, "detectDives", "Detecting vertical excursions in the depth record",
-              bullets = sprintf("Input: %d deployment%s \u00b7 reference %s \u00b7 direction %s",
-                                src$n, if (src$n != 1) "s" else "",
-                                control$reference, control$direction))
+              bullets = sprintf("Input: %d deployment%s", src$n, if (src$n != 1) "s" else ""),
+              close = FALSE)
 
   ## ---- pass 1: gather what the DERIVED settings need, across the whole cohort -------------------
   # The floor is derived ONCE over all deployments (the maximum), never per deployment, so a cohort's
@@ -165,20 +167,28 @@ detectDives <- function(data,
              "i" = "Check the {.arg depth.col} / {.arg datetime.col} column names."))
 
   settings <- .diveDeriveSettings(usable, control, lvl)
+  .reportDiveSettings(lvl, settings, control)
+  .log_header_close(lvl)
 
   ## ---- pass 2: detect ---------------------------------------------------------------------------
   data_list <- vector("list", src$n); saved <- vector("list", src$n); ids <- rep(NA_character_, src$n)
   n_done <- 0L; tot_dives <- 0L; statuses <- character(0)
+  refs <- rep(NA_character_, src$n)                     # resolved reference, for the cohort split
+  risks <- vector("list", src$n)                        # baseline-estimator risks, grouped at the end
   collect_diag <- isTRUE(plot) || !is.null(plot.file)      # opt-in: nothing gathered unless asked
   diag_bundles <- vector("list", src$n)
 
   for (i in seq_len(src$n)) {
     x <- data.table::as.data.table(src$get(i))
     id <- as.character(.getMeta(x)$id %||% src$ids[i]); ids[i] <- id
-    if (lvl >= 2L) .log_h2(lvl, sprintf("%s (%d/%d)", id, i, src$n))
+    # a blank line BETWEEN blocks, but not before the first: the header already closes with one
+    if (lvl >= 2L) { if (i > 1L) cli::cli_text(""); .log_h2(lvl, sprintf("%s (%d/%d)", id, i, src$n)) }
 
     res <- .detectDivesOne(x, scan[[i]], settings, control, datetime.col, depth.col, lvl, id)
     statuses <- c(statuses, res$status)
+    refs[i] <- res$reference
+    if (!is.null(res$risk)) risks[[i]] <- c(res$risk, list(id = id))
+    if (lvl >= 2L) .reportDiveDeployment(lvl, res, settings, auto = identical(settings$reference, "per-deployment"))
     tot_dives <- tot_dives + res$n_dives
 
     # the three columns are added ALWAYS, even for an unusable deployment, so the schema never varies
@@ -212,30 +222,165 @@ detectDives <- function(data,
                                  output.suffix = output.suffix, compress = compress))
     data_list[[i]] <- x
     n_done <- n_done + 1L
-    if (lvl >= 2L) .log_ok(lvl, id, " \u00b7 ", res$n_dives, " dive", if (res$n_dives != 1) "s",
-                           " \u00b7 ", res$status)
+    if (lvl >= 2L) {
+      .log_ok(lvl, format(res$n_dives, big.mark = ","), " dive", if (res$n_dives != 1) "s", " detected")
+      if (!is.null(saved[[i]])) .log_ok(lvl, basename(saved[[i]]), " saved")
+    }
   }
 
   ## ---- summary ----------------------------------------------------------------------------------
+  # Grouped by kind, not by deployment: one warning per deployment buries a large cohort, and R keeps
+  # only the first 50 warnings, so on a 51-deployment run the tail is dropped without trace.
+  .warnDiveBaseline(Filter(Negate(is.null), risks), control, src$n)
+
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .log_done(lvl, n_done, " of ", src$n, " deployment", if (src$n != 1) "s", " processed")
-    .log_arrow(lvl, "reference: ", settings$reference_note)
-    .log_arrow(lvl, sprintf("threshold: %.2f m (%s) \u00b7 band %.2f m \u00b7 prominence %.2f m \u00b7 min duration %.0f s (%s)",
-                            settings$depth.threshold, settings$threshold_source, settings$surface.band,
-                            settings$min.prominence, settings$min.duration, settings$duration_source))
-    .log_arrow(lvl, sprintf("dives: %s across %d deployment%s", format(tot_dives, big.mark = ","),
-                            n_done, if (n_done != 1) "s" else ""))
-    if (any(statuses != "applied")) {
-      tb <- table(statuses[statuses != "applied"])
-      .log_detail(lvl, sprintf("non-standard outcomes: %s",
-                               paste(sprintf("%s x%d", names(tb), as.integer(tb)), collapse = " \u00b7 ")))
-    }
-    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    .reportDiveCohort(lvl, n_done, src$n, refs, tot_dives, statuses, output.dir)
     .log_runtime(lvl, start.time)
   }
 
   if (collect_diag) .renderDiveDiagnostic(diag_bundles, plot = plot, plot.file = plot.file)
 
   .collectOutput(data_list, saved, return.data, ids)
+}
+
+
+#' Render the "Detection settings" block: every setting that decides what becomes a dive, in one place.
+#'
+#' Each row says where its value came from. Which numbers the user chose and which the package inferred
+#' from the record is the distinction a methods section needs, and it was previously scattered between
+#' the header, a stray technical line and the summary.
+#' @param lvl Resolved verbosity.
+#' @param settings The resolved settings from `.diveDeriveSettings()`.
+#' @param control The user's `diveControl()` object.
+#' @keywords internal
+#' @noRd
+.reportDiveSettings <- function(lvl, settings, control) {
+  if (lvl < 1L) return(invisible(NULL))
+  src <- function(x) if (identical(x, "user")) "(user)" else "(derived)"
+
+  # min.duration: when derived, say what derived it. A boxcar of the downsampling bin attenuates any
+  # excursion short relative to its width, and the floor is what protects against reporting those.
+  dur <- if (identical(settings$duration_source, "user")) {
+    # a user value BELOW what the binning supports is worth flagging where it happens, not in a warning
+    floor_s <- max(4 * (settings$depth_bin %||% 0), 4 * (settings$dt %||% 0), 10)
+    if (is.finite(floor_s) && settings$min.duration < floor_s)
+      sprintf("%.0f s (user; below the %.0f s the %.3g s binning supports)",
+              settings$min.duration, floor_s, settings$depth_bin)
+    else sprintf("%.0f s (user)", settings$min.duration)
+  } else if (is.finite(settings$depth_bin) && settings$depth_bin > 0) {
+    sprintf("%.0f s (derived: 4x the %.3g s downsampling bin)", settings$min.duration, settings$depth_bin)
+  } else sprintf("%.0f s (derived)", settings$min.duration)
+
+  rows <- c(
+    Reference = as.character(control$reference),
+    Direction = as.character(control$direction),
+    `Depth threshold` = sprintf("%.2f m %s", settings$depth.threshold, src(settings$threshold_source)),
+    `Surface band`    = sprintf("%.2f m %s", settings$surface.band, src(settings$band_source)),
+    `Min. amplitude`  = if (identical(settings$amplitude_source, "derived"))
+                          sprintf("%.2f m (derived: threshold - band)", settings$min.amplitude)
+                        else sprintf("%.2f m (user)", settings$min.amplitude),
+    # Inf is the internal sentinel for "never split a W-shaped excursion"; say that, not "Inf m"
+    Prominence        = if (!is.finite(settings$min.prominence)) "not applied (excursions never split)"
+                        else sprintf("%.2f m %s", settings$min.prominence, src(settings$prominence_source)),
+    `Min. duration`   = dur,
+    `Max. gap`        = sprintf("%.0f s %s", settings$max.gap, src(settings$gap_source)))
+
+  # only meaningful where "auto" has a decision to make
+  if (identical(control$reference, "auto"))
+    rows <- c(rows, `Surface criterion` = sprintf("%.2f%% occupancy", 100 * control$min.surface.occupancy))
+  # and the estimator only runs where some deployment resolves to a baseline reference
+  if (!identical(control$reference, "surface"))
+    rows <- c(rows, `Baseline estimator` = as.character(control$baseline.stat))
+
+  .log_section(lvl, "Detection settings")
+  .log_rows(lvl, rows)
+  invisible(NULL)
+}
+
+
+#' One deployment's block: how the reference was decided, then the outcome.
+#'
+#' The two reason lines appear only where `reference = "auto"` had a decision to make; with an explicit
+#' reference there is nothing to explain and they would be noise on every deployment.
+#' @keywords internal
+#' @noRd
+.reportDiveDeployment <- function(lvl, res, settings, auto) {
+  if (lvl < 2L) return(invisible(NULL))
+  .log_arrow(lvl, "Reference: ", res$reference)
+  if (auto && is.finite(res$occupancy))
+    .log_rows(lvl, c(`ZOC status` = if (isTRUE(res$zoc_anchored)) "anchored" else "not anchored",
+                     `Surface occupancy` = sprintf("%.2f%% (%.1f m band)",
+                                                   100 * res$occupancy, settings$surface.band)),
+              min_level = 2L)
+  invisible(NULL)
+}
+
+
+#' The SUMMARY block: what happened, in sections. Settings are reported by the header, not repeated here.
+#' @keywords internal
+#' @noRd
+.reportDiveCohort <- function(lvl, n_done, n_total, refs, tot_dives, statuses, output.dir) {
+  if (lvl < 1L) return(invisible(NULL))
+  tick <- cli::col_green(cli::symbol$tick)
+
+  dep <- c(Processed = sprintf("%d/%d", n_done, n_total))
+  n_surf <- sum(refs == "surface", na.rm = TRUE); n_base <- sum(refs == "baseline", na.rm = TRUE)
+  if (n_surf + n_base > 0)
+    dep <- c(dep, `Surface reference` = format(n_surf), `Baseline reference` = format(n_base))
+  .log_section(lvl, "Deployments")
+  .log_rows(lvl, dep, symbols = c(tick, rep(cli::symbol$bullet, length(dep) - 1L)))
+
+  n_none <- sum(statuses == "applied_no_dives")
+  res <- c(`Dives detected` = format(tot_dives, big.mark = ","),
+           `Deployments with dives` = format(n_done - n_none))
+  # "1 deployment yielded no dives" rather than "applied_no_dives x1": zero dives is a documented
+  # result, not a non-standard outcome, and the raw status string means nothing to a reader
+  if (n_none > 0) res <- c(res, `Deployments without dives` = format(n_none))
+  other <- statuses[!statuses %in% c("applied", "applied_no_dives")]
+  if (length(other)) {
+    tb <- table(other)
+    res <- c(res, Skipped = paste(sprintf("%d (%s)", as.integer(tb), names(tb)), collapse = ", "))
+  }
+  .log_section(lvl, "Results")
+  .log_rows(lvl, res)
+
+  if (!is.null(output.dir)) {
+    .log_section(lvl, "Output")
+    .log_rows(lvl, c(Directory = output.dir))
+  }
+  cli::cli_text("")
+  invisible(NULL)
+}
+
+
+#' Raise the baseline-estimator cautions once per kind, naming the deployments they apply to.
+#' @param risks Per-deployment risk records, each carrying `id`.
+#' @param control The user's `diveControl()` object.
+#' @param n_total Cohort size, for context in the message.
+#' @keywords internal
+#' @noRd
+.warnDiveBaseline <- function(risks, control, n_total) {
+  if (!length(risks)) return(invisible(NULL))
+  cap <- function(txt) if (length(txt) > 10L)
+    c(utils::head(txt, 10L), sprintf("(+%d more)", length(txt) - 10L)) else txt
+
+  med <- Filter(function(r) isTRUE(r$median_at_risk), risks)
+  if (length(med)) {
+    who <- cap(vapply(med, function(r) sprintf("%s (%d%%)", r$id, round(100 * r$duty_cycle)), ""))
+    cli::cli_warn(c(
+      "The running median baseline sits inside the excursions for {length(med)} of {n_total} deployment{?s}, where they occupy more than half the record.",
+      "!" = "{who}",
+      "i" = "Use {.code diveControl(baseline.stat = \"quantile\")} for a duty cycle above ~50%."))
+  }
+
+  qua <- Filter(function(r) isTRUE(r$quantile_at_risk), risks)
+  if (length(qua)) {
+    who <- cap(vapply(qua, function(r) sprintf("%s (%.1f m/window)", r$id, r$drift_per_window_m), ""))
+    cli::cli_warn(c(
+      "The low-quantile baseline tracks the window edge rather than the local level for {length(qua)} of {n_total} deployment{?s}, whose baseline drifts within a window.",
+      "!" = "{who}",
+      "i" = "Use {.code diveControl(baseline.stat = \"median\")} on a drifting baseline."))
+  }
+  invisible(NULL)
 }

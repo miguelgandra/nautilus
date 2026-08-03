@@ -426,26 +426,17 @@
     }
   }
 
-  if (lvl >= 1L && is.null(control$depth.threshold)) {
-    .log_arrow(lvl, "depth.threshold not supplied; using the derived FLOOR for this cohort")
-    .log_detail(lvl, sprintf("ZOC residual (p95 |depth| at surface): %s",
-                             if (is.na(r_max)) "unavailable" else sprintf("%.2f m", r_max)))
-    .log_detail(lvl, sprintf("stored-series noise (MAD, 2nd diff):   %s",
-                             if (is.na(n_med)) "unavailable" else sprintf("%.3f m", n_med)))
-    .log_detail(lvl, sprintf("derived floor = %.2f m", thr))
-    .log_subdetail(lvl, "This is the smallest excursion the RECORD can support, not an estimate of what")
-    .log_subdetail(lvl, "the ANIMAL treats as a dive. Set diveControl(depth.threshold = ) from your study")
-    .log_subdetail(lvl, "system, and choose it BEFORE looking at your response variable.")
-  }
-  if (lvl >= 1L && bin_max > 0) {
-    .log_detail(lvl, sprintf("depth binned at %s by downsampling -> min duration floor %.0f s; shorter excursions are attenuated",
-                             if (bin_max < 1) sprintf("%.3g s", bin_max) else .formatDurationShort(bin_max), dur))
-  }
-
+  # No logging here any more. The caller renders one "Detection settings" block from these values, so
+  # every setting is reported in one place instead of being narrated as it happens to be computed.
   list(reference = ref, reference_note = ref_note,
        depth.threshold = thr, surface.band = band, min.prominence = prom, min.duration = dur,
        min.amplitude = amp_min, max.gap = gap, wiggle.amplitude = wig, threshold_source = thr_src, duration_source = dur_src,
-       noise = n_med)
+       noise = n_med, zoc_residual = r_max, depth_bin = bin_max, dt = dt_med,
+       n_anchored = if (identical(control$reference, "auto")) sum(zst %in% c("applied", "applied_with_gaps", "constant_offset"), na.rm = TRUE) else NA_integer_,
+       band_source = if (is.null(control$surface.band)) "derived" else "user",
+       amplitude_source = if (is.null(control$min.amplitude)) "derived" else "user",
+       gap_source = if (is.null(control$max.gap)) "derived" else "user",
+       prominence_source = if (is.null(control$min.prominence)) "derived" else "user")
 }
 
 #' Detect dives in ONE deployment. Returns the three per-sample columns plus a status.
@@ -457,7 +448,8 @@
                 dive_phase = factor(rep("inter_dive", n),
                                     levels = c("descent", "bottom", "ascent", "inter_dive")),
                 baseline = rep(NA_real_, n), n_dives = 0L,
-                reference = settings$reference, status = "abstained_no_depth")
+                reference = settings$reference, status = "abstained_no_depth",
+                occupancy = NA_real_, zoc_anchored = NA, risk = NULL)
   if (!isTRUE(scan$usable)) return(empty)
 
   tnum <- .asTimeSeconds(x[[datetime.col]])
@@ -468,43 +460,37 @@
   # threshold: the animal has to visit the band for "not diving" to mean anything there. An anchored
   # ZOC on a record that never comes shallow otherwise yields one dive spanning the whole deployment.
   ref <- settings$reference
-  occ <- NA_real_
+  occ <- NA_real_; auto_zoc <- NA
   if (identical(ref, "per-deployment")) {
     zoc_ok <- isTRUE(scan$zoc_status %in% c("applied", "applied_with_gaps", "constant_offset"))
     fin <- d[is.finite(d)]
     occ <- if (length(fin)) mean(abs(fin) <= settings$surface.band) else 0
     band_ok <- is.finite(occ) && occ >= control$min.surface.occupancy
     ref <- if (zoc_ok && band_ok) "surface" else "baseline"
-    if (lvl >= 2L)
-      .log_arrow(lvl, sprintf("reference: %s (auto: ZOC %s, %.2f%% of samples within the %.2f m band, needs %.2f%%)",
-                              ref, if (zoc_ok) "anchored" else "not anchored",
-                              100 * occ, settings$surface.band, 100 * control$min.surface.occupancy))
+    auto_zoc <- zoc_ok
   }
   b <- if (identical(ref, "surface")) rep(0, n)
        else .diveBaseline(d, tnum, control, control$direction)
   resid <- d - b
 
-  # warn when the chosen baseline estimator sits in its own failing regime
-  if (identical(ref, "baseline") && lvl >= 1L) {
-    risk <- .diveBaselineRisk(d, b, settings$depth.threshold, control, tnum)
-    if (isTRUE(risk$median_at_risk))
-      cli::cli_warn(c("{.val {id}}: excursions occupy {round(100*risk$duty_cycle)}% of the record, so the running MEDIAN baseline sits inside them.",
-                      "i" = "Use {.code diveControl(baseline.stat = \"quantile\")} for a duty cycle above ~50%."))
-    if (isTRUE(risk$quantile_at_risk))
-      cli::cli_warn(c("{.val {id}}: the baseline moves {round(risk$drift_per_window_m,1)} m per window, so a low QUANTILE tracks the window edge, not the local level.",
-                      "i" = "Use {.code diveControl(baseline.stat = \"median\")} on a drifting baseline."))
-  }
+  # The baseline estimator can sit in its own failing regime. Reported back rather than warned about
+  # here: one warning per deployment buries a large cohort, and R keeps only the first 50 warnings, so
+  # on a 51-deployment run the tail is dropped outright. The caller groups them by kind.
+  risk <- if (identical(ref, "baseline")) .diveBaselineRisk(d, b, settings$depth.threshold, control, tnum)
+          else NULL
 
   signs <- switch(control$direction, down = 1, up = -1, both = c(1, -1))
   runs <- do.call(rbind, lapply(signs, function(s)
     .diveRuns(resid, tnum, settings$depth.threshold, settings$surface.band, sign = s)))
   if (is.null(runs) || !nrow(runs)) {
-    e <- empty; e$baseline <- b; e$reference <- ref; e$status <- "applied_no_dives"; return(e)
+    e <- empty; e$baseline <- b; e$reference <- ref; e$status <- "applied_no_dives"
+    e$occupancy <- occ; e$zoc_anchored <- auto_zoc; e$risk <- risk; return(e)
   }
   runs <- .diveSplitOnGaps(runs, tnum, d, settings$max.gap)
   runs <- .diveSplitOnProminence(runs, resid, settings$min.prominence)
   runs <- .diveScreenRuns(runs, resid, tnum, settings$min.amplitude, settings$min.duration, n)
-  if (!nrow(runs)) { e <- empty; e$baseline <- b; e$reference <- ref; e$status <- "applied_no_dives"; return(e) }
+  if (!nrow(runs)) { e <- empty; e$baseline <- b; e$reference <- ref; e$status <- "applied_no_dives"
+                     e$occupancy <- occ; e$zoc_anchored <- auto_zoc; e$risk <- risk; return(e) }
   runs <- runs[order(runs$start_i), , drop = FALSE]
 
   dive_id <- rep(0L, n)
@@ -517,7 +503,8 @@
   list(dive_id = dive_id,
        dive_phase = factor(phase, levels = c("descent", "bottom", "ascent", "inter_dive")),
        baseline = b, n_dives = nrow(runs),
-       reference = ref, status = "applied")
+       reference = ref, status = "applied",
+       occupancy = occ, zoc_anchored = auto_zoc, risk = risk)
 }
 
 #' Split one dive into descent / bottom / ascent.

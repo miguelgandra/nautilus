@@ -79,7 +79,7 @@ dive_settings <- diveControl(
   surface.band    = 5,        # must return within 5 m of the reference to close the dive
   min.duration    = 20,       # seconds; excludes brief undulations that are not dives
   min.prominence  = NULL,     # NULL never splits a W-shaped excursion into two dives (see below)
-  max.gap         = 300,      # a longer interruption splits the dive and marks both parts censored
+  max.gap         = 60*30,      # a longer interruption splits the dive and marks both parts censored
   phase.method    = "vertical.rate")   # how descent/bottom/ascent are separated
 
 # On min.prominence: left NULL, a deep excursion with a partial re-ascent in the middle is reported
@@ -112,8 +112,6 @@ detectDives(data          = processed_files,
             output.dir    = "./data interim/07_dives",
             verbose       = "detailed")
 
-dive_files <- list.files("./data interim/07_dives", full.names = TRUE)
-
 # Zero dives is a result, not a failure: it is reported with the threshold that produced it, the
 # observed depth range and the reference used, and the threshold is never quietly relaxed until dives
 # appear. If a deployment reports none, check its depth range before changing anything.
@@ -132,16 +130,10 @@ dive_files <- list.files("./data interim/07_dives", full.names = TRUE)
 #
 # Angles need circular statistics (the mean of 350 and 10 degrees is 0, not 180), so heading and roll
 # are handled separately and reported as a mean angle plus a mean resultant length.
-#
-# One habit worth adopting: calculateTailBeats() names its output after the backend that produced it
-# (tbf_hz_peaks, tbf_hz_wavelet), so provenance travels with every value. Rather than hard-coding one,
-# ask the data which is there. tailBeatColumn() resolves it from the column contents - so this script
-# keeps working whichever backend Tutorial 01 was run with.
-tbf_col <- tailBeatColumn(readRDS(dive_files[1]))
-tbf_col
 
-dive_metrics <- diveMetrics(data               = dive_files,
-                            variables          = c("temp", "vedba", tbf_col, "heading"),
+
+dive_metrics <- diveMetrics(data               = list.files("./data interim/07_dives", full.names = TRUE),
+                            variables          = c("temp", "vedba", "tbf_hz_wavelet", "heading"),
                             circular.variables = c("heading", "roll"),
                             statistics         = c("mean", "sd"),
                             by.phase           = TRUE,   # also summarise within descent/bottom/ascent
@@ -205,7 +197,7 @@ surface_intervals <- subset(dive_metrics, !inter_dive_censored & !is.na(inter_di
 # numbers are not recomputed: the deployment is reduced by the same engine behind diveMetrics(), so a
 # dive count quoted from the summary is by construction the one the per-dive table gives.
 
-dive_summary <- summarizeTagData(data        = dive_files,
+dive_summary <- summarizeTagData(data        = list.files("./data interim/07_dives", full.names = TRUE),
                                  error.stat  = "sd",
                                  verbose     = "detailed")
 
