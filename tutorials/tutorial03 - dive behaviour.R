@@ -75,8 +75,8 @@ print(processed_files)
 dive_settings <- diveControl(
   reference       = "auto",   # resolve per deployment; the choice is reported and stored
   direction       = "down",
-  depth.threshold = 5,        # metres past the reference before an excursion counts as a dive
-  surface.band    = 2,        # must return within 2 m of the reference to close the dive
+  depth.threshold = 10,       # metres past the reference before an excursion counts as a dive
+  surface.band    = 5,        # must return within 5 m of the reference to close the dive
   min.duration    = 20,       # seconds; excludes brief undulations that are not dives
   min.prominence  = NULL,     # NULL never splits a W-shaped excursion into two dives (see below)
   max.gap         = 300,      # a longer interruption splits the dive and marks both parts censored

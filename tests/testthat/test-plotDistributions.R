@@ -190,3 +190,56 @@ test_that("an explicit label for the column as it is actually named wins over th
   # a non-tail-beat metric is unaffected
   expect_identical(nautilus:::.distLabel("vedba", c(vedba = "Effort")), "Effort")
 })
+
+
+# ---- panel geometry -------------------------------------------------------------------------
+
+test_that("every metric panel gets exactly the same width, whatever the metrics", {
+  # the first column carries the deployment labels in its own left margin, so with equal layout cells
+  # its plot region came out narrower than its neighbours' - a two-metric figure looked lopsided
+  mk <- function(id) {
+    n <- 200
+    d <- data.frame(ID = id,
+                    datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n),
+                    tbf_hz_wavelet = rlnorm(n, -0.8, 0.3),
+                    paddle_speed   = rlnorm(n, 0, 0.4),
+                    vedba          = rlnorm(n, -1, 0.5))
+    m <- nautilus:::.newNautilusMeta(); m$id <- id
+    nautilus:::new_nautilus_tag(data.table::as.data.table(d), m)
+  }
+  widths_for <- function(metrics, ids) {
+    tags <- lapply(ids, mk); names(tags) <- ids
+    orig <- nautilus:::.drawViolinPanel
+    pins <- numeric(0)
+    testthat::local_mocked_bindings(
+      .drawViolinPanel = function(...) { orig(...); pins <<- c(pins, graphics::par("pin")[1]) },
+      .package = "nautilus")
+    pdf(NULL); on.exit(dev.off(), add = TRUE)
+    suppressWarnings(plotDistributions(tags, metrics = metrics, plot = TRUE, verbose = FALSE))
+    pins
+  }
+  ids <- sprintf("PIN_%02d", 1:6)
+
+  w2 <- widths_for(c("tbf_hz_wavelet", "paddle_speed"), ids)
+  expect_length(w2, 2L)
+  expect_equal(w2[1], w2[2], tolerance = 1e-6)
+
+  w3 <- widths_for(c("vedba", "tbf_hz_wavelet", "paddle_speed"), ids)
+  expect_length(w3, 3L)
+  expect_equal(w3, rep(w3[1], 3L), tolerance = 1e-6)
+
+  # and it holds when the labels are long, which is when the imbalance was worst
+  wl <- widths_for(c("tbf_hz_wavelet", "paddle_speed"),
+                   c("PIN_CAM_LONGNAME_01", "PIN_CAM_LONGNAME_02", "PIN_CAM_LONGNAME_03"))
+  expect_equal(wl[1], wl[2], tolerance = 1e-6)
+})
+
+test_that("the default canvas is wide enough not to look vertically stretched", {
+  # one metric over a modest cohort should be wider than it is tall
+  d1 <- nautilus:::.distDeviceSize(1, 8, TRUE, 1)
+  expect_gt(d1$width, d1$height)
+  # and each added metric widens it substantially
+  d2 <- nautilus:::.distDeviceSize(2, 8, TRUE, 1)
+  expect_gt(d2$width - d1$width, 3)
+  expect_identical(d1$height, d2$height)          # height depends on the cohort, not the metric count
+})

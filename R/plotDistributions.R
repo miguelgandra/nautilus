@@ -202,10 +202,29 @@ plotDistributions <- function(data,
     lay <- if (show.marginal) matrix(c(seq_len(M), M + seq_len(M)), nrow = 2, byrow = TRUE) else matrix(seq_len(M), nrow = 1)
     # fixed-height marginal strip (absolute cm), so it never collapses under its title margin when there
     # are few deployments; the violin row takes the remaining height.
-    graphics::layout(lay, heights = if (show.marginal) c(graphics::lcm(2.4), 1) else 1)
-    graphics::par(oma = c(0, 0, 0, 0), mgp = c(3, 0.7, 0))
-
     left1 <- max(4.5, 0.55 * max(nchar(ord_ids)) * cex)          # room for the id labels in the first column
+
+    # Every panel must end up the SAME size, whatever metrics are drawn. The first column carries the
+    # deployment labels in its own left margin, so with equal cells its plot region is narrower than
+    # its neighbours' by exactly that margin - which is what made a two-metric figure look lopsided.
+    # Widening the first CELL by the same amount cancels it: region = cell - margins is then constant.
+    # The layout is set TWICE, deliberately. layout() shrinks par("cex") according to how many figures
+    # it holds (0.83 for a 2x2), and margins are measured in lines of that scaled text - so the
+    # inches-per-line needed to size the gutter is only knowable once the layout exists. Reading
+    # par("csi") beforehand returns the unscaled 0.2 and over-widens the first column by a fifth.
+    heights <- if (show.marginal) c(graphics::lcm(2.4), 1) else 1
+    graphics::par(oma = c(0, 0, 0, 0), mgp = c(3, 0.7, 0))       # before layout, so the region is known
+    graphics::layout(lay, heights = heights)                     # establishes the per-figure cex
+    lh <- graphics::par("csi")                                   # true inches per margin line
+    # Measure the DEVICE, not the size this function would have asked for: with plot = TRUE the figure
+    # goes to whatever device is already open, which is rarely dims$width. Sizing the correction from
+    # the intended width instead scales it by the ratio of the two and under-corrects.
+    avail <- graphics::par("din")[1] - sum(graphics::par("omi")[c(2, 4)])
+    gut   <- (left1 - 0.8) * lh                                  # the first column's extra margin, in inches
+    panel <- (avail - gut) / M                                   # the width every panel cell then shares
+    # layout() allocates `widths` proportionally, so passing inches that sum to the figure width makes
+    # the allocation literal.
+    graphics::layout(lay, widths = c(panel + gut, rep(panel, M - 1L)), heights = heights)
     # top row: pooled marginal densities
     if (show.marginal) for (j in seq_len(M)) {
       m <- metrics[j]
@@ -374,7 +393,7 @@ plotDistributions <- function(data,
 #' @noRd
 .distDeviceSize <- function(M, ny, show.marginal, cex) {
   marg_in <- if (show.marginal) 0.95 else 0
-  list(width  = max(4, 3.1 * M + 1.2) * max(1, cex * 0.9),
+  list(width  = max(5, 3.8 * M + 1.5) * max(1, cex * 0.9),
        height = (marg_in + 0.95 + 0.19 * ny) * max(1, cex * 0.9))
 }
 
