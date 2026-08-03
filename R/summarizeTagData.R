@@ -187,16 +187,7 @@ summarizeTagData <- function(data,
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    # detailed: per-metric coverage across the processed deployments (+ the excluded ids, if a roster)
-    if (lvl >= 2L) .summaryCoverageDetail(lvl, summary_table)
-    if (!is.null(deployments) && "status" %in% names(summary_table)) {
-      n_excl <- sum(summary_table$status == "excluded")
-      .log_done(lvl, nrow(summary_table), " deployment", if (nrow(summary_table) != 1) "s",
-                " in roster (", nrow(summary_table) - n_excl, " included, ", n_excl, " excluded)")
-    } else {
-      n_ok <- nrow(summary_table)
-      .log_done(lvl, n_ok, " tag", if (n_ok != 1) "s", " summarised")
-    }
+    .summaryReport(lvl, summary_table, has_roster = !is.null(deployments))
     .log_runtime(lvl, start.time)
   }
 
@@ -204,65 +195,111 @@ summarizeTagData <- function(data,
 }
 
 
-#' Detailed-verbose diagnostic: how many processed deployments carry each optional metric group, plus
-#' the excluded ids when the roster was completed. A cheap data-completeness check (e.g. spotting the
-#' deployments that never had calculateTailBeats() run, or lack a magnetometer / positions).
+#' Render the SUMMARY block as short, titled sections rather than one dense line per topic.
+#'
+#' The information is unchanged and so is its verbosity gating - what moves is the layout. A single line
+#' carrying six coverage counts is quick to write and slow to read; the same six as an aligned column
+#' under a heading can be scanned without parsing prose. Sections appear only when they have something
+#' to say, so a run without a roster, without dives or without exclusions simply omits them.
+#' @param lvl Resolved verbosity.
+#' @param st The finished summary table.
+#' @param has_roster Whether `deployments` completed the roster, which is what makes the
+#'   included/excluded split meaningful.
 #' @keywords internal
 #' @noRd
-.summaryCoverageDetail <- function(lvl, st) {
-  incl <- if ("status" %in% names(st)) st[st$status == "included", , drop = FALSE] else st
-  n <- nrow(incl)
-  if (n == 0) return(invisible())
-  cnt <- function(col) if (col %in% names(incl)) sum(is.finite(incl[[col]])) else 0L
-  p <- if ("n_positions" %in% names(incl)) incl$n_positions else rep(NA_real_, n)
-  npos <- sum(is.finite(p) & p > 0)
-  sep <- if (cli::is_utf8_output()) " \u00b7 " else " | "     # ASCII fallback on non-UTF-8 consoles
-  parts <- sprintf(c("depth %d", "temp %d", "activity %d", "tail-beats %d", "paddle %d", "positions %d"),
-                   c(cnt("depth_max"), cnt("temp_max"), cnt("vedba_mean"), cnt("tbf_mean"), cnt("speed_mean"), npos))
-  .log_detail(lvl, sprintf("metric coverage (of %d processed): %s", n, paste(parts, collapse = sep)))
-  # dive block: only once detectDives() has annotated at least one of the processed deployments
-  if ("n_dives" %in% names(incl)) {
-    nd    <- incl$n_dives
-    have  <- is.finite(nd)                                  # the deployments that carry the block
-    n_dep <- sum(have)
-    tot   <- sum(nd[have])
-    if (tot == 0) {
-      .log_detail(lvl, sprintf("dives: none detected in %d annotated deployment%s",
-                               n_dep, if (n_dep != 1) "s" else ""))
-    } else {
-      # the summary holds no pooled dive list, so the typical duration is the median of the
-      # per-deployment medians; the extremes are true cohort extremes
-      # "across N deployments" must count the ones that HAVE dives, not the ones that were annotated -
-      # a cohort where 3 of 10 tags dived reads "across 10 deployments" otherwise
-      n_with <- sum(nd[have] > 0)
-      # no pooled dive list exists here, so this is a median of per-deployment medians. Said plainly,
-      # because it is the kind of number that gets copied into a methods section.
-      med <- stats::median(incl$dive_duration_median_min[have], na.rm = TRUE)
-      bits <- c(sprintf("typical duration %.1f min (median of deployment medians)", med),
-                sprintf("longest %.1f min", max(incl$dive_duration_max_min[have], na.rm = TRUE)),
-                sprintf("deepest %.1f m", max(incl$dive_depth_max_m[have], na.rm = TRUE)))
-      .log_detail(lvl, sprintf("dives: %s across %d deployment%s%s%s", format(tot, big.mark = ","),
-                               n_with, if (n_with != 1) "s" else "", sep, paste(bits, collapse = sep)))
-      n_inc <- sum(incl$dives_incomplete[have], na.rm = TRUE)
-      if (n_inc > 0) {
-        n_tr <- sum(incl$dives_truncated[have], na.rm = TRUE)
-        n_gp <- sum(incl$dives_gapped[have], na.rm = TRUE)
-        # the two causes overlap, so they can sum past the total. Say so when they actually do, rather
-        # than let "2 incomplete: 2 truncated + 1 gap-interrupted" read as an arithmetic error.
-        .log_subdetail(lvl, sprintf("%s incomplete: %s truncated at a record boundary%s%s gap-interrupted%s",
-                                    format(n_inc, big.mark = ","), format(n_tr, big.mark = ","),
-                                    sep, format(n_gp, big.mark = ","),
-                                    if (n_tr + n_gp > n_inc) " (a dive can be both)" else ""))
-      }
+.summaryReport <- function(lvl, st, has_roster) {
+  rostered <- has_roster && "status" %in% names(st)
+  incl     <- if (rostered) st[st$status == "included", , drop = FALSE] else st
+  n        <- nrow(incl)
+  tick     <- cli::col_green(cli::symbol$tick)
+  cross    <- cli::col_red(cli::symbol$cross)
+
+  ## Deployments -----------------------------------------------------------------------------------
+  .log_section(lvl, "Deployments")
+  if (rostered) {
+    n_excl <- nrow(st) - n
+    .log_rows(lvl, c(Roster = nrow(st), Included = n, Excluded = n_excl),
+              symbols = c(tick, tick, if (n_excl > 0) cross else tick))
+  } else {
+    .log_rows(lvl, stats::setNames(n, if (n == 1) "Tag summarised" else "Tags summarised"),
+              symbols = tick)
+  }
+
+  ## Data availability -----------------------------------------------------------------------------
+  # detailed-only, as before: a completeness check for spotting the deployments that never had
+  # calculateTailBeats() run, or that carry no magnetometer or positions
+  if (lvl >= 2L && n > 0) {
+    cnt  <- function(col) if (col %in% names(incl)) sum(is.finite(incl[[col]])) else 0L
+    p    <- if ("n_positions" %in% names(incl)) incl$n_positions else rep(NA_real_, n)
+    rows <- c(Depth = cnt("depth_max"), Temperature = cnt("temp_max"), Activity = cnt("vedba_mean"),
+              `Tail-beats` = cnt("tbf_mean"), Paddle = cnt("speed_mean"),
+              Positions = sum(is.finite(p) & p > 0))
+    .log_section(lvl, sprintf("Data availability (%d %s)", n, if (rostered) "included" else "processed"),
+                 min_level = 2L)
+    .log_rows(lvl, rows, min_level = 2L)
+  }
+
+  ## Dives -----------------------------------------------------------------------------------------
+  if (lvl >= 2L && "n_dives" %in% names(incl)) .summaryDiveSection(lvl, incl)
+
+  ## Excluded deployments --------------------------------------------------------------------------
+  if (lvl >= 2L && rostered) {
+    ex <- st$id[st$status == "excluded"]
+    if (length(ex)) {
+      .log_section(lvl, "Excluded deployments", min_level = 2L)
+      shown <- if (length(ex) > 12L) paste0(paste(utils::head(ex, 12L), collapse = ", "),
+                                            sprintf(", ... (+%d more)", length(ex) - 12L))
+               else paste(ex, collapse = ", ")
+      .log_block(lvl, shown, min_level = 2L)
     }
   }
-  if ("status" %in% names(st)) {
-    ex <- st$id[st$status == "excluded"]
-    if (length(ex))
-      .log_detail(lvl, sprintf("excluded (%d): %s", length(ex),
-                               if (length(ex) > 12) paste0(paste(utils::head(ex, 12), collapse = ", "), sprintf(", ... (+%d more)", length(ex) - 12))
-                               else paste(ex, collapse = ", ")))
+  cli::cli_text("")
+  invisible()
+}
+
+
+#' The dive section of the SUMMARY block, present once detectDives() has annotated any deployment.
+#' @keywords internal
+#' @noRd
+.summaryDiveSection <- function(lvl, incl) {
+  nd    <- incl$n_dives
+  have  <- is.finite(nd)                                  # the deployments that carry the block
+  n_dep <- sum(have)
+  if (!n_dep) return(invisible())
+  tot <- sum(nd[have])
+
+  if (tot == 0) {
+    .log_section(lvl, "Dives", min_level = 2L)
+    .log_block(lvl, sprintf("None detected in %d annotated deployment%s.",
+                            n_dep, if (n_dep != 1) "s" else ""), min_level = 2L)
+    return(invisible())
   }
+
+  # "across N deployments" counts the ones that HAVE dives, not the ones that were annotated - a cohort
+  # where 3 of 10 tags dived otherwise reads "across 10 deployments"
+  n_with <- sum(nd[have] > 0)
+  # no pooled dive list exists here, so the typical duration is a median of per-deployment medians. Said
+  # plainly, because it is the kind of number that gets copied into a methods section.
+  med  <- stats::median(incl$dive_duration_median_min[have], na.rm = TRUE)
+  rows <- c(Total = format(tot, big.mark = ","),
+            `With dives` = format(n_with),
+            `Typical duration` = sprintf("%.1f min (median of deployment medians)", med),
+            Longest = sprintf("%.1f min", max(incl$dive_duration_max_min[have], na.rm = TRUE)),
+            Deepest = sprintf("%.1f m", max(incl$dive_depth_max_m[have], na.rm = TRUE)))
+
+  n_inc <- sum(incl$dives_incomplete[have], na.rm = TRUE)
+  if (n_inc > 0) {
+    n_tr <- sum(incl$dives_truncated[have], na.rm = TRUE)
+    n_gp <- sum(incl$dives_gapped[have], na.rm = TRUE)
+    # the two causes overlap, so they can sum past the total. Say so when they actually do, rather than
+    # let "2 incomplete: 2 truncated, 1 gap-interrupted" read as an arithmetic error.
+    rows <- c(rows, Incomplete = sprintf("%s (%s truncated, %s gap-interrupted%s)",
+                                         format(n_inc, big.mark = ","), format(n_tr, big.mark = ","),
+                                         format(n_gp, big.mark = ","),
+                                         if (n_tr + n_gp > n_inc) "; a dive can be both" else ""))
+  }
+  .log_section(lvl, "Dives", min_level = 2L)
+  .log_rows(lvl, rows, min_level = 2L)
   invisible()
 }
 

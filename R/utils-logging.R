@@ -207,6 +207,59 @@
 #' untouched, so no escaping dance is needed.
 #' @keywords internal
 #' @noRd
+#' A titled group inside a SUMMARY block: a blank line, then the heading in bold.
+#'
+#' Sections are what let a summary be scanned rather than read. The heading is deliberately plain text
+#' rather than a `cli_rule()`: a SUMMARY already sits under one rule, and nesting a second set inside it
+#' reads as a new stage of the run rather than a group within the same block.
+#' @param lvl Resolved verbosity.
+#' @param title Section heading.
+#' @param min_level Lowest verbosity at which the section appears.
+#' @keywords internal
+#' @noRd
+.log_section <- function(lvl, title, min_level = 1L) {
+  if (lvl < min_level) return(invisible(NULL))
+  cli::cli_text("")
+  cli::cli_text("{.strong {title}}")
+  invisible(NULL)
+}
+
+#' Aligned label/value rows for a summary section.
+#'
+#' `cli_verbatim()` rather than `cli_text()`, because the latter normalises runs of whitespace and would
+#' collapse exactly the padding that makes the column line up. Values are formatted together so integers
+#' share a width and the numbers read as a column.
+#' @param lvl Resolved verbosity.
+#' @param rows A named vector: names become the labels, values the right-hand column.
+#' @param symbols One symbol per row, recycled; defaults to a bullet.
+#' @param min_level Lowest verbosity at which the rows appear.
+#' @keywords internal
+#' @noRd
+.log_rows <- function(lvl, rows, symbols = cli::symbol$bullet, min_level = 1L) {
+  if (lvl < min_level || !length(rows)) return(invisible(NULL))
+  labs <- paste0(names(rows), ":")
+  pad  <- formatC(labs, width = -max(nchar(labs)))
+  # numbers are formatted together so they right-align into a column; strings are left exactly as
+  # given, since format() would pad them all to the longest and leave a ragged tail of whitespace
+  vals <- if (is.numeric(rows)) format(rows, big.mark = ",") else as.character(rows)
+  sym  <- rep(symbols, length.out = length(rows))
+  for (i in seq_along(rows)) cli::cli_verbatim(paste0("  ", sym[i], " ", pad[i], "  ", vals[i]))
+  invisible(NULL)
+}
+
+#' A free-text block inside a summary section, wrapped to the console and indented under its heading.
+#' @param lvl Resolved verbosity.
+#' @param text One string; wrapped at the console width.
+#' @param min_level Lowest verbosity at which the block appears.
+#' @keywords internal
+#' @noRd
+.log_block <- function(lvl, text, min_level = 1L) {
+  if (lvl < min_level) return(invisible(NULL))
+  width <- max(40L, min(getOption("width", 80L), 100L) - 4L)
+  for (ln in strwrap(text, width = width)) cli::cli_verbatim(paste0("  ", ln))
+  invisible(NULL)
+}
+
 .log_subdetail_aligned <- function(lvl, ...) {
   if (lvl < 2L) return(invisible(NULL))
   cli::cli_verbatim(paste0("  \u21b3 ", paste0(...)))

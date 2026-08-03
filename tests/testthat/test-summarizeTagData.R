@@ -228,18 +228,42 @@ test_that("summary.nautilus_tag returns a one-row nautilus_summary", {
   expect_equal(s$id, "A")
 })
 
-test_that("detailed verbose reports metric coverage (and the roster split when completed)", {
+test_that("the SUMMARY block groups its content into titled sections", {
   grab <- function(...) paste(cli::cli_fmt(suppressWarnings(summarizeTagData(...))), collapse = "\n")
+
   d2 <- grab(list(A = .mk("A", withtbf = TRUE), B = .mk("B")), verbose = 2)
-  expect_match(d2, "metric coverage")
-  expect_match(d2, "tail-beats 1")                          # only A has tail-beat data
+  expect_match(d2, "Data availability")                     # the section heading
+  expect_match(d2, "Tail-beats:\\s+1")                       # only A has tail-beat data
+  expect_match(d2, "Depth:\\s+2")
+
+  # coverage stays level-2 only: the layout changed, the verbosity gating did not
   d1 <- grab(list(A = .mk("A")), verbose = 1)
-  expect_false(grepl("metric coverage", d1))               # coverage is level-2 only
-  # roster split surfaces at level 1 when deployments is supplied
+  expect_false(grepl("Data availability", d1))
+  expect_match(d1, "Deployments")                           # but the roster section is level-1
+
+  # the roster split still surfaces at level 1, now as aligned rows rather than one packed line
   dep <- data.frame(id = c("A", "B", "C"), tag_model = "CATS", stringsAsFactors = FALSE)
   class(dep) <- c("nautilus_deployments", "data.frame")
   dr <- grab(list(A = .mk("A")), deployments = dep, verbose = 1)
-  expect_match(dr, "1 included, 2 excluded")
+  expect_match(dr, "Roster:\\s+3")
+  expect_match(dr, "Included:\\s+1")
+  expect_match(dr, "Excluded:\\s+2")
+
+  # and the excluded ids are named at level 2, under their own heading
+  dr2 <- grab(list(A = .mk("A")), deployments = dep, verbose = 2)
+  expect_match(dr2, "Excluded deployments")
+  expect_match(dr2, "B, C")
+})
+
+test_that("the summary omits sections that have nothing to say", {
+  grab <- function(...) paste(cli::cli_fmt(suppressWarnings(summarizeTagData(...))), collapse = "\n")
+  # no roster -> no Roster/Excluded rows, and no excluded-ids section
+  d <- grab(list(A = .mk("A"), B = .mk("B")), verbose = 2)
+  expect_match(d, "Tags summarised:\\s+2")
+  expect_false(grepl("Roster:", d))
+  expect_false(grepl("Excluded deployments", d))
+  # no dive annotation -> no Dives section
+  expect_false(grepl("^Dives", d))
 })
 
 test_that("verbose = FALSE is silent", {
