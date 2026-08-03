@@ -250,8 +250,8 @@ plotDives(data      = dives_analysable,
 # than the default temperature turns the profile into a picture of effort through the water column -
 # whether the animal worked hardest descending, on the bottom, or coming back up.
 
-plotDepthProfiles(data             = dive_files,
-                  color.by         = tbf_col,          # resolved in STEP 3, whichever backend ran
+plotDepthProfiles(data             = list.files("./data interim/07_dives", full.names = TRUE),
+                  color.by         = "tbf_hz_wavelet",
                   color.label      = "Tail-beat frequency (Hz)",
                   geom             = "line",
                   shade.diel       = TRUE,
@@ -259,7 +259,7 @@ plotDepthProfiles(data             = dive_files,
                   downsample       = 5,
                   theme            = fig_theme,
                   plot             = FALSE,
-                  plot.file        = "./plots/fig2-depth-profiles-effort.pdf",
+                  plot.file        = "./plots/depth-profiles-tbf.pdf",
                   ncols            = 2,
                   nrows            = 5)
 

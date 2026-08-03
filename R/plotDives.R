@@ -62,7 +62,7 @@
   unname(ifelse(is.na(lab), metric, lab))
 }
 
-#' Is this metric an ABSOLUTE depth (inverted axis, zero at the top) or a magnitude (upright)?
+#' Is this metric an ABSOLUTE depth (measured from a real zero) or a magnitude (no origin to mark)?
 #'
 #' A property of the metric, never of `direction` - which is why no direction-dependent axis code
 #' exists anywhere in this function.
@@ -175,6 +175,158 @@
 # Rendering ###########################################################################################
 #######################################################################################################
 
+#' Report the decisions that shaped the figure, before any of them is applied.
+#'
+#' Every one of these changes what the reader sees - which dives counted, where the axis was cut,
+#' whether a median was drawn at all - so they belong in the header, not inferred afterwards from the
+#' figure.
+#' @keywords internal
+#' @noRd
+.reportDivePlotSettings <- function(lvl, metrics, trim, min.n, order.by, group.by, n_ids,
+                                    max.per.page, n_pages) {
+  .log_section(lvl, "Plot settings")
+  rows <- c("Metrics"            = paste(metrics, collapse = ", "),
+            "Axis trim"          = sprintf("%.3g (values above the %s percentile sit at the edge)",
+                                           trim, .ordinalSuffix(round(trim * 100))),
+            "Median drawn from"  = sprintf("%d usable dive%s", min.n, if (min.n != 1) "s" else ""),
+            "Order"              = switch(order.by,
+                                          id = "deployment id", input = "order of appearance",
+                                          median = "median of the ordering metric"),
+            "Grouping"           = group.by %||% "none",
+            "Layout"             = if (n_pages > 1L)
+                                     sprintf("%d pages, up to %d deployments each", n_pages, max.per.page)
+                                   else sprintf("1 page, %d deployment%s", n_ids,
+                                                if (n_ids != 1) "s" else ""))
+  .log_rows(lvl, rows)
+}
+
+
+#' Ordinal suffix for a whole percentile ("95th", "90th", "1st").
+#' @keywords internal
+#' @noRd
+.ordinalSuffix <- function(n) {
+  s <- if (n %% 100 %in% 11:13) "th" else switch(as.character(n %% 10), "1" = "st", "2" = "nd",
+                                                 "3" = "rd", "th")
+  paste0(n, s)
+}
+
+
+#' The closing summary: what was drawn, what was left out, and where it went.
+#' @keywords internal
+#' @noRd
+.reportDivePlotSummary <- function(lvl, st, metrics, ids, pages, trim, min.n, plot.file, start.time) {
+  .log_summary(lvl)
+  agg <- function(f) vapply(metrics, function(m) sum(f(st[st$metric == m, ]), na.rm = TRUE), numeric(1))
+  used <- agg(function(z) z$n_used)
+  excl <- agg(function(z) z$n_censored + z$n_unsupported)
+  offs <- agg(function(z) z$n_trimmed)
+  # a dash rather than a zero: a column of zeros reads as a finding, when it means nothing happened
+  num <- function(x) ifelse(x > 0, format(x, big.mark = ",", trim = TRUE), "-")
+
+  .log_section(lvl, "Dives per metric")
+  .log_table(lvl, data.frame(Metric = metrics, Used = num(used), Excluded = num(excl),
+                             `Off-scale` = num(offs), check.names = FALSE,
+                             stringsAsFactors = FALSE))
+  if (any(excl > 0))
+    .log_note(lvl, paste("Excluded dives were censored by the record's start or end, or had no",
+                         "descent/bottom/ascent resolved. They are drawn in outline."))
+  if (any(offs > 0))
+    .log_note(lvl, sprintf(paste("Off-scale dives lie beyond the trimmed axis (trim = %.3g). They are",
+                                 "drawn at the axis edge, not removed."), trim))
+
+  # said ONCE for the cohort, not repeated under every metric: it is a property of the deployment
+  no_med <- unique(st$id[!st$drawn])
+  .log_section(lvl, "Deployments")
+  rows <- c("Drawn" = format(length(ids), big.mark = ","))
+  if (length(no_med)) {
+    shown <- utils::head(no_med, 8L)
+    rows <- c(rows, stats::setNames(
+      sprintf("%d (%s%s)", length(no_med), paste(shown, collapse = ", "),
+              if (length(no_med) > length(shown)) sprintf(", +%d more", length(no_med) - length(shown)) else ""),
+      sprintf("Without a median (< %d dives)", min.n)))
+  }
+  if (length(pages) > 1L) rows <- c(rows, "Pages" = format(length(pages)))
+  .log_rows(lvl, rows)
+
+  if (!is.null(plot.file)) {
+    .log_section(lvl, "Output")
+    .log_rows(lvl, c("File" = plot.file))
+  }
+  .log_runtime(lvl, start.time)
+}
+
+
+#' Split one metric's dives per deployment into the ones that count and the ones only drawn.
+#' @keywords internal
+#' @noRd
+.pdPerId <- function(dm, metric, ids, id.col) {
+  lapply(ids, function(id) {
+    sub <- dm[as.character(dm[[id.col]]) == id, , drop = FALSE]
+    if (!metric %in% names(sub)) return(list(used = numeric(0), excl = numeric(0)))
+    u <- .diveUsable(sub, metric)
+    # Non-finite values are dropped HERE, not later: `censored` is decided before finiteness (see
+    # .diveUsable), so a boundary-truncated dive whose ascent never resolved is censored AND valueless.
+    # Such a dive has no position on the axis, and carrying its NA into the placement arithmetic turns
+    # the off-scale test into NA and aborts the panel. It is still counted in the summary, from `st`.
+    list(used = u$value[u$used], excl = u$value[u$censored & is.finite(u$value)])
+  })
+}
+
+
+#' Value-axis range for one metric, shared by every page.
+#'
+#' The axis is governed by the dives that COUNT - an excluded outlier must not set the scale for a
+#' median it took no part in - but it must still CONTAIN every marker the figure draws, or a deployment
+#' whose median sits above the pooled quantile has its marker clipped away silently while the returned
+#' table reports `drawn = TRUE`. The floor likewise has to reach the excluded points, or they are
+#' clipped and never counted, contradicting the promise that excluded dives are drawn, not removed.
+#' @keywords internal
+#' @noRd
+.pdMetricRange <- function(per_id, st, metric, ids, trim) {
+  used_all <- unlist(lapply(per_id, `[[`, "used"))
+  excl_all <- unlist(lapply(per_id, `[[`, "excl"))
+  if (!length(used_all)) used_all <- 0
+  hi <- stats::quantile(used_all, trim, names = FALSE, na.rm = TRUE)
+  mk <- st[st$metric == metric & st$id %in% ids & st$drawn, , drop = FALSE]
+  if (nrow(mk)) hi <- max(hi, max(mk$q75, mk$median, na.rm = TRUE), na.rm = TRUE)
+  lo <- min(c(used_all, excl_all, if (nrow(mk)) mk$q25 else NULL, 0), na.rm = TRUE)
+  if (!is.finite(hi) || hi <= lo) hi <- lo + 1
+  c(lo, hi)
+}
+
+
+#' Clip the group blocks of a grouped layout to the deployments on ONE page, in panel coordinates.
+#' @keywords internal
+#' @noRd
+.pdPageBlocks <- function(blocks, xp) {
+  if (is.null(blocks)) return(NULL)
+  top <- max(xp); rng <- range(xp)
+  out <- lapply(blocks, function(b) {
+    s <- max(b[1], rng[1]); e <- min(b[2], rng[2])
+    if (s > e) NULL else c(top - e + 1, top - s + 1)
+  })
+  out <- out[!vapply(out, is.null, logical(1))]
+  if (length(out)) out else NULL
+}
+
+
+#' Fold one page's draw record into the cohort-wide record.
+#'
+#' The record is the figure's audit trail and describes the whole cohort, so pagination must not make it
+#' describe only the last page drawn.
+#' @keywords internal
+#' @noRd
+.pdMergeRecords <- function(acc, rec) {
+  if (is.null(acc)) return(rec)
+  acc$ids     <- c(acc$ids, rec$ids)
+  acc$ypos    <- c(acc$ypos, rec$ypos)
+  acc$trimmed <- c(acc$trimmed, rec$trimmed)
+  acc$clipped <- acc$clipped + rec$clipped
+  acc$markers <- c(acc$markers, rec$markers)
+  acc
+}
+
+
 #' Draw ONE metric panel into the current plot region.
 #'
 #' Every dive is drawn. Dives excluded from the statistics are drawn in outline rather than removed,
@@ -182,114 +334,137 @@
 #' excluded (censored, phase-unsupported) are not interchangeable, so the panel note names both.
 #' @keywords internal
 #' @noRd
-.pdDrawPanel <- function(dm, st, metric, ids, theme, trim, id.col, show.axis = TRUE,
-                         label = NULL, xpos = NULL, cols = NULL, blocks = NULL) {
-  xpos <- xpos %||% seq_along(ids)
-  cols <- cols %||% rep(theme$axis, length(ids))
+.pdDrawPanel <- function(dm, st, metric, ids, theme, trim, id.col, show.labels = TRUE,
+                         label = NULL, ypos = NULL, cols = NULL, blocks = NULL, gutter = TRUE,
+                         xlim = NULL) {
+  # ONE ROW PER DEPLOYMENT, metric value on x. The transpose is what makes a large cohort readable: the
+  # deployment count now drives HEIGHT, which can grow and paginate, instead of WIDTH, which cannot.
+  # At 49 deployments the old geometry asked for a 56-inch canvas, so every glyph and label was scaled
+  # into illegibility by whatever rendered it.
+  ny   <- length(ids)
+  ypos <- ypos %||% rev(seq_len(ny))                 # first id at the TOP, as in plotDistributions
+  cols <- cols %||% rep(theme$axis, ny)
 
-  is_depth <- .diveIsDepth(metric)
-  per_id <- lapply(ids, function(id) {
-    sub <- dm[as.character(dm[[id.col]]) == id, , drop = FALSE]
-    if (!metric %in% names(sub)) return(list(used = numeric(0), excl = numeric(0)))
-    u <- .diveUsable(sub, metric)
-    list(used = u$value[u$used], excl = u$value[u$censored])   # unsupported are NA: nothing to place
-  })
+  per_id <- .pdPerId(dm, metric, ids, id.col)
 
-  used_all <- unlist(lapply(per_id, `[[`, "used"))
-  excl_all <- unlist(lapply(per_id, `[[`, "excl"))
-  if (!length(used_all)) used_all <- 0
-  # The axis is governed by the dives that COUNT - an excluded outlier must not set the scale for a
-  # median it took no part in - but it must still CONTAIN every marker the figure draws, or a
-  # deployment whose median sits above the pooled quantile has its marker clipped away silently while
-  # the returned table reports drawn = TRUE. Measured: two deployments at 5-15 m beside one at
-  # 800-1200 m gave an axis top of 14.9 m and a deep marker that rendered to nothing.
-  hi <- stats::quantile(used_all, trim, names = FALSE, na.rm = TRUE)
-  mk <- st[st$metric == metric & st$id %in% ids & st$drawn, , drop = FALSE]
-  if (nrow(mk)) hi <- max(hi, max(mk$q75, mk$median, na.rm = TRUE), na.rm = TRUE)
-  # ...and the floor must reach the excluded points too, or they are clipped below and never counted,
-  # which contradicts the promise that excluded dives are drawn rather than removed.
-  lo <- min(c(used_all, excl_all, if (nrow(mk)) mk$q25 else NULL, 0), na.rm = TRUE)
-  if (!is.finite(hi) || hi <= lo) hi <- lo + 1
-  ylim <- if (is_depth) c(hi, lo) else c(lo, hi)                # depth: zero at the top
+  # A paginated figure whose pages carry different axes is not a comparison, so the caller fixes the
+  # range across the whole cohort once and passes it in; computing it here is the single-page fallback.
+  rng <- xlim %||% .pdMetricRange(per_id, st, metric, ids, trim)
+  lo <- rng[1]; hi <- rng[2]
 
   graphics::plot.new()
-  graphics::plot.window(xlim = c(min(xpos) - 0.6, max(xpos) + 0.6), ylim = ylim, xaxs = "i")
-  graphics::rect(graphics::par("usr")[1], graphics::par("usr")[3],
-                 graphics::par("usr")[2], graphics::par("usr")[4],
-                 col = theme$panel, border = NA)
-  ticks <- graphics::axTicks(2)
-  graphics::abline(h = ticks, col = theme$grid, lwd = 0.8)      # horizontal only: x is categorical
-  if (is_depth) graphics::abline(h = 0, col = theme$ink, lty = 2, lwd = 0.9)
+  # the y span follows `ypos`, not the deployment count, so the gaps a grouped layout inserts between
+  # blocks are honoured instead of pushing the last rows off the panel
+  graphics::plot.window(xlim = c(lo, hi), ylim = c(min(ypos) - 0.6, max(ypos) + 0.6),
+                        xaxs = "i", yaxs = "i")
+  usr <- graphics::par("usr")
+  graphics::rect(usr[1], usr[3], usr[2], usr[4], col = theme$panel, border = NA)
+  ticks <- graphics::axTicks(1)
+  graphics::abline(v = ticks, col = theme$grid, lwd = 0.8)      # vertical only: y is categorical now
+  # An ABSOLUTE depth is measured from a zero that means something (the surface, or the baseline the
+  # animal was holding), so that zero is marked. The axis is NOT inverted: inverting depth is a
+  # convention for depth on the VERTICAL axis, and here the value runs left to right like every other
+  # metric - flipping it would put the shallowest deployment on the right of the deepest.
+  zero_line <- .diveIsDepth(metric)
+  if (zero_line) graphics::abline(v = 0, col = theme$ink, lty = 2, lwd = 0.9)
 
   clipped <- 0L
-  trimmed <- integer(length(ids))
-  for (i in seq_along(ids)) {
+  trimmed <- integer(ny)
+  for (i in seq_len(ny)) {
     d <- per_id[[i]]
     n <- length(d$used)
     # a dense cloud and a sparse one must both stay readable, so alpha tracks n rather than being fixed
-    al <- max(0.22, min(0.70, 0.70 * sqrt(30 / max(n, 1))))
+    al <- max(0.25, min(0.75, 0.75 * sqrt(30 / max(n, 1))))
+    yi <- ypos[i]
     # Deterministic spread, not runif(): a published figure must redraw identically, and a golden-ratio
-    # sequence scatters more evenly across the slot than random jitter does at small n.
-    xi <- xpos[i]
-    jit <- function(k) if (!k) numeric(0) else xi + (((seq_len(k) * 0.6180339887498949) %% 1) - 0.5) * 0.56
-    pin <- function(v) list(inside = v[v >= lo & v <= hi], edge = sum(v > hi | v < lo))
+    # sequence scatters more evenly across the band than random jitter does at small n.
+    jit <- function(k) if (!k) numeric(0) else yi + (((seq_len(k) * 0.6180339887498949) %% 1) - 0.5) * 0.54
+    # na.rm even though .pdPerId already filters: a single NA reaching here would make the off-scale
+    # test NA and abort the whole panel, which is a poor failure mode for a plotting function
+    pin <- function(v) list(inside = v[!is.na(v) & v >= lo & v <= hi],
+                            edge = sum(v > hi | v < lo, na.rm = TRUE))
     pu <- pin(d$used); pe <- pin(d$excl)
     clipped <- clipped + pu$edge + pe$edge
     if (length(pe$inside))
-      graphics::points(jit(length(pe$inside)), pe$inside, pch = 1, cex = 0.5,
-                       col = grDevices::adjustcolor(theme$ink, alpha.f = 0.45))
+      graphics::points(pe$inside, jit(length(pe$inside)), pch = 1, cex = 0.62,
+                       col = grDevices::adjustcolor(theme$ink, alpha.f = 0.5))
     if (length(pu$inside))
-      graphics::points(jit(length(pu$inside)), pu$inside, pch = 16, cex = 0.55,
+      graphics::points(pu$inside, jit(length(pu$inside)), pch = 16, cex = 0.7,
                        col = grDevices::adjustcolor(cols[i], alpha.f = al))
     if (pu$edge + pe$edge > 0) {
+      # chevrons rather than the old up/down triangles: the axis runs left-to-right now, so the marker
+      # has to point the way the values went
       above <- sum(d$used > hi, na.rm = TRUE) + sum(d$excl > hi, na.rm = TRUE)
       below <- (pu$edge + pe$edge) - above
-      if (above) graphics::points(xi, hi, pch = 2, cex = 0.8, col = theme$ink)
-      if (below) graphics::points(xi, lo, pch = 6, cex = 0.8, col = theme$ink)
+      # inset by a hair so the glyph sits INSIDE the panel: centred exactly on the limit, half of it
+      # spills into the gutter and collides with that row's n=
+      pad <- 0.014 * (hi - lo)
+      if (above) graphics::points(hi - pad, yi, pch = 62, cex = 0.95, col = theme$ink)
+      if (below) graphics::points(lo + pad, yi, pch = 60, cex = 0.95, col = theme$ink)
     }
     trimmed[i] <- pu$edge + pe$edge
 
     s <- st[st$id == ids[i] & st$metric == metric, ]
     if (nrow(s) && isTRUE(s$drawn)) {
-      graphics::segments(xi, s$q25, xi, s$q75, lwd = 1.7, col = theme$ink)
-      graphics::segments(c(xi, xi) - 0.10, c(s$q25, s$q75), c(xi, xi) + 0.10, c(s$q25, s$q75),
-                         lwd = 1.7, col = theme$ink)                       # caps, so the IQR reads as a range
-      graphics::segments(xi - 0.22, s$median, xi + 0.22, s$median, lwd = 2.6, col = theme$ink)
+      graphics::segments(s$q25, yi, s$q75, yi, lwd = 1.9, col = theme$ink)
+      graphics::segments(c(s$q25, s$q75), c(yi, yi) - 0.13, c(s$q25, s$q75), c(yi, yi) + 0.13,
+                         lwd = 1.9, col = theme$ink)          # caps, so the IQR reads as a range
+      graphics::segments(s$median, yi - 0.26, s$median, yi + 0.26, lwd = 2.8, col = theme$ink)
     }
-    # this panel's own n, under this panel. Usable count, not dive count - they differ by metric, and
-    # a single row of counts under a shared axis would attribute the last panel's n to all of them.
-    if (nrow(s))
-      graphics::mtext(paste0("n=", s$n_used), side = 1, at = xi, line = 0.15,
-                      cex = 0.6 * theme$cex, col = grDevices::adjustcolor(theme$ink, alpha.f = 0.8))
+    # the usable count, in a fixed right-hand gutter. Always the same place on every row, so it can be
+    # scanned or ignored; under each column (as before) it was unreadable at any realistic figure size.
+    if (gutter && nrow(s))
+      graphics::mtext(paste0("n=", s$n_used), side = 4, at = yi, line = 0.35, las = 1,
+                      cex = 0.62 * theme$cex, col = grDevices::adjustcolor(theme$ink, alpha.f = 0.85))
   }
 
-  graphics::axis(2, at = ticks, las = 1, cex.axis = 0.85 * theme$cex, col = NA, col.axis = theme$ink)
-  graphics::mtext(label %||% .diveLabel(metric), side = 2, line = 2.6,
-                  cex = 0.9 * theme$cex, col = theme$ink)
-  if (show.axis) {
-    graphics::axis(1, at = xpos, labels = ids, las = 2, tick = FALSE,
-                   cex.axis = 0.8 * theme$cex, col.axis = theme$ink)
+  # The metric is a COLUMN TITLE and the value axis carries bare ticks: with one panel per metric the
+  # units belong at the head of the column, not repeated beneath every one of them.
+  graphics::axis(1, at = ticks, cex.axis = 0.78 * theme$cex, col = NA, col.ticks = theme$axis,
+                 col.axis = theme$ink)
+  graphics::mtext(label %||% .diveLabel(metric), side = 3, line = 0.5, font = 2,
+                  cex = 0.82 * theme$cex, col = theme$ink)
+  # deployment labels once per page, on the leftmost panel: repeating them per column would spend the
+  # width the metrics need
+  if (show.labels) {
+    graphics::axis(2, at = ypos, labels = ids, las = 1, tick = FALSE, line = -0.4,
+                   cex.axis = 0.76 * theme$cex, col.axis = theme$ink)
     if (!is.null(blocks))
       for (l in names(blocks))
-        graphics::mtext(l, side = 1, line = 3.9, at = mean(blocks[[l]]), font = 2,
-                        cex = 0.72 * theme$cex, col = theme$ink)
+        graphics::mtext(l, side = 2, line = 5.1, at = mean(blocks[[l]]), font = 2,
+                        cex = 0.8 * theme$cex, col = theme$ink)
   }
-  if (clipped > 0)
-    graphics::mtext(sprintf("%d dive%s beyond the axis", clipped, if (clipped != 1) "s" else ""),
-                    side = 3, adj = 1, line = -1.1, cex = 0.62 * theme$cex,
-                    col = grDevices::adjustcolor(theme$ink, alpha.f = 0.7))
   graphics::box(col = theme$grid)
-  # A structured record of what was actually drawn. Without it the whole rendering layer is unverifiable
-  # from a test - every mutation planted in this function (trim removed, the depth inversion removed,
-  # the median drawn at q25, the IQR drawn as min..max) passed a green suite.
-  invisible(list(metric = metric, ylim = ylim, lo = lo, hi = hi, inverted = is_depth,
-                 ids = ids, xpos = xpos, trimmed = stats::setNames(trimmed, ids),
+  invisible(list(metric = metric, xlim = c(lo, hi), lo = lo, hi = hi, zero_line = zero_line,
+                 ylim = c(min(ypos) - 0.6, max(ypos) + 0.6),
+                 ids = ids, ypos = ypos, trimmed = stats::setNames(trimmed, ids),
                  clipped = clipped,
                  markers = stats::setNames(lapply(seq_along(ids), function(i) {
                    z <- st[st$id == ids[i] & st$metric == metric, ]
                    if (!nrow(z) || !isTRUE(z$drawn)) NULL
                    else c(median = z$median, q25 = z$q25, q75 = z$q75)
                  }), ids)))
+}
+
+
+#' Draw the figure key into the bottom outer margin.
+#'
+#' The glyphs carry meaning that no axis states (which dives counted, which were only drawn, where the
+#' axis was cut), so the key is drawn with the ACTUAL symbols rather than described in a subtitle - a
+#' reader should not have to translate "open = excluded" into what is on the panel.
+#' @keywords internal
+#' @noRd
+.pdDrawKey <- function(theme) {
+  op <- graphics::par(fig = c(0, 1, 0, 1), oma = c(0, 0, 0, 0), mar = c(0, 0, 0, 0), new = TRUE)
+  on.exit(graphics::par(op), add = TRUE)
+  graphics::plot.new()
+  faded <- grDevices::adjustcolor(theme$ink, alpha.f = 0.6)
+  graphics::legend("bottom", horiz = TRUE, bty = "n", xpd = NA, inset = c(0, 0),
+                   cex = 0.72 * theme$cex, text.col = theme$ink,
+                   legend = c("dive (used)", "dive (excluded)", "beyond axis", "median with IQR"),
+                   pch = c(16, 1, 62, NA), lty = c(NA, NA, NA, 1), lwd = c(NA, NA, NA, 2.2),
+                   pt.cex = c(0.9, 0.8, 0.9, NA), col = c(faded, faded, theme$ink, theme$ink))
+  invisible(NULL)
 }
 
 
@@ -325,7 +500,7 @@
 #' @param order.metric Metric whose per-deployment median drives `order.by = "median"`. `NULL`
 #'   (default) uses the first entry of `metrics`.
 #' @param trim Numeric in (0, 1]. Upper quantile bounding the value axis; `1` shows the full range.
-#'   Points beyond it are pinned to the axis edge and counted in a panel note, never dropped silently.
+#'   Points beyond it are drawn at the axis edge and counted in the summary, never dropped silently.
 #'   Defaults to `0.95`, rather than the `0.995` the rest of the plotting family uses, because per-dive metrics
 #'   are far more skewed than the per-sample kinematics that default was chosen for: on a real cohort
 #'   `amplitude_m` had a median of 12.2 m against a maximum of 1414.1 m. At `0.995` the axis reached
@@ -333,6 +508,12 @@
 #'   92.8 m and the between-deployment differences the plot exists to show become legible. The 5% that
 #'   moves is pinned and counted, and the untrimmed extremes remain in the returned `max` column.
 #' @param min.n Integer. Dives needed before a median/IQR marker is drawn. Points are always drawn.
+#' @param max.per.page Integer. Deployments per page; the cohort is split across as many pages as it
+#'   needs. Each deployment occupies a row, so this caps how tall one page becomes: beyond roughly
+#'   thirty rows the labels and the point cloud of a single deployment both start to compress. Raise it
+#'   to keep a mid-sized cohort on one page, lower it for a denser cloud per deployment. The value axis
+#'   of each metric is held fixed across pages, so deployments remain comparable between them. Only a
+#'   PDF (`plot.file`) can hold more than one page; on a screen device the pages are drawn in turn.
 #' @param theme A [plotTheme()] object, or a list of overrides.
 #' @param plot Logical. Draw to the active device.
 #' @param plot.file Character. Path to a PDF.
@@ -383,6 +564,7 @@ plotDives <- function(data,
                       order.metric = NULL,
                       trim      = 0.95,
                       min.n     = 5L,
+                      max.per.page = 30L,
                       theme     = plotTheme(),
                       plot      = TRUE,
                       plot.file = NULL,
@@ -398,6 +580,7 @@ plotDives <- function(data,
   .assert_number(trim, "trim", min = 0, max = 1)
   if (trim <= 0) .abort("{.arg trim} must be greater than zero.")
   .assert_count(min.n, "min.n")
+  .assert_count(max.per.page, "max.per.page")
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")
   theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
   if (!isTRUE(plot) && is.null(plot.file))
@@ -413,12 +596,17 @@ plotDives <- function(data,
 
   dm <- .pdBindMetrics(data, id.col)
 
+  n_ids <- length(unique(dm[[id.col]]))
   .log_header(lvl, "plotDives", "Comparing deployments on per-dive metrics",
-              bullets = sprintf("Input: %d dive%s across %d deployment%s \u00b7 %d metric%s",
-                                nrow(dm), if (nrow(dm) != 1) "s" else "",
-                                length(unique(dm[[id.col]])),
-                                if (length(unique(dm[[id.col]])) != 1) "s" else "",
-                                length(metrics), if (length(metrics) != 1) "s" else ""))
+              bullets = sprintf("Input: %s dive%s across %d deployment%s",
+                                format(nrow(dm), big.mark = ","), if (nrow(dm) != 1) "s" else "",
+                                n_ids, if (n_ids != 1) "s" else ""),
+              close = FALSE)
+  .reportDivePlotSettings(lvl, metrics, trim, min.n, order.by,
+                          if (is.character(group.by) && length(group.by) == 1L) group.by
+                          else if (!is.null(group.by)) "supplied lookup" else NULL,
+                          n_ids, max.per.page, ceiling(n_ids / max.per.page))
+  .log_header_close(lvl)
 
   st <- .diveSummaryTable(dm, metrics, id.col = id.col, min.n = min.n)
 
@@ -453,6 +641,14 @@ plotDives <- function(data,
     cli::cli_warn(c("The cohort mixes {.val {sort(refs)}} references, and an absolute-depth metric is drawn.",
                     "i" = "Depths measured against different zeros are not comparable between deployments.",
                     "i" = "Consider {.val amplitude_m}, which is measured from each dive's own baseline."))
+  # Deployments paginate, as in plotDepthProfiles: rows drive the figure's height, and past a point a
+  # single page stops being readable however tall it is made.
+  pages <- split(seq_along(ids), ceiling(seq_along(ids) / max.per.page))
+  # Each metric's value axis is fixed ACROSS pages. Pages carrying different axes would not be a
+  # comparison, which is the whole purpose of the figure.
+  ranges <- stats::setNames(lapply(metrics, function(m)
+    .pdMetricRange(.pdPerId(dm, m, ids, id.col), st, m, ids, trim)), metrics)
+
   # `.renderToDevices` calls this once per target and tells it whether the device can render Unicode;
   # the separator degrades to ASCII on a device that cannot, rather than emitting a <U+00B7> box.
   # `trim` is a deliberate, non-family-default decision, so how many dives it moved must not exist only
@@ -462,28 +658,42 @@ plotDives <- function(data,
   draw <- function(to.file = FALSE, unicode = TRUE) {
     sep <- if (unicode) " \u00b7 " else " | "
 
-    old <- graphics::par(family = theme$font.family, mar = c(1.9, 4.4, 0.8, 1.2), oma = c(3.6, 0, 2.2, 0))
+    old <- graphics::par(family = theme$font.family, mar = c(3.4, 0.9, 2.4, 3.2),
+                         oma = c(2.4, 5.6, 3.2, 0))
     on.exit(graphics::par(old), add = TRUE)
-    graphics::layout(matrix(seq_along(metrics), ncol = 1))
-    for (k in seq_along(metrics)) {
-      rec <- .pdDrawPanel(dm, st, metrics[k], ids, theme, trim, id.col,
-                          show.axis = k == length(metrics), label = lab_of(metrics[k]),
-                          xpos = lay$xpos, cols = lay$cols, blocks = lay$blocks)
-      drawn_rec[[metrics[k]]] <<- rec
+    for (pg in seq_along(pages)) {
+      idx <- pages[[pg]]
+      # positions are re-based per page so a page always fills its own height, and reversed so the
+      # first deployment sits at the TOP - reading order, as in plotDistributions
+      xp   <- lay$xpos[idx]
+      ypos <- max(xp) - xp + 1
+      blk  <- .pdPageBlocks(lay$blocks, xp)
+      graphics::layout(matrix(seq_along(metrics), nrow = 1))
+      for (k in seq_along(metrics)) {
+        rec <- .pdDrawPanel(dm, st, metrics[k], ids[idx], theme, trim, id.col,
+                            show.labels = k == 1L, label = lab_of(metrics[k]),
+                            ypos = ypos, cols = lay$cols[idx], blocks = blk,
+                            xlim = ranges[[metrics[k]]])
+        # the record describes the whole cohort, so it is assembled across pages rather than overwritten
+        drawn_rec[[metrics[k]]] <<- .pdMergeRecords(drawn_rec[[metrics[k]]], rec)
+      }
+      graphics::mtext(paste0("Dive metrics by deployment",
+                             if (length(pages) > 1L) sprintf("  (%d/%d)", pg, length(pages)) else ""),
+                      outer = TRUE, side = 3, line = 1.2, font = 2,
+                      cex = 1.1 * theme$cex, col = theme$ink)
+      if (length(refs))
+        graphics::mtext(paste0("depth reference: ", paste(sort(refs), collapse = sep)),
+                        outer = TRUE, side = 3, line = 0.1, cex = 0.72 * theme$cex,
+                        col = grDevices::adjustcolor(theme$ink, alpha.f = 0.75))
+      .pdDrawKey(theme)
     }
-    graphics::mtext("Dive metrics by deployment", outer = TRUE, side = 3, line = 0.5,
-                    font = 2, cex = 1.15 * theme$cex, col = theme$ink)
-    refs <- unique(stats::na.omit(dm$reference))
-    if (length(refs))
-      graphics::mtext(paste0("reference: ", paste(sort(refs), collapse = " + "), sep,
-                             "filled = used", sep, "open = excluded", sep,
-                             "triangle = beyond axis", sep, "bar = median with IQR"),
-                      outer = TRUE, side = 3, line = -0.7, cex = 0.72 * theme$cex,
-                      col = grDevices::adjustcolor(theme$ink, alpha.f = 0.75))
   }
+  # Width comes from the METRIC count and height from the deployments on a page. That is the whole point
+  # of the transpose: the cohort used to drive WIDTH, which cannot grow indefinitely - at 49 deployments
+  # it asked for a 56-inch canvas and every label was scaled into illegibility.
   .renderToDevices(draw, plot = plot, plot.file = plot.file,
-                   width = max(6, 1.1 * length(ids) + 2.5),
-                   height = max(4, 2.6 * length(metrics) + 1.6))
+                   width  = max(6, 3.2 * length(metrics) + 2.2),
+                   height = max(4.5, 2.4 + 0.24 * max(vapply(pages, length, integer(1)))))
 
   # fold the render record back into the audit trail
   st$n_trimmed <- 0L; st$axis_max <- NA_real_
@@ -494,31 +704,7 @@ plotDives <- function(data,
     st$axis_max[w]  <- r$hi
   }
 
-  if (lvl >= 1L) {
-    .log_summary(lvl)
-    .log_done(lvl, length(metrics), " metric", if (length(metrics) != 1) "s",
-              " over ", length(ids), " deployment", if (length(ids) != 1) "s")
-    for (m in metrics) {
-      sm <- st[st$metric == m, ]
-      .log_arrow(lvl, sprintf("%s: %s of %s dives used", lab_of(m),
-                              format(sum(sm$n_used), big.mark = ","),
-                              format(sum(sm$n_dives), big.mark = ",")))
-      # the two exclusions are reported apart because they mean different things and differ in size by
-      # more than an order of magnitude on real data
-      if (sum(sm$n_censored) > 0 || sum(sm$n_unsupported) > 0)
-        .log_detail(lvl, sprintf("excluded: %d censored \u00b7 %d not supported by the dive's phases",
-                                 sum(sm$n_censored), sum(sm$n_unsupported)))
-      if (sum(sm$n_trimmed, na.rm = TRUE) > 0)
-        .log_detail(lvl, sprintf("%d dive%s beyond the axis at trim = %.3g (pinned, not dropped)",
-                                 sum(sm$n_trimmed, na.rm = TRUE),
-                                 if (sum(sm$n_trimmed, na.rm = TRUE) != 1) "s" else "", trim))
-      if (any(!sm$drawn))
-        .log_detail(lvl, sprintf("no median drawn for %s (fewer than %d usable dives)",
-                                 paste(sm$id[!sm$drawn], collapse = ", "), min.n))
-    }
-    if (!is.null(plot.file)) .log_arrow(lvl, "output: ", plot.file)
-    .log_runtime(lvl, start.time)
-  }
+  if (lvl >= 1L) .reportDivePlotSummary(lvl, st, metrics, ids, pages, trim, min.n, plot.file, start.time)
   invisible(st)
 }
 

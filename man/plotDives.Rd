@@ -13,6 +13,7 @@ plotDives(
   order.metric = NULL,
   trim = 0.95,
   min.n = 5L,
+  max.per.page = 30L,
   theme = plotTheme(),
   plot = TRUE,
   plot.file = NULL,
@@ -43,7 +44,7 @@ median first, on \code{order.metric}).}
 (default) uses the first entry of \code{metrics}.}
 
 \item{trim}{Numeric in (0, 1]. Upper quantile bounding the value axis; \code{1} shows the full range.
-Points beyond it are pinned to the axis edge and counted in a panel note, never dropped silently.
+Points beyond it are drawn at the axis edge and counted in the summary, never dropped silently.
 Defaults to \code{0.95}, rather than the \code{0.995} the rest of the plotting family uses, because per-dive metrics
 are far more skewed than the per-sample kinematics that default was chosen for: on a real cohort
 \code{amplitude_m} had a median of 12.2 m against a maximum of 1414.1 m. At \code{0.995} the axis reached
@@ -52,6 +53,13 @@ are far more skewed than the per-sample kinematics that default was chosen for: 
 moves is pinned and counted, and the untrimmed extremes remain in the returned \code{max} column.}
 
 \item{min.n}{Integer. Dives needed before a median/IQR marker is drawn. Points are always drawn.}
+
+\item{max.per.page}{Integer. Deployments per page; the cohort is split across as many pages as it
+needs. Each deployment occupies a row, so this caps how tall one page becomes: beyond roughly
+thirty rows the labels and the point cloud of a single deployment both start to compress. Raise it
+to keep a mid-sized cohort on one page, lower it for a denser cloud per deployment. The value axis
+of each metric is held fixed across pages, so deployments remain comparable between them. Only a
+PDF (\code{plot.file}) can hold more than one page; on a screen device the pages are drawn in turn.}
 
 \item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object, or a list of overrides.}
 

@@ -112,9 +112,9 @@ test_that("one row per deployment per metric, in a stable order", {
   expect_equal(st$metric, c("amplitude_m", "duration_s", "amplitude_m", "duration_s"))
 })
 
-test_that("absolute depths invert the axis and magnitudes do not", {
+test_that("absolute depths are classified apart from magnitudes", {
   # a property of the METRIC, never of `direction` - a benthic rester's upward excursion still has a
-  # magnitude that belongs on an upright axis
+  # magnitude, and no absolute zero to measure it from
   expect_true(all(vapply(c("max_depth_m", "mean_depth_m", "baseline_depth_m", "bottom_depth_mean_m"),
                          .diveIsDepth, logical(1))))
   expect_false(any(vapply(c("amplitude_m", "duration_s", "vertical_distance_m", "ascent_rate_q90"),
@@ -493,15 +493,28 @@ test_that("the axis always contains the markers the figure claims to draw", {
   expect_gte(r$markers[["DEEP"]][["q25"]], r$lo)
 })
 
-test_that("an absolute depth inverts the axis and a magnitude does not", {
+test_that("an absolute depth marks its zero, and no metric's value axis is inverted", {
+  # Depth used to run downward on an inverted y axis. Since the panels were transposed the value runs
+  # left to right for every metric, so inverting depth would put the shallowest deployment to the RIGHT
+  # of the deepest. What survives is the zero line: an absolute depth has a meaningful origin.
   d <- .pdMk("A", c(5, 10, 20, 30), metric = "max_depth_m")
   r <- .pdDraw(d, "max_depth_m")
-  expect_true(r$inverted)
-  expect_gt(r$ylim[1], r$ylim[2])                 # zero at the TOP
+  expect_true(r$zero_line)
+  expect_lt(r$xlim[1], r$xlim[2])                 # small values on the LEFT, as everywhere else
   d2 <- .pdMk("A", c(5, 10, 20, 30))
   r2 <- .pdDraw(d2, "amplitude_m")
-  expect_false(r2$inverted)
-  expect_lt(r2$ylim[1], r2$ylim[2])
+  expect_false(r2$zero_line)                      # a magnitude has no absolute origin to mark
+  expect_lt(r2$xlim[1], r2$xlim[2])
+})
+
+test_that("the deployment axis reads top-down and every row gets a slot", {
+  # the transpose put deployments on y; reading order (first id at the top) is the contract, and a row
+  # that silently fell outside ylim would be a deployment missing from the figure
+  d <- rbind(.pdMk("A", rep(10, 20)), .pdMk("B", rep(12, 20)), .pdMk("C", rep(14, 20)))
+  r <- .pdDraw(d, "amplitude_m")
+  expect_equal(r$ids, c("A", "B", "C"))
+  expect_equal(r$ypos, c(3, 2, 1))                             # A at the top
+  expect_true(all(r$ypos > r$ylim[1] & r$ypos < r$ylim[2]))
 })
 
 test_that("the marker is the MEDIAN with the IQR, not some other pair of quantiles", {
@@ -574,4 +587,79 @@ test_that("a non-logical `complete` column does not silently produce NA counts",
   st <- .diveSummaryTable(dm, "m", min.n = 1L)
   expect_false(is.na(st$n_used))                  # as.logical("yes") is a silent NA
   expect_equal(st$n_used + st$n_censored + st$n_unsupported, st$n_dives)
+})
+
+
+#######################################################################################################
+# Pagination and the transposed geometry ##############################################################
+#
+# The panels were transposed so the DEPLOYMENT count drives height rather than width: the old geometry
+# asked for a 56-inch canvas at 49 deployments and scaled every label into illegibility. Height can grow
+# only so far too, so the cohort paginates - and pagination is exactly where a figure quietly starts
+# lying, by giving each page its own axis or by losing the deployments that did not fit.
+
+test_that("a cohort larger than max.per.page paginates, and every deployment survives", {
+  f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
+  d <- do.call(rbind, lapply(sprintf("D%02d", 1:14), function(id) .pdMk(id, seq(5, 60, length.out = 20))))
+  st <- plotDives(d, metrics = "amplitude_m", max.per.page = 5L, plot = FALSE, plot.file = f,
+                  verbose = FALSE)
+  expect_equal(sort(unique(st$id)), sort(sprintf("D%02d", 1:14)))   # 14 over 3 pages, none dropped
+  expect_true(all(st$drawn))
+  expect_equal(nrow(st), 14L)                                       # ...and none counted twice
+})
+
+test_that("the value axis is shared across pages, so deployments stay comparable between them", {
+  # each page recomputing its own trim quantile would silently make page 2 a different figure
+  f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
+  small <- do.call(rbind, lapply(sprintf("S%d", 1:4), function(id) .pdMk(id, rep(10, 30))))
+  big   <- do.call(rbind, lapply(sprintf("T%d", 1:4), function(id) .pdMk(id, rep(400, 30))))
+  st <- plotDives(rbind(small, big), metrics = "amplitude_m", max.per.page = 4L, order.by = "input",
+                  plot = FALSE, plot.file = f, verbose = FALSE)
+  expect_equal(length(unique(st$axis_max)), 1L)   # one axis, not one per page
+  expect_gte(unique(st$axis_max), 400)            # ...and it reaches page two's data
+})
+
+test_that("max.per.page is validated rather than producing an empty or infinite page split", {
+  f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
+  expect_error(plotDives(.pdCohort(), max.per.page = 0L, plot = FALSE, plot.file = f, verbose = FALSE),
+               "whole number")
+  expect_error(plotDives(.pdCohort(), max.per.page = -3L, plot = FALSE, plot.file = f, verbose = FALSE))
+  expect_error(plotDives(.pdCohort(), max.per.page = "many", plot = FALSE, plot.file = f, verbose = FALSE))
+})
+
+test_that("a censored dive with no value is counted but never placed on the axis", {
+  # .diveUsable decides censoring BEFORE finiteness, so a boundary-truncated dive whose ascent never
+  # resolved is censored AND valueless. Carrying that NA into the placement arithmetic turned the
+  # off-scale test into NA and aborted the panel - a crash on ordinary real data.
+  f <- tempfile(fileext = ".pdf"); on.exit(unlink(f))
+  d <- .pdMk("A", c(1:9, NA))
+  d$complete <- c(rep(TRUE, 9), FALSE)
+  expect_silent(st <- plotDives(d, metrics = "amplitude_m", min.n = 5L, plot = FALSE, plot.file = f,
+                                verbose = FALSE))
+  expect_equal(st$n_censored, 1L)
+  expect_equal(st$n_used, 9L)
+  expect_equal(st$n_unsupported, 0L)
+})
+
+test_that("group blocks are clipped to the page they appear on, in panel coordinates", {
+  expect_null(.pdPageBlocks(NULL, 1:5))
+  blocks <- list(north = c(1, 3), south = c(4.75, 6.75))
+  # page one holds slots 1..3: only `north` appears, spanning the whole page top to bottom
+  p1 <- .pdPageBlocks(blocks, c(1, 2, 3))
+  expect_equal(names(p1), "north")
+  expect_equal(unname(p1$north), c(1, 3))
+  # page two holds `south` alone, re-based so the page starts at its own top
+  p2 <- .pdPageBlocks(blocks, c(4.75, 5.75, 6.75))
+  expect_equal(names(p2), "south")
+  expect_equal(unname(p2$south), c(1, 3))
+})
+
+test_that("the draw record accumulates across pages instead of describing only the last one", {
+  a <- list(ids = "A", ypos = 1, trimmed = c(A = 1L), clipped = 1L, markers = list(A = NULL), hi = 9)
+  b <- list(ids = "B", ypos = 1, trimmed = c(B = 2L), clipped = 2L, markers = list(B = NULL), hi = 9)
+  m <- .pdMergeRecords(.pdMergeRecords(NULL, a), b)
+  expect_equal(m$ids, c("A", "B"))
+  expect_equal(m$clipped, 3L)
+  expect_equal(names(m$trimmed), c("A", "B"))
+  expect_equal(names(m$markers), c("A", "B"))
 })

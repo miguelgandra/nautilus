@@ -260,6 +260,32 @@
   invisible(NULL)
 }
 
+#' An aligned table inside a summary section.
+#'
+#' Some summary content is naturally tabular - one row per metric, a few counts each - and reads far
+#' better as a grid than as one sentence per row. Columns are right-aligned except the first, which
+#' names the row; `cli_verbatim()` again, so the padding survives.
+#' @param lvl Resolved verbosity.
+#' @param df A data frame; its names become the header row.
+#' @param min_level Lowest verbosity at which the table appears.
+#' @keywords internal
+#' @noRd
+.log_table <- function(lvl, df, min_level = 1L) {
+  if (lvl < min_level || !NROW(df)) return(invisible(NULL))
+  # the first column names the row and reads left-aligned; the rest are counts and line up on the right
+  cells <- lapply(seq_along(df), function(j)
+    format(as.character(df[[j]]), justify = if (j == 1L) "left" else "right"))
+  w <- vapply(seq_along(cells), function(j)
+    max(nchar(c(names(df)[j], cells[[j]]))), integer(1))
+  pad <- function(x, j) formatC(x, width = if (j == 1L) -w[j] else w[j])
+  line <- function(vals) paste0("  ", paste(vapply(seq_along(vals), function(j) pad(vals[j], j), ""),
+                                            collapse = "   "))
+  cli::cli_verbatim(cli::style_bold(line(names(df))))
+  for (i in seq_len(nrow(df)))
+    cli::cli_verbatim(line(vapply(cells, function(col) col[i], "")))
+  invisible(NULL)
+}
+
 #' A free-text block inside a summary section, wrapped to the console and indented under its heading.
 #' @param lvl Resolved verbosity.
 #' @param text One string; wrapped at the console width.
@@ -270,6 +296,25 @@
   if (lvl < min_level) return(invisible(NULL))
   width <- max(40L, min(getOption("width", 80L), 100L) - 4L)
   for (ln in strwrap(text, width = width)) cli::cli_verbatim(paste0("  ", ln))
+  invisible(NULL)
+}
+
+#' A footnote below a summary table: indented, wrapped, and marked with the info symbol.
+#'
+#' A table cell cannot carry its own caveat, and a column heading wide enough to hold one
+#' ("Off-scale (drawn at the axis edge, not removed)") destroys the grid it heads. The qualification
+#' therefore sits below the table, hanging-indented so continuation lines do not read as new points.
+#' @param lvl Resolved verbosity.
+#' @param text One string; wrapped at the console width.
+#' @param min_level Lowest verbosity at which the note appears.
+#' @keywords internal
+#' @noRd
+.log_note <- function(lvl, text, min_level = 1L) {
+  if (lvl < min_level) return(invisible(NULL))
+  width <- max(40L, min(getOption("width", 80L), 100L) - 6L)
+  ln <- strwrap(text, width = width)
+  cli::cli_verbatim(paste0("  ", cli::symbol$info, " ", cli::col_grey(ln[1])))
+  for (k in seq_along(ln)[-1]) cli::cli_verbatim(paste0("    ", cli::col_grey(ln[k])))
   invisible(NULL)
 }
 

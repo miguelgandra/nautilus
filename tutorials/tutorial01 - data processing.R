@@ -64,7 +64,6 @@
 if (!require(readxl)) { install.packages("readxl"); library(readxl) }
 
 # Install 'nautilus' from GitHub once, then load it.
-# install.packages("remotes")
 # remotes::install_github("miguelgandra/nautilus", build_vignettes = TRUE)
 library(nautilus)
 
@@ -147,7 +146,7 @@ animal_metadata$attachment_site[animal_metadata$ID %in% c("PIN_CAM_04", "PIN_CAM
                                                           "PIN_CAM_31", "PIN_CAM_32", "PIN_CAM_39")] <- "right_pectoral"
 
 # done parsing the notes; drop them
-animal_metadata$obs <- NULL
+animal_metadata$obs <- NULL   
 
 
 ################################################################################
@@ -303,7 +302,7 @@ filterDeploymentData(data                    = list.files("./data interim/01_imp
 regularizeTimeSeries(data                 = list.files("./data interim/02_filtered", full.names = TRUE),
                      gap.threshold        = 2,        # fill gaps up to 2 s; leave longer ones as NA (0 = never fill)
                      interpolation.method = "linear", # or "spline" / "locf"
-                     plot                 = FALSE,
+                     plot                 = FALSE,    
                      plot.file            = "./plots/regularization.pdf",
                      return.data          = FALSE,
                      output.dir           = "./data interim/03_checked",
@@ -314,18 +313,18 @@ regularizeTimeSeries(data                 = list.files("./data interim/02_filter
 # STEP 6. Screen the sensor channels                                           #
 ################################################################################
 
-# The quality-control workflow consists of three sequential steps. First, sensor integrity
-# is assessed to identify unreliable channels. Next, transient anomalies such as spikes or
-# sensor malfunctions are corrected. Finally, GPS/Argos position fixes are screened for
+# The quality-control workflow consists of three sequential steps. First, sensor integrity 
+# is assessed to identify unreliable channels. Next, transient anomalies such as spikes or 
+# sensor malfunctions are corrected. Finally, GPS/Argos position fixes are screened for 
 # implausible locations. Performing these steps before downstream analyses helps ensure the
 # data are as reliable as possible.
 
 
 ## 6.1 Structural integrity ------------------------------------------------------------------------
-# checkSensorIntegrity() performs an initial assessment of sensor channels to identify hardware- or
-# firmware-related issues, such as duplicated, unresponsive, clipped, or otherwise implausible signals.
-# This integrity check should be run before sensor quality control to ensure corrupted channels are
-# identified before any corrections are applied. The recommended workflow is to first review the results
+# checkSensorIntegrity() performs an initial assessment of sensor channels to identify hardware- or 
+# firmware-related issues, such as duplicated, unresponsive, clipped, or otherwise implausible signals. 
+# This integrity check should be run before sensor quality control to ensure corrupted channels are 
+# identified before any corrections are applied. The recommended workflow is to first review the results 
 # and then re-run the function with apply = TRUE to remove channels flagged as unreliable.
 integrity <- checkSensorIntegrity(data   = list.files("./data interim/03_checked", full.names = TRUE),
                                   checks = c("duplication", "dead", "saturation", "mag.plausibility",
@@ -339,12 +338,12 @@ integrity <- checkSensorIntegrity(data   = list.files("./data interim/03_checked
                                   verbose     = "detailed")
 
 # the findings, one row per flagged channel
-integrity$issues
+integrity$issues                                   
 
 
 ## 6.2 Transient signal quality --------------------------------------------------------------------
-#checkSensorQuality() identifies and corrects common issues in sensor data, such as isolated spikes and
-# periods where sensors become stuck or stop recording properly. Users define the expected behaviour of
+#checkSensorQuality() identifies and corrects common issues in sensor data, such as isolated spikes and 
+# periods where sensors become stuck or stop recording properly. Users define the expected behaviour of 
 # each sensor channel with anomalyControl(), allowing the function to detect implausible values.
 quality <- checkSensorQuality(data    = list.files("./data interim/03_checked", full.names = TRUE),
                               sensors = list(
@@ -361,12 +360,12 @@ quality <- checkSensorQuality(data    = list.files("./data interim/03_checked", 
                               verbose       = "detailed")
 
 # the findings, one row per flagged channel
-quality$issues
+quality$issues  
 
 ## 6.3 Position fixes ------------------------------------------------------------------------------
-# The filterLocations() function performs quality control on GPS/Argos positions before track analysis.
-# It identifies and removes unreliable fixes based on criteria such as poor satellite quality, impossible movement speeds,
-# or unrealistic spatial jumps. Importantly, only automatically generated locations are filtered,
+# The filterLocations() function performs quality control on GPS/Argos positions before track analysis. 
+# It identifies and removes unreliable fixes based on criteria such as poor satellite quality, impossible movement speeds, 
+# or unrealistic spatial jumps. Importantly, only automatically generated locations are filtered, 
 # while user-defined positions and deployment anchors are preserved.
 filterLocations(data           = list.files("./data interim/03_checked", full.names = TRUE),
                 max.speed.kmh   = 10,     # reject fixes implying > 10 km/h to both neighbours
@@ -572,7 +571,7 @@ calibrateMagnetometer(data          = list.files("./data interim/04_oriented", f
                       plot          = FALSE,
                       plot.file     = "./plots/magnetometer_calibration.pdf",
                       return.data   = FALSE,
-                      output.dir = "./data interim/05_processed",
+                      output.dir = "./data interim/05_processed",   
                       verbose       = "detailed")
 # You can check the per-deployment heading confidence later via processingSummary()$heading_conf.
 
@@ -610,7 +609,7 @@ paddle_calibration <- imputePaddleCalibration(calibration       = calibration_re
 # STEP 11. Process the tag data                                                #
 ################################################################################
 
-# processTagData() is the core derivation step: it takes the oriented, cleaned data and
+# processTagData() is the core derivation step: it takes the oriented, cleaned data and 
 # computes the full set of kinematic and motion metrics. It estimates body attitude (roll, pitch, heading),
 # splits acceleration into the static (gravity/posture) and dynamic (movement) parts, and computes the
 # full metric suite - dynamic body acceleration (VeDBA/ODBA, a proxy for movement intensity widely used
@@ -618,7 +617,7 @@ paddle_calibration <- imputePaddleCalibration(calibration       = calibration_re
 # vertical velocity, and paddle-wheel speed where available. It must run on the
 # oriented files, since every posture metric depends on a correct body frame. Downsampling the output
 # (here to 20 Hz) keeps the files manageable for downstream analysis without losing the behaviour.
-
+ 
 # The processing knobs are grouped into small control objects, one per concern, so the call stays
 # readable. Each is shown here with the options worth knowing about.
 
@@ -658,12 +657,9 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 # STEP 12. Estimate tail-beat frequencies                                      #
 ################################################################################
 
-# calculateTailBeats() estimates the tail-beat frequency from a motion channel. Each backend names its
-# own output, so provenance travels with the value: "peaks" returns tbf_hz_peaks and
-# tbf_amplitude_peaks, "wavelet" returns tbf_hz_wavelet and tbf_amplitude_wavelet. Both amplitudes are
-# the peak-to-trough excursion, so they are directly comparable. The swimming/gliding flag
-# (tbf_swimming) is shared by the backends and so carries no suffix. Use tailBeatColumn() if you want
-# code that works whichever backend was run.
+# calculateTailBeats() estimates the tail-beat frequency from a motion channel. The default "peaks"
+# method returns per-beat frequency (tbf_hz), amplitude (tbf_amplitude, an effort proxy) and a
+# swimming/gliding flag (tbf_swimming).
 #
 # Choosing the axis: for lateral swimmers (most sharks and teleosts) tail beats are cleanest on the
 # lateral 'sway' axis; other taxa (e.g. cetaceans, rays) may need the vertical 'heave' axis. Using an
@@ -681,8 +677,8 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
                    return.data     = FALSE,
                    output.dir      =  "./data interim/06_tailbeats",
                    verbose         = "detailed")
-
-
+                               
+                  
 
 ################################################################################
 # STEP 13. Summarize each deployment                                           #
@@ -695,6 +691,7 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
 
 summary <- summarizeTagData(data           = list.files("./data interim/06_tailbeats", full.names = TRUE),
                             deployments    = deployments,
+                            tbf.method     = "wavelet", 
                             error.stat     = "sd",
                             verbose        = "detailed")
 
@@ -712,7 +709,7 @@ write.csv2(summary_table, file = "./outputs/summary_table.csv", row.names = FALS
 # A depth-versus-time profile is the most immediate portrait of a deployment: dive shape, vertical
 # range, and the temperatures the animal moved through. plotDepthProfiles() draws one panel per
 # deployment, coloured by temperature and shaded by day/night (read from each deployment's coordinates),
-# and manages the multi-page PDF itself - so you just hand it the file paths.
+# and manages the multi-page PDF itself - so you just hand it the file paths. 
 
 plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", full.names = TRUE),
                   color.by         = "temp",   # colour the trace by any per-sample metric
@@ -720,7 +717,7 @@ plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", f
                   same.depth.scale = FALSE,    # let each panel use its own depth range
                   downsample       = 5,        # thin to ~5 s for a lighter PDF
                   plot             = FALSE,
-                  plot.file        = "./plots/depth-profiles3.pdf",
+                  plot.file        = "./plots/depth-profiles.pdf",
                   ncols            = 2,
                   nrows            = 7)
 
@@ -733,11 +730,11 @@ plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", f
 # way to spot among-individual variation and multimodal behaviour that a mean would hide - and it
 # returns the per-deployment distribution summary invisibly, for tables and stats.
 dist_summary <- plotDistributions(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
-                                  metrics   = c("tbf_hz_peaks", "paddle_speed"),
-                                  order.by  = "id",
+                                  metrics   = c("tbf_hz_wavelet", "paddle_speed"),
+                                  order.by  = "id",  
                                   min.n     = 30,         # ignore deployments with too few samples for a metric
                                   plot      = FALSE,
-                                  plot.file = "./plots/metric-distributions2.pdf")
+                                  plot.file = "./plots/metric-distributions.pdf")
 
 
 ################################################################################
