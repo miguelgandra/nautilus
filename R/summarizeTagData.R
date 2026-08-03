@@ -218,7 +218,9 @@ summarizeTagData <- function(data,
   .log_section(lvl, "Deployments")
   if (rostered) {
     n_excl <- nrow(st) - n
-    .log_rows(lvl, c(Roster = nrow(st), Included = n, Excluded = n_excl),
+    # "Total", not "Roster": under a "Deployments" heading the plain word needs no explaining, and
+    # the roster is a concept from the `deployments` argument rather than one the reader arrives with.
+    .log_rows(lvl, c(Total = nrow(st), Included = n, Excluded = n_excl),
               symbols = c(tick, tick, if (n_excl > 0) cross else tick))
   } else {
     .log_rows(lvl, stats::setNames(n, if (n == 1) "Tag summarised" else "Tags summarised"),

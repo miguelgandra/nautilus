@@ -245,7 +245,7 @@ test_that("the SUMMARY block groups its content into titled sections", {
   dep <- data.frame(id = c("A", "B", "C"), tag_model = "CATS", stringsAsFactors = FALSE)
   class(dep) <- c("nautilus_deployments", "data.frame")
   dr <- grab(list(A = .mk("A")), deployments = dep, verbose = 1)
-  expect_match(dr, "Roster:\\s+3")
+  expect_match(dr, "Total:\\s+3")
   expect_match(dr, "Included:\\s+1")
   expect_match(dr, "Excluded:\\s+2")
 
@@ -260,7 +260,7 @@ test_that("the summary omits sections that have nothing to say", {
   # no roster -> no Roster/Excluded rows, and no excluded-ids section
   d <- grab(list(A = .mk("A"), B = .mk("B")), verbose = 2)
   expect_match(d, "Tags summarised:\\s+2")
-  expect_false(grepl("Roster:", d))
+  expect_false(grepl("Total:", d))
   expect_false(grepl("Excluded deployments", d))
   # no dive annotation -> no Dives section
   expect_false(grepl("^Dives", d))
