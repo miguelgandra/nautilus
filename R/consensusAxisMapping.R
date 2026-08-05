@@ -138,6 +138,10 @@ consensusAxisMapping <- function(results, group.by = "package_id", min.agreement
 
   out_mappings <- list(); prov_rows <- list(); group_reports <- list()
   n_filled <- 0L; n_conflicts <- 0L
+  # Conflicts are ACCUMULATED, not warned as they are found. One warning per group per sensor family
+  # buries a large cohort in near-identical text, and R keeps only the first 50 warnings, so on a big
+  # run the tail is silently dropped - the same reasoning as .warnDiveBaseline() in detectDives().
+  conflicts <- list()
   skipped_standalone <- character(0)   # labels of size-1 (standalone) groups, listed before the summary
   outlier_ids <- character(0)          # deployments that self-resolved a family against the group majority
   sub_arrow <- if (cli::is_utf8_output()) "\u21b3" else cli::symbol$arrow_right   # nested-detail marker
@@ -278,11 +282,9 @@ consensusAxisMapping <- function(results, group.by = "package_id", min.agreement
     for (fn in conflict_fams) {
       n_conflicts <- n_conflicts + 1L
       fs <- fam_status[[fam_letters[[fn]]]]
-      warning(sprintf(paste0("consensusAxisMapping: %s '%s' has conflicting %s axis mappings ",
-                             "across confidently-resolved deployments (%d distinct solutions). Check ",
-                             "whether the circuit board was swapped or remounted inside the housing, ",
-                             "or whether two units share this %s. No consensus propagated."),
-                      gb_desc, grp_label, fn, fs$n_distinct, gb_desc), call. = FALSE)
+      conflicts[[grp_label]] <- c(conflicts[[grp_label]],
+                                  list(list(family = fn, n_distinct = fs$n_distinct,
+                                            ids = vapply(members, function(n) n$id, character(1)))))
     }
 
     # ---- pass 2: render the group block --------------------------------------
@@ -369,6 +371,9 @@ consensusAxisMapping <- function(results, group.by = "package_id", min.agreement
   n_resolved   <- sum(!unresolved_mask)
   n_unresolved <- length(unresolved_ids)
   n_outliers   <- length(outlier_ids)
+
+  # one warning for the whole run, naming every affected group and the families that disagree
+  .warnAxisConflicts(conflicts, gb_desc)
 
   ##############################################################################
   # Summary ####################################################################
@@ -527,4 +532,48 @@ consensusAxisMapping <- function(results, group.by = "package_id", min.agreement
 #' @noRd
 .matEq <- function(a, b) {
   !is.null(a) && !is.null(b) && all(dim(a) == dim(b)) && all(a == b)
+}
+
+
+#' One warning for every axis-mapping conflict found in a run.
+#'
+#' A conflict means two confidently-resolved deployments sharing a unit disagree about how its axes map,
+#' which is a hardware question (a swapped or remounted board, or two units filed under one id) and not
+#' something the reconciliation can settle. It therefore warns regardless of verbosity.
+#'
+#' Emitted ONCE, not per group and per sensor family. A cohort where one unit conflicts on accelerometer
+#' and gyroscope produced two near-identical warnings for the same physical cause; on a large run that
+#' becomes a wall of text, and R keeps only the first 50 warnings, so the tail is dropped in silence.
+#' Grouping by unit also puts the useful comparison - which families disagree for THIS unit - on one line.
+#' @param conflicts Named list, one entry per group label, each a list of
+#'   `list(family, n_distinct, ids)` records.
+#' @param gb_desc How the grouping fields read in prose, e.g. `"package_id x logger_id"`.
+#' @keywords internal
+#' @noRd
+.warnAxisConflicts <- function(conflicts, gb_desc) {
+  if (!length(conflicts)) return(invisible(NULL))
+  cap <- function(x, n = 10L) if (length(x) > n) c(utils::head(x, n), sprintf("(+%d more)", length(x) - n)) else x
+
+  lines <- vapply(names(conflicts), function(g) {
+    recs <- conflicts[[g]]
+    fams <- paste(vapply(recs, function(r) sprintf("%s (%d solutions)", r$family, r$n_distinct), ""),
+                  collapse = ", ")
+    ids  <- unique(unlist(lapply(recs, `[[`, "ids"), use.names = FALSE))
+    sprintf("%s: %s -- %s", g, fams, paste(cap(ids, 6L), collapse = ", "))
+  }, character(1))
+
+  # one bullet PER unit: passing the vector to a single bullet would let cli collapse them into an
+  # English list ("A and B"), which is unreadable once more than two units conflict. Braces are escaped
+  # because each line is a glue template to cli and an id containing one would abort the warning.
+  esc   <- function(x) gsub("}", "}}", gsub("{", "{{", x, fixed = TRUE), fixed = TRUE)
+  bul   <- stats::setNames(esc(cap(lines)), rep("*", length(cap(lines))))
+
+  cli::cli_warn(c(
+    # cli takes the pluralising quantity from the LAST substitution, which is {gb_desc} (length 1) -
+    # so the count is pinned explicitly with qty() immediately before each plural marker
+    "Conflicting axis mappings across confidently-resolved deployments, for {length(conflicts)} {gb_desc} combination{cli::qty(length(conflicts))}{?s}. No consensus was propagated for {cli::qty(length(conflicts))}{?it/them}.",
+    bul,
+    "i" = "Check whether the circuit board was swapped or remounted inside the housing between deployments, or whether two physical units share one {gb_desc}.",
+    "i" = "Each deployment keeps whatever mapping it resolved on its own; only the group consensus is withheld."))
+  invisible(NULL)
 }

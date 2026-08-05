@@ -289,3 +289,73 @@ test_that("the final resolution status reports the rescue verdict and lists left
   expect_equal(res$n_unresolved, 1L)
   expect_setequal(res$unresolved_ids, "D3")
 })
+
+
+#######################################################################################################
+# Conflicts are reported as ONE warning for the run ###################################################
+#
+# A unit whose accelerometer and gyroscope both conflict has ONE physical cause - a swapped or
+# remounted board - and used to produce one near-identical warning per sensor family per unit. On a
+# large cohort that is a wall of text, and R keeps only the first 50 warnings, so the tail vanishes.
+
+# a deployment resolving BOTH accel and gyro, so a single unit can conflict on two families at once
+.resolved2 <- function(id, pkg, from = .M_from, to = .M_to, gfrom = c("gx","gy","gz"),
+                       gto = c("gx","gy","gz")) {
+  list(id = id, package_id = pkg,
+       proposal = rbind(data.frame(from = from, to = to, stringsAsFactors = FALSE),
+                        data.frame(from = gfrom, to = gto, stringsAsFactors = FALSE)),
+       candidates = .cand(.cand_M), resolution = NULL)
+}
+
+.warnText <- function(expr) {
+  w <- character(0)
+  withCallingHandlers(suppressMessages(expr),
+                      warning = function(x) { w <<- c(w, conditionMessage(x)); invokeRestart("muffleWarning") })
+  w
+}
+
+test_that("two sensor families conflicting in one unit produce a SINGLE warning", {
+  dat <- list(D1 = .resolved2("D1", "PKG_A"),
+              D2 = .resolved2("D2", "PKG_A", from = .id_from, to = .id_to,
+                              gfrom = c("gy","gx","gz"), gto = c("gx","-gy","gz")))
+  w <- .warnText(consensusAxisMapping(dat, verbose = 0))
+  expect_length(w, 1L)                                  # was two: one per family
+  expect_match(w, "accel")
+  expect_match(w, "gyro")
+  expect_match(w, "circuit board was swapped")          # the hardware hint survives consolidation
+})
+
+test_that("each conflicting unit gets its own line inside that one warning", {
+  dat <- list(A1 = .resolved("A1", "PKG_A"),
+              A2 = .resolved("A2", "PKG_A", from = .id_from, to = .id_to),
+              B1 = .resolved("B1", "PKG_B"),
+              B2 = .resolved("B2", "PKG_B", from = .id_from, to = .id_to))
+  w <- .warnText(consensusAxisMapping(dat, verbose = 0))
+  expect_length(w, 1L)
+  expect_match(w, "PKG_A", fixed = TRUE)
+  expect_match(w, "PKG_B", fixed = TRUE)
+  expect_match(w, "2 package_id combination", fixed = TRUE)
+})
+
+test_that("the warning names the deployments involved, so the unit can be traced back to records", {
+  dat <- list(D1 = .resolved("D1", "PKG_A"),
+              D2 = .resolved("D2", "PKG_A", from = .id_from, to = .id_to))
+  w <- .warnText(consensusAxisMapping(dat, verbose = 0))
+  expect_match(w, "D1", fixed = TRUE)
+  expect_match(w, "D2", fixed = TRUE)
+})
+
+test_that("a clean cohort warns not at all", {
+  dat <- list(D1 = .resolved("D1", "PKG_A"), D2 = .resolved("D2", "PKG_A"),
+              D3 = .ambiguous("D3", "PKG_A"))
+  expect_length(.warnText(consensusAxisMapping(dat, verbose = 0)), 0L)
+})
+
+test_that("a brace in a deployment id cannot abort the warning", {
+  # every bullet is a glue template to cli; an unescaped { in the data would error instead of warn
+  dat <- list(`D{1}` = .resolved("D{1}", "PKG_A"),
+              `D{2}` = .resolved("D{2}", "PKG_A", from = .id_from, to = .id_to))
+  w <- .warnText(consensusAxisMapping(dat, verbose = 0))
+  expect_length(w, 1L)
+  expect_match(w, "D{1}", fixed = TRUE)
+})
