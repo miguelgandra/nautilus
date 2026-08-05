@@ -333,3 +333,95 @@ test_that("filterDeploymentData runs without a temp column and just omits its pl
   res2 <- run_quiet(filterDeploymentData(list(A01 = f$data), plot = FALSE, return.data = TRUE, verbose = FALSE))
   expect_false(is.null(res2$A01))
 })
+
+
+#######################################################################################################
+# The two discard reasons are reported apart ##########################################################
+#
+# "nothing found" and "found but below the duration floor" call for OPPOSITE responses: the first means
+# the record is unusable, the second means a parameter needs adjusting. Both used to print
+# "no deployment detected", which sent a real 22-minute deployment (PIN_06D, a genuine dive to 225 m)
+# to the discard pile looking like a detector failure.
+
+# cli alerts go to STDERR, so suppressMessages() would swallow exactly what these tests assert on
+.fddReport <- function(expr) {
+  msg <- NULL
+  out <- capture.output(msg <- capture.output(suppressWarnings(expr), type = "message"), type = "output")
+  paste(c(out, msg), collapse = " ")
+}
+
+test_that("a window rejected on duration says so, and names the window and the floor", {
+  f <- .make_deployment()                       # 1 h of deep data inside a 2 h record
+  txt <- .fddReport(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
+                                         min.deployment.hours = 5,   # far above the window -> rejected
+                                         plot = FALSE, return.data = TRUE, verbose = "detailed"))
+  expect_match(txt, "deployment too short")
+  expect_match(txt, "min.deployment.hours = 5", fixed = TRUE)   # the floor that rejected it
+  expect_match(txt, "detected 00:29 . 01:29 \\(1\\.00 h\\)")       # ...and the window it rejected
+  expect_false(grepl("no deployment detected", txt, fixed = TRUE))
+})
+
+test_that("a record with no deployment at all still reports the original message", {
+  f <- .make_deployment(deep = FALSE)           # shallow noise throughout: nothing to find
+  txt <- .fddReport(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
+                                         min.deployment.hours = 0.25,
+                                         plot = FALSE, return.data = TRUE, verbose = "detailed"))
+  expect_match(txt, "no deployment detected")
+  expect_false(grepl("deployment too short", txt, fixed = TRUE))
+})
+
+test_that("the duration floor does not apply to a fully custom window", {
+  # the escape hatch the message points at has to actually work
+  f <- .make_deployment()
+  custom <- data.frame(ID = "A01", start = f$t0 + f$surf, end = f$t0 + f$surf + f$mid)
+  r <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                      min.deployment.hours = 99, plot = FALSE, return.data = TRUE,
+                                      verbose = FALSE))
+  d <- if (is.data.frame(r)) r else r[[1]]
+  expect_gt(nrow(d), 0L)                        # kept despite a floor it could never clear
+})
+
+
+#######################################################################################################
+# A window rejected on duration is still DRAWN ########################################################
+#
+# The panel is the only way to tell a real short dive from a transient spike: a duration cannot. But it
+# is drawn for review, never retained - the discard must stay a discard.
+
+test_that("a duration-rejected window gets a panel, badged and never saved", {
+  f   <- .make_deployment()
+  pdf_out <- tempfile(fileext = ".pdf"); on.exit(unlink(pdf_out), add = TRUE)
+  dir <- file.path(tempdir(), paste0("fdd_rej_", as.integer(runif(1, 1, 1e7))))
+  dir.create(dir); on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+
+  r <- run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
+                                      min.deployment.hours = 5, plot = FALSE, plot.file = pdf_out,
+                                      plot.metrics = c("temp", "ax"), return.data = FALSE,
+                                      output.dir = dir, verbose = FALSE))
+  expect_true(file.exists(pdf_out))                    # the panel was drawn...
+  expect_gt(file.size(pdf_out), 1000)
+  expect_length(list.files(dir), 0L)                   # ...and nothing was written to disk
+  expect_true(is.null(r) || length(unlist(r)) == 0L)   # ...and nothing was returned
+})
+
+test_that("a record with nothing detected is still skipped entirely", {
+  # the branch where attachtime/poptime are undefined stays untouched: that is where the old crash was
+  f <- .make_deployment(deep = FALSE)
+  pdf_out <- tempfile(fileext = ".pdf"); on.exit(unlink(pdf_out), add = TRUE)
+  expect_error(run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
+                                              min.deployment.hours = 0.25, plot = FALSE,
+                                              plot.file = pdf_out, plot.metrics = c("temp", "ax"),
+                                              return.data = TRUE, verbose = FALSE)), NA)
+  # a PDF is opened for the run, but it carries no page for this record
+  expect_lt(file.size(pdf_out), 12000)
+})
+
+test_that("a retained deployment is unaffected by the rejected-window path", {
+  f <- .make_deployment()
+  dir <- file.path(tempdir(), paste0("fdd_ok_", as.integer(runif(1, 1, 1e7))))
+  dir.create(dir); on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  run_quiet(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
+                                 min.deployment.hours = 0.25, plot = FALSE, return.data = FALSE,
+                                 output.dir = dir, verbose = FALSE))
+  expect_length(list.files(dir), 1L)                   # still written, still one file
+})

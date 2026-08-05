@@ -81,7 +81,14 @@ deployment times.}
 
 \item{min.deployment.hours}{Numeric. Minimum duration (hours) for an automatically detected
 deployment window; shorter windows (e.g. a transient depth spike or a brief diver test-dive) are
-treated as "no deployment" and discarded (default 0.25). Ignored for custom deployment times.}
+discarded (default 0.25). A window rejected this way is reported as \verb{deployment too short}, naming
+the window it found and the floor it failed, so it is distinguishable from a record in which nothing
+was detected at all - the two mean different things and call for different responses. It also still
+gets a diagnostic panel, badged \code{DISCARDED} with the rejected window drawn in red, because a
+duration on its own cannot separate a real short dive from a sensor spike and that judgement is the
+reason the record is worth seeing. The record is drawn for review only: it is never trimmed, saved
+or returned. Genuinely short deployments do occur: raise or lower this to suit the cohort, or pass
+the known window in \code{custom.deployment.times}, to which the floor does not apply.}
 
 \item{plot}{A logical value indicating whether the diagnostic plots should be drawn to the
 active graphics device. These plots generate diagnostic visuals showing depth and additional

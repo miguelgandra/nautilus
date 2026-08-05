@@ -86,7 +86,14 @@
 #' deployment times.
 #' @param min.deployment.hours Numeric. Minimum duration (hours) for an automatically detected
 #' deployment window; shorter windows (e.g. a transient depth spike or a brief diver test-dive) are
-#' treated as "no deployment" and discarded (default 0.25). Ignored for custom deployment times.
+#' discarded (default 0.25). A window rejected this way is reported as `deployment too short`, naming
+#' the window it found and the floor it failed, so it is distinguishable from a record in which nothing
+#' was detected at all - the two mean different things and call for different responses. It also still
+#' gets a diagnostic panel, badged `DISCARDED` with the rejected window drawn in red, because a
+#' duration on its own cannot separate a real short dive from a sensor spike and that judgement is the
+#' reason the record is worth seeing. The record is drawn for review only: it is never trimmed, saved
+#' or returned. Genuinely short deployments do occur: raise or lower this to suit the cohort, or pass
+#' the known window in `custom.deployment.times`, to which the floor does not apply.
 #' @param plot A logical value indicating whether the diagnostic plots should be drawn to the
 #' active graphics device. These plots generate diagnostic visuals showing depth and additional
 #' metrics, assisting users in reviewing the extracted deployment periods.
@@ -403,6 +410,10 @@ filterDeploymentData <- function(data,
 
     # set default flags
     valid_dataset <- TRUE
+    # Set when a window WAS found and then rejected on duration. "nothing found" and "found but too
+    # short" call for OPPOSITE responses - the first means the record is unusable, the second means a
+    # parameter needs adjusting - and a reader cannot tell them apart from the discard line alone.
+    short_window <- NULL
     temp_rescued  <- FALSE   # set TRUE if temperature recovered a deployment depth alone missed
 
 
@@ -655,7 +666,14 @@ filterDeploymentData <- function(data,
       if (deployment_found && !partial_deployment_times) {
         dur_h <- as.numeric(difftime(reduced_data[[datetime.col]][pop_idx],
                                      reduced_data[[datetime.col]][attach_idx], units = "hours"))
-        if (is.finite(dur_h) && dur_h < min.deployment.hours) deployment_found <- FALSE
+        if (is.finite(dur_h) && dur_h < min.deployment.hours) {
+          # the indices are about to be clobbered below, so keep them: they are what lets the panel
+          # DRAW the window that was rejected, which two timestamps in the log cannot convey
+          short_window <- list(from  = reduced_data[[datetime.col]][attach_idx],
+                               to    = reduced_data[[datetime.col]][pop_idx],
+                               hours = dur_h, attach_idx = attach_idx, pop_idx = pop_idx)
+          deployment_found <- FALSE
+        }
       }
 
       if (!deployment_found) {
@@ -680,17 +698,37 @@ filterDeploymentData <- function(data,
       }
     }
 
-    # if no valid deployment was detected, the dataset is discarded: report it, skip the plotting
-    # and subsetting (attachtime/poptime are undefined here), and move on to the next individual
+    # The dataset is discarded either way, but the two reasons are not equivalent. Where a window WAS
+    # found and then rejected on duration, everything the panel needs exists and the record is drawn -
+    # badged as discarded - because a duration alone cannot separate a real short dive from a sensor
+    # spike, and that judgement is exactly why the record is worth surfacing. Where nothing was found,
+    # attachtime/poptime are undefined and the panel is skipped, as it always has been.
     if (!valid_dataset) {
-      .log_skip(lvl, id, "  no deployment detected ", cli::symbol$bullet, " discarded")
+      if (is.null(short_window)) {
+        .log_skip(lvl, id, "  no deployment detected ", cli::symbol$bullet, " discarded")
+      } else {
+        .log_skip(lvl, id, "  deployment too short ", cli::symbol$bullet, " discarded")
+        .log_arrow(lvl, sprintf("detected %s %s %s (%.2f h), below min.deployment.hours = %g",
+                                strftime(short_window$from, "%H:%M", tz = "UTC"), cli::symbol$arrow_right,
+                                strftime(short_window$to,   "%H:%M", tz = "UTC"),
+                                short_window$hours, min.deployment.hours))
+      }
       n_discarded <- n_discarded + 1L
-      .log_gap(lvl)
-      next
+      if (is.null(short_window) || !make_plots) {
+        .log_gap(lvl)
+        next
+      }
+      # restore the rejected window so the panel can draw it; the save path is skipped further below
+      attachtime <- short_window$from
+      poptime    <- short_window$to
+      attach_idx <- short_window$attach_idx
+      pop_idx    <- short_window$pop_idx
     }
 
     ##########################################################################
-    # Deployment statistics (valid_dataset is guaranteed TRUE here) ###########
+    # Deployment statistics ####################################################
+
+    if (valid_dataset) {
 
     deploy_duration <- difftime(poptime, attachtime, units = "hours")
     deploy_duration <- paste(sprintf("%.2f", as.numeric(deploy_duration)), attributes(deploy_duration)$units)
@@ -723,6 +761,8 @@ filterDeploymentData <- function(data,
     .log_detail(lvl, "retained: ~", .formatLargeNumber(kept_rows), " rows | removed: ~",
                 .formatLargeNumber(rows_discarded), " rows")
 
+    }
+
     ############################################################################
     # Plot results #############################################################
     ############################################################################
@@ -731,7 +771,8 @@ filterDeploymentData <- function(data,
 
       # describe how this individual's window was determined (drives the status badge)
       method_kind <- if (isTRUE(valid_deployment_times)) "custom" else "automatic"
-      method_label <- if (!valid_dataset) "no deployment detected"
+      method_label <- if (!valid_dataset) sprintf("deployment too short (%.2f h < %g h)",
+                                                  short_window$hours, min.deployment.hours)
         else if (method_kind == "automatic") { if (isTRUE(temp_rescued)) "temperature rescue" else "depth + temperature" }
         else if (isTRUE(custom_start_only)) "custom start, inferred end"
         else if (isTRUE(custom_end_only))   "inferred start, custom end"
@@ -767,12 +808,20 @@ filterDeploymentData <- function(data,
         poptime     = if (valid_dataset) poptime    else as.POSIXct(NA),
         deploy_duration   = if (valid_dataset) deploy_duration   else NA_character_,
         deploy_percentage = if (valid_dataset) deploy_percentage else NA_real_,
+        rejected = if (!valid_dataset) short_window else NULL,
+        min_hours = min.deployment.hours,
         kept_rows = kept_rows, rows_discarded = rows_discarded)
 
       # suppress device font/encoding warnings (text.default / mbcsToSbcs substituting glyphs like
       # the arrow on non-UTF devices); they are not meaningful and would break the per-individual blocks
       if (!is.null(file_dev)) { grDevices::dev.set(file_dev); suppressWarnings(.drawDeploymentPanel(pd)) }
       if (plot) { if (caller_dev > 1L) grDevices::dev.set(caller_dev); suppressWarnings(.drawDeploymentPanel(pd)) }
+    }
+
+    # the panel was the only reason a rejected record got this far; it is never subset or saved
+    if (!valid_dataset) {
+      .log_gap(lvl)
+      next
     }
 
     ############################################################################
@@ -987,11 +1036,16 @@ filterDeploymentData <- function(data,
   ai <- pd$attach_idx; pp <- pd$pop_idx
   has_window <- isTRUE(pd$valid) && is.finite(ai) && is.finite(pp) && ai <= n && pp <= n && ai < pp
   kept <- if (has_window) c(tt[ai], tt[pp]) else NULL
+  # A window that was detected and then rejected on duration is drawn too, but in the DISCARD palette
+  # and with dashed bounds: the reader has to be able to see the shape that was thrown away without
+  # ever mistaking it for something that was kept.
+  rej <- if (!is.null(pd$rejected)) c(pd$rejected$from, pd$rejected$to) else NULL
   xlim <- c(pd$first_datetime, pd$last_datetime)   # real data span (excludes internal padding)
 
   # palette
   col_kept <- "#185FA5"; col_disc <- "#9AA0A6"; band <- "#378ADD22"; col_meta <- "#1D9E75"
   col_auto <- "#A32D2D"; col_custom <- "#E8A33D"          # retained boundary, coloured by method
+  rej_col  <- "#B23A3A"; rej_band <- "#B23A3A18"          # detected-then-rejected window (discard red)
   col_fast <- "#2AA7A0"; col_user <- "#7E57C2"            # location-fix tones (distinct from depth blue)
   badge_col <- if (!has_window) "#B23A3A" else if (identical(pd$method_kind, "custom")) "#E8A33D" else "#1D9E75"
   attach_col  <- if (identical(pd$attach_method,  "custom")) col_custom else col_auto
@@ -1034,8 +1088,16 @@ filterDeploymentData <- function(data,
     draw_pairs(list(c("Duration", pd$deploy_duration),
                     c("Retained", sprintf("%.0f%% (%s)", pd$deploy_percentage, .formatLargeNumber(pd$kept_rows)))), 0.30)
   } else {
-    draw_pairs(list(c("Status", "no deployment detected"),
-                    c("Discarded", paste0(.formatLargeNumber(pd$rows_discarded), " rows"))), 0.40)
+    if (is.null(pd$rejected)) {
+      draw_pairs(list(c("Status", "no deployment detected"),
+                      c("Discarded", paste0(.formatLargeNumber(pd$rows_discarded), " rows"))), 0.40)
+    } else {
+      draw_pairs(list(c("Detected", paste0(fmt_dt(pd$rejected$from), "  ", cli::symbol$arrow_right, "  ",
+                                           strftime(pd$rejected$to, "%H:%M", tz = "UTC"))),
+                      c("Duration", sprintf("%.2f h  (floor %g h)", pd$rejected$hours, pd$min_hours))), 0.52)
+      draw_pairs(list(c("Status", "rejected on duration; nothing retained"),
+                      c("Discarded", paste0(.formatLargeNumber(pd$rows_discarded), " rows"))), 0.30)
+    }
   }
 
   # helper: draw a series with the retained window shaded, kept (colour) over discarded (grey), plus
@@ -1045,10 +1107,17 @@ filterDeploymentData <- function(data,
     graphics::plot(tt, y, type = "n", xlim = xlim, ylim = ylim, xaxt = "n", xlab = "", ylab = ylab,
                    las = 1, cex.axis = 0.95, cex.lab = 1.05)
     if (has_window) graphics::rect(kept[1], graphics::par("usr")[3], kept[2], graphics::par("usr")[4], col = band, border = NA)
+    if (!is.null(rej)) {
+      graphics::rect(rej[1], graphics::par("usr")[3], rej[2], graphics::par("usr")[4], col = rej_band, border = NA)
+      graphics::abline(v = rej, col = rej_col, lty = 2, lwd = 1.4)
+    }
     graphics::lines(tt, y, col = col_disc, lwd = lwd * 0.8)
     if (has_window) {
       keep <- tt >= kept[1] & tt <= kept[2]
       graphics::lines(tt[keep], y[keep], col = col_kept, lwd = lwd)
+    } else if (!is.null(rej)) {
+      inr <- tt >= rej[1] & tt <= rej[2]
+      graphics::lines(tt[inr], y[inr], col = rej_col, lwd = lwd)
     }
     if (is.finite(pd$meta_deploy))  graphics::abline(v = pd$meta_deploy,  col = col_meta, lty = 2, lwd = 1.0)
     if (is.finite(pd$meta_release)) graphics::abline(v = pd$meta_release, col = col_meta, lty = 2, lwd = 1.0)
@@ -1095,6 +1164,7 @@ filterDeploymentData <- function(data,
     if (attach_col == col_auto   || release_col == col_auto)   add("automatic boundary", 1L, col_auto)
     if (attach_col == col_custom || release_col == col_custom) add("custom boundary",    1L, col_custom)
   }
+  if (!is.null(rej)) add("detected, then rejected", 2L, rej_col)
   if (is.finite(pd$meta_deploy) || is.finite(pd$meta_release)) add("metadata deploy/release", 2L, col_meta)
   if (has_fast) add("FastGPS fix",   NA_integer_, col_fast, 16L)
   if (has_user) add("User position", NA_integer_, col_user, 16L)
