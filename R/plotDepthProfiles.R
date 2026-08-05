@@ -376,11 +376,8 @@ plotDepthProfiles <- function(data,
   if (geom %in% c("line", "both")) .drawColorLine(time, depth, point_col, lwd = lwd)
   if (geom %in% c("points", "both")) graphics::points(x = time, y = depth, pch = 16, col = point_col, cex = point.size)
 
-  # axes: date or clock time depending on the record length
-  tr   <- range(time, na.rm = TRUE)
-  span <- as.numeric(difftime(tr[2], tr[1], units = "secs"))
-  graphics::axis.POSIXct(1, at = pretty(tr, n = 5), format = if (span > 86400) "%d/%b" else "%H:%M",
-                         cex.axis = cex * 0.95, col = theme$axis, col.axis = theme$axis)
+  # axes: date or clock time depending on the record length, labelled in the DATA's zone (see .axisTime)
+  .axisTime(time, n = 5, cex.axis = cex * 0.95, col = theme$axis, col.axis = theme$axis)
   graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.95,
                  col = theme$axis, col.axis = theme$axis)
 

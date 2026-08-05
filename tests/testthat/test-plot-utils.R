@@ -41,3 +41,70 @@ test_that(".deploymentGroup resolves from a data column, a named vector, a data.
   expect_true(is.na(nautilus:::.deploymentGroup(x, "A01", NULL)))
   expect_true(is.na(nautilus:::.deploymentGroup(x, "Z99", c(A01 = "g1"))))       # unmatched id
 })
+
+
+#######################################################################################################
+# Time axes are labelled in the DATA's timezone ########################################################
+#
+# graphics::axis.POSIXct(side, at = ) without `x` sets tz <- "" internally and then OVERWRITES the tick
+# vector's own tzone with it, so the labels come out in the analyst's session zone. On a Europe/Lisbon
+# machine that silently put every depth profile of a UTC record one hour late: a real dive at 12:26 UTC
+# was drawn at 13:26 and could not be reconciled with the camera footage of it. Nothing about the figure
+# looked wrong. These tests are the only thing standing between that and a repeat.
+
+test_that("the time axis is labelled in the data's timezone, not the session's", {
+  old <- Sys.getenv("TZ", unset = NA)
+  on.exit({ if (is.na(old)) Sys.unsetenv("TZ") else Sys.setenv(TZ = old) }, add = TRUE)
+  Sys.setenv(TZ = "America/New_York")                       # -4 h in September: a guaranteed mismatch
+
+  t <- seq(as.POSIXct("2019-09-27 10:25:00", tz = "UTC"), by = "10 min", length.out = 14)
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot(t, seq_along(t), xaxt = "n")
+  r <- .axisTime(t, n = 5)
+
+  expect_equal(r$tz, "UTC")
+  expect_equal(r$labels, format(r$at, "%H:%M", tz = "UTC"))
+  # and the regression itself: the session zone must NOT be what got printed
+  expect_false(identical(r$labels, format(r$at, "%H:%M", tz = "America/New_York")))
+})
+
+test_that("a time vector carrying no zone falls back to UTC, never to the session", {
+  old <- Sys.getenv("TZ", unset = NA)
+  on.exit({ if (is.na(old)) Sys.unsetenv("TZ") else Sys.setenv(TZ = old) }, add = TRUE)
+  Sys.setenv(TZ = "America/New_York")
+
+  t <- seq(as.POSIXct("2019-09-27 10:25:00", tz = "UTC"), by = "10 min", length.out = 14)
+  attr(t, "tzone") <- NULL                                  # storage contract says UTC; honour it
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot(t, seq_along(t), xaxt = "n")
+  r <- .axisTime(t, n = 5)
+
+  expect_equal(r$tz, "UTC")
+  expect_equal(r$labels, format(r$at, "%H:%M", tz = "UTC"))
+})
+
+test_that("an explicit tz argument wins, and the format follows the record length", {
+  t <- seq(as.POSIXct("2019-09-27 10:00:00", tz = "UTC"), by = "10 min", length.out = 14)
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot(t, seq_along(t), xaxt = "n")
+  r <- .axisTime(t, n = 5, tz = "Pacific/Auckland")
+  expect_equal(r$tz, "Pacific/Auckland")
+  expect_equal(r$labels, format(r$at, "%H:%M", tz = "Pacific/Auckland"))
+
+  # a record longer than a day switches from clock time to dates
+  long <- seq(as.POSIXct("2019-09-27 10:00:00", tz = "UTC"), by = "6 hours", length.out = 20)
+  plot(long, seq_along(long), xaxt = "n")
+  expect_true(all(grepl("^[0-9]{2}/", .axisTime(long, n = 5)$labels)))
+  expect_true(all(grepl("^[0-9]{2}:[0-9]{2}$", r$labels)))
+})
+
+test_that("no function reaches for axis.POSIXct again", {
+  # axis.POSIXct(at=) without x= is the footgun described above. .axisTime() is the sanctioned path;
+  # it resolves the zone explicitly and formats the labels itself. If this fails, use it instead.
+  ns <- asNamespace("nautilus")
+  bodies <- vapply(ls(ns, all.names = TRUE), function(nm) {
+    f <- get(nm, envir = ns)
+    if (!is.function(f)) "" else paste(deparse(body(f)), collapse = " ")
+  }, character(1))
+  expect_false(any(grepl("axis.POSIXct", bodies, fixed = TRUE)))
+})

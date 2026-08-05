@@ -593,9 +593,7 @@ checkSensorQuality <- function(data,
   graphics::lines(tp, tr$y, col = "grey30", lwd = 0.7)
   if (length(pan$removed$t)) graphics::points(as.POSIXct(pan$removed$t, origin = "1970-01-01", tz = pan$tz), pan$removed$y, pch = 16, col = "red3", cex = 0.8)
   if (length(pan$interp$t))  graphics::points(as.POSIXct(pan$interp$t,  origin = "1970-01-01", tz = pan$tz), pan$interp$y,  pch = 16, col = "cyan3", cex = 0.8)
-  rng <- range(tp, na.rm = TRUE)
-  graphics::axis.POSIXct(1, at = pretty(rng, 6),
-                         format = if (as.numeric(diff(rng), units = "secs") > 86400) "%d/%b" else "%H:%M", cex.axis = 0.8)
+  .axisTime(tp, n = 6, tz = pan$tz, cex.axis = 0.8)
   graphics::axis(2, cex.axis = 0.8, las = 1); graphics::box()
   leg <- character(0); lcol <- character(0)
   if (length(pan$spans))     { leg <- c(leg, "stall / malfunction block"); lcol <- c(lcol, "#e41818") }

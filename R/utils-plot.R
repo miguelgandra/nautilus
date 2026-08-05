@@ -475,3 +475,42 @@
   list(ncols = ncols, nrows = nrows, per_page = per_page,
        pages = split(seq_len(n), ceiling(seq_len(n) / per_page)))
 }
+
+
+#' Draw a time axis whose labels are in the DATA's timezone, never the session's.
+#'
+#' `graphics::axis.POSIXct(side, at = )` called without `x` looks like it will honour the timezone
+#' carried by `at`, and does not: internally it sets `tz <- ""` (because `x` is missing) and then
+#' overwrites the tick vector's own attribute with `attr(z, "tzone") <- tz`. The labels are therefore
+#' formatted in whatever zone the analyst's machine happens to be in. This is silent, plausible, and
+#' wrong: on a Europe/Lisbon machine every depth profile of a UTC record was labelled one hour late, so
+#' a real dive at 12:26 UTC read as 13:26 and could not be reconciled with the video that recorded it.
+#' It was found only because a camera deployment's footage disagreed with its own depth trace.
+#'
+#' So the zone is resolved explicitly and the labels are formatted here, rather than delegated. A
+#' vector with no zone falls back to UTC, which is the package's storage contract ([importTagData()]
+#' stamps it) - never to the session zone, which is a property of the analyst, not of the data.
+#'
+#' The date-versus-clock rule lives here too, so the two call sites cannot drift apart.
+#' @param time A `POSIXct` vector: the data being plotted, not the tick positions.
+#' @param n Approximate number of ticks, passed to [pretty()].
+#' @param tz Timezone for the labels. `NULL` (default) reads it from `time`, falling back to `"UTC"`.
+#' @param side Axis side, as in [graphics::axis()].
+#' @param ... Passed to [graphics::axis()] (`cex.axis`, `col`, `col.axis`, ...).
+#' @return Invisibly, a list of the tick positions (`at`) and the strings drawn (`labels`), so a test
+#'   can assert on the rendering without inspecting a device.
+#' @keywords internal
+#' @noRd
+.axisTime <- function(time, n = 5, tz = NULL, side = 1L, ...) {
+  if (is.null(tz)) tz <- attr(time, "tzone")
+  if (is.null(tz) || !nzchar(tz[1])) tz <- "UTC"
+  tz  <- tz[1]
+  rng <- range(time, na.rm = TRUE)
+  at  <- pretty(rng, n = n)
+  fmt <- if (as.numeric(difftime(rng[2], rng[1], units = "secs")) > 86400) "%d/%b" else "%H:%M"
+  # re-tag the instants with the intended zone; the moment is unchanged, only how it is written down
+  z   <- structure(as.numeric(at), class = c("POSIXct", "POSIXt"), tzone = tz)
+  lab <- format(z, format = fmt, tz = tz)
+  graphics::axis(side, at = as.numeric(at), labels = lab, ...)
+  invisible(list(at = at, labels = lab, tz = tz))
+}
