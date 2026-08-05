@@ -1057,10 +1057,11 @@ filterDeploymentData <- function(data,
       graphics::abline(v = kept[2], col = release_col, lty = 1, lwd = 1.4)
     }
     graphics::box(col = "#CCCCCC")
-    if (draw_axis) {
-      ticks <- pretty(xlim, n = 6)
-      graphics::axis(1, at = ticks, labels = format(ticks, "%d %b %Y\n%H:%M"), cex.axis = 0.82, padj = 0.5)
-    }
+    if (draw_axis)
+      # `xlim` is built with c(), which has not always preserved the timezone attribute; .axisTime
+      # resolves the zone explicitly and falls back to UTC rather than to the analyst's session
+      .axisTime(xlim, n = 6, tz = attr(tt, "tzone"), fmt = "%d %b %Y\n%H:%M",
+                cex.axis = 0.82, padj = 0.5)
   }
 
   # ---- location strip (narrow band above depth; FastGPS / User distinguished by colour) -------

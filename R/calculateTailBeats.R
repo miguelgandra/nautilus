@@ -1322,8 +1322,8 @@ calculateTailBeats <- function(data,
 #' @keywords internal
 #' @noRd
 .tbTimeAxis <- function(x, offset = 0) {
+  # the panel's x runs in shifted seconds, so the ticks are placed at `at - offset` while the labels
+  # name the instants `at`; the zone is stated rather than inherited (see .axisTime)
   at <- pretty(range(x, na.rm = TRUE), 6)
-  graphics::axis(1, at = at - offset,                   # tick positions in the panel's own coordinates
-                 labels = strftime(as.POSIXct(at, origin = "1970-01-01", tz = "UTC"),
-                                   "%d/%b %H:%M", tz = "UTC"), las = 1)
+  .axisTime(.asPosix(at, "UTC"), at = at - offset, fmt = "%d/%b %H:%M", tz = "UTC", las = 1)
 }

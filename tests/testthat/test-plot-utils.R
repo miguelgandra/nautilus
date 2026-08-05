@@ -98,13 +98,50 @@ test_that("an explicit tz argument wins, and the format follows the record lengt
   expect_true(all(grepl("^[0-9]{2}:[0-9]{2}$", r$labels)))
 })
 
-test_that("no function reaches for axis.POSIXct again", {
-  # axis.POSIXct(at=) without x= is the footgun described above. .axisTime() is the sanctioned path;
-  # it resolves the zone explicitly and formats the labels itself. If this fails, use it instead.
+test_that("an explicit `at` labels a non-time axis in the data's zone", {
+  # coverage bars, spectrogram panels and gap zooms plot in bin/sample/offset coordinates, so the tick
+  # POSITIONS are not instants. The labels still have to name instants in the data's zone.
+  old <- Sys.getenv("TZ", unset = NA)
+  on.exit({ if (is.na(old)) Sys.unsetenv("TZ") else Sys.setenv(TZ = old) }, add = TRUE)
+  Sys.setenv(TZ = "America/New_York")
+
+  t3 <- as.POSIXct(c("2020-01-01 00:00:00", "2020-01-01 01:00:00", "2020-01-01 02:00:00"), tz = "UTC")
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot(c(0, 100), c(0, 1), type = "n", xaxt = "n")
+  r <- .axisTime(t3, at = c(0, 50, 100), fmt = "%d-%b %H:%M")
+
+  expect_equal(r$labels, c("01-Jan 00:00", "01-Jan 01:00", "01-Jan 02:00"))
+  expect_false(any(grepl("31-Dec", r$labels)))          # the session zone must not appear
+  expect_equal(r$tz, "UTC")
+})
+
+test_that("a mismatch between tick positions and timestamps is refused, not silently recycled", {
+  t3 <- as.POSIXct(c("2020-01-01 00:00:00", "2020-01-01 01:00:00"), tz = "UTC")
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot(c(0, 100), c(0, 1), type = "n", xaxt = "n")
+  expect_error(.axisTime(t3, at = c(0, 50, 100)), "same length")
+})
+
+test_that("epoch seconds are accepted, so a panel in shifted coordinates can still be labelled", {
+  secs <- as.numeric(as.POSIXct(c("2020-01-01 00:00:00", "2020-01-01 06:00:00"), tz = "UTC"))
+  grDevices::pdf(NULL); on.exit(grDevices::dev.off(), add = TRUE)
+  plot(c(0, 1), c(0, 1), type = "n", xaxt = "n")
+  r <- .axisTime(secs, at = c(0, 1), fmt = "%H:%M", tz = "UTC")
+  expect_equal(r$labels, c("00:00", "06:00"))
+})
+
+test_that("no function builds a time axis outside .axisTime", {
+  # TWO ways to leak the session zone into a figure, both silent:
+  #   1. axis.POSIXct(at=) without x= - it OVERWRITES the tick vector's tzone with ""
+  #   2. axis(labels = format(<timestamps>)) - correct only while something upstream happens to have
+  #      preserved the tzone attribute; c() on POSIXct has not always done so
+  # .axisTime() is the sanctioned path for both: it resolves the zone and formats the labels itself.
   ns <- asNamespace("nautilus")
   bodies <- vapply(ls(ns, all.names = TRUE), function(nm) {
     f <- get(nm, envir = ns)
     if (!is.function(f)) "" else paste(deparse(body(f)), collapse = " ")
   }, character(1))
   expect_false(any(grepl("axis.POSIXct", bodies, fixed = TRUE)))
+  expect_false(any(grepl("labels = format(",   bodies, fixed = TRUE)))
+  expect_false(any(grepl("labels = strftime(", bodies, fixed = TRUE)))
 })

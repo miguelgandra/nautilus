@@ -1026,8 +1026,9 @@ regularizeTimeSeries <- function(data,
     graphics::segments(xx, 1, xx, 1.12, col = col_gap, lwd = 0.9, xpd = NA)
     graphics::text(xx, 1.16, .formatDurationShort(p$gap_marks$dur[k]), cex = 0.68, col = col_gap, adj = c(0.5, 0), xpd = NA)
   }
-  graphics::axis(1, at = c(0, nb / 2, nb), labels = format(c(p$t_start, p$t_mid, p$t_end), "%d-%b %H:%M"),
-                 cex.axis = 0.72, tcl = -0.3)
+  # x is the coverage BIN INDEX, not time: three fixed positions carrying three named instants
+  .axisTime(c(p$t_start, p$t_mid, p$t_end), at = c(0, nb / 2, nb), fmt = "%d-%b %H:%M",
+            cex.axis = 0.72, tcl = -0.3)
 
   # ---- targeted zoom ----
   graphics::par(mar = c(3.2, 3.6, 2.0, 1), mgp = c(2.1, 0.6, 0))
@@ -1052,7 +1053,7 @@ regularizeTimeSeries <- function(data,
       graphics::points(stats::approx(as.numeric(z$post_t), xR, xout = as.numeric(z$raw_post$t), rule = 2)$y,
                        z$raw_post$v, pch = 16, col = col_raw, cex = 0.5)
     graphics::axis(2, cex.axis = 0.8, las = 1); graphics::box(col = "#CCCCCC")
-    graphics::axis(1, at = c(1, xmax), labels = format(c(z$gap_t0, z$gap_t1), "%H:%M"), cex.axis = 0.78)
+    .axisTime(c(z$gap_t0, z$gap_t1), at = c(1, xmax), fmt = "%H:%M", cex.axis = 0.78)
   } else {
     yl <- range(c(z$gv, z$ov), na.rm = TRUE); if (!all(is.finite(yl))) yl <- c(0, 1)
     graphics::plot(z$gt, z$gv, type = "l", col = col_grid, lwd = 1.1, ylim = yl, xlab = "time", ylab = z$col,

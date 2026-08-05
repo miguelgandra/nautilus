@@ -491,26 +491,52 @@
 #' vector with no zone falls back to UTC, which is the package's storage contract ([importTagData()]
 #' stamps it) - never to the session zone, which is a property of the analyst, not of the data.
 #'
-#' The date-versus-clock rule lives here too, so the two call sites cannot drift apart.
-#' @param time A `POSIXct` vector: the data being plotted, not the tick positions.
-#' @param n Approximate number of ticks, passed to [pretty()].
+#' The date-versus-clock rule lives here too, so the call sites cannot drift apart.
+#'
+#' Two shapes are supported. With `at = NULL` the ticks are chosen from `time` and drawn at the instants
+#' they represent - an ordinary time axis. With `at` supplied the panel's x axis is NOT a time axis (a
+#' bin index, a sample number, a shifted coordinate system) and the caller states where each tick goes
+#' and which instant it stands for; `time` is then the label timestamps, one per position. The second
+#' form is why this cannot simply wrap [graphics::axis.POSIXct()].
+#' @param time A `POSIXct` vector (or epoch seconds): the instants to be LABELLED, not tick positions.
+#' @param n Approximate number of ticks, passed to [pretty()]. Ignored when `at` is supplied.
 #' @param tz Timezone for the labels. `NULL` (default) reads it from `time`, falling back to `"UTC"`.
 #' @param side Axis side, as in [graphics::axis()].
+#' @param at Tick positions in the panel's own coordinates. `NULL` (default) derives them from `time`.
+#' @param fmt Explicit [strftime()] format. `NULL` (default) picks dates over a day, clock time under.
 #' @param ... Passed to [graphics::axis()] (`cex.axis`, `col`, `col.axis`, ...).
 #' @return Invisibly, a list of the tick positions (`at`) and the strings drawn (`labels`), so a test
 #'   can assert on the rendering without inspecting a device.
 #' @keywords internal
 #' @noRd
-.axisTime <- function(time, n = 5, tz = NULL, side = 1L, ...) {
+.axisTime <- function(time, n = 5, tz = NULL, side = 1L, at = NULL, fmt = NULL, ...) {
   if (is.null(tz)) tz <- attr(time, "tzone")
   if (is.null(tz) || !nzchar(tz[1])) tz <- "UTC"
-  tz  <- tz[1]
-  rng <- range(time, na.rm = TRUE)
-  at  <- pretty(rng, n = n)
-  fmt <- if (as.numeric(difftime(rng[2], rng[1], units = "secs")) > 86400) "%d/%b" else "%H:%M"
-  # re-tag the instants with the intended zone; the moment is unchanged, only how it is written down
-  z   <- structure(as.numeric(at), class = c("POSIXct", "POSIXt"), tzone = tz)
+  tz   <- tz[1]
+  tnum <- as.numeric(time)
+  rng  <- range(tnum, na.rm = TRUE)
+  if (is.null(at)) {
+    # ticks chosen from the data, drawn at the times they represent
+    lab_t <- as.numeric(pretty(.asPosix(rng, tz), n = n))
+    pos   <- lab_t
+  } else {
+    # the panel's x axis is NOT a time axis (bin index, sample number, an offset coordinate system);
+    # the caller says where each tick goes and which instant it stands for
+    lab_t <- tnum
+    pos   <- as.numeric(at)
+    if (length(pos) != length(lab_t))
+      .abort(c("{.arg at} and {.arg time} must be the same length when tick positions are supplied.",
+               "i" = "Got {length(pos)} position{?s} for {length(lab_t)} timestamp{?s}."))
+  }
+  if (is.null(fmt)) fmt <- if (diff(rng) > 86400) "%d/%b" else "%H:%M"
+  z   <- .asPosix(lab_t, tz)   # re-tag: the instant is unchanged, only how it is written down
   lab <- format(z, format = fmt, tz = tz)
-  graphics::axis(side, at = as.numeric(at), labels = lab, ...)
-  invisible(list(at = at, labels = lab, tz = tz))
+  graphics::axis(side, at = pos, labels = lab, ...)
+  invisible(list(at = z, labels = lab, tz = tz))
 }
+
+
+#' Tag epoch seconds with a timezone, without going through as.POSIXct()'s defaulting rules.
+#' @keywords internal
+#' @noRd
+.asPosix <- function(x, tz) structure(as.numeric(x), class = c("POSIXct", "POSIXt"), tzone = tz)
