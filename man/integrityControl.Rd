@@ -10,6 +10,12 @@ integrityControl(
   saturation.error = 0.2,
   accel.scale.warning = 0.2,
   accel.scale.error = 0.5,
+  accel.calibration.warning = 1,
+  accel.calibration.error = 3,
+  accel.calibration.residual = 0.04,
+  accel.calibration.condition = 5000,
+  accel.calibration.quiet = 0.4,
+  accel.calibration.min.n = 5000L,
   mag.plausibility.warning = 0.4,
   mag.break.warning = 0.96,
   gyro.bias.info = 0.3,
@@ -31,6 +37,34 @@ Defaults 0.01 and 0.20.}
 static-acceleration magnitude from 1 g (in g). A small departure suggests an imperfect calibration
 (warning); a large one is a scaling or unit error - e.g. acceleration left in m/s^2 - rather than a
 calibration offset (error). Defaults 0.20 and 0.50.}
+
+\item{accel.calibration.warning, accel.calibration.error}{Per-axis accelerometer calibration, graded
+on the ATTITUDE ERROR it implies rather than on the parameter itself, in degrees (defaults 1 and 3).
+A reader can act on "up to 1.4 degrees of roll error"; they cannot act on an offset of 0.024 g
+without doing the trigonometry themselves. Complements \code{accel.scale}, which grades the magnitude
+and is by construction insensitive to the per-axis errors that move roll and pitch.}
+
+\item{accel.calibration.residual}{Residual SD (g) of the static sphere model above which the check
+declines to estimate anything and says so (default 0.04). This is the gate that matters: what
+breaks the fit is not a narrow posture range but static samples that are not gravity-only - a tag
+resting on deck in one attitude, or sustained turning acceleration. On a real cohort the residual
+separated cleanly (<= 0.025 where the fit was plausible, >= 0.058 where it was not) while the
+design condition number did not separate at all.}
+
+\item{accel.calibration.condition}{Condition number of the least-squares design above which the
+check declines (default 5000). This is the SECOND gate and it catches the opposite failure to
+\code{accel.calibration.residual}: when the posture range is too narrow to separate six parameters the
+fit becomes confidently wrong, and its residual FALLS rather than rises. Measured on a simulated
+error-free sensor, narrowing the posture spread from 20 to 5 degrees drove the condition number
+from 115 to 35,313 while the residual fell from 0.0054 to 0.0018 and the check reported a spurious
+1.1 degree warning. Every deployment of a real whale-shark cohort sat between 134 and 1965, so the
+default rejects the degenerate case without touching normal data.}
+
+\item{accel.calibration.quiet}{Fraction of the quietest samples, by dynamic-acceleration magnitude,
+used for the fit (default 0.4). Lower is stricter about gravity dominance and leaves fewer samples.}
+
+\item{accel.calibration.min.n}{Minimum static samples required before the fit is attempted
+(default 5000). Below this the check is silent rather than reporting a number it cannot support.}
 
 \item{mag.plausibility.warning}{Magnetometer plausibility: the robust coefficient of variation of the
 hard-iron-centred field magnitude (a stable field is near-constant). Default 0.4. Warning only: this

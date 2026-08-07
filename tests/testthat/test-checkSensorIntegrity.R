@@ -483,3 +483,171 @@ test_that("output.dir requires apply = TRUE (a report-only save would only copy 
                          output.dir = dir, verbose = FALSE)))))
   expect_gte(length(list.files(dir, pattern = "\\.rds$")), 1L)
 })
+
+
+#######################################################################################################
+# accel.calibration: the per-axis companion to accel.scale #############################################
+#
+# accel.scale grades |median(||A||) - 1|, a scalar on the MAGNITUDE, and is by construction insensitive
+# to the per-axis errors that move roll and pitch: a 0.02 g lateral offset shifts it by 0.0002 (its
+# warning threshold is 0.2) while producing ~10 deg of roll error. These tests pin that separation.
+
+# a static-dominated record at a realistic posture spread, with a known error injected
+.aclSim <- function(n = 60000, offset = c(0, 0, 0), gain = c(1, 1, 1), sd_deg = 20, noise = 0.004,
+                    fs = 10) {
+  set.seed(11)
+  # attitude must vary SMOOTHLY: the check derives its static component from a ~2 s rolling mean, and
+  # white-noise attitude would be averaged to zero by it (a fixture bug, not a detector limitation)
+  smooth <- function(k) {
+    w <- max(3L, round(fs * 20))                                   # ~20 s correlation time
+    z <- as.numeric(stats::filter(stats::rnorm(n + 2 * w), rep(1 / w, w), sides = 2))
+    z <- z[!is.na(z)][seq_len(n)]
+    z / stats::sd(z) * k * pi / 180
+  }
+  p <- smooth(sd_deg); r <- smooth(sd_deg)
+  A <- cbind(-sin(p), cos(p) * sin(r), cos(p) * cos(r))
+  A <- sweep(sweep(A, 2, gain, "*"), 2, offset, "+") + matrix(stats::rnorm(3 * n, 0, noise), ncol = 3)
+  d <- data.table::data.table(ID = "A01",
+        datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n) / fs,
+        ax = A[, 1], ay = A[, 2], az = A[, 3], depth = 0)
+  data.table::setattr(d, "nautilus.version", "test")
+  d
+}
+.aclRun <- function(d, ...) {
+  r <- suppressWarnings(suppressMessages(
+    checkSensorIntegrity(list(A01 = d), checks = "accel.calibration", apply = FALSE,
+                         return.data = FALSE, verbose = FALSE, ...)))
+  if (is.data.frame(r)) r else r$issues
+}
+
+test_that("a clean accelerometer produces no finding", {
+  expect_equal(nrow(.aclRun(.aclSim())), 0L)
+})
+
+test_that("a lateral offset is caught, and reported as degrees of attitude error", {
+  iss <- .aclRun(.aclSim(offset = c(0, 0.03, 0)))
+  expect_gte(nrow(iss), 1L)
+  off <- iss[grepl("offset", iss$message), , drop = FALSE]
+  expect_equal(nrow(off), 1L)
+  expect_true(off$severity %in% c("warning", "error"))
+  expect_gt(off$metric, 1)                       # degrees, not g
+  expect_match(off$message, "deg of attitude error")
+})
+
+test_that("that same offset is invisible to accel.scale - the two checks are not redundant", {
+  d <- .aclSim(offset = c(0, 0.03, 0))
+  sc <- suppressWarnings(suppressMessages(
+    checkSensorIntegrity(list(A01 = d), checks = "accel.scale", apply = FALSE,
+                         return.data = FALSE, verbose = FALSE)))
+  sc <- if (is.data.frame(sc)) sc else sc$issues
+  expect_equal(nrow(sc), 0L)                     # accel.scale sees nothing...
+  expect_gte(nrow(.aclRun(d)), 1L)               # ...while accel.calibration does
+})
+
+test_that("a per-axis gain error is caught and named separately from an offset", {
+  iss <- .aclRun(.aclSim(gain = c(1, 1.12, 1)))
+  g <- iss[grepl("gain", iss$message), , drop = FALSE]
+  expect_equal(nrow(g), 1L)
+  expect_match(g$message, "spread")
+})
+
+test_that("a UNIFORM gain error is not reported: it cancels in the angle", {
+  # this is accel.scale's job, and correcting it here would mask a unit bug
+  iss <- .aclRun(.aclSim(gain = c(1.1, 1.1, 1.1)))
+  expect_equal(nrow(iss[grepl("gain", iss$message), , drop = FALSE]), 0L)
+})
+
+test_that("a record that is not gravity-dominated is declined, not guessed at", {
+  # a tag held in ONE attitude with sustained specific acceleration: the model does not hold, and the
+  # fit would otherwise return physically impossible parameters (measured: offsets to 0.96 g on real data)
+  set.seed(12); n <- 60000
+  A <- cbind(rep(0, n), rep(0, n), rep(1, n)) + matrix(stats::rnorm(3 * n, 0, 0.25), ncol = 3)
+  d <- data.table::data.table(ID = "A01",
+        datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n) / 10,
+        ax = A[, 1], ay = A[, 2], az = A[, 3], depth = 0)
+  data.table::setattr(d, "nautilus.version", "test")
+  iss <- .aclRun(d)
+  expect_equal(nrow(iss), 1L)
+  expect_equal(iss$severity, "info")
+  expect_match(iss$message, "could not be assessed")
+  expect_false(grepl("offset \\(", iss$message))   # no parameter is reported when declining
+})
+
+test_that("the check is opt-in and silent on a short record", {
+  expect_equal(nrow(.aclRun(.aclSim(n = 2000))), 0L)          # below accel.calibration.min.n
+  d <- .aclSim(offset = c(0, 0.03, 0))
+  dflt <- suppressWarnings(suppressMessages(
+    checkSensorIntegrity(list(A01 = d), apply = FALSE, return.data = FALSE, verbose = FALSE)))
+  dflt <- if (is.data.frame(dflt)) dflt else dflt$issues
+  expect_equal(nrow(dflt[dflt$check == "accel.calibration", , drop = FALSE]), 0L)
+})
+
+test_that("thresholds are honoured and validated", {
+  d <- .aclSim(offset = c(0, 0.03, 0))
+  expect_equal(nrow(.aclRun(d, control = integrityControl(accel.calibration.warning = 90,
+                                                          accel.calibration.error = 91))), 0L)
+  expect_error(integrityControl(accel.calibration.warning = 5, accel.calibration.error = 1), "must be >=")
+})
+
+
+# ---- the two failure modes, and why one gate is not enough ------------------------------------------
+# An adversarial review found the first version reported a 1.06 deg warning on a PERFECT sensor once the
+# posture spread narrowed to 5 degrees. The residual gate cannot see that: it FELL (0.0054 -> 0.0018) as
+# the fit degenerated, because an ill-conditioned design fits its own noise confidently.
+
+test_that("a narrow posture range is declined on conditioning, not reported as an error", {
+  iss <- .aclRun(.aclSim(sd_deg = 5))            # perfect sensor, too little posture spread
+  expect_equal(nrow(iss), 1L)
+  expect_equal(iss$severity, "info")
+  expect_match(iss$message, "posture range is too narrow")
+  expect_false(any(grepl("offset \\(|gain \\(", iss$message)))
+})
+
+test_that("the residual gate and the conditioning gate catch OPPOSITE failures", {
+  # narrow posture: low residual, huge condition -> only the conditioning gate fires
+  narrow <- .aclRun(.aclSim(sd_deg = 5))
+  expect_match(narrow$message, "condition")
+  # one fixed attitude plus heavy specific acceleration: low condition is irrelevant, residual fires
+  set.seed(12); n <- 60000
+  A <- cbind(rep(0, n), rep(0, n), rep(1, n)) + matrix(stats::rnorm(3 * n, 0, 0.25), ncol = 3)
+  d <- data.table::data.table(ID = "A01",
+        datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n) / 10,
+        ax = A[, 1], ay = A[, 2], az = A[, 3], depth = 0)
+  data.table::setattr(d, "nautilus.version", "test")
+  iss <- .aclRun(d)
+  expect_equal(nrow(iss), 1L)
+  expect_equal(iss$severity, "info")
+})
+
+test_that("a heave-axis offset is caught - the lateral-pair-only bound missed it entirely", {
+  # verified before the fix: z-offsets of 0.02-0.15 g were invisible to BOTH accel.scale and this check,
+  # while producing ~2 deg of real pitch error
+  iss <- .aclRun(.aclSim(offset = c(0, 0, 0.10)))
+  off <- iss[grepl("offset", iss$message), , drop = FALSE]
+  expect_equal(nrow(off), 1L)
+  expect_gt(off$metric, 1)
+  sc <- suppressWarnings(suppressMessages(
+    checkSensorIntegrity(list(A01 = .aclSim(offset = c(0, 0, 0.10))), checks = "accel.scale",
+                         apply = FALSE, return.data = FALSE, verbose = FALSE)))
+  sc <- if (is.data.frame(sc)) sc else sc$issues
+  expect_equal(nrow(sc), 0L)                     # still invisible to the magnitude check
+})
+
+test_that("the reported angle is evaluated over observed postures, not an unreachable worst case", {
+  # the all-orientation bound atan(|c|) is true but loose - an animal that never inverts cannot attain
+  # it. Same offset, wider posture range -> a LARGER realised error, which a fixed bound could not show.
+  narrow <- .aclRun(.aclSim(offset = c(0, 0, 0.08), sd_deg = 15))
+  wide   <- .aclRun(.aclSim(offset = c(0, 0, 0.08), sd_deg = 35))
+  mn <- narrow[grepl("offset", narrow$message), "metric"]
+  mw <- wide[grepl("offset", wide$message), "metric"]
+  expect_true(length(mn) == 1L && length(mw) == 1L)
+  expect_gt(mw, mn)
+})
+
+test_that("the conditioning threshold is exposed and validated", {
+  expect_true("accel.calibration.condition" %in% names(integrityControl()))
+  expect_error(integrityControl(accel.calibration.condition = 0), "must be")
+  # relaxing it lets the degenerate fit through, which is what makes it the operative gate
+  iss <- .aclRun(.aclSim(sd_deg = 5), control = integrityControl(accel.calibration.condition = 1e9))
+  expect_false(identical(iss$severity, "info") && grepl("condition", iss$message))
+})

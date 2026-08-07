@@ -608,6 +608,29 @@ ocrControl <- function(model = "cam",
 #'   exact minimum or maximum (clipping). Above \code{saturation.warning} the channel is flagged for
 #'   review; above \code{saturation.error} it has lost the dynamic range that quantitative use requires.
 #'   Defaults 0.01 and 0.20.
+#' @param accel.calibration.warning,accel.calibration.error Per-axis accelerometer calibration, graded
+#'   on the ATTITUDE ERROR it implies rather than on the parameter itself, in degrees (defaults 1 and 3).
+#'   A reader can act on "up to 1.4 degrees of roll error"; they cannot act on an offset of 0.024 g
+#'   without doing the trigonometry themselves. Complements `accel.scale`, which grades the magnitude
+#'   and is by construction insensitive to the per-axis errors that move roll and pitch.
+#' @param accel.calibration.residual Residual SD (g) of the static sphere model above which the check
+#'   declines to estimate anything and says so (default 0.04). This is the gate that matters: what
+#'   breaks the fit is not a narrow posture range but static samples that are not gravity-only - a tag
+#'   resting on deck in one attitude, or sustained turning acceleration. On a real cohort the residual
+#'   separated cleanly (<= 0.025 where the fit was plausible, >= 0.058 where it was not) while the
+#'   design condition number did not separate at all.
+#' @param accel.calibration.condition Condition number of the least-squares design above which the
+#'   check declines (default 5000). This is the SECOND gate and it catches the opposite failure to
+#'   `accel.calibration.residual`: when the posture range is too narrow to separate six parameters the
+#'   fit becomes confidently wrong, and its residual FALLS rather than rises. Measured on a simulated
+#'   error-free sensor, narrowing the posture spread from 20 to 5 degrees drove the condition number
+#'   from 115 to 35,313 while the residual fell from 0.0054 to 0.0018 and the check reported a spurious
+#'   1.1 degree warning. Every deployment of a real whale-shark cohort sat between 134 and 1965, so the
+#'   default rejects the degenerate case without touching normal data.
+#' @param accel.calibration.quiet Fraction of the quietest samples, by dynamic-acceleration magnitude,
+#'   used for the fit (default 0.4). Lower is stricter about gravity dominance and leaves fewer samples.
+#' @param accel.calibration.min.n Minimum static samples required before the fit is attempted
+#'   (default 5000). Below this the check is silent rather than reporting a number it cannot support.
 #' @param accel.scale.warning,accel.scale.error Accelerometer scale: departure of the median
 #'   static-acceleration magnitude from 1 g (in g). A small departure suggests an imperfect calibration
 #'   (warning); a large one is a scaling or unit error - e.g. acceleration left in m/s^2 - rather than a
@@ -643,6 +666,12 @@ integrityControl <- function(duplication.error        = 0.999,
                              saturation.error         = 0.20,
                              accel.scale.warning      = 0.20,
                              accel.scale.error        = 0.50,
+                             accel.calibration.warning  = 1.0,
+                             accel.calibration.error    = 3.0,
+                             accel.calibration.residual = 0.04,
+                             accel.calibration.condition = 5000,
+                             accel.calibration.quiet    = 0.4,
+                             accel.calibration.min.n    = 5000L,
                              mag.plausibility.warning = 0.40,
                              mag.break.warning        = 0.96,
                              gyro.bias.info           = 0.30,
@@ -653,6 +682,14 @@ integrityControl <- function(duplication.error        = 0.999,
   .assert_number(saturation.error, "saturation.error", min = 0, max = 1)
   .assert_number(accel.scale.warning, "accel.scale.warning", min = 0)
   .assert_number(accel.scale.error, "accel.scale.error", min = 0)
+  .assert_number(accel.calibration.warning, "accel.calibration.warning", min = 0)
+  .assert_number(accel.calibration.error, "accel.calibration.error", min = 0)
+  .assert_number(accel.calibration.residual, "accel.calibration.residual", min = 0)
+  .assert_number(accel.calibration.condition, "accel.calibration.condition", min = 1)
+  .assert_number(accel.calibration.quiet, "accel.calibration.quiet", min = 0, max = 1)
+  .assert_count(accel.calibration.min.n, "accel.calibration.min.n")
+  if (accel.calibration.error < accel.calibration.warning)
+    .abort("{.arg accel.calibration.error} ({accel.calibration.error}) must be >= {.arg accel.calibration.warning} ({accel.calibration.warning}).")
   .assert_number(mag.plausibility.warning, "mag.plausibility.warning", min = 0)
   .assert_number(mag.break.warning, "mag.break.warning", min = 0.5, max = 1)
   .assert_number(gyro.bias.info, "gyro.bias.info", min = 0)
@@ -667,6 +704,12 @@ integrityControl <- function(duplication.error        = 0.999,
   structure(list(duplication.error = duplication.error,
                  saturation.warning = saturation.warning, saturation.error = saturation.error,
                  accel.scale.warning = accel.scale.warning, accel.scale.error = accel.scale.error,
+                 accel.calibration.warning = accel.calibration.warning,
+                 accel.calibration.error = accel.calibration.error,
+                 accel.calibration.residual = accel.calibration.residual,
+                 accel.calibration.condition = accel.calibration.condition,
+                 accel.calibration.quiet = accel.calibration.quiet,
+                 accel.calibration.min.n = accel.calibration.min.n,
                  mag.plausibility.warning = mag.plausibility.warning,
                  mag.break.warning = mag.break.warning,
                  gyro.bias.info = gyro.bias.info, paddle.warning = paddle.warning,

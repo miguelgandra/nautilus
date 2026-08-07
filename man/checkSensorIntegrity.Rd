@@ -37,7 +37,8 @@ axis, a clipping gyroscope and sentinel values). Both are GRADED, so either can 
 error depending on the magnitude measured. The remaining checks are opt-in: \code{"mag.plausibility"} (an
 unstable magnetometer field magnitude), \code{"mag.break"} (a persistent mid-deployment step in the
 magnetometer field, i.e. the magnetic environment changed and one calibration no longer covers the
-record), \code{"gyro.bias"} (a persistent gyroscope offset), \code{"paddle.contamination"} (a narrow-band
+record), \code{"accel.calibration"} (a per-axis accelerometer offset or gain, graded by the attitude
+error it implies), \code{"gyro.bias"} (a persistent gyroscope offset), \code{"paddle.contamination"} (a narrow-band
 magnetometer peak suggesting an undocumented paddle wheel) and \code{"dropout"} (a channel missing for
 most of the deployment).}
 
@@ -216,6 +217,31 @@ and never converted to g, but may not detect errors affecting only individual ax
 animal a gain error on a single axis barely moves the vector magnitude while still distorting roll.
 Users working with unusual sensor configurations or unexpected results should inspect individual sensor
 axes in addition to this summary metric. (metric: the median static magnitude, g.)
+
+\strong{accel.calibration} (info / warning / error). The per-axis companion to \code{accel.scale}, and opt-in
+because it costs a least-squares solve. It estimates a per-axis offset and gain for the static
+acceleration and grades the ATTITUDE ERROR they imply, in degrees - the number a reader can act on -
+rather than the parameter itself. The two checks are complementary rather than redundant, because
+they see almost disjoint errors: a lateral offset of 0.02 g produces around 10 degrees of roll error
+while moving the \code{accel.scale} metric by 0.0002, whereas a uniform gain error, which \code{accel.scale}
+does see, leaves every angle unchanged because a common factor cancels in the arctangent. Since
+attitude feeds roll, pitch, the levelled heading, the axis-map inference in \code{\link[=checkTagMapping]{checkTagMapping()}} and
+every kinematic channel derived from them, an uncorrected per-axis error propagates widely while
+remaining invisible to a magnitude test.
+
+The estimate comes from the static samples only, taking the quietest
+\code{accel.calibration.quiet} fraction by dynamic-acceleration magnitude, and solves the six-
+parameter form of \code{||a||^2} as a linear model in the measured unit-vector components. It reports
+nothing at all when the model does not hold: above \code{accel.calibration.residual} the check emits a
+single \code{info} row stating that the static samples are not gravity-dominated. That happens when a tag
+rests in one attitude (on deck, or a long stationary period) or when sustained turning and diving
+acceleration survives the low-pass, and it is the common outcome rather than a rare one. The check
+never corrects anything - it measures, names the consequence in degrees, and leaves the decision to
+the analyst.
+
+(metric: the implied attitude error in degrees, at the 95th percentile of the postures the animal
+actually held - or, when the check declines, the design condition number or the model residual in g,
+whichever gate stopped it. The message always names which.)
 
 \strong{gyro.bias} (info). Over a long record the animal's rotations average out, so each gyroscope axis
 should have a near-zero median. A persistent offset that is both a large fraction of the rotational

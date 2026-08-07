@@ -119,6 +119,31 @@
 #' Users working with unusual sensor configurations or unexpected results should inspect individual sensor
 #' axes in addition to this summary metric. (metric: the median static magnitude, g.)
 #'
+#' **accel.calibration** (info / warning / error). The per-axis companion to `accel.scale`, and opt-in
+#' because it costs a least-squares solve. It estimates a per-axis offset and gain for the static
+#' acceleration and grades the ATTITUDE ERROR they imply, in degrees - the number a reader can act on -
+#' rather than the parameter itself. The two checks are complementary rather than redundant, because
+#' they see almost disjoint errors: a lateral offset of 0.02 g produces around 10 degrees of roll error
+#' while moving the `accel.scale` metric by 0.0002, whereas a uniform gain error, which `accel.scale`
+#' does see, leaves every angle unchanged because a common factor cancels in the arctangent. Since
+#' attitude feeds roll, pitch, the levelled heading, the axis-map inference in [checkTagMapping()] and
+#' every kinematic channel derived from them, an uncorrected per-axis error propagates widely while
+#' remaining invisible to a magnitude test.
+#'
+#' The estimate comes from the static samples only, taking the quietest
+#' \code{accel.calibration.quiet} fraction by dynamic-acceleration magnitude, and solves the six-
+#' parameter form of \code{||a||^2} as a linear model in the measured unit-vector components. It reports
+#' nothing at all when the model does not hold: above \code{accel.calibration.residual} the check emits a
+#' single `info` row stating that the static samples are not gravity-dominated. That happens when a tag
+#' rests in one attitude (on deck, or a long stationary period) or when sustained turning and diving
+#' acceleration survives the low-pass, and it is the common outcome rather than a rare one. The check
+#' never corrects anything - it measures, names the consequence in degrees, and leaves the decision to
+#' the analyst.
+#'
+#' (metric: the implied attitude error in degrees, at the 95th percentile of the postures the animal
+#' actually held - or, when the check declines, the design condition number or the model residual in g,
+#' whichever gate stopped it. The message always names which.)
+#'
 #' **gyro.bias** (info). Over a long record the animal's rotations average out, so each gyroscope axis
 #' should have a near-zero median. A persistent offset that is both a large fraction of the rotational
 #' scale (\code{> gyro.bias.info}) and absolutely meaningful (against an internal floor) is a sensor bias.
@@ -161,7 +186,8 @@
 #'   error depending on the magnitude measured. The remaining checks are opt-in: `"mag.plausibility"` (an
 #'   unstable magnetometer field magnitude), `"mag.break"` (a persistent mid-deployment step in the
 #'   magnetometer field, i.e. the magnetic environment changed and one calibration no longer covers the
-#'   record), `"gyro.bias"` (a persistent gyroscope offset), `"paddle.contamination"` (a narrow-band
+#'   record), `"accel.calibration"` (a per-axis accelerometer offset or gain, graded by the attitude
+#'   error it implies), `"gyro.bias"` (a persistent gyroscope offset), `"paddle.contamination"` (a narrow-band
 #'   magnetometer peak suggesting an undocumented paddle wheel) and `"dropout"` (a channel missing for
 #'   most of the deployment).
 #' @param control An [integrityControl()] object (or a named list of its fields) bundling the
@@ -422,7 +448,7 @@ checkSensorIntegrity <- function(data,
 #' @keywords internal
 #' @noRd
 .integrityChecks <- function() c("duplication", "dead", "saturation", "mag.plausibility",
-                                 "mag.break", "accel.scale", "gyro.bias", "paddle.contamination",
+                                 "mag.break", "accel.scale", "accel.calibration", "gyro.bias", "paddle.contamination",
                                  "dropout")
 
 #' Checks whose findings describe the RECORD rather than a channel's trustworthiness, and which `apply`
@@ -450,7 +476,7 @@ checkSensorIntegrity <- function(data,
   }
   engine <- list(duplication = .icheckDuplication, dead = .icheckDead, saturation = .icheckSaturation,
                  mag.plausibility = .icheckMagPlausibility, mag.break = .icheckMagBreak,
-                 accel.scale = .icheckAccelScale,
+                 accel.scale = .icheckAccelScale, accel.calibration = .icheckAccelCalibration,
                  gyro.bias = .icheckGyroBias, paddle.contamination = .icheckPaddle, dropout = .icheckDropout)
   rows <- lapply(intersect(names(engine), checks), function(ck) engine[[ck]](x, ctx))
   out <- do.call(rbind, rows)
@@ -675,6 +701,141 @@ checkSensorIntegrity <- function(data,
   rows
 }
 
+#' Per-axis accelerometer calibration (warning/error): estimate the per-axis offset and gain of the
+#' static (gravity) acceleration and report the tilt error they imply.
+#'
+#' WHY THIS EXISTS ALONGSIDE `accel.scale`. That check grades |median(||A||) - 1|, a scalar on the
+#' MAGNITUDE, and the errors it sees are almost disjoint from the errors that corrupt attitude. Measured
+#' on a simulated free-swimming posture distribution: a 0.02 g offset on the lateral axis produces 10.4
+#' degrees of roll error while moving the accel.scale metric by 0.0002 - a thousandth of its own warning
+#' threshold - whereas a uniform +10% gain error, the one mode accel.scale is sensitive to, leaves every
+#' angle exactly unchanged because a common scale factor cancels in atan2(). The two checks are
+#' complementary: accel.scale catches a unit/scale mistake, this catches a calibration one.
+#'
+#' THE MODEL. For static samples the measurement is a = G u + c, with G = diag(gain), u the true unit
+#' gravity direction and c the per-axis offset. Then
+#'     ||a||^2 = sum(g_i^2 u_i^2) + 2 sum(g_i c_i u_i) + O(|c|^2)
+#' which is LINEAR in (u_i^2, u_i), so the six parameters come from one least-squares solve with u
+#' approximated by the measured unit vector (first-order exact for small errors). No intercept: sum
+#' u_i^2 = 1 makes it collinear with the quadratic terms. Note the consequence rather than glossing it -
+#' the |c|^2 term is not discarded, it is absorbed into the three quadratic coefficients and therefore
+#' reported as a small spurious GAIN error. It is second order (a 0.10 g offset moves a true gain of 1
+#' to about 0.99), so it is left in rather than modelled, but it is why a large pure offset can also
+#' raise a modest gain finding.
+#'
+#' This is used INSTEAD of `.ellipsoidFit()` deliberately. A free-swimming animal's static-acceleration
+#' cloud is close to planar (measured planarity 0.017-0.18 across a real cohort, where the magnetometer
+#' path already rejects above 0.6), because roll and pitch are hydrostatically constrained while heading
+#' - which is what sweeps the magnetometer cloud - is free. Fitting a nine-parameter ellipsoid to that
+#' returned offsets of 0.18-0.91 g and axis-ratio 4.7 on real deployments, physically impossible values
+#' that `.ellipsoidFit()`'s own condition gate did not reject. The six-parameter form is far better
+#' conditioned and recovers a known offset to 0.008 g at a posture spread of only 12 degrees.
+#'
+#' TWO GATES, BECAUSE THERE ARE TWO WAYS TO FAIL, AND EACH GATE IS BLIND TO THE OTHER.
+#'
+#' (a) MODEL MISSPECIFICATION - the "static" samples are not gravity-only: a tag resting on deck in one
+#' attitude, or sustained turning/diving acceleration surviving the low-pass. The residual SD of the
+#' quadratic form measures this directly and separates cleanly on a real cohort (<= 0.025 g where the
+#' fit is plausible, >= 0.058 g where it returns offsets of up to 0.96 g). Gated by
+#' `accel.calibration.residual`.
+#'
+#' (b) ILL-CONDITIONING - the posture range is too narrow to constrain six parameters. This one moves
+#' the residual the WRONG WAY: on a simulated perfect sensor the residual FELL from 0.0054 to 0.0018 as
+#' the posture spread narrowed from 20 to 5 degrees, while the fitted gains drifted to (0.964, 0.966,
+#' 0.931) and the check reported a 1.06 degree warning on a sensor with no error at all. The design
+#' condition number is what tracks this (115 -> 35,313 over the same range), and it is flat across every
+#' deployment of the real cohort (134-1965), so it costs nothing there. Gated by
+#' `accel.calibration.condition`.
+#'
+#' Neither gate subsumes the other: (a) has a moderate condition number, (b) has a small residual. Above
+#' either threshold the check reports that it could not assess, and estimates nothing.
+#' @keywords internal
+#' @noRd
+.icheckAccelCalibration <- function(x, ctx) {
+  rows <- .emptyIntegrityIssues()
+  a <- ctx$fams$accel
+  if (!all(a %in% names(x))) return(rows)
+  ctl <- ctx$control
+
+  # static component via the SAME helper accel.scale uses: it returns same-length vectors, so the
+  # static estimate and the dynamic residual stay index-aligned. (Smoothing that drops rows and then
+  # indexing the raw matrix by position misaligns the two and yields gains of 0.6-2.9 - a real trap.)
+  win <- if (is.finite(ctx$fs) && ctx$fs > 0) max(3L, 2L * round(ctx$fs) + 1L) else 21L
+  sd  <- .staticDynamicAccel(x[[a[1]]], x[[a[2]]], x[[a[3]]], win)
+  S   <- cbind(sd$static$x, sd$static$y, sd$static$z)
+  dyn <- sqrt(sd$dynamic$x^2 + sd$dynamic$y^2 + sd$dynamic$z^2)
+  keep <- stats::complete.cases(S) & is.finite(dyn)
+  if (sum(keep) < ctl$accel.calibration.min.n) return(rows)
+  S <- S[keep, , drop = FALSE]; dyn <- dyn[keep]
+  # the quietest fraction only: gravity dominates there, which is the model's assumption
+  cut <- stats::quantile(dyn, ctl$accel.calibration.quiet, na.rm = TRUE)
+  S <- S[dyn <= cut, , drop = FALSE]
+  if (nrow(S) < ctl$accel.calibration.min.n) return(rows)
+
+  n2 <- rowSums(S^2)
+  if (!all(is.finite(n2)) || any(n2 <= 0)) return(rows)
+  u  <- S / sqrt(n2)
+  X  <- cbind(u[, 1]^2, u[, 2]^2, u[, 3]^2, u[, 1], u[, 2], u[, 3])
+  b  <- tryCatch(stats::lm.fit(X, n2)$coefficients, error = function(e) NULL)
+  if (is.null(b) || any(!is.finite(b)) || any(b[1:3] <= 0)) return(rows)
+  resid <- stats::sd(n2 - as.numeric(X %*% b))
+  sv    <- tryCatch(svd(X, nu = 0, nv = 0)$d, error = function(e) NULL)
+  kappa <- if (is.null(sv) || min(sv) <= 0) Inf else max(sv) / min(sv)
+
+  # gate (b) first: an ill-conditioned design produces a CONFIDENT wrong answer, so a small residual
+  # here is evidence of nothing at all
+  if (!is.finite(kappa) || kappa > ctl$accel.calibration.condition) {
+    return(rbind(rows, .integrityIssue("accel", "accel.calibration", "info", round(kappa, 1),
+      sprintf(paste("per-axis calibration could not be assessed: the posture range is too narrow to",
+                    "separate the six parameters (design condition %.0f > %.0f) - the animal held one",
+                    "attitude for most of the record"),
+              kappa, ctl$accel.calibration.condition))))
+  }
+  if (!is.finite(resid) || resid > ctl$accel.calibration.residual) {
+    return(rbind(rows, .integrityIssue("accel", "accel.calibration", "info", round(resid, 4),
+      sprintf(paste("per-axis calibration could not be assessed: the static samples are not",
+                    "gravity-dominated (model residual %.3f g > %.3f) - typically a tag resting in one",
+                    "attitude, or sustained turning/diving acceleration"),
+              resid, ctl$accel.calibration.residual))))
+  }
+
+  gain <- sqrt(b[1:3]); off <- b[4:6] / (2 * gain)
+  # Report the CONSEQUENCE, not the parameter - and evaluate it over the postures the animal ACTUALLY
+  # held, not over all conceivable orientations. A closed-form worst case is a true bound but a loose
+  # one: a whale shark never inverts, so the orientation that maximises the tilt from a heave-axis
+  # offset is one it never visits. On this cohort the all-orientation bound ran about 3x the realised
+  # error and escalated two deployments to `error` on a number they could not attain. The angle between
+  # the measured direction and the calibration-corrected direction, at the 95th percentile of the
+  # observed samples, is both honest and actionable.
+  #
+  # Attribution is by ablation: correct ONLY the offset to get the offset's contribution, ONLY the gain
+  # to get the gain's. (A common scale factor is divided out by the normalisation, so a uniform gain
+  # error correctly contributes zero - which is accel.scale's business, not this check's.)
+  ang <- function(P, Q) {
+    P <- P / sqrt(rowSums(P^2)); Q <- Q / sqrt(rowSums(Q^2))
+    acos(pmax(-1, pmin(1, rowSums(P * Q)))) * 180 / pi
+  }
+  q95 <- function(v) as.numeric(stats::quantile(v[is.finite(v)], 0.95, na.rm = TRUE))
+  tilt_off  <- q95(ang(S, sweep(S, 2, off, "-")))
+  tilt_gain <- q95(ang(S, sweep(S, 2, gain, "/")))
+  gr        <- max(gain) / min(gain)
+
+  sev <- .integrityGrade(tilt_off, warning = ctl$accel.calibration.warning,
+                                   error   = ctl$accel.calibration.error)
+  if (!is.na(sev))
+    rows <- rbind(rows, .integrityIssue("accel", "accel.calibration", sev, round(tilt_off, 2),
+      sprintf(paste("per-axis offset (%.3f, %.3f, %.3f) g implies up to %.1f deg of attitude error;",
+                    "%s cancels in the angle and is not counted"),
+              off[1], off[2], off[3], tilt_off, "the common component")))
+  sevg <- .integrityGrade(tilt_gain, warning = ctl$accel.calibration.warning,
+                                     error   = ctl$accel.calibration.error)
+  if (!is.na(sevg))
+    rows <- rbind(rows, .integrityIssue("accel", "accel.calibration", sevg, round(tilt_gain, 2),
+      sprintf("per-axis gain (%.3f, %.3f, %.3f), spread %.1f%%, implies up to %.1f deg of attitude error",
+              gain[1], gain[2], gain[3], 100 * (gr - 1), tilt_gain)))
+  rows
+}
+
 #' Gyroscope bias (info): a persistent per-axis offset (the median should sit near zero once rotations
 #' average out); flagged when it is a notable fraction of the rotational signal scale.
 #' @keywords internal
@@ -804,7 +965,7 @@ checkSensorIntegrity <- function(data,
 .integrityCheckLine <- function(check, iss) {
   hit <- iss[iss$check == check, , drop = FALSE]
   label <- switch(check, mag.plausibility = "mag plausibility", mag.break = "mag break",
-                  accel.scale = "accel scale",
+                  accel.scale = "accel scale", accel.calibration = "accel calibration",
                   gyro.bias = "gyro bias", paddle.contamination = "paddle", check)
   if (!nrow(hit)) return(sprintf("%s: none", label))
   switch(check,
