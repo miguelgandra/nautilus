@@ -215,7 +215,14 @@ continuously active animal. It detects uniform scaling errors, for example accel
 and never converted to g, but may not detect errors affecting only individual axes: on a near-level
 animal a gain error on a single axis barely moves the vector magnitude while still distorting roll.
 Users working with unusual sensor configurations or unexpected results should inspect individual sensor
-axes in addition to this summary metric. (metric: the median static magnitude, g.)
+axes in addition to this summary metric.
+
+A uniform scale error is worth flagging even though it leaves roll and pitch exactly unchanged (a
+common factor cancels in the arctangent). It survives into every magnitude-derived channel instead:
+ODBA, VeDBA and tail-beat amplitude are all proportional to it, so a cohort whose tags are calibrated
+a few per cent apart carries a silent, systematic bias in any comparison of effort between animals.
+That is why the warning level sits at a few per cent rather than at the point where the units are
+obviously wrong. (metric: the median static magnitude, g.)
 
 \strong{gyro.bias} (info). Over a long record the animal's rotations average out, so each gyroscope axis
 should have a near-zero median. A persistent offset that is both a large fraction of the rotational

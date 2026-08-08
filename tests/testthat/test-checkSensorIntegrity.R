@@ -414,7 +414,7 @@ test_that("integrityControl exposes classification thresholds only, and validate
   d <- integrityControl()
   expect_s3_class(d, "nautilus_integrity")
   expect_equal(d$saturation.warning, 0.01); expect_equal(d$saturation.error, 0.20)
-  expect_equal(d$accel.scale.warning, 0.20); expect_equal(d$accel.scale.error, 0.50)
+  expect_equal(d$accel.scale.warning, 0.05); expect_equal(d$accel.scale.error, 0.50)
   expect_equal(d$mag.plausibility.warning, 0.40); expect_equal(d$paddle.warning, 30)
   # low-level algorithm constants are private, NOT part of the public control object
   expect_null(d$paddle.min.freq); expect_null(d$gyro.bias.min); expect_null(d$paddle.harmonic.guard)
@@ -424,7 +424,7 @@ test_that("integrityControl exposes classification thresholds only, and validate
   expect_error(integrityControl(paddle.warning = 0.5), "paddle.warning", ignore.case = TRUE)
   # an error threshold below its warning threshold would make the warning unreachable
   expect_error(integrityControl(saturation.error = 0.005), "saturation.error", ignore.case = TRUE)
-  expect_error(integrityControl(accel.scale.error = 0.1), "accel.scale.error", ignore.case = TRUE)
+  expect_error(integrityControl(accel.scale.error = 0.01), "accel.scale.error", ignore.case = TRUE)
   # a named list is coerced; an unknown field (including a removed one) is rejected
   expect_s3_class(nautilus:::.as_control(list(mag.plausibility.warning = 0.5), integrityControl,
                                         "nautilus_integrity", "control"), "nautilus_integrity")
@@ -482,4 +482,67 @@ test_that("output.dir requires apply = TRUE (a report-only save would only copy 
     checkSensorIntegrity(list(A = x), apply = TRUE,
                          output.dir = dir, verbose = FALSE)))))
   expect_gte(length(list.files(dir, pattern = "\\.rds$")), 1L)
+})
+
+
+# ---- accel.scale: the warning level must catch a real scale error ------------------------------------
+# The default was 0.20, which let a genuine 10% error through in silence. A uniform scale error leaves
+# roll and pitch exactly unchanged (a common factor cancels in atan2) but is PROPORTIONAL in ODBA, VeDBA
+# and tail-beat amplitude, so a cohort calibrated a few per cent apart is silently biased on effort.
+# Measured on a real 11-deployment cohort the static magnitude spanned 0.89-1.03 g and not one
+# deployment reached the old threshold.
+
+.scaleSim <- function(factor, n = 20000, fs = 10) {
+  set.seed(21)
+  w <- max(3L, round(fs * 20))
+  sm <- function(k) { z <- as.numeric(stats::filter(stats::rnorm(n + 2 * w), rep(1 / w, w), sides = 2))
+                      z <- z[!is.na(z)][seq_len(n)]; z / stats::sd(z) * k * pi / 180 }
+  p <- sm(15); r <- sm(15)
+  A <- cbind(-sin(p), cos(p) * sin(r), cos(p) * cos(r)) * factor
+  d <- data.table::data.table(ID = "A01",
+        datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n) / fs,
+        ax = A[, 1], ay = A[, 2], az = A[, 3], depth = 0)
+  data.table::setattr(d, "nautilus.version", "test")
+  d
+}
+.scaleRun <- function(d, ...) {
+  r <- suppressWarnings(suppressMessages(
+    checkSensorIntegrity(list(A01 = d), checks = "accel.scale", apply = FALSE,
+                         return.data = FALSE, verbose = FALSE, ...)))
+  if (is.data.frame(r)) r else r$issues
+}
+
+test_that("a 10 percent scale error is caught (it was silent at the old 0.20 default)", {
+  iss <- .scaleRun(.scaleSim(0.90))
+  expect_equal(nrow(iss), 1L)
+  expect_equal(iss$severity, "warning")
+  expect_lt(abs(iss$metric - 0.90), 0.02)                  # metric is the magnitude itself
+  # and it would NOT have been caught before
+  expect_equal(nrow(.scaleRun(.scaleSim(0.90),
+                              control = integrityControl(accel.scale.warning = 0.20))), 0L)
+})
+
+test_that("a well-calibrated accelerometer is still clean", {
+  expect_equal(nrow(.scaleRun(.scaleSim(1.00))), 0L)
+  expect_equal(nrow(.scaleRun(.scaleSim(0.97))), 0L)        # 3% sits under the 5% warning
+})
+
+test_that("a unit mistake is an error, not a warning - the two levels mean different things", {
+  iss <- .scaleRun(.scaleSim(9.81))                          # left in m/s^2
+  expect_equal(iss$severity, "error")
+  expect_match(iss$message, "scaling or unit error")
+})
+
+test_that("a warning does not drop the channel under the default apply.severity", {
+  # tightening the threshold must not start excluding accelerometers from existing pipelines
+  d <- .scaleSim(0.90)
+  out <- suppressWarnings(suppressMessages(
+    checkSensorIntegrity(list(A01 = d), checks = "accel.scale", apply = TRUE,
+                         return.data = TRUE, verbose = FALSE)))
+  # the return is list(curated_data = list(<id> = tag), issues = df) - reach the tag, not the wrapper
+  expect_named(out, c("curated_data", "issues"))
+  kept <- out$curated_data[["A01"]]
+  expect_true(all(c("ax", "ay", "az") %in% names(kept)))
+  expect_true(any(is.finite(kept$ax)))
+  expect_equal(out$issues$severity, "warning")
 })

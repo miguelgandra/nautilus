@@ -8,7 +8,7 @@ integrityControl(
   duplication.error = 0.999,
   saturation.warning = 0.01,
   saturation.error = 0.2,
-  accel.scale.warning = 0.2,
+  accel.scale.warning = 0.05,
   accel.scale.error = 0.5,
   mag.plausibility.warning = 0.4,
   mag.break.warning = 0.96,
@@ -28,9 +28,21 @@ review; above \code{saturation.error} it has lost the dynamic range that quantit
 Defaults 0.01 and 0.20.}
 
 \item{accel.scale.warning, accel.scale.error}{Accelerometer scale: departure of the median
-static-acceleration magnitude from 1 g (in g). A small departure suggests an imperfect calibration
-(warning); a large one is a scaling or unit error - e.g. acceleration left in m/s^2 - rather than a
-calibration offset (error). Defaults 0.20 and 0.50.}
+static-acceleration magnitude from 1 g (in g). The two levels mean different things. A moderate
+departure is a calibration or scaling error (warning): it leaves roll and pitch untouched, because
+a common factor cancels in the arctangent, but it passes straight through every magnitude-derived
+channel - ODBA, VeDBA and tail-beat amplitude are all proportional to it, so two deployments of the
+same animal calibrated 10\% apart are not comparable on effort. A large departure is a unit mistake
+\itemize{
+\item acceleration left in m/s^2 reads about 9.8 g - and the data cannot be used until it is fixed
+(error). Defaults 0.05 and 0.50.
+}
+
+The warning default was 0.20 and admitted a genuine 10\% scale error in silence. Measured across a
+real 11-deployment cohort the static magnitude ranged from 0.89 to 1.03 g, i.e. errors up to 11\%,
+and not one deployment reached the old threshold. The value is not an artefact of the low-pass the
+check uses: the within-window attitude spread was only 3.4-7.9 degrees, so vector averaging shrinks
+the magnitude by under 1\%, and a per-sample estimator over the quietest samples agrees to 0.01 g.}
 
 \item{mag.plausibility.warning}{Magnetometer plausibility: the robust coefficient of variation of the
 hard-iron-centred field magnitude (a stable field is near-constant). Default 0.4. Warning only: this
