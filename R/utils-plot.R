@@ -232,6 +232,66 @@
 #' a reported failure. Needs \pkg{maptiles} + \pkg{terra} + \pkg{sf}.
 #' @keywords internal
 #' @noRd
+#' Slippy-map tile indices for a lon/lat pair at zoom `z` (standard Web Mercator scheme).
+#' @keywords internal
+#' @noRd
+.tileIndex <- function(lon, lat, z) {
+  n   <- 2^z
+  lat <- pmax(-85.05112878, pmin(85.05112878, lat))
+  phi <- lat * pi / 180
+  c(x = (lon + 180) / 360 * n,
+    y = (1 - log(tan(phi) + 1 / cos(phi)) / pi) / 2 * n)
+}
+
+
+#' Choose a tile zoom from the extent and the size the basemap will actually be DRAWN at.
+#'
+#' maptiles' own default is the wrong question for a figure. Its `get_zoom()` picks the largest zoom
+#' that still covers the area in four tiles and adds one, which is sized for a cheap request rather than
+#' for print: on a 54 x 68 km extent it returns zoom 9, i.e. 244 m/px, 260 px across, about 60 dpi in a
+#' `plotTracks()` panel - islands render as blurred blobs. Resolution is the whole point of a satellite
+#' basemap, so the target here is pixels on the page (~`target.px` across the panel), bounded by a tile
+#' budget so a wide extent cannot silently issue thousands of requests.
+#' @param xlim,ylim Lon/lat extent.
+#' @param target.px Pixels wanted across the drawn width. 1200 is ~280 dpi in a 4.3 in panel.
+#' @param max.tiles Ceiling on total tiles fetched.
+#' @return A list of `zoom`, the resulting `px` and `tiles`, and `capped` (TRUE when the tile budget,
+#'   not the target, decided the answer - the caller reports that rather than hiding it).
+#' @keywords internal
+#' @noRd
+.basemapZoom <- function(xlim, ylim, target.px = 1200, max.tiles = 160L) {
+  lat  <- mean(ylim)
+  m_w  <- abs(diff(xlim)) * 111320 * cos(lat * pi / 180)          # extent width in metres
+  best <- NULL
+  for (z in 1:18) {
+    res    <- 156543.03392 * cos(lat * pi / 180) / 2^z            # m per pixel at this latitude
+    px     <- m_w / res
+    tl     <- .tileIndex(xlim[1], ylim[2], z); br <- .tileIndex(xlim[2], ylim[1], z)
+    tiles  <- (floor(br[["x"]]) - floor(tl[["x"]]) + 1) * (floor(br[["y"]]) - floor(tl[["y"]]) + 1)
+    if (tiles > max.tiles) break                                   # budget reached: keep the last one
+    best <- list(zoom = z, px = px, tiles = tiles, capped = TRUE)
+    if (px >= target.px) { best$capped <- FALSE; break }
+  }
+  best %||% list(zoom = 1L, px = NA_real_, tiles = 1L, capped = TRUE)
+}
+
+
+#' Fraction of an RGB tile raster that carries no imagery (all channels near zero).
+#'
+#' A provider's coverage runs out at some zoom and it then serves empty tiles rather than an error.
+#' Measured on Esri.WorldImagery over the Azores: 0% empty at zoom <= 11, 5.5% at 12 and above, where
+#' the open-ocean tiles go black while the coastline gains detail. Raising the zoom blindly therefore
+#' trades blur for black patches, which is why `.fetchTiles()` checks this and steps back down.
+#' @keywords internal
+#' @noRd
+.tileEmptyFraction <- function(rast) {
+  a <- tryCatch(terra::as.array(rast), error = function(e) NULL)
+  if (is.null(a) || length(dim(a)) < 3L || dim(a)[3] < 3L) return(0)
+  mx <- apply(a[, , 1:3, drop = FALSE], c(1, 2), max)
+  mean(mx < 12, na.rm = TRUE)
+}
+
+
 .fetchTiles <- function(xlim, ylim, control = basemapControl(), lvl = 0L) {
   for (pkg in c("maptiles", "terra", "sf"))
     if (!requireNamespace(pkg, quietly = TRUE))
@@ -240,12 +300,37 @@
   # get_tiles() wants an sf/sfc with a CRS, not a bare bbox: give it an sfc polygon of the extent
   aoi <- sf::st_as_sfc(sf::st_bbox(c(xmin = xlim[1], ymin = ylim[1], xmax = xlim[2], ymax = ylim[2]),
                                    crs = 4326))
-  rast <- tryCatch(
-    suppressWarnings(maptiles::get_tiles(aoi, provider = control$provider, crop = TRUE,
+  auto <- .basemapZoom(xlim, ylim)
+  zoom <- control$zoom %||% auto$zoom
+  grab <- function(z) tryCatch(
+    suppressWarnings(maptiles::get_tiles(aoi, provider = control$provider, zoom = z, crop = TRUE,
                                          cachedir = .tileCacheDir(control$cache))),
     error = function(e) { .log_skip(lvl, "satellite basemap unavailable: ", conditionMessage(e)); NULL })
+
+  rast <- grab(zoom)
   if (is.null(rast)) return(NULL)
-  rast <- tryCatch(terra::project(rast, "EPSG:4326"), error = function(e) rast)
+  # Step back down where the provider has no imagery at this zoom. Only when the zoom was CHOSEN for the
+  # user - an explicit control$zoom is a decision, not a suggestion, and is honoured as given.
+  if (is.null(control$zoom)) {
+    for (k in 1:2) {
+      empty <- .tileEmptyFraction(rast)
+      if (empty <= 0.02 || zoom <= 1L) break
+      lower <- grab(zoom - 1L)
+      if (is.null(lower) || .tileEmptyFraction(lower) >= empty) break
+      .log_skip(lvl, sprintf("%s has no imagery for %.0f%% of the extent at zoom %d; using zoom %d",
+                             control$provider, 100 * empty, zoom, zoom - 1L))
+      rast <- lower; zoom <- zoom - 1L
+    }
+  }
+  if (lvl >= 2L)
+    .log_detail(lvl, sprintf("basemap: zoom %d (%s) %d x %d px%s", zoom,
+                             if (is.null(control$zoom)) "auto" else "user", dim(rast)[2], dim(rast)[1],
+                             if (is.null(control$zoom) && isTRUE(auto$capped))
+                               sprintf(" - tile budget reached, capped below the %d px target", 1200L) else ""))
+  # get_tiles(project = TRUE) already returns the AOI's CRS, so reprojecting is normally a no-op that
+  # costs a full raster copy. Only do it when the CRS genuinely differs.
+  if (!isTRUE(grepl("4326", terra::crs(rast, describe = TRUE)$code %||% "")))
+    rast <- tryCatch(terra::project(rast, "EPSG:4326"), error = function(e) rast)
   attr(rast, "nautilus.credit") <- tryCatch(maptiles::get_credit(control$provider), error = function(e) NULL)
   rast
 }

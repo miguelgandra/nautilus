@@ -28,7 +28,7 @@
 #' @param type Character. The basemap kind: `"satellite"` (imagery tiles, via \pkg{maptiles}) or
 #'   `"bathymetry"` (a depth grid, via \pkg{marmap}). Either can be passed straight back to
 #'   [plotTracks()] as `basemap =`; only `"satellite"` is accepted by [filterLocations()].
-#' @param control A [basemapControl()] object (provider + cache).
+#' @param control A [basemapControl()] object (tile provider, cache, and zoom).
 #' @param id.col,datetime.col Column names, matching [plotTracks()]. Defaults `"ID"`/`"datetime"`.
 #' @param verbose Logical/character verbosity, as elsewhere. Default `TRUE`.
 #' @return For `type = "satellite"`, a \pkg{terra} `SpatRaster` (RGB, lon/lat) carrying a

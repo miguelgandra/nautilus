@@ -52,7 +52,7 @@ bundled source by resolution -- \code{"auto"} (default: the highest-resolution i
 (NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
 the \code{data.frame}/\code{matrix} form; \pkg{sf} is needed for \code{sf} objects and most file paths.}
 
-\item{basemap.control}{A \code{\link[=basemapControl]{basemapControl()}} object tuning the satellite fetch (tile
+\item{basemap.control}{A \code{\link[=basemapControl]{basemapControl()}} object tuning the satellite fetch (tile provider, zoom,
 \code{provider}, \code{cache}). Used only when \code{basemap = "satellite"}; ignored for a pre-fetched raster.}
 
 \item{bathy.contours}{Bathymetric contour overlay (composes with any \code{basemap}). \code{FALSE} (default) is

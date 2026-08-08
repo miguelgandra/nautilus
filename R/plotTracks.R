@@ -59,7 +59,7 @@
 #'   `SpatRaster` (imagery) or a \pkg{marmap} `bathy` grid (depth), drawn as-is: the reproducible/offline
 #'   path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
 #'   `basemap = "bathymetry"` and `bathy.contours` compose, as relief plus isobaths, and share one download.
-#' @param basemap.control A [basemapControl()] object tuning the satellite fetch (tile
+#' @param basemap.control A [basemapControl()] object tuning the satellite fetch (tile provider, zoom,
 #'   `provider`, `cache`). Used only when `basemap = "satellite"`; ignored for a pre-fetched raster.
 #' @param coastline Which vector coastline to draw over whichever canvas you chose - only
 #'   `basemap = "none"` skips it. A keyword selecting a

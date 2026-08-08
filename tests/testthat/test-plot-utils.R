@@ -145,3 +145,60 @@ test_that("no function builds a time axis outside .axisTime", {
   expect_false(any(grepl("labels = format(",   bodies, fixed = TRUE)))
   expect_false(any(grepl("labels = strftime(", bodies, fixed = TRUE)))
 })
+
+
+#######################################################################################################
+# Basemap tile zoom ###################################################################################
+#
+# maptiles' own default takes the largest zoom that still covers the area in FOUR tiles. That is sized
+# for a cheap request, not a figure: on tutorial04's 54 x 68 km extent it returned zoom 9 - 244 m/px,
+# 260 px across, about 60 dpi in a plotTracks panel, which rendered islands as blurred blobs.
+
+test_that("the tile index follows the standard slippy-map scheme", {
+  # zoom 0 is one tile: (0,0) maps to the centre, and the prime meridian at the equator is (0.5, 0.5)
+  expect_equal(unname(.tileIndex(0, 0, 0)), c(0.5, 0.5), tolerance = 1e-9)
+  expect_equal(unname(.tileIndex(-180, 85.0511, 0))[1], 0, tolerance = 1e-6)
+  # x grows eastward, y grows southward
+  expect_gt(.tileIndex(10, 0, 5)[["x"]], .tileIndex(-10, 0, 5)[["x"]])
+  expect_gt(.tileIndex(0, -10, 5)[["y"]], .tileIndex(0, 10, 5)[["y"]])
+  expect_true(all(is.finite(.tileIndex(0, 89.9, 5))))     # clamped, not Inf, beyond the Mercator limit
+})
+
+test_that("zoom is chosen for pixels on the page, not for a four-tile budget", {
+  z <- .basemapZoom(c(-25.5575, -24.9431), c(36.5857, 37.2001))   # tutorial04's extent
+  expect_gte(z$zoom, 11L)                                          # maptiles' own default was 9
+  expect_gte(z$px, 1200)
+  expect_false(z$capped)
+})
+
+test_that("a smaller extent gets a higher zoom, and the metre-per-pixel scale is the reason", {
+  wide   <- .basemapZoom(c(-28.5, -25.0), c(36.5, 38.5))
+  narrow <- .basemapZoom(c(-25.10, -25.078), c(36.98, 37.00))
+  expect_gt(narrow$zoom, wide$zoom)
+  # both still land near the pixel target rather than at some fixed zoom
+  expect_gte(wide$px, 1200); expect_gte(narrow$px, 1200)
+})
+
+test_that("the tile budget caps a wide extent and says so, rather than issuing thousands of requests", {
+  z <- .basemapZoom(c(-60, 20), c(-40, 40), target.px = 100000, max.tiles = 16L)
+  expect_lte(z$tiles, 16L)
+  expect_true(z$capped)                                            # the caller reports this
+})
+
+test_that("empty-tile fraction detects a provider that has run out of imagery", {
+  blank <- terra::rast(nrows = 20, ncols = 20, nlyrs = 3, vals = 0)
+  full  <- terra::rast(nrows = 20, ncols = 20, nlyrs = 3, vals = 128)
+  expect_equal(.tileEmptyFraction(blank), 1)
+  expect_equal(.tileEmptyFraction(full), 0)
+  half <- terra::rast(nrows = 20, ncols = 20, nlyrs = 3,
+                      vals = rep(c(rep(0, 200), rep(128, 200)), 3))
+  expect_equal(.tileEmptyFraction(half), 0.5, tolerance = 0.01)
+})
+
+test_that("basemapControl carries zoom, validates it, and defaults to automatic", {
+  expect_null(basemapControl()$zoom)
+  expect_equal(basemapControl(zoom = 11)$zoom, 11)
+  expect_error(basemapControl(zoom = 25), "maximum tile zoom")
+  expect_error(basemapControl(zoom = -1), "zoom")
+  expect_error(basemapControl(zoom = 2.5), "whole number")
+})

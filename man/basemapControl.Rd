@@ -4,7 +4,7 @@
 \alias{basemapControl}
 \title{Tile-fetch settings for a satellite basemap}
 \usage{
-basemapControl(provider = "Esri.WorldImagery", cache = TRUE)
+basemapControl(provider = "Esri.WorldImagery", cache = TRUE, zoom = NULL)
 }
 \arguments{
 \item{provider}{Which tile provider to draw from. Default \code{"Esri.WorldImagery"}, which is satellite
@@ -15,6 +15,21 @@ so check the terms before publishing a figure drawn on one.}
 \item{cache}{Whether to keep fetched tiles for reuse: \code{TRUE} (default) uses a persistent per-user
 cache, \code{FALSE} keeps them only for the session, and a directory path caches them there. Leave it on
 unless disk space is tight - it makes a redrawn figure instant and works offline.}
+
+\item{zoom}{Tile zoom level, or \code{NULL} (default) to choose one from the extent and the size the
+basemap will be drawn at. The automatic choice targets roughly 1200 pixels across the panel -
+about 280 dpi in a \code{\link[=plotTracks]{plotTracks()}} map - bounded by a tile budget so a wide extent cannot silently
+issue thousands of requests; when the budget binds rather than the target, the detailed log says so.
+
+This exists because the tile library's own default optimises for a cheap request, not a figure: it
+takes the largest zoom that still covers the area in four tiles. On a 54 x 68 km extent that is
+zoom 9 - 244 m per pixel, about 60 dpi on the page - which renders islands as blurred blobs.
+
+Higher is not always better. A provider's imagery runs out at some zoom and it then serves empty
+tiles rather than an error: \code{Esri.WorldImagery} over the open Atlantic is complete to zoom 11 and
+about 5\% black at zoom 12, where the coastline gains detail but the ocean loses it. An automatic
+choice is therefore checked for coverage and steps back down if the imagery is missing. A zoom you
+set explicitly is treated as a decision and is used as given.}
 }
 \value{
 A validated \code{nautilus_basemap} object for the \code{basemap.control} argument of \code{\link[=plotTracks]{plotTracks()}} and

@@ -21,7 +21,7 @@ getBasemap(
 \code{"bathymetry"} (a depth grid, via \pkg{marmap}). Either can be passed straight back to
 \code{\link[=plotTracks]{plotTracks()}} as \verb{basemap =}; only \code{"satellite"} is accepted by \code{\link[=filterLocations]{filterLocations()}}.}
 
-\item{control}{A \code{\link[=basemapControl]{basemapControl()}} object (provider + cache).}
+\item{control}{A \code{\link[=basemapControl]{basemapControl()}} object (tile provider, cache, and zoom).}
 
 \item{id.col, datetime.col}{Column names, matching \code{\link[=plotTracks]{plotTracks()}}. Defaults \code{"ID"}/\code{"datetime"}.}
 
