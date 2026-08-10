@@ -508,3 +508,192 @@ test_that("the summary reports deployments with and without dives in plain words
   expect_false(grepl("applied_no_dives", out))           # the raw status string is not user-facing
   expect_false(grepl("non-standard outcomes", out))
 })
+
+
+# ---------------------------------------------------------------------------
+# the phase rule: what it measures, over what span, and against what
+# ---------------------------------------------------------------------------
+
+# A realistic dive profile with KNOWN limbs: linear descent, flat bottom, linear ascent, built at an
+# arbitrary sampling rate so the same shape can be presented to the rule several ways.
+.diveProfile <- function(hz = 1, dur = 600, peak = 100, f_desc = 0.25, f_bot = 0.5, quant = 0) {
+  n <- round(dur * hz); f <- seq(0, 1, length.out = n)
+  f_asc <- 1 - f_desc - f_bot
+  z <- ifelse(f <= f_desc, peak * f / f_desc,
+       ifelse(f <= f_desc + f_bot, peak, peak * (1 - (f - f_desc - f_bot) / f_asc)))
+  if (quant > 0) z <- round(z / quant) * quant
+  list(z = c(rep(0, round(60 * hz)), z, rep(0, round(60 * hz))), hz = hz)
+}
+.phaseFrac <- function(x) {
+  p <- as.character(x$dive_phase)[x$dive_id > 0]
+  c(descent = mean(p == "descent"), bottom = mean(p == "bottom"), ascent = mean(p == "ascent"))
+}
+.runProfile <- function(pr, ...) {
+  tg <- .diveTag("P", pr$z, tnum = (seq_along(pr$z) - 1) / pr$hz)
+  .detect(tg, .diveCtl(...))[[1]]
+}
+
+test_that("a V-shaped dive is reported with NO bottom phase", {
+  # The property that separates a rate rule from a proportion-of-depth rule. `prop.depth` labels
+  # 1 - bottom.prop of EVERY dive as bottom whatever its shape; the rate rule can say "there was no
+  # bottom", and on a profile with no bottom that is the only correct answer.
+  v <- .diveProfile(hz = 1, f_desc = 0.5, f_bot = 0)
+  fr <- .phaseFrac(.runProfile(v))
+  expect_identical(unname(fr[["bottom"]]), 0)
+  expect_gt(fr[["descent"]], 0.4); expect_gt(fr[["ascent"]], 0.4)
+
+  # and the alternative rule does exactly what it is documented to do on the same profile
+  fp <- .phaseFrac(.runProfile(v, phase.method = "prop.depth", bottom.prop = 0.8))
+  expect_gt(fp[["bottom"]], 0.15)
+})
+
+test_that("descent and ascent are treated symmetrically: reversing a dive swaps them", {
+  # The ascent is the descent of the same dive played backwards, and one routine answers both, so this
+  # is a structural guarantee rather than a coincidence of two hand-written branches. The old rule had
+  # a fallback on the descent branch and none on the ascent, and ascent was empty in every deployment.
+  #
+  # Tested on the phase rule itself rather than through detectDives(), because hysteresis is directional
+  # - a dive opens above the threshold and closes below the band - so the detected SPAN of a reversed
+  # profile is not the mirror of the original, and that difference belongs to detection, not to phases.
+  ctl <- diveControl()
+  mirror <- function(z, hz = 1) {
+    tv <- (seq_along(z) - 1) / hz
+    f <- nautilus:::.divePhases(z, tv, ctl, list(), noise = 0.01)$phase
+    b <- nautilus:::.divePhases(rev(z), tv, ctl, list(), noise = 0.01)$phase
+    list(f = f, b = rev(b))
+  }
+  # A unique apex, so `which.max()` picks the same sample either way and the mirror is exact - to the
+  # single apex sample, which the tie-break hands to the descent whichever way the dive is played.
+  swap <- c(descent = "ascent", bottom = "bottom", ascent = "descent")
+  v <- c(seq(0, 100, length.out = 150), seq(100, 0, length.out = 450))[-151]
+  m <- mirror(v)
+  expect_lte(sum(unname(swap[m$f]) != m$b), 1L)
+  expect_identical(sum(m$f == "bottom"), 0L)             # a V, both ways round
+
+  # a flat-topped dive mirrors to within the apex tie that `which.max()` breaks by position
+  u <- c(seq(0, 100, length.out = 90), rep(100, 300), seq(100, 0, length.out = 210))
+  m2 <- mirror(u)
+  expect_equal(sum(m2$f == "descent"), sum(m2$b == "ascent"),  tolerance = 0.02)
+  expect_equal(sum(m2$f == "ascent"),  sum(m2$b == "descent"), tolerance = 0.02)
+})
+
+test_that("the same profile splits the same way at 1, 20 and 100 Hz", {
+  # Sampling-rate INDEPENDENCE, which the sample-count rule did not have: it differentiated one sample
+  # at a time, so the noise floor was one depth quantum per sampling interval and rose with rate, and
+  # it required a run of 5% of the dive's SAMPLES, which rose with rate too.
+  fr <- lapply(c(1, 20, 100), function(h) .phaseFrac(.runProfile(.diveProfile(hz = h, quant = 0.01))))
+  for (i in 2:3) {
+    expect_equal(fr[[i]][["descent"]], fr[[1]][["descent"]], tolerance = 0.03)
+    expect_equal(fr[[i]][["ascent"]],  fr[[1]][["ascent"]],  tolerance = 0.03)
+  }
+})
+
+test_that("a fast descent does not set the bar for a slow ascent", {
+  # The criterion is a fraction of EACH LIMB's own rate. Pooled over the dive - the previous behaviour -
+  # the fast limb sets the threshold for the slow one, and on this profile (descent 6x faster than
+  # ascent) the pooled criterion lands above the true ascent rate and no ascent is ever labelled.
+  pr <- .diveProfile(hz = 1, dur = 1200, peak = 120, f_desc = 0.1, f_bot = 0.3)   # ascent 6x slower
+  fr <- .phaseFrac(.runProfile(pr))
+  expect_gt(fr[["ascent"]], 0.45)                        # the ascent is ~60% of the dive here
+  expect_gt(fr[["descent"]], 0.05)
+})
+
+test_that("the boundary hold is a duration, not a share of the dive's sample count", {
+  # 5% of a 20 Hz, 600 s dive is a 600-SAMPLE unbroken run; the same rule on the same shape at 1 Hz
+  # asks for 30. Expressed in seconds the demand is the same animal behaviour either way, so a long
+  # dive and a short one at the same rate get the same bottom.
+  short <- .phaseFrac(.runProfile(.diveProfile(hz = 20, dur = 300)))
+  long  <- .phaseFrac(.runProfile(.diveProfile(hz = 20, dur = 3000)))
+  expect_equal(short[["bottom"]], long[["bottom"]], tolerance = 0.03)
+})
+
+test_that("phase.window and min.phase.duration are validated, reported and recorded", {
+  expect_error(diveControl(phase.window = 0), "greater than zero")
+  expect_error(diveControl(phase.window = -1), "between 0 and Inf")
+  expect_error(diveControl(min.phase.duration = 0), "greater than zero")
+  expect_error(diveControl(phase.window = "wide"))
+
+  out <- paste(cli::cli_fmt(detectDives(.diveTag("A", .diveTrain),
+                                        control = .diveCtl(phase.window = 12),
+                                        verbose = 2)), collapse = "\n")
+  expect_match(out, "Phase rule:")
+  expect_match(out, "Rate window:\\s+12 s \\(user\\)")
+  expect_match(out, "Min. phase:")
+  expect_match(out, "Phase structure")
+
+  x <- .detect(.diveTag("A", .diveTrain), .diveCtl(phase.window = 12))[[1]]
+  expect_equal(.diveProv(x)$phase_window_s, 12)
+  expect_equal(.diveProv(x)$min_phase_duration_s, 24)    # derived as twice the window
+
+  # the rate scales are not recorded for a rule that does not use them
+  y <- .detect(.diveTag("A", .diveTrain), .diveCtl(phase.method = "prop.depth"))[[1]]
+  expect_true(is.na(.diveProv(y)$phase_window_s))
+})
+
+test_that("a whole missing limb is warned about, and a missing bottom is not", {
+  # The check that would have caught the failure it exists because of: a phase rule that cannot see a
+  # limb produces a perfectly well-formed table in which `ascent` never appears, and nothing else says
+  # so. An empty BOTTOM is the opposite - it is the correct answer on a V-dive.
+  v <- .diveProfile(hz = 1, f_desc = 0.5, f_bot = 0)
+  expect_silent(suppressMessages(detectDives(
+    .diveTag("V", rep(c(v$z, rep(0, 30)), 3)), control = .diveCtl(), verbose = 0)))
+
+  # The tally is what the warning reads, so its rules are pinned here: fires above half the judged
+  # dives, names the deployment and the count, stays quiet at or below half, and abstains rather than
+  # accuses on dives the record cut short or on which the rule returned no answer at all.
+  tally <- function(...) nautilus:::.divePhaseTally(list(...))
+  dive <- function(d = TRUE, a = TRUE, trunc = FALSE)
+    list(descent_established = d, ascent_established = a, truncated = trunc, structure = "DBA")
+  ctl <- diveControl()
+
+  bad <- c(tally(dive(a = FALSE), dive(a = FALSE), dive()), list(id = "X"))
+  expect_warning(nautilus:::.warnDivePhases(list(bad), ctl), "No ascent phase was resolved")
+  expect_warning(nautilus:::.warnDivePhases(list(bad), ctl), "X \\(2/3 dives\\)")
+
+  half <- c(tally(dive(a = FALSE), dive()), list(id = "X"))       # exactly half is not "more than"
+  expect_silent(nautilus:::.warnDivePhases(list(half), ctl))
+
+  # truncated dives and NA answers leave nothing to judge, so nothing is claimed
+  cut <- c(tally(dive(a = FALSE, trunc = TRUE), dive(a = FALSE, trunc = TRUE)), list(id = "X"))
+  expect_silent(nautilus:::.warnDivePhases(list(cut), ctl))
+  abst <- c(tally(dive(d = NA, a = NA), dive(d = NA, a = NA)), list(id = "X"))
+  expect_silent(nautilus:::.warnDivePhases(list(abst), ctl))
+})
+
+test_that(".diveSlope matches a direct least-squares fit and tolerates gaps", {
+  set.seed(11)
+  n <- 400; tv <- seq_len(n) * 0.5; z <- 0.03 * tv + stats::rnorm(n, 0, 0.2)
+  W <- 10; k <- floor((W / 2) / 0.5)
+  brute <- vapply(seq_len(n), function(i) {
+    j <- max(1L, i - k):min(n, i + k)
+    unname(stats::coef(stats::lm(z[j] ~ tv[j]))[2])
+  }, numeric(1))
+  expect_equal(nautilus:::.diveSlope(z, tv, W), brute, tolerance = 1e-8)
+
+  # NA depth carries no information and must not poison the whole window
+  z2 <- z; z2[c(50:55, 200)] <- NA_real_
+  s2 <- nautilus:::.diveSlope(z2, tv, W)
+  expect_true(all(is.finite(s2[100:150])))
+  expect_equal(mean(s2, na.rm = TRUE), 0.03, tolerance = 0.02)
+
+  # THE property the one-sample difference had backwards. At a fixed depth quantum, dividing one
+  # quantum by one sampling interval gives a noise floor that RISES with sampling rate; a slope over a
+  # fixed span in seconds falls as rate^-0.5. Same true rate, same quantum, three sampling rates.
+  err <- function(hz, how) {
+    tt <- seq_len(round(600 * hz)) / hz
+    zz <- round((0.37 * tt) / 0.05) * 0.05               # 5 cm quantum, 0.37 m/s, not a whole number of
+    r <- if (how == "slope") nautilus:::.diveSlope(zz, tt, 10)  # quanta per sample at any of these rates
+         else c(NA, diff(zz) / diff(tt))
+    stats::sd(r, na.rm = TRUE)
+  }
+  expect_lt(err(100, "slope"), err(20, "slope"))
+  expect_lt(err(20,  "slope"), err(1,  "slope"))
+  expect_gt(err(100, "diff"),  err(20, "diff"))          # the old estimator, going the wrong way
+  expect_lt(err(20,  "slope"), err(20, "diff") / 50)     # and two orders of magnitude apart at 20 Hz
+})
+
+test_that(".diveQuantum finds a lattice step and abstains when there is no lattice", {
+  expect_equal(nautilus:::.diveQuantum(round(stats::runif(500, 0, 50) / 0.05) * 0.05), 0.05)
+  expect_true(is.na(nautilus:::.diveQuantum(stats::runif(500, 0, 50))))    # not a lattice
+  expect_true(is.na(nautilus:::.diveQuantum(rep(c(0, 25), 100))))          # too few levels to tell
+})

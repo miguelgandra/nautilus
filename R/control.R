@@ -1089,12 +1089,25 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 #' @param baseline.quantile Which quantile to use when `baseline.stat = "quantile"`. `NULL` picks 0.10,
 #'   0.90 or 0.50 according to `direction`.
 #' @param phase.method How descent, bottom and ascent are separated: `"vertical.rate"` (default), which
-#'   ends a phase when the animal stops descending or ascending briskly, or `"prop.depth"`, which
-#'   defines the bottom geometrically as everything below a proportion of the dive's amplitude.
-#' @param rate.crit,rate.quantile The vertical-rate phase rule: a phase ends when the rate falls below
-#'   `rate.crit` times the dive's `rate.quantile` quantile of vertical rate. Defaults `0.25` and `0.90`.
-#'   A quantile rather than the maximum, because the maximum of a smoothed series is an artefact of the
-#'   smoothing window.
+#'   ends a phase when the animal stops transiting, or `"prop.depth"`, which defines the bottom
+#'   geometrically as everything below a proportion of the dive's amplitude. They answer different
+#'   questions and only the first can report a dive with no bottom phase at all - see the Details.
+#' @param phase.window The span, in seconds, over which the vertical rate is measured for
+#'   `phase.method = "vertical.rate"`. The rate is a least-squares slope of depth against time over this
+#'   window, never a one-sample difference. `NULL` (default) derives the larger of 5 s and three sampling
+#'   intervals. Widen it on a noisy or coarsely quantised depth channel; narrow it to resolve sharper
+#'   transitions. It is capped per dive at an eighth of that dive's duration, because a window wider than
+#'   the profile measures the profile.
+#' @param min.phase.duration How long, in seconds, the animal must have stopped transiting before a
+#'   phase is treated as over - and therefore the shortest bottom phase that can be reported. `NULL`
+#'   (default) derives twice `phase.window`, the shortest span over which two windowed rate estimates are
+#'   independent. Raise it to ignore brief pauses within a descent; lower it to resolve short bottoms.
+#'   Capped per dive at a quarter of that dive's duration, since a longer hold could never be met.
+#' @param rate.crit,rate.quantile The vertical-rate criterion: a limb ends when its rate falls below
+#'   `rate.crit` times the `rate.quantile` quantile of *that limb's own* rate. Defaults `0.25` and
+#'   `0.90`. Per limb, not per dive: a dive's descent and ascent routinely differ several-fold in speed,
+#'   and a criterion pooled over both lets the faster one set the bar for the slower one. A quantile
+#'   rather than the maximum, because the maximum of a smoothed series is an artefact of the window.
 #' @param bottom.prop For `phase.method = "prop.depth"`: the bottom phase is the span deeper than this
 #'   proportion of the dive's amplitude. Default `0.80`.
 #' @param max.gap The longest interruption of the record, in seconds, that a single dive may span. An
@@ -1133,6 +1146,29 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 #' rather than the local level. [detectDives()] measures both conditions and warns when the estimator
 #' you chose is in its failing regime.
 #'
+#' ## Choosing `phase.method`
+#'
+#' The two rules are not two settings of the same idea. `"vertical.rate"` **estimates a behavioural
+#' state** - is the animal still transiting? - and can therefore answer "there was no bottom phase".
+#' `"prop.depth"` **partitions the geometry** - is this sample near the deepest point? - and cannot.
+#'
+#' That difference is definitional, not a matter of tuning. `"prop.depth"` labels exactly
+#' `1 - bottom.prop` of *every* dive as bottom, whatever its shape: 20% at the default, on a V-shaped
+#' profile with no bottom at all, because the samples nearest the single deepest point always satisfy
+#' the criterion. Lowering `bottom.prop` shrinks that share but never removes it, and it always costs
+#' the terminal part of each transit, capping descent and ascent recall near 80% by construction.
+#'
+#' `"vertical.rate"` is the default because the profiles this package is usually pointed at - sharks,
+#' rays, fish that never surface - are frequently V-shaped or oscillatory rather than square, and
+#' reporting bottom-phase statistics for a state the animal never entered is a quieter error than
+#' reporting none. `"prop.depth"` is worth choosing when the depth channel is too coarse or too slow for
+#' a derivative to mean anything, or when you want the same geometric definition another package used;
+#' it is the convention in `tagtools::dive_stats()`, with `prop = 0.85`.
+#'
+#' Whichever rule is in force, [detectDives()] reports the realised phase structure per deployment and
+#' warns when a limb is missing from most dives, which is the signature of a rate criterion that is not
+#' working on that record rather than of an unusual dive shape.
+#'
 #' @return A validated `nautilus_dive` object for the `control` argument of [detectDives()].
 #'
 #' @seealso [detectDives()] for the function that consumes it; [diveMetrics()] for the per-dive
@@ -1155,6 +1191,8 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
                         baseline.stat         = c("median", "quantile"),
                         baseline.quantile     = NULL,
                         phase.method          = c("vertical.rate", "prop.depth"),
+                        phase.window          = NULL,
+                        min.phase.duration    = NULL,
                         rate.crit             = 0.25,
                         rate.quantile         = 0.90,
                         bottom.prop           = 0.80,
@@ -1177,6 +1215,14 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
   if (!is.null(min.duration))     .assert_number(min.duration,     "dive$min.duration",     min = 0)
   if (!is.null(max.gap))          .assert_number(max.gap,          "dive$max.gap",          min = 0)
   if (!is.null(wiggle.amplitude)) .assert_number(wiggle.amplitude, "dive$wiggle.amplitude", min = 0)
+  if (!is.null(phase.window)) {
+    .assert_number(phase.window, "dive$phase.window", min = 0)
+    if (phase.window <= 0) .abort("{.arg dive$phase.window} must be greater than zero.")
+  }
+  if (!is.null(min.phase.duration)) {
+    .assert_number(min.phase.duration, "dive$min.phase.duration", min = 0)
+    if (min.phase.duration <= 0) .abort("{.arg dive$min.phase.duration} must be greater than zero.")
+  }
   .assert_number(baseline.window,       "dive$baseline.window",       min = 0)
   .assert_number(rate.crit,             "dive$rate.crit",             min = 0)
   .assert_number(rate.quantile,         "dive$rate.quantile",         min = 0)
@@ -1216,7 +1262,9 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
                  min.duration = min.duration,
                  baseline.window = baseline.window, baseline.stat = baseline.stat,
                  baseline.quantile = baseline.quantile,
-                 phase.method = phase.method, rate.crit = rate.crit, rate.quantile = rate.quantile,
+                 phase.method = phase.method, phase.window = phase.window,
+                 min.phase.duration = min.phase.duration,
+                 rate.crit = rate.crit, rate.quantile = rate.quantile,
                  bottom.prop = bottom.prop, max.gap = max.gap, wiggle.amplitude = wiggle.amplitude,
                  min.surface.occupancy = min.surface.occupancy, require.zoc = require.zoc),
             class = "nautilus_dive")

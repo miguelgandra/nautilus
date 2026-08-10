@@ -136,6 +136,16 @@
 #' how long the dive lasted, so maxima are not comparable between a short dive and a long one even
 #' within one animal.
 #'
+#' ## Over what span a rate is measured
+#'
+#' `descent_rate_*` and `ascent_rate_*` are least-squares slopes of depth against time over the same
+#' window the phase rule used - `diveControl(phase.window = )`, recorded per deployment and read back
+#' from the provenance, or re-derived from the sampling interval for a table annotated by hand. Not a
+#' one-sample difference: dividing one depth quantum by one sampling interval returns the pressure
+#' transducer rather than the animal, and on a 20 Hz record it put `descent_rate_q90` at 1.60 m/s where
+#' the animal's own rate was nearer 0.2. The signed means were never affected, because that noise is
+#' zero-mean; the quantiles were entirely instrument.
+#'
 #' ## The thresholds travel with every row
 #'
 #' `reference`, `direction`, `depth_threshold_m` and `surface_band_m` are columns rather than metadata,

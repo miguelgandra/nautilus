@@ -329,6 +329,7 @@
   # would fail open.
   fin <- d[is.finite(d)]
   noise <- if (length(fin) > 3L) stats::mad(diff(fin, differences = 2)) / sqrt(6) else NA_real_
+  quantum <- .diveQuantum(fin)
 
   # zero-offset provenance: the honest answer to "how far from zero is this record's zero"
   pr <- Filter(function(r) identical(r$step, "depth_drift"), .getMeta(x)$processing)
@@ -336,11 +337,45 @@
   bin_s <- .diveDepthBin(.getMeta(x))
 
   utils::modifyList(out, list(
-    usable = TRUE, tnum = NULL, dt = dt, noise = noise,
+    usable = TRUE, tnum = NULL, dt = dt, noise = noise, quantum = quantum,
     depth_range = range(fin), depth_q = stats::quantile(fin, c(.5, .75, .9, .95), names = FALSE),
     zoc_status = as.character(zoc$status %||% NA_character_),
     zoc_residual = suppressWarnings(as.numeric(zoc$outcome$residual_m %||% NA_real_)),
     depth_bin = bin_s))
+}
+
+#' The depth channel's own quantum, in metres: the finest step it can actually express.
+#'
+#' Second differences measure the noise of a series that HAS noise. A depth channel written as a clean
+#' lattice - no dither, every value an exact multiple of the transducer's least significant bit - has
+#' second differences that are mostly exactly zero, so `mad()` returns 0 and the record is pronounced
+#' perfect. It is not: it is a staircase, and a staircase is the harder case for any derivative, because
+#' the error is deterministic rather than averaging away. The quantum is what says so.
+#'
+#' On a lattice the smallest gap between occupied levels IS the quantum. On a dithered or floating-point
+#' channel adjacent levels are arbitrarily close, the estimate collapses towards zero, and the noise
+#' measured from second differences takes over - which is the right division of labour, since that is
+#' exactly the regime second differences are good for.
+#'
+#' Two guards, because the smallest gap between distinct values is only the quantum when the values are
+#' actually ON a lattice. A square test pulse holds two depths, 0 m and 25 m, and its smallest gap is
+#' 25 m - which, taken at face value, told the phase rule the depth channel could not resolve anything
+#' finer than the dive itself. So: enough occupied levels to see a lattice at all, and every gap an
+#' integer multiple of the smallest. Anything else abstains and lets the noise estimate answer.
+#' @keywords internal
+#' @noRd
+.diveQuantum <- function(z, max.n = 1e5L, min.levels = 10L) {
+  z <- z[is.finite(z)]
+  if (length(z) < 3L) return(NA_real_)
+  if (length(z) > max.n) z <- z[seq(1L, length(z), length.out = max.n)]
+  u <- sort(unique(z))
+  if (length(u) < min.levels) return(NA_real_)
+  g <- diff(u)
+  q <- min(g)
+  if (!is.finite(q) || q <= 0) return(NA_real_)
+  r <- g / q
+  if (!all(abs(r - round(r)) < 0.01)) return(NA_real_)   # not a lattice: let mad() answer
+  q
 }
 
 #' The boxcar that actually reached the STORED depth channel, in seconds (NA when none did).
@@ -402,6 +437,20 @@
   gap <- control$max.gap %||% max(60, 10 * dt_med)
   wig <- control$wiggle.amplitude %||% max(0.5, 3 * (if (is.na(n_med)) 0.1 else n_med))
 
+  # The two time scales of the phase rule, both in SECONDS and both derived once for the cohort so that
+  # phase structure stays comparable between deployments sampled at different rates.
+  #   phase.window       - over what span the vertical rate is measured. A MEASUREMENT scale: it sets
+  #                        the slope's standard error (sigma * sqrt(12/N) / W), so it is floored at
+  #                        three samples and otherwise at 5 s, which is short against any dive limb and
+  #                        long against the depth channel's own noise.
+  #   min.phase.duration - how long the animal must have stopped transiting for the phase to have ended.
+  #                        A BEHAVIOURAL scale, derived as twice the window because that is the shortest
+  #                        span over which two windowed estimates are independent.
+  pwin_src <- if (is.null(control$phase.window)) "derived" else "user"
+  pwin <- control$phase.window %||% max(5, 3 * dt_med)
+  phold_src <- if (is.null(control$min.phase.duration)) "derived" else "user"
+  phold <- control$min.phase.duration %||% (2 * pwin)
+
   # reference resolution: "auto" needs the ZOC provenance AND evidence the animal visits the band
   # The THRESHOLD is cohort-wide so dive counts stay comparable. The REFERENCE is not: whether a
   # record's zero can be trusted is a property of THAT deployment's zero-offset correction. Deciding it
@@ -431,6 +480,8 @@
   list(reference = ref, reference_note = ref_note,
        depth.threshold = thr, surface.band = band, min.prominence = prom, min.duration = dur,
        min.amplitude = amp_min, max.gap = gap, wiggle.amplitude = wig, threshold_source = thr_src, duration_source = dur_src,
+       phase.window = pwin, phase_window_source = pwin_src,
+       min.phase.duration = phold, phase_duration_source = phold_src,
        noise = n_med, zoc_residual = r_max, depth_bin = bin_max, dt = dt_med,
        n_anchored = if (identical(control$reference, "auto")) sum(zst %in% c("applied", "applied_with_gaps", "constant_offset"), na.rm = TRUE) else NA_integer_,
        band_source = if (is.null(control$surface.band)) "derived" else "user",
@@ -449,7 +500,7 @@
                                     levels = c("descent", "bottom", "ascent", "inter_dive")),
                 baseline = rep(NA_real_, n), n_dives = 0L,
                 reference = settings$reference, status = "abstained_no_depth",
-                occupancy = NA_real_, zoc_anchored = NA, risk = NULL)
+                occupancy = NA_real_, zoc_anchored = NA, risk = NULL, phases = NULL)
   if (!isTRUE(scan$usable)) return(empty)
 
   tnum <- .asTimeSeconds(x[[datetime.col]])
@@ -495,83 +546,307 @@
 
   dive_id <- rep(0L, n)
   phase <- rep("inter_dive", n)
+  # The depth uncertainty the phase rule budgets for is the WORSE of the two things that limit a
+  # derivative: the noise of the stored series, and its quantum. A dither-free lattice has the first at
+  # zero and the second at the transducer's step, and taking the maximum is what stops the rule
+  # believing a staircase is a perfect measurement.
+  nz <- max(scan$noise %||% NA_real_, (scan$quantum %||% NA_real_) / sqrt(12), na.rm = TRUE)
+  if (!is.finite(nz)) nz <- settings$noise %||% NA_real_
+  # Per-dive limb diagnosis, kept so the caller can tell a V-dive (no bottom, correct) from a limb the
+  # detector never saw (no ascent, a defect). Truncated dives are excluded from that judgement: a dive
+  # the record cut short legitimately lacks a limb.
+  lim <- vector("list", nrow(runs))
   for (k in seq_len(nrow(runs))) {
     idx <- runs$start_i[k]:runs$end_i[k]
     dive_id[idx] <- k
-    phase[idx] <- .divePhases(resid[idx] * runs$sign[k], tnum[idx], control)
+    pk <- .divePhases(resid[idx] * runs$sign[k], tnum[idx], control, settings, noise = nz,
+                      dt = settings$dt)
+    phase[idx] <- pk$phase
+    lim[[k]] <- c(pk[c("descent_established", "ascent_established")],
+                  list(truncated = isTRUE(runs$truncated_start[k]) || isTRUE(runs$truncated_end[k]),
+                       structure = .divePhaseCode(pk$phase)))
   }
   list(dive_id = dive_id,
        dive_phase = factor(phase, levels = c("descent", "bottom", "ascent", "inter_dive")),
        baseline = b, n_dives = nrow(runs),
        reference = ref, status = "applied",
-       occupancy = occ, zoc_anchored = auto_zoc, risk = risk)
+       occupancy = occ, zoc_anchored = auto_zoc, risk = risk,
+       phases = .divePhaseTally(lim))
+}
+
+#' The D/B/A shorthand for one dive's realised phase structure ("X" when it has none).
+#' @keywords internal
+#' @noRd
+.divePhaseCode <- function(ph) {
+  code <- paste0(if (any(ph == "descent")) "D" else "",
+                 if (any(ph == "bottom"))  "B" else "",
+                 if (any(ph == "ascent"))  "A" else "")
+  if (nzchar(code)) code else "X"
+}
+
+#' Reduce one deployment's per-dive limb diagnoses to the counts the warning and the report need.
+#' @keywords internal
+#' @noRd
+.divePhaseTally <- function(lim) {
+  if (!length(lim)) return(list(n = 0L, n_judged = 0L, no_descent = 0L, no_ascent = 0L,
+                                structures = character(0)))
+  # A dive is judged only when the rule was in a position to answer: not cut short by the record, and
+  # carrying some vertical variation to find limbs in. NA from `.divePhases()` means "no answer", which
+  # is not the same as "no limb" and must not be counted as one.
+  skip <- vapply(lim, function(z) isTRUE(z$truncated) ||
+                   is.na(z$descent_established) || is.na(z$ascent_established), logical(1))
+  jd <- lim[!skip]
+  list(n = length(lim), n_judged = length(jd),
+       no_descent = sum(vapply(jd, function(z) !isTRUE(z$descent_established), logical(1))),
+       no_ascent  = sum(vapply(jd, function(z) !isTRUE(z$ascent_established),  logical(1))),
+       structures = vapply(lim, function(z) as.character(z$structure), character(1)))
+}
+
+#' Centred least-squares slope of `z` against `tnum`, over a window given in SECONDS.
+#'
+#' The vertical rate the phase rule needs is not `diff(z)/dt`. Depth arrives quantised, and a one-sample
+#' difference divides one quantum by one sampling interval: the apparent rate per quantum is `q/dt`, so
+#' the noise floor RISES with sampling rate. Measured consequence on a symmetric V-dive with identical
+#' true limb rates: ascent recovered perfectly at 1-50 Hz and not at all at 100-200 Hz, at fixed depth
+#' resolution. More samples per second made the estimator worse, which is the opposite of what a user
+#' expects and exactly wrong for the high-rate archival tags this package targets.
+#'
+#' A least-squares slope over a window of `window_s` SECONDS inverts that. For `N` samples spanning `W`
+#' seconds with per-sample noise `sigma`, the slope's standard error is `sigma * sqrt(12 / N) / W`, so
+#' the estimate improves with sampling rate and is governed by a physical span rather than a sample
+#' count. That is what makes the phase rule behave the same way on a 1 Hz PSAT and a 200 Hz archival tag.
+#'
+#' O(n) via cumulative sums rather than O(n*k), because this runs over every in-dive sample of a 20 Hz
+#' record. Both axes are centred first: the sums are differences of large cumulative quantities, and
+#' POSIX seconds squared exhaust the useful precision of a double long before the fit itself does.
+#' @param dt Median sampling interval, if already known; recomputed when `NULL`.
+#' @return Numeric of `length(z)`, in metres per second, NA where the window holds fewer than three
+#'   finite samples.
+#' @keywords internal
+#' @noRd
+.diveSlope <- function(z, tnum, window_s, dt = NULL) {
+  n <- length(z)
+  if (n < 2L) return(rep(NA_real_, n))
+  if (is.null(dt) || !is.finite(dt) || dt <= 0) {
+    dt <- suppressWarnings(stats::median(diff(tnum), na.rm = TRUE))
+    if (!is.finite(dt) || dt <= 0) dt <- 1
+  }
+  ok <- is.finite(z) & is.finite(tnum)
+  if (sum(ok) < 3L) return(rep(NA_real_, n))
+  k <- max(1L, floor((window_s / 2) / dt))
+  t0 <- tnum - stats::median(tnum[ok]); t0[!ok] <- 0
+  z0 <- z    - stats::median(z[ok]);    z0[!ok] <- 0
+  w  <- as.numeric(ok)
+  cs <- function(v) c(0, cumsum(v))
+  Sw <- cs(w); St <- cs(t0); Stt <- cs(t0 * t0); Sz <- cs(z0); Stz <- cs(t0 * z0)
+  i <- seq_len(n); lo <- pmax(1L, i - k); hi <- pmin(n, i + k)
+  g <- function(S) S[hi + 1L] - S[lo]
+  N <- g(Sw); T1 <- g(St); T2 <- g(Stt); Z1 <- g(Sz); TZ <- g(Stz)
+  den <- T2 - T1 * T1 / N
+  out <- (TZ - T1 * Z1 / N) / den
+  out[!is.finite(out) | N < 3 | !is.finite(den) | den <= 0] <- NA_real_
+  out
+}
+
+#' Index of the first position where `ok` holds continuously for at least `hold_s` seconds.
+#'
+#' The span is measured from the real timestamps, never from a sample count. A run length in samples is
+#' a statement about the recorder; a run length in seconds is a statement about the animal, and only the
+#' second is comparable between a 1 Hz and a 20 Hz deployment of the same rule.
+#' @keywords internal
+#' @noRd
+.diveFirstHold <- function(ok, tv, hold_s) {
+  if (!length(ok) || !any(ok)) return(NA_integer_)
+  r <- rle(ok); e <- cumsum(r$lengths); st <- e - r$lengths + 1L
+  for (j in which(r$values)) {
+    span <- tv[e[j]] - tv[st[j]]
+    if (is.finite(span) && span >= hold_s) return(st[j])
+  }
+  NA_integer_
+}
+
+#' Where the OPENING limb of one dive ends: the descent, or - fed a time-reversed dive - the ascent.
+#'
+#' One routine serves both limbs. The ascent of a dive is the descent of the same dive played backwards,
+#' so reversing the series and negating the slope turns one problem into the other, and symmetry stops
+#' being something to remember and starts being something the code cannot get wrong. The previous rule
+#' had a fallback on the descent branch and none on the ascent, which is why ascent could be empty in
+#' every dive of every deployment while descent looked fine.
+#'
+#' `established` and `resolved` are kept apart because they mean different things:
+#' \itemize{
+#'   \item not `established` - the slope never once exceeded the criterion in the descending direction.
+#'     The limb was never seen, and nothing is labelled. This is detection FAILING, and it is counted.
+#'   \item `established` but not `resolved` - the animal descended and never sustainably stopped. The
+#'     limb runs to the apex and the bottom is empty. This is a V-dive, and it is the CORRECT answer,
+#'     not a fallback.
+#' }
+#' Collapsing the two - as a bare fallback does - makes a broken detector indistinguishable from a
+#' pointed dive profile.
+#' @keywords internal
+#' @noRd
+.diveLimbEnd <- function(s, tnum, i_peak, crit, hold_s) {
+  # The apex IS the first sample: whatever transit reached this depth happened before the dive's own
+  # boundary, so there is nothing here to resolve. NA, not FALSE - this says where the boundary fell,
+  # not whether the rule works.
+  if (!is.finite(i_peak) || i_peak < 2L)
+    return(list(end = 0L, established = NA, resolved = FALSE))
+  idx <- seq_len(i_peak)
+  began <- which(is.finite(s[idx]) & s[idx] > crit)
+  if (!length(began)) return(list(end = 0L, established = FALSE, resolved = FALSE))
+  tail_idx <- idx[idx > min(began)]
+  if (!length(tail_idx)) return(list(end = i_peak, established = TRUE, resolved = FALSE))
+  ok <- is.finite(s[tail_idx]) & s[tail_idx] <= crit
+  st <- .diveFirstHold(ok, tnum[tail_idx], hold_s)
+  # No hold long enough: the animal descended to the apex without pausing. The limb runs to the apex.
+  if (is.na(st)) return(list(end = i_peak, established = TRUE, resolved = FALSE))
+  list(end = tail_idx[st] - 1L, established = TRUE, resolved = TRUE)
 }
 
 #' Split one dive into descent / bottom / ascent.
 #'
-#' The rate rule normalises by the dive's own `rate.quantile` quantile of |vertical rate|, NOT its
-#' maximum: the maximum of a smoothed series is an artefact of the smoothing window, and its magnitude
-#' depends on dive duration, so a max-normalised criterion is not comparable between a short dive and a
-#' long one within the same animal.
+#' @section The two rules:
+#' `"vertical.rate"` estimates a behavioural state: is the animal still transiting? `"prop.depth"`
+#' partitions the geometry: is this sample near the deepest point? Only the first can return an EMPTY
+#' bottom phase, and a V-shaped dive has no bottom phase. `"prop.depth"` labels exactly
+#' `1 - bottom.prop` of every dive as bottom whatever its shape - 20% at the default, on a profile with
+#' no bottom at all - because the samples nearest the single deepest point always satisfy the criterion.
+#'
+#' @section What the rate rule measures, and against what:
+#' Three properties, each fixing a measured failure of the sample-count rule that preceded it:
+#' \itemize{
+#'   \item The rate is a least-squares slope over `phase.window` SECONDS (`.diveSlope()`), not a
+#'     one-sample difference. A one-sample difference of a quantised depth channel has a noise floor of
+#'     one quantum per sampling interval, which grows with sampling rate.
+#'   \item The criterion is PER LIMB. `crit` is a fraction of that limb's own `rate.quantile` quantile,
+#'     taken over the descending side for the descent and the ascending side for the ascent. Pooling the
+#'     two - the previous behaviour - lets the faster limb set the bar for the slower one: on a
+#'     fast-descent/slow-ascent dive the pooled criterion landed at 1.4x the true ascent rate at every
+#'     sampling rate tested and with no quantisation at all, so ascent was never labelled. That is a
+#'     threshold-design failure, and no amount of smoothing touches it.
+#'   \item A boundary must hold for `min.phase.duration` SECONDS. The old rule required 5% of the dive's
+#'     SAMPLE COUNT, so the bar was set by the length of the enclosing dive rather than by the
+#'     transition: on a 596 s dive at 20 Hz it demanded a 596-sample run where the longest real one was
+#'     six, and recall fell off a cliff - exactly 0 below 5% of the dive, exactly 1 above 6%.
+#' }
+#' A floor of three times the slope's own standard error keeps `crit` above the noise when a limb's
+#' quantile is degenerate, so the rule never chases the instrument.
+#'
+#' @param z Excursion residual, already signed so that positive is AWAY from the reference.
+#' @param settings Resolved detection settings, for `phase.window`, `min.phase.duration` and the noise.
+#' @param noise Per-deployment depth noise, in metres; falls back to the cohort value.
+#' @return A list with `phase` (character) and the per-dive diagnosis of each limb.
 #' @keywords internal
 #' @noRd
-.divePhases <- function(z, tnum, control) {
+.divePhases <- function(z, tnum, control, settings = NULL, noise = NA_real_, dt = NULL) {
   m <- length(z)
-  if (m < 3L) return(rep("bottom", m))
+  out <- function(ph, descent = NA, ascent = NA)
+    list(phase = ph, descent_established = descent, ascent_established = ascent)
+  if (m < 3L) return(out(rep("bottom", m)))
+  # No vertical variation inside the dive at all - a square pulse whose transitions fell between the
+  # boundary samples. There are no limbs to find, and reporting "no descent was resolved" would describe
+  # where the boundaries fell rather than anything about the phase rule. NA, so the tally abstains.
+  # Ahead of the method dispatch, because it is true of either rule.
+  rng <- suppressWarnings(diff(range(z, na.rm = TRUE)))
+  if (!is.finite(rng) || rng <= 0) return(out(rep("bottom", m)))
+
   if (identical(control$phase.method, "prop.depth")) {
-    peak <- max(z, na.rm = TRUE)
-    if (!is.finite(peak) || peak <= 0) return(rep("bottom", m))
+    peak <- suppressWarnings(max(z, na.rm = TRUE))
+    if (!is.finite(peak) || peak <= 0) return(out(rep("bottom", m)))
     deep <- which(z >= control$bottom.prop * peak)
-    if (!length(deep)) return(rep("bottom", m))
+    if (!length(deep)) return(out(rep("bottom", m)))
     ph <- rep("bottom", m)
     if (min(deep) > 1L) ph[seq_len(min(deep) - 1L)] <- "descent"
     if (max(deep) < m)  ph[(max(deep) + 1L):m] <- "ascent"
-    return(ph)
+    return(out(ph, descent = min(deep) > 1L, ascent = max(deep) < m))
   }
-  dt <- diff(tnum); dt[!is.finite(dt) | dt <= 0] <- NA_real_
-  rate <- c(NA_real_, diff(z) / dt)
-  aq <- suppressWarnings(stats::quantile(abs(rate), control$rate.quantile, na.rm = TRUE, names = FALSE))
-  if (!is.finite(aq) || aq <= 0) return(rep("bottom", m))
-  crit <- control$rate.crit * aq
+
+  if (is.null(dt) || !is.finite(dt) || dt <= 0) {
+    dt <- suppressWarnings(stats::median(diff(tnum), na.rm = TRUE))
+    if (!is.finite(dt) || dt <= 0) dt <- 1
+  }
+  dur <- suppressWarnings(diff(range(tnum, na.rm = TRUE)))
+  if (!is.finite(dur) || dur <= 0) return(out(rep("bottom", m)))
+
+  # Both scales are capped by the dive's own duration, because neither question can be asked of a span
+  # longer than the dive: a window wider than the profile measures the profile, and a hold longer than a
+  # quarter of the dive can never be met. The cap binds only on short dives; it is not the primary scale.
+  w_win  <- max(min(settings$phase.window %||% max(5, 3 * dt), dur / 8), 3 * dt)
+  w_hold <- max(min(settings$min.phase.duration %||% (2 * w_win), dur / 4), 2 * dt)
+
   i_peak <- which.max(z)
+  pre  <- seq_len(i_peak)
+  post <- if (i_peak < m) (i_peak + 1L):m else integer(0)
+
+  # Standard error of a least-squares slope over W seconds at interval dt: sigma * sqrt(12/N) / W with
+  # N = W/dt, i.e. proportional to W^-1.5. Analytic, so the window that would deliver a wanted precision
+  # can be solved for rather than searched.
+  sd_of <- function(W) if (is.finite(noise) && noise > 0) noise * sqrt(12 * dt) / W^1.5 else 0
+
+  # The rate scale each limb is judged against is a quantile of that limb's rate WHILE MOVING - the
+  # slopes that clear the channel's own noise - not a quantile of the whole side. A dive that spends
+  # nine tenths of its time on the bottom puts nine tenths of the side's samples at zero, and a plain
+  # quantile then returns the bottom's noise rather than the animal's transit rate: measured on a
+  # benthic profile, the ascent criterion collapsed to one standard error, no hold could ever be met,
+  # and the ascent label spread backwards across the entire bottom (precision 0.05).
+  qmov <- function(v, floor_) {
+    v <- v[is.finite(v) & v > floor_]
+    if (!length(v)) return(NA_real_)
+    suppressWarnings(stats::quantile(v, control$rate.quantile, na.rm = TRUE, names = FALSE))
+  }
+  limb_rates <- function(sv, floor_) c(qmov(sv[pre], floor_), qmov(-sv[post], floor_))
+
+  s <- .diveSlope(z, tnum, w_win, dt = dt)
+  if (!any(is.finite(s))) return(out(rep("bottom", m)))
+
+  # WIDEN THE WINDOW RATHER THAN RAISE THE BAR. When the depth channel is coarse or slow relative to the
+  # animal, the slope's own noise can rival the rate being tested - measured on a 100 m dive logged at
+  # 1 m resolution, where the noise floor reached 80% of the true descent rate. Raising `crit` to clear
+  # that noise is the wrong response: it discards the limbs it was meant to protect, which is how a
+  # 12 m dive lost a quarter of both transits. Widening is the right one, because the slope's error
+  # falls as W^-1.5 while the boundary blurs only as W. The target is a criterion three times its own
+  # standard error; the slower limb sets it, since it is the one at risk; and the dive's own duration
+  # caps it. Fixed point in one step - W* is solved for, not iterated.
+  q0 <- limb_rates(s, max(sd_of(w_win), 1e-6))
+  q0 <- q0[is.finite(q0) & q0 > 0]
+  if (length(q0) && is.finite(noise) && noise > 0) {
+    want <- control$rate.crit * min(q0) / 3
+    if (want > 0 && sd_of(w_win) > want) {
+      w_new <- min(max(w_win, (noise * sqrt(12 * dt) / want)^(2 / 3)), dur / 8)
+      if (w_new > w_win * 1.01) {
+        w_win <- w_new
+        # A hold shorter than the window it is measured over is no evidence at all - a smoothed slope
+        # cannot vary independently within its own support - so widening lifts the hold with it. Never
+        # past the quarter-dive cap, which the window's own eighth-dive cap keeps it clear of.
+        w_hold <- min(max(w_hold, w_win), dur / 4)
+        s <- .diveSlope(z, tnum, w_win, dt = dt)
+      }
+    }
+  }
+
+  # The floor guards a degenerate limb only: after widening, `crit` is by construction well above the
+  # slope's noise wherever the limb was measurable at all.
+  crit_floor <- max(sd_of(w_win), 1e-6)
+  qq <- limb_rates(s, crit_floor)
+  crit_of <- function(q) if (is.finite(q) && q > 0) max(control$rate.crit * q, crit_floor) else crit_floor
+  crit_d <- crit_of(qq[1]); crit_a <- crit_of(qq[2])
+
+  d <- .diveLimbEnd(s, tnum, i_peak, crit_d, w_hold)
+  # the ascent is the descent of the same dive played backwards: reverse the series, negate the slope,
+  # and let one routine answer both. Reversed time is measured forward from the dive's own end.
+  a <- .diveLimbEnd(-rev(s), tnum[m] - rev(tnum), m + 1L - i_peak, crit_a, w_hold)
+
+  d_end   <- d$end
+  a_start <- if (isTRUE(a$established)) m + 1L - a$end else m + 1L
+  # A V-dive leaves both limbs unresolved and both reaching the apex, so they meet on the apex sample;
+  # one of them must yield. Descent keeps it, the bottom stays empty, and the profile is reported as the
+  # DA it is. This is the case that separates the rate rule from a proportion-of-depth rule.
+  if (a_start <= d_end) a_start <- d_end + 1L
+
   ph <- rep("bottom", m)
-  # A boundary must be SUSTAINED. Taking the first slow sample to end descent (or the last slow one to
-  # begin ascent) makes the boundary hostage to a single hesitation: rendered on real profiles, descent
-  # stopped at 25 m on a dive that continued to 145 m, and the entire ascent of a clean V-dive was
-  # labelled bottom. Require the criterion to hold over a run before committing.
-  run_len <- max(3L, ceiling(0.05 * m))
-  sustained <- function(ok) {
-    # index of the first position where `ok` holds for run_len consecutive samples, else NA
-    if (length(ok) < run_len) return(NA_integer_)
-    r <- rle(ok)
-    e <- cumsum(r$lengths); st <- e - r$lengths + 1L
-    w <- which(r$values & r$lengths >= run_len)
-    if (!length(w)) NA_integer_ else st[w[1]]
-  }
-  ok_rate <- is.finite(rate)
-  # descent: ends at the start of the first sustained NOT-descending run after descent has begun
-  before <- seq_len(max(1L, i_peak - 1L))
-  if (length(before) >= run_len) {
-    began <- which(ok_rate[before] & rate[before] > crit)
-    if (length(began)) {
-      tail_idx <- before[before > min(began)]
-      k <- sustained(ok_rate[tail_idx] & rate[tail_idx] <= crit)
-      d_end <- if (is.na(k)) i_peak - 1L else tail_idx[k] - 1L
-      if (d_end >= 1L) ph[seq_len(d_end)] <- "descent"
-    }
-  }
-  # ascent: begins at the start of the LAST sustained ascending run
-  after <- if (i_peak < m) (i_peak + 1L):m else integer(0)
-  if (length(after) >= run_len) {
-    ok_asc <- ok_rate[after] & rate[after] < -crit
-    r <- rle(ok_asc); e <- cumsum(r$lengths); st <- e - r$lengths + 1L
-    w <- which(r$values & r$lengths >= run_len)
-    if (length(w)) {
-      a_start <- after[st[w[1]]]
-      if (a_start <= m) ph[a_start:m] <- "ascent"
-    }
-  }
-  ph
+  if (d_end >= 1L) ph[seq_len(d_end)] <- "descent"
+  if (a_start <= m) ph[a_start:m] <- "ascent"
+  out(ph, descent = d$established, ascent = a$established)
 }
 
 
@@ -734,6 +1009,14 @@
   }
   dark <- .diveCensorMap(tnum, d, max_gap)
 
+  # The window the phase rule cut these dives on, so the rates reported per phase are measured the same
+  # way the phases were. Falls back to the same derivation detectDives uses when the provenance is
+  # absent - a hand-annotated `dive_id` is a supported input here.
+  dt_med <- suppressWarnings(stats::median(diff(tnum), na.rm = TRUE))
+  if (!is.finite(dt_med) || dt_med <= 0) dt_med <- 1
+  phase_win0 <- suppressWarnings(as.numeric(p$phase_window_s %||% NA))
+  if (!is.finite(phase_win0) || phase_win0 <= 0) phase_win0 <- max(5, 3 * dt_med)
+
   ids <- sort(unique(did[did > 0]))
   pos <- which(did > 0)                       # one pass, rather than a which() per dive per question
   i0v <- as.integer(tapply(pos, did[pos], min))[order(sort(unique(did[pos])))]
@@ -759,8 +1042,15 @@
     if (!nzchar(structure_code)) structure_code <- "X"
     shape_ok <- sum(present) >= 2L
 
-    # vertical rates within each phase, from the depth series itself
-    rate <- c(NA_real_, diff(dd) / diff(tt))
+    # Vertical rates within each phase, from the depth series itself - but over the SAME window the
+    # phase rule used, not a one-sample difference. A one-sample difference of a quantised channel
+    # returns one quantum per sampling interval, so `descent_rate_q90` was reporting the pressure
+    # transducer rather than the animal: on a 20 Hz record its 90th percentile came out at 1.60 m/s
+    # against a true ascent of 0.21 m/s. `descent_rate_mean` was unaffected (the noise is zero-mean)
+    # and is unchanged by the switch.
+    phase_win <- max(min(phase_win0, if (is.finite(dur) && dur > 0) dur / 8 else phase_win0),
+                     3 * dt_med)
+    rate <- .diveSlope(dd, tt, phase_win, dt = dt_med)
     rq <- function(q, f) { w <- which(pp == q & is.finite(rate)); if (!length(w)) NA_real_ else f(rate[w]) }
     q90 <- function(z) suppressWarnings(stats::quantile(abs(z), 0.90, na.rm = TRUE, names = FALSE))
 

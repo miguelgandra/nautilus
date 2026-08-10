@@ -120,6 +120,23 @@ function prints which one it used. \code{\link[=diveMetrics]{diveMetrics()}} rep
 \code{depth_attenuation}. To reach shorter dives, re-process at a finer \code{downsample.to}.
 }
 
+\subsection{A dive with no bottom phase is a result, not a gap}{
+
+\code{dive_phase} splits each dive into \code{descent}, \code{bottom} and \code{ascent}, and any of the three may be
+empty. On a V-shaped profile the animal turns at the apex and starts back up, and an empty bottom is
+the correct description of that - so the reported structure is \code{DA}, and \code{\link[=diveMetrics]{diveMetrics()}} gives that
+dive \code{bottom_duration_s = 0} with \code{bottom_depth_mean_m = NA}. Two thirds of the dives in a
+52-deployment whale-shark cohort come out this way. The alternative rule,
+\code{diveControl(phase.method = "prop.depth")}, defines the bottom geometrically and therefore reports
+one on every dive whatever its shape; see \code{\link[=diveControl]{diveControl()}} for when that is what you want.
+
+The realised structure is tallied in the summary, so what the rule actually produced is visible
+without going looking for it. A \strong{missing descent or ascent} is a different matter: every excursion
+the detector found must have gone away from the reference and come back, so a limb missing from more
+than half of a deployment's dives is warned about. Dives the record cut short are left out of that
+count, since a deployment that started or stopped mid-dive legitimately lacks a limb.
+}
+
 \subsection{Zero dives is a result, not a failure}{
 
 It is reported together with the threshold that produced it, the observed depth range and the

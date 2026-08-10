@@ -84,6 +84,22 @@
 #' function prints which one it used. [diveMetrics()] reports the surviving bound for each dive as
 #' `depth_attenuation`. To reach shorter dives, re-process at a finer `downsample.to`.
 #'
+#' ## A dive with no bottom phase is a result, not a gap
+#'
+#' `dive_phase` splits each dive into `descent`, `bottom` and `ascent`, and any of the three may be
+#' empty. On a V-shaped profile the animal turns at the apex and starts back up, and an empty bottom is
+#' the correct description of that - so the reported structure is `DA`, and [diveMetrics()] gives that
+#' dive `bottom_duration_s = 0` with `bottom_depth_mean_m = NA`. Two thirds of the dives in a
+#' 52-deployment whale-shark cohort come out this way. The alternative rule,
+#' `diveControl(phase.method = "prop.depth")`, defines the bottom geometrically and therefore reports
+#' one on every dive whatever its shape; see [diveControl()] for when that is what you want.
+#'
+#' The realised structure is tallied in the summary, so what the rule actually produced is visible
+#' without going looking for it. A **missing descent or ascent** is a different matter: every excursion
+#' the detector found must have gone away from the reference and come back, so a limb missing from more
+#' than half of a deployment's dives is warned about. Dives the record cut short are left out of that
+#' count, since a deployment that started or stopped mid-dive legitimately lacks a limb.
+#'
 #' ## Zero dives is a result, not a failure
 #'
 #' It is reported together with the threshold that produced it, the observed depth range and the
@@ -175,6 +191,7 @@ detectDives <- function(data,
   n_done <- 0L; tot_dives <- 0L; statuses <- character(0)
   refs <- rep(NA_character_, src$n)                     # resolved reference, for the cohort split
   risks <- vector("list", src$n)                        # baseline-estimator risks, grouped at the end
+  phase_tally <- vector("list", src$n)                  # realised phase structure, grouped at the end
   collect_diag <- isTRUE(plot) || !is.null(plot.file)      # opt-in: nothing gathered unless asked
   diag_bundles <- vector("list", src$n)
 
@@ -188,6 +205,7 @@ detectDives <- function(data,
     statuses <- c(statuses, res$status)
     refs[i] <- res$reference
     if (!is.null(res$risk)) risks[[i]] <- c(res$risk, list(id = id))
+    if (!is.null(res$phases) && res$phases$n > 0L) phase_tally[[i]] <- c(res$phases, list(id = id))
     if (lvl >= 2L) .reportDiveDeployment(lvl, res, settings, auto = identical(settings$reference, "per-deployment"))
     tot_dives <- tot_dives + res$n_dives
 
@@ -208,6 +226,10 @@ detectDives <- function(data,
                               wiggle_amplitude_m = settings$wiggle.amplitude,
                               threshold_source = settings$threshold_source,
                               phase_method = control$phase.method,
+                              phase_window_s = if (identical(control$phase.method, "vertical.rate"))
+                                                 settings$phase.window else NA_real_,
+                              min_phase_duration_s = if (identical(control$phase.method, "vertical.rate"))
+                                                 settings$min.phase.duration else NA_real_,
                               baseline_stat = control$baseline.stat,
                               n_dives = res$n_dives, status = res$status)
     x <- .restoreMeta(x, meta)
@@ -232,10 +254,12 @@ detectDives <- function(data,
   # Grouped by kind, not by deployment: one warning per deployment buries a large cohort, and R keeps
   # only the first 50 warnings, so on a 51-deployment run the tail is dropped without trace.
   .warnDiveBaseline(Filter(Negate(is.null), risks), control, src$n)
+  .warnDivePhases(Filter(Negate(is.null), phase_tally), control)
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .reportDiveCohort(lvl, n_done, src$n, refs, tot_dives, statuses, output.dir)
+    .reportDiveCohort(lvl, n_done, src$n, refs, tot_dives, statuses, output.dir,
+                      Filter(Negate(is.null), phase_tally))
     .log_runtime(lvl, start.time)
   }
 
@@ -286,6 +310,18 @@ detectDives <- function(data,
     `Min. duration`   = dur,
     `Max. gap`        = sprintf("%.0f s %s", settings$max.gap, src(settings$gap_source)))
 
+  # The phase rule's own scales, and only the ones the chosen rule actually uses. Both are seconds, so
+  # what the rule demands of the animal reads the same at 1 Hz and at 200 Hz.
+  rows <- c(rows, `Phase rule` = as.character(control$phase.method))
+  if (identical(control$phase.method, "vertical.rate"))
+    rows <- c(rows,
+              `Rate window`  = sprintf("%.3g s %s", settings$phase.window,
+                                       src(settings$phase_window_source)),
+              `Min. phase`   = sprintf("%.3g s %s", settings$min.phase.duration,
+                                       src(settings$phase_duration_source)))
+  else
+    rows <- c(rows, `Bottom span` = sprintf("deeper than %.0f%% of amplitude", 100 * control$bottom.prop))
+
   # only meaningful where "auto" has a decision to make
   if (identical(control$reference, "auto"))
     rows <- c(rows, `Surface criterion` = sprintf("%.2f%% occupancy", 100 * control$min.surface.occupancy))
@@ -320,7 +356,8 @@ detectDives <- function(data,
 #' The SUMMARY block: what happened, in sections. Settings are reported by the header, not repeated here.
 #' @keywords internal
 #' @noRd
-.reportDiveCohort <- function(lvl, n_done, n_total, refs, tot_dives, statuses, output.dir) {
+.reportDiveCohort <- function(lvl, n_done, n_total, refs, tot_dives, statuses, output.dir,
+                              phase_tally = list()) {
   if (lvl < 1L) return(invisible(NULL))
   tick <- cli::col_green(cli::symbol$tick)
 
@@ -345,11 +382,74 @@ detectDives <- function(data,
   .log_section(lvl, "Results")
   .log_rows(lvl, res)
 
+  # What the phase rule actually produced, as a tally of D/B/A shorthand. A rule that is not working on
+  # a record produces a well-formed table with a whole phase missing and says nothing; printing the
+  # realised structure is what makes that visible without having to go looking for it.
+  st <- unlist(lapply(phase_tally, function(z) z$structures), use.names = FALSE)
+  if (length(st)) {
+    tb <- sort(table(st), decreasing = TRUE)
+    .log_section(lvl, "Phase structure")
+    .log_rows(lvl, stats::setNames(sprintf("%s dive%s (%.0f%%)", format(as.integer(tb), big.mark = ","),
+                                           ifelse(as.integer(tb) == 1, "", "s"),
+                                           100 * as.integer(tb) / length(st)),
+                                   .divePhaseLabel(names(tb))))
+  }
+
   if (!is.null(output.dir)) {
     .log_section(lvl, "Output")
     .log_rows(lvl, c(Directory = output.dir))
   }
   cli::cli_text("")
+  invisible(NULL)
+}
+
+
+#' Spell the D/B/A shorthand out, so the tally reads as dive shapes rather than as codes.
+#' @keywords internal
+#' @noRd
+.divePhaseLabel <- function(code) {
+  lab <- c(DBA = "descent + bottom + ascent", DA = "descent + ascent (no bottom)",
+           DB = "descent + bottom (no ascent)", BA = "bottom + ascent (no descent)",
+           D = "descent only", A = "ascent only", B = "bottom only", X = "unclassified")
+  out <- unname(lab[code])
+  ifelse(is.na(out), code, out)
+}
+
+
+#' Say so when a whole phase is missing from most dives.
+#'
+#' This is the check that would have caught the failure it exists because of. A phase rule that cannot
+#' see a limb does not error and does not produce a malformed table: it produces a perfectly well-formed
+#' one in which `ascent` never appears, and every downstream summary then silently describes half a
+#' dive. Across five deployments the ascent fraction was exactly 0.0000 and nothing said a word.
+#'
+#' An empty BOTTOM is deliberately not warned about - a V-shaped dive has no bottom phase, and saying so
+#' is the whole reason `"vertical.rate"` is the default. Dives the record cut short are excluded from
+#' the count: a dive truncated by the start or end of the deployment legitimately lacks a limb.
+#' @param tally Per-deployment phase tallies from `.divePhaseTally()`, each carrying `id`.
+#' @param control The user's `diveControl()` object.
+#' @keywords internal
+#' @noRd
+.warnDivePhases <- function(tally, control, frac = 0.5) {
+  if (!length(tally)) return(invisible(NULL))
+  cap <- function(txt) if (length(txt) > 10L)
+    c(utils::head(txt, 10L), sprintf("(+%d more)", length(txt) - 10L)) else txt
+
+  hit <- function(field) Filter(function(z) z$n_judged > 0L && z[[field]] / z$n_judged > frac, tally)
+  say <- function(bad, limb, other) {
+    if (!length(bad)) return(invisible(NULL))
+    who <- cap(vapply(bad, function(z)
+      sprintf("%s (%d/%d dives)", z$id, z[[paste0("no_", limb)]], z$n_judged), ""))
+    tip <- if (identical(control$phase.method, "vertical.rate"))
+      c("i" = "Widen {.code diveControl(phase.window = )} if the depth channel is noisy, or lower {.code rate.crit}. {.code diveControl(phase.method = \"prop.depth\")} splits on depth alone and always returns all three phases - at the cost of reporting a bottom phase on dives that have none.")
+    else
+      c("i" = "With {.code phase.method = \"prop.depth\"} this means the dives reach their deepest point at one end, which is what a record cut short looks like.")
+    cli::cli_warn(c(
+      "No {limb} phase was resolved in more than half the dives of {length(bad)} deployment{?s}, so {.field {other}} statistics there describe part of a dive.",
+      "!" = "{who}", tip))
+  }
+  say(hit("no_descent"), "descent", "descent_duration_s")
+  say(hit("no_ascent"),  "ascent",  "ascent_duration_s")
   invisible(NULL)
 }
 

@@ -175,6 +175,17 @@ how long the dive lasted, so maxima are not comparable between a short dive and 
 within one animal.
 }
 
+\subsection{Over what span a rate is measured}{
+
+\verb{descent_rate_*} and \verb{ascent_rate_*} are least-squares slopes of depth against time over the same
+window the phase rule used - \code{diveControl(phase.window = )}, recorded per deployment and read back
+from the provenance, or re-derived from the sampling interval for a table annotated by hand. Not a
+one-sample difference: dividing one depth quantum by one sampling interval returns the pressure
+transducer rather than the animal, and on a 20 Hz record it put \code{descent_rate_q90} at 1.60 m/s where
+the animal's own rate was nearer 0.2. The signed means were never affected, because that noise is
+zero-mean; the quantiles were entirely instrument.
+}
+
 \subsection{The thresholds travel with every row}{
 
 \code{reference}, \code{direction}, \code{depth_threshold_m} and \code{surface_band_m} are columns rather than metadata,

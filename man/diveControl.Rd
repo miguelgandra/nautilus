@@ -16,6 +16,8 @@ diveControl(
   baseline.stat = c("median", "quantile"),
   baseline.quantile = NULL,
   phase.method = c("vertical.rate", "prop.depth"),
+  phase.window = NULL,
+  min.phase.duration = NULL,
   rate.crit = 0.25,
   rate.quantile = 0.9,
   bottom.prop = 0.8,
@@ -83,13 +85,28 @@ These have complementary failure modes, described in the Details.}
 0.90 or 0.50 according to \code{direction}.}
 
 \item{phase.method}{How descent, bottom and ascent are separated: \code{"vertical.rate"} (default), which
-ends a phase when the animal stops descending or ascending briskly, or \code{"prop.depth"}, which
-defines the bottom geometrically as everything below a proportion of the dive's amplitude.}
+ends a phase when the animal stops transiting, or \code{"prop.depth"}, which defines the bottom
+geometrically as everything below a proportion of the dive's amplitude. They answer different
+questions and only the first can report a dive with no bottom phase at all - see the Details.}
 
-\item{rate.crit, rate.quantile}{The vertical-rate phase rule: a phase ends when the rate falls below
-\code{rate.crit} times the dive's \code{rate.quantile} quantile of vertical rate. Defaults \code{0.25} and \code{0.90}.
-A quantile rather than the maximum, because the maximum of a smoothed series is an artefact of the
-smoothing window.}
+\item{phase.window}{The span, in seconds, over which the vertical rate is measured for
+\code{phase.method = "vertical.rate"}. The rate is a least-squares slope of depth against time over this
+window, never a one-sample difference. \code{NULL} (default) derives the larger of 5 s and three sampling
+intervals. Widen it on a noisy or coarsely quantised depth channel; narrow it to resolve sharper
+transitions. It is capped per dive at an eighth of that dive's duration, because a window wider than
+the profile measures the profile.}
+
+\item{min.phase.duration}{How long, in seconds, the animal must have stopped transiting before a
+phase is treated as over - and therefore the shortest bottom phase that can be reported. \code{NULL}
+(default) derives twice \code{phase.window}, the shortest span over which two windowed rate estimates are
+independent. Raise it to ignore brief pauses within a descent; lower it to resolve short bottoms.
+Capped per dive at a quarter of that dive's duration, since a longer hold could never be met.}
+
+\item{rate.crit, rate.quantile}{The vertical-rate criterion: a limb ends when its rate falls below
+\code{rate.crit} times the \code{rate.quantile} quantile of \emph{that limb's own} rate. Defaults \code{0.25} and
+\code{0.90}. Per limb, not per dive: a dive's descent and ascent routinely differ several-fold in speed,
+and a criterion pooled over both lets the faster one set the bar for the slower one. A quantile
+rather than the maximum, because the maximum of a smoothed series is an artefact of the window.}
 
 \item{bottom.prop}{For \code{phase.method = "prop.depth"}: the bottom phase is the span deeper than this
 proportion of the dive's amplitude. Default \code{0.80}.}
@@ -158,6 +175,30 @@ migrates into the excursions once they occupy more than about half the record. A
 immune to that duty cycle, but on a trending baseline it tracks the trailing edge of its window
 rather than the local level. \code{\link[=detectDives]{detectDives()}} measures both conditions and warns when the estimator
 you chose is in its failing regime.
+}
+
+\subsection{Choosing \code{phase.method}}{
+
+The two rules are not two settings of the same idea. \code{"vertical.rate"} \strong{estimates a behavioural
+state} - is the animal still transiting? - and can therefore answer "there was no bottom phase".
+\code{"prop.depth"} \strong{partitions the geometry} - is this sample near the deepest point? - and cannot.
+
+That difference is definitional, not a matter of tuning. \code{"prop.depth"} labels exactly
+\code{1 - bottom.prop} of \emph{every} dive as bottom, whatever its shape: 20\% at the default, on a V-shaped
+profile with no bottom at all, because the samples nearest the single deepest point always satisfy
+the criterion. Lowering \code{bottom.prop} shrinks that share but never removes it, and it always costs
+the terminal part of each transit, capping descent and ascent recall near 80\% by construction.
+
+\code{"vertical.rate"} is the default because the profiles this package is usually pointed at - sharks,
+rays, fish that never surface - are frequently V-shaped or oscillatory rather than square, and
+reporting bottom-phase statistics for a state the animal never entered is a quieter error than
+reporting none. \code{"prop.depth"} is worth choosing when the depth channel is too coarse or too slow for
+a derivative to mean anything, or when you want the same geometric definition another package used;
+it is the convention in \code{tagtools::dive_stats()}, with \code{prop = 0.85}.
+
+Whichever rule is in force, \code{\link[=detectDives]{detectDives()}} reports the realised phase structure per deployment and
+warns when a limb is missing from most dives, which is the signature of a rate criterion that is not
+working on that record rather than of an unusual dive shape.
 }
 }
 \examples{

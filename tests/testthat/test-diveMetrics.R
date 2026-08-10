@@ -568,3 +568,58 @@ test_that("no dives anywhere returns a 0-row table with the FULL schema and the 
   expect_type(e$censoring, "character"); expect_type(e$n_gaps, "integer")
   expect_s3_class(e$start, "POSIXct"); expect_s3_class(e$max_depth_time, "POSIXct")
 })
+
+
+# ---------------------------------------------------------------------------
+# phase structure and the rates measured within it
+# ---------------------------------------------------------------------------
+
+test_that("a V-dive is reported as DA, with a zero-length bottom rather than an invented one", {
+  # 65% of the dives in a 52-deployment whale-shark cohort come out DA. Under a proportion-of-depth
+  # rule every one of them would carry bottom_depth_mean_m and a bottom_duration_s for a bottom the
+  # animal never had.
+  vee <- c(rep(0, 40), seq(0, 40, length.out = 90), seq(40, 0, length.out = 90), rep(0, 40))
+  m <- .dmMetrics(.dmDetect(.dmTag("V", vee))[[1]])
+  expect_equal(nrow(m), 1L)
+  expect_identical(m$phase_structure, "DA")
+  expect_true(m$shape_supported)                         # two phases is a supported shape
+  expect_equal(m$bottom_duration_s, 0)
+  expect_true(is.na(m$bottom_depth_mean_m))              # nothing measured where nothing happened
+  expect_gt(m$descent_duration_s, 60); expect_gt(m$ascent_duration_s, 60)
+
+  # the same profile under the geometric rule DOES get a bottom, which is the documented difference
+  mp <- .dmMetrics(.dmDetect(.dmTag("V", vee), .dmCtl(phase.method = "prop.depth"))[[1]])
+  expect_identical(mp$phase_structure, "DBA")
+  expect_gt(mp$bottom_duration_s, 20)
+})
+
+test_that("phase rates are measured over the phase rule's window, not one sample at a time", {
+  # A one-sample difference of a quantised depth channel returns one quantum per sampling interval, so
+  # `descent_rate_q90` reported the pressure transducer rather than the animal: 1.60 m/s on a 20 Hz
+  # record whose true rates were nearer 0.2. The signed means were always fine (the noise is
+  # zero-mean); it is the quantile that was pure instrument.
+  hz <- 20; rate <- 0.25; peak <- 40                            # m/s, both limbs; 160 s per leg
+  n_leg <- round(peak / rate * hz)
+  z <- c(rep(0, 20 * hz), seq(0, peak, length.out = n_leg), rep(peak, 60 * hz),
+         seq(peak, 0, length.out = n_leg), rep(0, 20 * hz))
+  z <- round(z / 0.05) * 0.05                                   # a 5 cm quantum -> 1.0 m/s per quantum
+  tg <- .dmTag("Q", z, tnum = (seq_along(z) - 1) / hz)
+  m <- .dmMetrics(.dmDetect(tg, .dmCtl(min.duration = 30))[[1]])
+
+  expect_equal(m$descent_rate_mean,  rate, tolerance = 0.15)
+  expect_equal(m$ascent_rate_mean,  -rate, tolerance = 0.15)
+  # the q90 now sits near the true rate rather than at the quantum-per-sample floor of 1.0 m/s
+  expect_lt(m$descent_rate_q90, 0.5)
+  expect_lt(m$ascent_rate_q90,  0.5)
+  expect_gt(m$descent_rate_q90, 0.15)
+})
+
+test_that("the rate window travels in the provenance and is honoured by diveMetrics", {
+  x <- .dmDetect(.dmTag("TRAP", .dmTrap), .dmCtl(phase.window = 9))[[1]]
+  p <- Filter(function(r) identical(r$step, "detectDives"), nautilus:::.getMeta(x)$processing)
+  expect_equal(p[[length(p)]]$phase_window_s, 9)
+  # a table built without any detectDives provenance still works: the window is re-derived, not assumed
+  y <- data.table::copy(x)
+  m2 <- nautilus:::.restoreMeta(y, nautilus:::.newNautilusMeta())
+  expect_s3_class(diveMetrics(m2, verbose = FALSE), "data.frame")
+})
