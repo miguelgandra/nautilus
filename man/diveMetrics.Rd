@@ -177,9 +177,12 @@ within one animal.
 
 \subsection{Over what span a rate is measured}{
 
-\verb{descent_rate_*} and \verb{ascent_rate_*} are least-squares slopes of depth against time over the same
-window the phase rule used - \code{diveControl(phase.window = )}, recorded per deployment and read back
-from the provenance, or re-derived from the sampling interval for a table annotated by hand. Not a
+\verb{descent_rate_*} and \verb{ascent_rate_*} are least-squares slopes of depth against time over the window
+the phase rule was configured with - \code{diveControl(phase.window = )}, recorded per deployment and read
+back from the provenance, or re-derived from the sampling interval for a table annotated by hand.
+Where the phase rule widened that window adaptively for a particular dive, on a coarse or slow depth
+channel, the boundaries were cut over a wider span than the rates are measured over; that costs the
+rate some precision and leaves it unbiased. Not a
 one-sample difference: dividing one depth quantum by one sampling interval returns the pressure
 transducer rather than the animal, and on a 20 Hz record it put \code{descent_rate_q90} at 1.60 m/s where
 the animal's own rate was nearer 0.2. The signed means were never affected, because that noise is

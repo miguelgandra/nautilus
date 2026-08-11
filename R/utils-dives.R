@@ -550,8 +550,17 @@
   # derivative: the noise of the stored series, and its quantum. A dither-free lattice has the first at
   # zero and the second at the transducer's step, and taking the maximum is what stops the rule
   # believing a staircase is a perfect measurement.
-  nz <- max(scan$noise %||% NA_real_, (scan$quantum %||% NA_real_) / sqrt(12), na.rm = TRUE)
-  if (!is.finite(nz)) nz <- settings$noise %||% NA_real_
+  nzc <- c(scan$noise %||% NA_real_, (scan$quantum %||% NA_real_) / sqrt(12))
+  nzc <- nzc[is.finite(nzc)]                             # max(na.rm=TRUE) of all-NA is -Inf AND warns
+  nz <- if (length(nzc)) max(nzc) else (settings$noise %||% NA_real_)
+
+  # THIS deployment's sampling interval, never the cohort's. The window is a span in SECONDS and has to
+  # be converted to samples on the record it is applied to: fed the cohort median, a 20 Hz deployment
+  # sharing a call with two 1 Hz ones was measured over a 20x wider span and returned a different phase
+  # structure than the same deployment analysed alone. The cohort median is right for DERIVING the
+  # settings, so dive counts stay comparable; it is wrong for interpreting them on one record.
+  dt_dep <- scan$dt %||% NA_real_
+  if (!is.finite(dt_dep) || dt_dep <= 0) dt_dep <- settings$dt
   # Per-dive limb diagnosis, kept so the caller can tell a V-dive (no bottom, correct) from a limb the
   # detector never saw (no ascent, a defect). Truncated dives are excluded from that judgement: a dive
   # the record cut short legitimately lacks a limb.
@@ -560,7 +569,7 @@
     idx <- runs$start_i[k]:runs$end_i[k]
     dive_id[idx] <- k
     pk <- .divePhases(resid[idx] * runs$sign[k], tnum[idx], control, settings, noise = nz,
-                      dt = settings$dt)
+                      dt = dt_dep)
     phase[idx] <- pk$phase
     lim[[k]] <- c(pk[c("descent_established", "ascent_established")],
                   list(truncated = isTRUE(runs$truncated_start[k]) || isTRUE(runs$truncated_end[k]),
@@ -685,16 +694,20 @@
 #' pointed dive profile.
 #' @keywords internal
 #' @noRd
-.diveLimbEnd <- function(s, tnum, i_peak, crit, hold_s) {
+.diveLimbEnd <- function(s, tnum, i_peak, crit, hold_s, begin_s = 0) {
   # The apex IS the first sample: whatever transit reached this depth happened before the dive's own
   # boundary, so there is nothing here to resolve. NA, not FALSE - this says where the boundary fell,
   # not whether the rule works.
   if (!is.finite(i_peak) || i_peak < 2L)
     return(list(end = 0L, established = NA, resolved = FALSE))
   idx <- seq_len(i_peak)
-  began <- which(is.finite(s[idx]) & s[idx] > crit)
-  if (!length(began)) return(list(end = 0L, established = FALSE, resolved = FALSE))
-  tail_idx <- idx[idx > min(began)]
+  # The limb must be seen for `begin_s` - one independent windowed estimate - not for one sample. A
+  # single crossing is something a Gaussian slope does routinely: on a flat noisy record a descent came
+  # out "established" in 99% of draws at a one-sample test, and `established` is exactly what
+  # .warnDivePhases() reads to decide whether a limb was ever there.
+  b0 <- .diveFirstHold(is.finite(s[idx]) & s[idx] > crit, tnum[idx], begin_s)
+  if (is.na(b0)) return(list(end = 0L, established = FALSE, resolved = FALSE))
+  tail_idx <- idx[idx > b0]
   if (!length(tail_idx)) return(list(end = i_peak, established = TRUE, resolved = FALSE))
   ok <- is.finite(s[tail_idx]) & s[tail_idx] <= crit
   st <- .diveFirstHold(ok, tnum[tail_idx], hold_s)
@@ -758,7 +771,13 @@
     ph <- rep("bottom", m)
     if (min(deep) > 1L) ph[seq_len(min(deep) - 1L)] <- "descent"
     if (max(deep) < m)  ph[(max(deep) + 1L):m] <- "ascent"
-    return(out(ph, descent = min(deep) > 1L, ascent = max(deep) < m))
+    # NA, not TRUE/FALSE. "Was this limb seen?" is a question a DETECTOR answers; this rule partitions
+    # geometry and detects nothing, so it has no opinion to report. Answering it structurally also
+    # answered it wrongly: a dive whose hysteresis threshold already exceeds `bottom.prop` of its own
+    # amplitude - any shallow dive, since the threshold is absolute and the proportion is relative -
+    # starts with its first sample already "deep", so descent came out FALSE by construction and every
+    # such cohort drew a warning whose suggested remedy names arguments this rule does not use.
+    return(out(ph))
   }
 
   if (is.null(dt) || !is.finite(dt) || dt <= 0) {
@@ -816,25 +835,42 @@
       if (w_new > w_win * 1.01) {
         w_win <- w_new
         # A hold shorter than the window it is measured over is no evidence at all - a smoothed slope
-        # cannot vary independently within its own support - so widening lifts the hold with it. Never
-        # past the quarter-dive cap, which the window's own eighth-dive cap keeps it clear of.
-        w_hold <- min(max(w_hold, w_win), dur / 4)
+        # cannot vary independently within its own support - so widening lifts the hold with it. Only a
+        # DERIVED hold, though: a number the user chose is the shortest bottom they want reported, and
+        # silently raising it would drop bottoms they asked to see while the console still printed their
+        # value. When they set it, the window is capped at the hold instead, and the rule stays honest
+        # about which one it obeyed.
+        if (identical(settings$phase_duration_source, "user")) w_win  <- min(w_win, w_hold)
+        else                                                   w_hold <- min(max(w_hold, w_win), dur / 4)
         s <- .diveSlope(z, tnum, w_win, dt = dt)
       }
     }
   }
 
   # The floor guards a degenerate limb only: after widening, `crit` is by construction well above the
-  # slope's noise wherever the limb was measurable at all.
-  crit_floor <- max(sd_of(w_win), 1e-6)
+  # slope's noise wherever the limb was measurable at all. THREE standard errors, not one - at one, a
+  # Gaussian slope clears the floor 16% of the time, which is often enough that a flat noisy record
+  # reported a descent as "established" in 99% of draws, and `established` is exactly what
+  # .warnDivePhases() reads to decide whether a limb was ever seen. A floor a limb can clear on noise
+  # alone silences the check that exists to catch a limb that was not there.
+  crit_floor <- max(3 * sd_of(w_win), 1e-6)
   qq <- limb_rates(s, crit_floor)
   crit_of <- function(q) if (is.finite(q) && q > 0) max(control$rate.crit * q, crit_floor) else crit_floor
   crit_d <- crit_of(qq[1]); crit_a <- crit_of(qq[2])
 
-  d <- .diveLimbEnd(s, tnum, i_peak, crit_d, w_hold)
-  # the ascent is the descent of the same dive played backwards: reverse the series, negate the slope,
-  # and let one routine answer both. Reversed time is measured forward from the dive's own end.
-  a <- .diveLimbEnd(-rev(s), tnum[m] - rev(tnum), m + 1L - i_peak, crit_a, w_hold)
+  # How long the criterion must hold for the limb to count as SEEN. Half the measurement window,
+  # floored at three samples: swept against a flat noisy record at 1 and 20 Hz, a quarter-window still
+  # let 0.5% through at 1 Hz and a half-window let none through at either, while a full window bought
+  # nothing further and cost the shortest dives their descent entirely.
+  w_begin <- max(w_win / 2, 3 * dt)
+  d <- .diveLimbEnd(s, tnum, i_peak, crit_d, w_hold, begin_s = w_begin)
+  # The ascent is the descent of the same dive played backwards: reverse the series, negate the slope,
+  # and let one routine answer both. Reversed time runs forward from the LAST FINITE timestamp - not
+  # from `tnum[m]`, which is NA often enough to matter and would make every reversed time NA, so no hold
+  # could ever be met and the ascent label would spread back across the whole bottom.
+  t_end <- suppressWarnings(max(tnum[is.finite(tnum)]))
+  a <- .diveLimbEnd(-rev(s), t_end - rev(tnum), m + 1L - i_peak, crit_a, w_hold,
+                    begin_s = w_begin)
 
   d_end   <- d$end
   a_start <- if (isTRUE(a$established)) m + 1L - a$end else m + 1L
@@ -1009,9 +1045,13 @@
   }
   dark <- .diveCensorMap(tnum, d, max_gap)
 
-  # The window the phase rule cut these dives on, so the rates reported per phase are measured the same
-  # way the phases were. Falls back to the same derivation detectDives uses when the provenance is
-  # absent - a hand-annotated `dive_id` is a supported input here.
+  # The window the phase rule was CONFIGURED with, so the rates reported per phase are measured much
+  # the way the phases were cut. Not exactly: on a dive where the phase rule widened its window
+  # adaptively - a coarse or slow depth channel - it used a wider one than this, and the difference is
+  # not recoverable from the provenance because the widening is per dive. The rates are then measured
+  # over a narrower span than the boundaries were, which costs precision and never correctness.
+  # Falls back to the derivation detectDives uses when there is no provenance at all: a hand-annotated
+  # `dive_id` is a supported input here.
   dt_med <- suppressWarnings(stats::median(diff(tnum), na.rm = TRUE))
   if (!is.finite(dt_med) || dt_med <= 0) dt_med <- 1
   phase_win0 <- suppressWarnings(as.numeric(p$phase_window_s %||% NA))

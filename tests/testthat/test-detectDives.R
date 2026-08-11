@@ -697,3 +697,88 @@ test_that(".diveQuantum finds a lattice step and abstains when there is no latti
   expect_true(is.na(nautilus:::.diveQuantum(stats::runif(500, 0, 50))))    # not a lattice
   expect_true(is.na(nautilus:::.diveQuantum(rep(c(0, 25), 100))))          # too few levels to tell
 })
+
+
+# ---------------------------------------------------------------------------
+# defects found by adversarial review of the phase rule
+# ---------------------------------------------------------------------------
+
+test_that("a deployment's phases do not depend on who else is in the call", {
+  # The window is a span in SECONDS and has to be converted to samples on the record it is applied to.
+  # Fed the COHORT median interval, a 20 Hz deployment sharing a call with two 1 Hz ones was measured
+  # over a 20x wider span and reported a different phase structure than the same deployment alone -
+  # cohort composition silently changing a per-deployment scientific result.
+  mk <- function(id, hz) {
+    leg <- function(a, b, s) seq(a, b, length.out = round(s * hz))
+    one <- c(leg(0, 40, 40), rep(40, round(200 * hz)), leg(40, 0, 40), rep(0, round(60 * hz)))
+    .diveTag(id, c(rep(0, round(60 * hz)), rep(one, 3)),
+             tnum = (seq_len(round(60 * hz) + 3 * length(one)) - 1) / hz)
+  }
+  ctl <- .diveCtl(min.duration = 20)
+  alone <- .phaseFrac(.detect(mk("H", 20), ctl)[[1]])
+  mixed <- .phaseFrac(.detect(list(mk("H", 20), mk("A", 1), mk("B", 1)), ctl)[[1]])
+  expect_identical(alone, mixed)
+})
+
+test_that("a single NA timestamp at the end of a dive does not swallow the bottom phase", {
+  # Reversed time used to be measured from `tnum[m]`; one NA there made every reversed timestamp NA, so
+  # no hold could be met, the ascent never resolved, and its label spread back over the whole bottom -
+  # with ascent_established still TRUE, so nothing flagged it.
+  z <- c(rep(0, 60), seq(0, 60, length.out = 60), rep(60, 300), seq(60, 0, length.out = 60), rep(0, 60))
+  tv <- seq_along(z) - 1
+  ph <- function(t) {
+    p <- nautilus:::.divePhases(z, t, diveControl(), list(), noise = 0.02, dt = 1)$phase
+    c(sum(p == "descent"), sum(p == "bottom"), sum(p == "ascent"))
+  }
+  bad <- tv; bad[length(bad)] <- NA_real_
+  expect_identical(ph(tv), ph(bad))
+  expect_gt(ph(bad)[2], 250)
+})
+
+test_that("a limb is not 'established' by instrument noise alone", {
+  # `established` is what .warnDivePhases() reads to decide whether a limb was ever there, so a limb
+  # that noise alone can establish silences the check. Two guards: a floor at THREE standard errors of
+  # the slope (at one, a Gaussian clears it 16% of the time) and a start that must persist for one
+  # window rather than for one sample. A flat noisy record used to report a descent in 99% of draws.
+  set.seed(9)
+  est <- replicate(60, {
+    z <- 20 + stats::rnorm(600, 0, 0.05)
+    r <- nautilus:::.divePhases(z, seq_len(600), diveControl(), list(), noise = 0.05, dt = 1)
+    c(isTRUE(r$descent_established), isTRUE(r$ascent_established))
+  })
+  expect_lt(mean(est), 0.05)
+
+  # and a real limb is still established on the same noise
+  v <- c(seq(0, 60, length.out = 200), seq(60, 0, length.out = 400)) + stats::rnorm(600, 0, 0.05)
+  r <- nautilus:::.divePhases(v, seq_len(600), diveControl(), list(), noise = 0.05, dt = 1)
+  expect_true(r$descent_established); expect_true(r$ascent_established)
+})
+
+test_that("prop.depth abstains on whether a limb was seen, rather than answering structurally", {
+  # It partitions geometry and detects nothing, so it has no opinion. Answering it structurally also
+  # answered it wrongly: a dive whose absolute hysteresis threshold already exceeds `bottom.prop` of its
+  # own amplitude starts with its first sample already "deep", so descent came out FALSE by
+  # construction and every shallow-dive cohort drew a warning naming arguments this rule does not use.
+  shallow <- rep(c(rep(0, 40), seq(0, 6, length.out = 20), rep(6, 60), seq(6, 0, length.out = 20)), 4)
+  r <- nautilus:::.divePhases(c(seq(0, 6, length.out = 20), rep(6, 60), seq(6, 0, length.out = 20)),
+                              seq_len(100), diveControl(phase.method = "prop.depth"), list())
+  expect_true(is.na(r$descent_established)); expect_true(is.na(r$ascent_established))
+  expect_silent(suppressMessages(detectDives(.diveTag("S", shallow),
+    control = .diveCtl(phase.method = "prop.depth"), verbose = 0)))
+})
+
+test_that("a user-set min.phase.duration survives adaptive widening", {
+  # Widening lifts a DERIVED hold with the window, because a hold shorter than the window it is
+  # measured over is no evidence. A number the user chose is the shortest bottom they want reported, so
+  # the window is capped at it instead - otherwise their bottoms vanish while the console still prints
+  # the value they asked for.
+  set.seed(5)
+  z <- c(seq(0, 10, length.out = 100), rep(10, 40), seq(10, 0, length.out = 100)) +
+       stats::rnorm(240, 0, 0.6)
+  bot <- function(h) {
+    s <- list(phase.window = 5, min.phase.duration = h, phase_duration_source = "user")
+    sum(nautilus:::.divePhases(z, seq_len(240), diveControl(), s, noise = 0.6, dt = 1)$phase == "bottom")
+  }
+  expect_gt(bot(6), 0)                                   # a short user hold still finds the bottom
+  expect_gte(bot(6), bot(30))                            # and a long one is not more permissive
+})
