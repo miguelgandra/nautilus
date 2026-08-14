@@ -782,3 +782,47 @@ test_that("a user-set min.phase.duration survives adaptive widening", {
   expect_gt(bot(6), 0)                                   # a short user hold still finds the bottom
   expect_gte(bot(6), bot(30))                            # and a long one is not more permissive
 })
+
+
+test_that("a hesitation on the way down does not end the descent", {
+  # A rate criterion alone cannot say WHICH pause ended the limb, because `crit` is a fraction of a
+  # quantile over the whole limb, so the fast part of a limb sets the bar for the slow part of the same
+  # limb. Taking the first sustained pause ended the descent wherever the animal hesitated: on a real
+  # 1414 m dive it ended after 58 s at 9.7 m, leaving a continuous 0.76 m/s plunge labelled bottom, and
+  # across 52 deployments the bottom spanned a median 81% of its dive's depth range. A pause now has to
+  # be an ARRIVAL - the animal already within `1 - bottom.prop` of this limb's deepest point.
+  hz <- 1
+  step <- c(seq(0, 60, length.out = 60),     # descend to 60 m ...
+            rep(60, 40),                     # ... hesitate for 40 s, far short of the apex ...
+            seq(60, 400, length.out = 200),  # ... then continue to 400 m
+            rep(400, 150),                   # the real bottom
+            seq(400, 0, length.out = 200))
+  tg <- .diveTag("STEP", c(rep(0, 40), step, rep(0, 40)), tnum = (seq_len(730) - 1) / hz)
+  x <- .detect(tg, .diveCtl(min.duration = 30))[[1]]
+  d <- as.numeric(x$depth)[x$dive_id > 0]; p <- as.character(x$dive_phase)[x$dive_id > 0]
+
+  expect_true(all(c("descent", "bottom", "ascent") %in% p))
+  # the descent reaches the real apex, not the hesitation depth
+  expect_gt(max(d[p == "descent"]), 300)
+  # and the bottom is a bottom: it spans a small part of the dive's depth range
+  expect_lt(diff(range(d[p == "bottom"])) / max(d), 0.25)
+  # the mid-descent hesitation is not labelled bottom
+  expect_false(any(p[d > 55 & d < 70] == "bottom"))
+})
+
+test_that("the arrival tolerance is bottom.prop, and it bounds the bottom's depth span", {
+  # bottom.prop governs both rules: outright for prop.depth, as the arrival test for vertical.rate.
+  z <- c(rep(0, 30), seq(0, 100, length.out = 80), rep(100, 30), seq(100, 300, length.out = 120),
+         rep(300, 100), seq(300, 0, length.out = 150), rep(0, 30))
+  tg <- .diveTag("ARR", z, tnum = seq_along(z) - 1)
+  span <- function(bp) {
+    x <- .detect(tg, .diveCtl(min.duration = 30, bottom.prop = bp))[[1]]
+    d <- as.numeric(x$depth)[x$dive_id > 0]; p <- as.character(x$dive_phase)[x$dive_id > 0]
+    if (!any(p == "bottom")) return(0)
+    diff(range(d[p == "bottom"])) / max(d)
+  }
+  expect_lt(span(0.80), 0.25)
+  # a laxer tolerance lets the bottom begin further up, so it spans more depth; a stricter one less
+  expect_gte(span(0.50), span(0.80))
+  expect_lte(span(0.95), span(0.80))
+})

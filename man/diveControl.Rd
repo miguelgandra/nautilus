@@ -108,8 +108,15 @@ Capped per dive at a quarter of that dive's duration, since a longer hold could 
 and a criterion pooled over both lets the faster one set the bar for the slower one. A quantile
 rather than the maximum, because the maximum of a smoothed series is an artefact of the window.}
 
-\item{bottom.prop}{For \code{phase.method = "prop.depth"}: the bottom phase is the span deeper than this
-proportion of the dive's amplitude. Default \code{0.80}.}
+\item{bottom.prop}{How near the deepest point counts as being at the bottom, as a proportion of the
+dive's amplitude. Default \code{0.80}. Both phase rules use it, and it is the only thing they share.
+For \code{"prop.depth"} it defines the bottom outright: every sample deeper than this proportion is
+bottom, whatever the animal was doing. For \code{"vertical.rate"} it is an ARRIVAL test applied to the
+pauses the rate rule finds - a pause only ends the descent if the animal had already reached this
+proportion of its eventual depth by then. Without it a hesitation on the way down ends the descent
+wherever it happens to occur: on a real 1414 m dive, 58 s in and 9.7 m down, leaving a continuous
+0.76 m/s plunge labelled bottom. Lower it to demand the animal be nearer its deepest point before
+a pause counts; raise it to accept a bottom that begins further up.}
 
 \item{max.gap}{The longest interruption of the record, in seconds, that a single dive may span. An
 interruption is either a jump in time between consecutive samples or a run of samples carrying no
@@ -188,6 +195,12 @@ That difference is definitional, not a matter of tuning. \code{"prop.depth"} lab
 profile with no bottom at all, because the samples nearest the single deepest point always satisfy
 the criterion. Lowering \code{bottom.prop} shrinks that share but never removes it, and it always costs
 the terminal part of each transit, capping descent and ascent recall near 80\% by construction.
+
+The two are nested rather than unrelated, and \code{bottom.prop} is what they share. The geometric rule
+asks only "is this sample near the deepest point?". The rate rule asks that AND "has the animal
+stopped transiting?" - a sustained pause ends the descent only once the animal has reached
+\code{bottom.prop} of its eventual depth, so a hesitation on the way down does not end it. That second
+condition is why a V-dive, which never pauses at depth, still gets no bottom at all.
 
 \code{"vertical.rate"} is the default because the profiles this package is usually pointed at - sharks,
 rays, fish that never surface - are frequently V-shaped or oscillatory rather than square, and

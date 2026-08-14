@@ -657,21 +657,33 @@
   out
 }
 
-#' Index of the first position where `ok` holds continuously for at least `hold_s` seconds.
+#' Start of EVERY run where `ok` holds continuously for at least `hold_s` seconds.
 #'
 #' The span is measured from the real timestamps, never from a sample count. A run length in samples is
 #' a statement about the recorder; a run length in seconds is a statement about the animal, and only the
 #' second is comparable between a 1 Hz and a 20 Hz deployment of the same rule.
+#'
+#' All of them, not the first: a pause is only a candidate for the end of a limb, and which candidate is
+#' the real one is a question the caller answers with the depth the animal had reached by then.
+#' @keywords internal
+#' @noRd
+.diveHoldStarts <- function(ok, tv, hold_s) {
+  if (!length(ok) || !any(ok)) return(integer(0))
+  r <- rle(ok); e <- cumsum(r$lengths); st <- e - r$lengths + 1L
+  w <- which(r$values)
+  if (!length(w)) return(integer(0))
+  keep <- vapply(w, function(j) {
+    span <- tv[e[j]] - tv[st[j]]
+    is.finite(span) && span >= hold_s
+  }, logical(1))
+  st[w[keep]]
+}
+
 #' @keywords internal
 #' @noRd
 .diveFirstHold <- function(ok, tv, hold_s) {
-  if (!length(ok) || !any(ok)) return(NA_integer_)
-  r <- rle(ok); e <- cumsum(r$lengths); st <- e - r$lengths + 1L
-  for (j in which(r$values)) {
-    span <- tv[e[j]] - tv[st[j]]
-    if (is.finite(span) && span >= hold_s) return(st[j])
-  }
-  NA_integer_
+  h <- .diveHoldStarts(ok, tv, hold_s)
+  if (!length(h)) NA_integer_ else h[1]
 }
 
 #' Where the OPENING limb of one dive ends: the descent, or - fed a time-reversed dive - the ascent.
@@ -692,9 +704,29 @@
 #' }
 #' Collapsing the two - as a bare fallback does - makes a broken detector indistinguishable from a
 #' pointed dive profile.
+#'
+#' @section A pause is a candidate, not a verdict:
+#' A rate criterion alone cannot say which pause ended the limb, because `crit` is a fraction of a
+#' quantile taken over the whole limb, so the FAST part of a limb sets the bar for the SLOW part of the
+#' same limb. Taking the first sustained pause therefore ended the descent wherever the animal happened
+#' to hesitate - and on a real 1414 m dive it ended the descent after 58 s at 9.7 m, leaving a
+#' continuous 0.76 m/s plunge from 170 m to 1018 m labelled `bottom`. Across 52 deployments the bottom
+#' phase spanned a median of 81% of its dive's depth range: not a bottom at all.
+#'
+#' So the pause must also be an ARRIVAL. Every sustained pause is a candidate, and the first one at
+#' which the animal is already within `tol` of this limb's deepest point is the boundary. A hesitation
+#' 1400 m short of the apex is not an arrival and the search continues; a pause at the working depth is.
+#'
+#' This is what bounds the bottom in DEPTH, and it is deliberately the same tolerance that
+#' `phase.method = "prop.depth"` uses to define its bottom outright. The two rules are then nested
+#' rather than unrelated: the geometric rule asks only "is this sample near the deepest point?", and the
+#' rate rule asks that AND "has the animal stopped transiting?". A V-dive still produces no qualifying
+#' pause at all, so it still gets no bottom - which is the property that separates them.
+#' @param z The limb's depth (signed so that positive is away from the reference), for the arrival test.
+#' @param tol_frac Arrival tolerance, as a fraction of the depth this limb covered.
 #' @keywords internal
 #' @noRd
-.diveLimbEnd <- function(s, tnum, i_peak, crit, hold_s, begin_s = 0) {
+.diveLimbEnd <- function(s, z, tnum, i_peak, crit, hold_s, begin_s = 0, tol_frac = 0.2) {
   # The apex IS the first sample: whatever transit reached this depth happened before the dive's own
   # boundary, so there is nothing here to resolve. NA, not FALSE - this says where the boundary fell,
   # not whether the rule works.
@@ -709,11 +741,23 @@
   if (is.na(b0)) return(list(end = 0L, established = FALSE, resolved = FALSE))
   tail_idx <- idx[idx > b0]
   if (!length(tail_idx)) return(list(end = i_peak, established = TRUE, resolved = FALSE))
-  ok <- is.finite(s[tail_idx]) & s[tail_idx] <= crit
-  st <- .diveFirstHold(ok, tnum[tail_idx], hold_s)
-  # No hold long enough: the animal descended to the apex without pausing. The limb runs to the apex.
-  if (is.na(st)) return(list(end = i_peak, established = TRUE, resolved = FALSE))
-  list(end = tail_idx[st] - 1L, established = TRUE, resolved = TRUE)
+
+  # the arrival band, measured against how far THIS limb travelled rather than against absolute depth,
+  # so it means the same thing on a 4 m dive and a 1400 m one
+  zp <- z[i_peak]
+  base <- suppressWarnings(min(z[idx], na.rm = TRUE))
+  amp <- if (is.finite(zp) && is.finite(base)) zp - base else NA_real_
+  tol <- if (is.finite(amp) && amp > 0) tol_frac * amp else Inf
+
+  cand <- .diveHoldStarts(is.finite(s[tail_idx]) & s[tail_idx] <= crit, tnum[tail_idx], hold_s)
+  for (k in cand) {
+    ci <- tail_idx[k]
+    if (is.finite(z[ci]) && (zp - z[ci]) <= tol)
+      return(list(end = ci - 1L, established = TRUE, resolved = TRUE))
+  }
+  # No pause at arrival depth: the animal reached the apex without ever settling. The limb runs to the
+  # apex and the bottom stays empty - a V-dive, and the correct answer rather than a fallback.
+  list(end = i_peak, established = TRUE, resolved = FALSE)
 }
 
 #' Split one dive into descent / bottom / ascent.
@@ -863,14 +907,18 @@
   # let 0.5% through at 1 Hz and a half-window let none through at either, while a full window bought
   # nothing further and cost the shortest dives their descent entirely.
   w_begin <- max(w_win / 2, 3 * dt)
-  d <- .diveLimbEnd(s, tnum, i_peak, crit_d, w_hold, begin_s = w_begin)
+  # The arrival band is `1 - bottom.prop` of the limb's own depth range - the SAME tolerance the
+  # geometric rule uses to define its bottom outright, so the two methods are nested rather than
+  # unrelated and one argument governs "how near the deepest point counts as the bottom" for both.
+  tol_f <- 1 - control$bottom.prop
+  d <- .diveLimbEnd(s, z, tnum, i_peak, crit_d, w_hold, begin_s = w_begin, tol_frac = tol_f)
   # The ascent is the descent of the same dive played backwards: reverse the series, negate the slope,
   # and let one routine answer both. Reversed time runs forward from the LAST FINITE timestamp - not
   # from `tnum[m]`, which is NA often enough to matter and would make every reversed time NA, so no hold
   # could ever be met and the ascent label would spread back across the whole bottom.
   t_end <- suppressWarnings(max(tnum[is.finite(tnum)]))
-  a <- .diveLimbEnd(-rev(s), t_end - rev(tnum), m + 1L - i_peak, crit_a, w_hold,
-                    begin_s = w_begin)
+  a <- .diveLimbEnd(-rev(s), rev(z), t_end - rev(tnum), m + 1L - i_peak, crit_a, w_hold,
+                    begin_s = w_begin, tol_frac = tol_f)
 
   d_end   <- d$end
   a_start <- if (isTRUE(a$established)) m + 1L - a$end else m + 1L
