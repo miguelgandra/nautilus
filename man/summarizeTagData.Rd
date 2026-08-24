@@ -82,7 +82,13 @@ and shows a live progress bar while the tags are read (cli auto-hides it for fas
 \value{
 A \code{nautilus_summary} data frame, one row per deployment, with (where available) the columns:
 \itemize{
-\item \strong{id}, \strong{tag_model}, \strong{tag_type}, \strong{attachment_site}: identity and tag metadata.
+\item \strong{id}, \strong{animal_id}: the deployment, and the animal that carried it - one individual can
+be tagged more than once, so the two are not the same identifier. \code{animal_id} appears when it was
+mapped with \code{metadataColumns(animal_id = )}, and is completed from the roster for a deployment
+whose tag predates that mapping.
+\item \strong{tag_model}, \strong{tag_type}, \strong{attachment_site}, \strong{paddle_wheel}: the tag. \code{paddle_wheel}
+sits here rather than with the metrics because it is what says whether the speed columns mean
+anything.
 \item \strong{record_start}, \strong{record_end}, \strong{record_duration_h}, \strong{n_samples}: the
 recorded data span - the true on-animal window once the data have been deployment-filtered.
 \item \strong{sampling_hz}: original sampling rate (Hz).
@@ -153,6 +159,24 @@ known about. Its row is completed from the roster through the same field declara
 rows are read through, so it carries the same identity, trait and tagging columns rather than a bare
 identifier. Supply \code{exclusions} as well and a deployment rejected for being too short also reports
 the window that was detected before it was rejected, which is the measurement the decision rested on.
+}
+
+\subsection{The column order}{
+
+Columns are grouped so the table reads as a narrative: which deployment, on which animal, with which
+tag, put out where and when, what record came back and whether it was kept, how much data there is,
+what the animal experienced, and what it did. \code{status} and \code{status_reason} close the record block
+together, because the reason usually explains a short or absent record. Traits and any
+\code{extra.metadata} covariates sit together, since both describe the animal. Anything the package does
+not recognise trails the block it follows rather than disappearing.
+
+\code{deploy_datetime} and \code{record_start} are both reported and are not the same quantity: the first is
+what the metadata says, the second is what the data says, whether detected by
+\code{\link[=filterDeploymentData]{filterDeploymentData()}} or supplied through its \code{custom.deployment.times}. Across a 52-deployment
+cohort only 9 agreed to the minute and 5 differed by more than an hour, and the sign of the
+difference is informative - a record starting BEFORE the recorded tagging time means the tag was
+already logging. For a deployment that was never recovered, \code{deploy_datetime} is the only date there
+is.
 }
 
 \subsection{Exporting the table}{

@@ -37,6 +37,7 @@
 .newNautilusMeta <- function() {
   list(
     id           = NA_character_,
+    animal_id    = NA_character_,                          # the ANIMAL; `id` is the DEPLOYMENT
     deployment   = list(lon = NA_real_, lat = NA_real_, datetime = as.POSIXct(NA),
                         popup_lon = NA_real_, popup_lat = NA_real_, popup_datetime = as.POSIXct(NA),
                         magnetic_declination = NA_real_, heading_reference = NA_character_,

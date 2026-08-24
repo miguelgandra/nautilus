@@ -193,6 +193,7 @@ importTagData <- function(data.folders,
   tag.format.col      <- columns$tag_format                    # per-deployment reader (overrides `format`)
   data.start.col      <- columns$data_start                    # recording start for clock-less loggers
   traits.cols         <- columns$traits                        # passive attribute columns carried to meta$biometrics
+  animal.id.col       <- columns$animal_id                     # the ANIMAL; `id` identifies the DEPLOYMENT
 
 
   ##############################################################################
@@ -332,6 +333,7 @@ importTagData <- function(data.folders,
   need_col(tag.type.col,        "tag_type")
   need_col(package.id.col,      "package_id")
   need_col(logger.id.col,       "logger_id")
+  need_col(animal.id.col,       "animal_id")
   need_col(exclude.sensors.col, "exclude_sensors")
   need_col(axis.config.col,     "axis_config")
   need_col(attachment.site.col, "attachment_site")
@@ -921,6 +923,7 @@ importTagData <- function(data.folders,
       package_id      = package_id %||% NA,
       paddle_wheel    = has_paddle %||% NA
     )
+    if (!is.null(animal.id.col))       role_meta$animal_id       <- animal_info[[animal.id.col]]
     if (!is.null(pop.date.col))        role_meta$popup_datetime  <- animal_info[[pop.date.col]]
     if (!is.null(pop.lon.col))         role_meta$popup_lon       <- animal_info[[pop.lon.col]]
     if (!is.null(pop.lat.col))         role_meta$popup_lat       <- animal_info[[pop.lat.col]]

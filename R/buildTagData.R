@@ -298,6 +298,10 @@ buildTagData <- function(data,
   if (is.null(md)) return(meta)
   chr <- function(x) if (is.null(x)) NULL else as.character(x)
   num <- function(x) if (is.null(x)) NULL else as.numeric(x)
+  # the ANIMAL, which is not the deployment: one shark can carry several tags across a season, and
+  # `id` identifies the deployment. Kept at the top level rather than under `deployment`, because it is
+  # a property of the animal that outlives any one attachment.
+  if (!is.null(v <- chr(.metaField(md, "animal_id"))))        meta$animal_id <- v
   # deployment block
   if (!is.null(v <- num(.metaField(md, "deploy_lon"))))       meta$deployment$lon <- v
   if (!is.null(v <- num(.metaField(md, "deploy_lat"))))       meta$deployment$lat <- v

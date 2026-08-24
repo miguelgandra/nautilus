@@ -95,8 +95,9 @@ test_that("deployments= completes the study roster with an included/excluded sta
   expect_equal(out$tag_model[out$id == "C"], "CATS")
   expect_true(out$paddle_wheel[out$id == "C"])
   expect_true(all(is.na(out$depth_max[out$status == "excluded"])))
-  # status sits right after the identity block
-  expect_equal(which(names(out) == "status"), which(names(out) == "attachment_site") + 1L)
+  # status closes the record block, with its reason beside it: status_reason usually explains a short
+  # or absent record, so the two read together rather than thirty columns apart
+  expect_equal(which(names(out) == "status"), which(names(out) == "record_duration_h") + 1L)
   # a non-deployments object is rejected
   expect_error(summarizeTagData(list(A = .mk("A")), deployments = data.frame(id = "A"), verbose = FALSE),
                "nautilus_deployments", ignore.case = TRUE)
@@ -200,7 +201,7 @@ test_that("format(style = 'concise') abbreviates the publication headers (same v
   concise <- format(s, style = "concise")
   expect_equal(dim(concise), dim(format(s)))
   expect_equal(unname(unlist(format(s)[1, ])), unname(unlist(concise[1, ])))    # identical values, only names differ
-  expect_true(all(c("Start", "End", "Duration (h)", "Rate (Hz)", "Attach. site",
+  expect_true(all(c("Rec. start", "Rec. end", "Duration (h)", "Rate (Hz)", "Attach. site",
                     "Mean TBF (Hz)", "Swimming (%)", "Positions (n)") %in% names(concise)))
   expect_true("Max speed (m/s)" %in% names(concise))                           # ASCII by default
   expect_true("Mean speed (m s\u207b\u00b9)" %in%                               # superscript on request
@@ -599,8 +600,9 @@ test_that("metadata = 'standard' adds the traits and the tagging position by def
   expect_s3_class(s$deploy_datetime, "POSIXct")
   expect_equal(s$deploy_lon, -25.1234); expect_equal(s$deploy_lat, 36.9876)
   # traits first (who the animal was), then where and when it was tagged, then the record
-  expect_equal(names(s)[1:9], c("id", "tag_model", "tag_type", "attachment_site", "sex", "size_m",
-                                "deploy_datetime", "deploy_lon", "deploy_lat"))
+  expect_equal(names(s)[1:10], c("id", "animal_id", "sex", "size_m", "tag_model", "tag_type",
+                                 "attachment_site", "paddle_wheel",
+                                 "deploy_datetime", "deploy_lon"))
   expect_false(any(c("popup_lon", "package_id") %in% names(s)))
 })
 
@@ -672,4 +674,60 @@ test_that("video.metadata totals the per-file table, and absence is NA rather th
   expect_warning(summarizeTagData(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "ZZ", duration = 10),
                                   verbose = FALSE),
                  "no 'video.metadata' ID matches")
+})
+
+
+# ---------------------------------------------------------------------------
+# column order, and the animal behind the deployment
+# ---------------------------------------------------------------------------
+
+test_that("columns are seated in declared blocks, whatever order they were produced in", {
+  # `status_reason` is attached long after `status`, and `video_duration_h` after both. Seating each
+  # block where it was appended is how `status_reason` ended up thirty columns from `status`.
+  ros <- .mkRoster(c("A", "GHOST")); ros$animal_id <- c("WS_1", "WS_9")
+  attr(ros, "nautilus.columns") <- list(traits = c("sex", "size_m"))
+  ex <- data.frame(id = "GHOST", reason = "deployment too short",
+                   detected_start = as.POSIXct("2020-02-01 10:00", tz = "UTC"),
+                   detected_end = as.POSIXct("2020-02-01 10:06", tz = "UTC"),
+                   detected_duration_h = 0.1, stringsAsFactors = FALSE)
+  s <- .run(list(A = .mkMeta("A")), deployments = ros, exclusions = ex,
+            video.metadata = data.frame(ID = "A", duration = 3600),
+            extra.metadata = data.frame(ID = "A", maturity = "adult", stringsAsFactors = FALSE))
+  n <- names(s)
+  expect_equal(n[1:2], c("id", "animal_id"))                       # deployment, then animal
+  expect_true(match("sex", n) < match("tag_model", n))             # animal before tag
+  expect_true(match("maturity", n) < match("tag_model", n))        # covariates sit with the traits
+  expect_equal(match("status_reason", n), match("status", n) + 1L) # the pair, adjacent
+  expect_equal(match("record_duration_h", n), match("status", n) - 1L)
+  expect_true(match("deploy_lat", n) < match("record_start", n))   # tagging position before the record
+  expect_true(match("video_duration_h", n) > match("n_positions", n))
+  expect_true(match("depth_max", n) < match("vedba_mean", n))      # habitat before behaviour
+  expect_true(match("paddle_wheel", n) < match("speed_mean", n))   # the qualifier before what it qualifies
+})
+
+test_that("animal_id is a role, and completes from the roster without overriding the tag", {
+  expect_true("animal_id" %in% names(formals(metadataColumns)))
+  expect_equal(metadataColumns(animal_id = "shark")$animal_id, "shark")
+  expect_true("animal_id" %in% names(nautilus:::.newNautilusMeta()))
+
+  # a tag that carries it keeps its own value; one that does not is completed from the roster
+  own <- .mkMeta("A"); m <- nautilus:::.getMeta(own); m$animal_id <- "FROM_TAG"
+  own <- nautilus:::.restoreMeta(own, m)
+  ros <- .mkRoster(c("A", "B")); ros$animal_id <- c("FROM_ROSTER", "WS_2")
+  attr(ros, "nautilus.columns") <- list(traits = c("sex", "size_m"))
+  s <- .run(list(A = own, B = .mkMeta("B")), deployments = ros)
+  expect_identical(s$animal_id[s$id == "A"], "FROM_TAG")           # the tag is authoritative
+  expect_identical(s$animal_id[s$id == "B"], "WS_2")               # the gap is completed
+})
+
+test_that("only DECLARED traits ride in from the roster, not every column of the workbook", {
+  # The workbook holds study columns nautilus knows nothing about. Sweeping them in populated them on
+  # excluded rows and left them NA on every processed one - visible, asymmetric, and wrong.
+  ros <- .mkRoster(c("A", "GHOST"))
+  ros$site <- "SMA"; ros$argos_ptt <- c(1, 2); ros$deploy_year <- c(2019, 2019)
+  attr(ros, "nautilus.columns") <- list(traits = c("sex", "size_m"))
+  s <- .run(list(A = .mkMeta("A")), deployments = ros)
+  expect_false(any(c("site", "argos_ptt", "deploy_year") %in% names(s)))
+  expect_true(all(c("sex", "size_m") %in% names(s)))
+  expect_identical(s$sex[s$id == "GHOST"], "M")                    # the declared ones still arrive
 })

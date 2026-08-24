@@ -6,6 +6,7 @@
 \usage{
 metadataColumns(
   id = "ID",
+  animal_id = NULL,
   tag_model = "tag",
   tag_type = NULL,
   deploy_datetime = "tagging_date",
@@ -28,7 +29,12 @@ metadataColumns(
 )
 }
 \arguments{
-\item{id}{Column holding the animal/deployment ID (default \code{"ID"}). Required.}
+\item{id}{Column holding the DEPLOYMENT ID (default \code{"ID"}). Required. This identifies one tag
+attachment, and is what every nautilus function keys on.}
+
+\item{animal_id}{Column holding the ANIMAL identifier, when it is not the same thing as \code{id}. One
+individual can carry several tags over a season, and a deployment table then needs both: \code{id} says
+which record, \code{animal_id} says which animal. \code{NULL} (default) when a deployment IS an animal.}
 
 \item{tag_model}{Column holding the tag model (default \code{"tag"}). Required.}
 

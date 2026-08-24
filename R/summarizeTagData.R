@@ -76,7 +76,13 @@
 #'
 #' @return A `nautilus_summary` data frame, one row per deployment, with (where available) the columns:
 #' \itemize{
-#'   \item **id**, **tag_model**, **tag_type**, **attachment_site**: identity and tag metadata.
+#'   \item **id**, **animal_id**: the deployment, and the animal that carried it - one individual can
+#'     be tagged more than once, so the two are not the same identifier. `animal_id` appears when it was
+#'     mapped with `metadataColumns(animal_id = )`, and is completed from the roster for a deployment
+#'     whose tag predates that mapping.
+#'   \item **tag_model**, **tag_type**, **attachment_site**, **paddle_wheel**: the tag. `paddle_wheel`
+#'     sits here rather than with the metrics because it is what says whether the speed columns mean
+#'     anything.
 #'   \item **record_start**, **record_end**, **record_duration_h**, **n_samples**: the
 #'     recorded data span - the true on-animal window once the data have been deployment-filtered.
 #'   \item **sampling_hz**: original sampling rate (Hz).
@@ -132,6 +138,23 @@
 #' identifier. Supply `exclusions` as well and a deployment rejected for being too short also reports
 #' the window that was detected before it was rejected, which is the measurement the decision rested on.
 #'
+#' ## The column order
+#'
+#' Columns are grouped so the table reads as a narrative: which deployment, on which animal, with which
+#' tag, put out where and when, what record came back and whether it was kept, how much data there is,
+#' what the animal experienced, and what it did. `status` and `status_reason` close the record block
+#' together, because the reason usually explains a short or absent record. Traits and any
+#' `extra.metadata` covariates sit together, since both describe the animal. Anything the package does
+#' not recognise trails the block it follows rather than disappearing.
+#'
+#' `deploy_datetime` and `record_start` are both reported and are not the same quantity: the first is
+#' what the metadata says, the second is what the data says, whether detected by
+#' [filterDeploymentData()] or supplied through its `custom.deployment.times`. Across a 52-deployment
+#' cohort only 9 agreed to the minute and 5 differed by more than an hour, and the sign of the
+#' difference is informative - a record starting BEFORE the recorded tagging time means the tag was
+#' already logging. For a deployment that was never recovered, `deploy_datetime` is the only date there
+#' is.
+#'
 #' ## Exporting the table
 #'
 #' `format()` renders the publication version, and its output is ASCII by default: the table is written
@@ -176,6 +199,7 @@ summarizeTagData <- function(data,
     .assert_columns(deployments, "id", "deployments")
   }
   if (!is.null(extra.metadata)) .assert_columns(extra.metadata, "ID", "extra.metadata")
+  covariates <- character(0)
 
   # resolve input: a list of processed datasets, a single aggregated data.frame (split by ID), or a
   # character vector of .rds file paths (loaded lazily) - consistent with the rest of the pipeline.
@@ -239,9 +263,14 @@ summarizeTagData <- function(data,
       summary_table <- merge(summary_table, agg, by = "id", all.x = TRUE, sort = FALSE)
       summary_table <- summary_table[match(ord_ids, summary_table$id), , drop = FALSE]
       rownames(summary_table) <- NULL
-      summary_table <- summary_table[, c("id", cov_cols, setdiff(names(summary_table), c("id", cov_cols)))]
+      covariates <- cov_cols            # seated with the traits below: both describe the animal
     }
   }
+
+  # One ordering pass at the end, once every block exists. `status`, `status_reason` and
+  # `video_duration_h` are attached by steps that run after the first pass, and seating them where they
+  # were appended is how `status_reason` ended up thirty columns from `status`.
+  summary_table <- .summaryOrderMeta(summary_table, meta_req, covariates)
 
   if (lvl >= 1L) {
     .log_summary(lvl)
@@ -441,6 +470,7 @@ summarizeTagData <- function(data,
 
   out <- data.frame(
     id                    = id,
+    animal_id             = s_chr(meta$animal_id),
     tag_model             = s_chr(meta$tag$model),
     tag_type              = s_chr(meta$tag$type),
     attachment_site       = s_chr(meta$deployment$attachment_site),
@@ -545,6 +575,8 @@ summarizeTagData <- function(data,
     else as.logical(v)
   }
 
+  roster_traits <- if (length(meta.req$traits) == 1L && is.na(meta.req$traits))
+    attr(deployments, "nautilus.columns")$traits %||% character(0) else meta.req$traits
   summary_table$status <- rep("included", nrow(summary_table))   # length-safe on an empty (all-excluded) table
   missing_ids <- setdiff(rid, summary_table$id)
   if (length(missing_ids)) {
@@ -552,6 +584,7 @@ summarizeTagData <- function(data,
     rownames(add) <- NULL
     m <- match(missing_ids, rid)
     add$id <- missing_ids
+    if ("animal_id" %in% names(add))       add$animal_id       <- as.character(pick("animal_id"))[m]
     if ("tag_model" %in% names(add))       add$tag_model       <- as.character(pick("tag_model"))[m]
     if ("tag_type" %in% names(add))        add$tag_type        <- as.character(pick("tag_type"))[m]
     if ("attachment_site" %in% names(add)) add$attachment_site <- as.character(pick("attachment_site"))[m]
@@ -581,8 +614,10 @@ summarizeTagData <- function(data,
     tr <- setdiff(names(add), c(names(.summaryTemplate()), .summaryDiveCols(), meta.req$fields, "status"))
     want <- meta.req$traits
     if (length(want) == 1L && is.na(want)) {
-      roles <- setdiff(names(formals(metadataColumns)), "traits")
-      tr <- union(tr, setdiff(names(deployments), c(roles, names(.summaryMetaFields()), "id")))
+      # The traits the caller DECLARED at import, which checkDeploymentMetadata() records on the roster.
+      # Taking every non-role column instead swept the whole workbook in - and only down this path, so a
+      # study column appeared on excluded rows and was NA on every processed one.
+      tr <- union(tr, attr(deployments, "nautilus.columns")$traits %||% character(0))
     } else tr <- union(tr, want)
     for (tn in intersect(tr, names(deployments))) {
       val <- deployments[[tn]][m]
@@ -595,16 +630,33 @@ summarizeTagData <- function(data,
     summary_table <- rbind(summary_table, add)
   }
 
+  # COMPLETE, never override. A processed deployment's own metadata stays authoritative - it is what the
+  # processing actually used - but where the tag carries nothing the roster may still know, and leaving
+  # the cell empty recreates the very asymmetry this function exists to remove: a column populated on
+  # excluded rows and blank on included ones. Bites hardest on a role added after a cohort was imported,
+  # like `animal_id`, which would otherwise need a full re-import to appear.
+  fillable <- intersect(c("animal_id", "tag_model", "tag_type", "attachment_site",
+                          meta.req$fields, roster_traits),
+                        intersect(names(summary_table), names(deployments)))
+  if (length(fillable)) {
+    mm <- match(summary_table$id, rid)
+    for (cc in fillable) {
+      gap <- is.na(summary_table[[cc]]) & !is.na(mm)
+      if (!any(gap)) next
+      val <- deployments[[cc]][mm[gap]]
+      summary_table[[cc]][gap] <- if (inherits(summary_table[[cc]], "POSIXt")) {
+        if (inherits(deployments[[cc]], "POSIXt")) val else next
+      } else if (is.numeric(summary_table[[cc]])) .asNumericSafe(val) else as.character(val)
+    }
+  }
+
   # order by the roster (deployment order); any processed ids not in the roster trail at the end
   ord <- c(match(rid[rid %in% summary_table$id], summary_table$id),
            which(!summary_table$id %in% rid))
   summary_table <- summary_table[ord, , drop = FALSE]
   rownames(summary_table) <- NULL
 
-  # place `status` right after the identity block
-  ident <- intersect(c("id", "tag_model", "tag_type", "attachment_site"), names(summary_table))
-  rest  <- setdiff(names(summary_table), c(ident, "status"))
-  summary_table[, c(ident, "status", rest), drop = FALSE]
+  summary_table
 }
 
 
@@ -619,7 +671,7 @@ summarizeTagData <- function(data,
 #' @noRd
 .summaryTemplate <- function() {
   ps <- as.POSIXct(character(0), tz = "UTC")
-  data.frame(id = character(0), tag_model = character(0), tag_type = character(0), attachment_site = character(0),
+  data.frame(id = character(0), animal_id = character(0), tag_model = character(0), tag_type = character(0), attachment_site = character(0),
              record_start = ps, record_end = ps, record_duration_h = numeric(0), n_samples = integer(0),
              sampling_hz = numeric(0), depth_mean = numeric(0), depth_max = numeric(0), temp_mean = numeric(0),
              temp_min = numeric(0), temp_max = numeric(0), vedba_mean = numeric(0), odba_mean = numeric(0),
@@ -848,7 +900,8 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 #' @noRd
 .summaryHeaders <- function(cols, style = "report") {
   report <- c(
-    id = "ID", tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attachment site",
+    id = "ID", animal_id = "Animal ID",
+    tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attachment site",
     status = "Status", status_reason = "Exclusion reason",
     deploy_datetime = "Tagging date", deploy_lon = "Tagging longitude (\u00b0)",
     deploy_lat = "Tagging latitude (\u00b0)", popup_datetime = "Pop-up date",
@@ -869,13 +922,14 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     dive_depth_max_m = "Max dive depth (m)", dives_incomplete = "Incomplete dives (n)",
     dives_truncated = "Boundary-truncated dives (n)", dives_gapped = "Gap-interrupted dives (n)")
   concise <- c(
-    id = "ID", tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attach. site",
+    id = "ID", animal_id = "Animal",
+    tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attach. site",
     status = "Status", status_reason = "Reason",
     deploy_datetime = "Tagged", deploy_lon = "Lon (\u00b0)", deploy_lat = "Lat (\u00b0)",
     popup_datetime = "Pop-up", popup_lon = "Pop-up lon (\u00b0)", popup_lat = "Pop-up lat (\u00b0)",
     deployment_type = "Deploy. type", package_id = "Package", logger_id = "Logger",
     axis_config = "Axis config", video_duration_h = "Video (h)",
-    record_start = "Start", record_end = "End",
+    record_start = "Rec. start", record_end = "Rec. end",
     record_duration_h = "Duration (h)", n_samples = "Samples (n)", sampling_hz = "Rate (Hz)",
     depth_mean = "Mean depth (m)", depth_max = "Max depth (m)",
     temp_mean = "Mean temp. (\u00b0C)", temp_min = "Min temp. (\u00b0C)", temp_max = "Max temp. (\u00b0C)",
@@ -939,24 +993,49 @@ print.nautilus_summary <- function(x, ...) {
     "dive_depth_max_m", "dives_incomplete", "dives_truncated", "dives_gapped")
 
 
-#' Put the metadata/trait block in a fixed place, whatever order the deployments arrived in.
+#' The order the summary table is presented in, declared as blocks.
 #'
-#' `rbindlist(fill = TRUE)` unions the columns of a ragged cohort, so a trait first seen on deployment
-#' seventeen lands wherever it lands. Two calls on the same animals must not produce differently ordered
-#' tables, so the block is re-seated here: traits (who the animal was), then metadata fields (where and
-#' when it was tagged), then everything the tag recorded. Explicitly named traits are also MATERIALISED
-#' when no deployment carried them, which is what lets two cohorts that recorded different traits still
-#' bind together.
+#' A deployment table is read as a narrative - which deployment, on which animal, with which tag, put
+#' out where and when, what record came back and whether it was kept, how much data there is, what the
+#' animal experienced, what it did - and the columns are ordered to follow it. Declared here rather
+#' than assembled incrementally, because the order previously fell out of the sequence in which blocks
+#' happened to be cbind-ed and appended, which put `status_reason` thirty columns from `status` and the
+#' external covariates ahead of the animal they describe.
+#'
+#' Anything not named here keeps its relative order and trails the block it follows, so a column added
+#' later appears rather than disappearing.
 #' @keywords internal
 #' @noRd
-.summaryOrderMeta <- function(tbl, meta.req) {
+.summaryBlocks <- function() list(
+  identity = c("id", "animal_id"),
+  animal   = character(0),                    # declared traits + extra.metadata covariates, filled in
+  tag      = c("tag_model", "tag_type", "attachment_site", "paddle_wheel"),
+  deploy   = character(0),                    # the requested metadata fields, in vocabulary order
+  record   = c("record_start", "record_end", "record_duration_h", "status", "status_reason"),
+  coverage = c("n_samples", "sampling_hz", "n_positions", "video_duration_h"),
+  habitat  = c("depth_mean", "depth_max", "temp_mean", "temp_min", "temp_max"),
+  movement = c("vedba_mean", "odba_mean", "tbf_mean", "tbf_method", "pct_swimming",
+               "speed_mean", "speed_max", "descent_rate_max", "ascent_rate_max"),
+  dives    = .summaryDiveCols())
+
+
+#' Put every column in its block, materialising the ones an argument asked for.
+#'
+#' `rbindlist(fill = TRUE)` unions the columns of a ragged cohort, so a trait first seen on deployment
+#' seventeen lands wherever it lands, and two calls on the same animals must not produce differently
+#' ordered tables. Explicitly named traits are also MATERIALISED when no deployment carried them, which
+#' is what lets two cohorts that recorded different traits still bind together.
+#' @keywords internal
+#' @noRd
+.summaryOrderMeta <- function(tbl, meta.req, covariates = character(0)) {
   fields <- meta.req$fields
   traits <- meta.req$traits
+  blocks <- .summaryBlocks()
+  known  <- unlist(blocks, use.names = FALSE)
   if (length(traits) == 1L && is.na(traits)) {
     # Whatever the cohort carried. Inferred by exclusion, so everything the summary itself produces has
-    # to be excluded - the base schema AND the dive block, which is appended per deployment and is
-    # therefore just as absent from the template as a trait is.
-    traits <- setdiff(names(tbl), c(names(.summaryTemplate()), .summaryDiveCols(), fields))
+    # to be excluded - the declared blocks AND the metadata fields, which are not traits.
+    traits <- setdiff(names(tbl), c(known, fields, covariates))
   } else {
     # Named but carried by no deployment. The column is still created - that is the whole point of
     # naming traits explicitly - but a silent all-NA column is indistinguishable from a typo, and the
@@ -969,18 +1048,19 @@ print.nautilus_summary <- function(x, ...) {
   }
   # Requested FIELDS are materialised whether or not any deployment carried them, so column presence
   # follows the argument and nothing else - the fixed-schema promise. Without this an all-excluded
-  # cohort (every deployment in the roster, none with data) came back with no metadata columns for
-  # .completeRoster to fill, which is exactly the case this whole block exists for.
+  # cohort came back with no metadata columns for .completeRoster() to fill.
   spec <- .summaryMetaFields()
   for (f in setdiff(fields, names(tbl)))
     tbl[[f]] <- switch(spec[[f]]$type,
                        time = .POSIXct(rep(NA_real_, nrow(tbl)), tz = "UTC"),
                        num  = rep(NA_real_, nrow(tbl)),
                        rep(NA_character_, nrow(tbl)))
-  ident <- intersect(c("id", "tag_model", "tag_type", "attachment_site"), names(tbl))
-  block <- c(intersect(traits, names(tbl)), intersect(fields, names(tbl)))
-  rest  <- setdiff(names(tbl), c(ident, block))
-  tbl[, c(ident, block, rest), drop = FALSE]
+
+  blocks$animal <- c(traits, covariates)
+  blocks$deploy <- fields
+  ord <- unlist(blocks, use.names = FALSE)
+  ord <- intersect(ord, names(tbl))
+  tbl[, c(ord, setdiff(names(tbl), ord)), drop = FALSE]
 }
 
 
