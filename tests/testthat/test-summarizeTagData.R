@@ -202,8 +202,37 @@ test_that("format(style = 'concise') abbreviates the publication headers (same v
   expect_equal(unname(unlist(format(s)[1, ])), unname(unlist(concise[1, ])))    # identical values, only names differ
   expect_true(all(c("Start", "End", "Duration (h)", "Rate (Hz)", "Attach. site",
                     "Mean TBF (Hz)", "Swimming (%)", "Positions (n)") %in% names(concise)))
-  expect_true("Mean speed (m s\u207b\u00b9)" %in% names(concise))               # superscript unit form
+  expect_true("Max speed (m/s)" %in% names(concise))                           # ASCII by default
+  expect_true("Mean speed (m s\u207b\u00b9)" %in%                               # superscript on request
+                names(format(s, style = "concise", symbols = "unicode")))
   expect_false(any(grepl("_", names(concise))))
+})
+
+test_that("the formatted table is ASCII by default, in every style, whatever the locale", {
+  # It is written to a CSV far more often than it is read in a terminal, and Excel has no BOM to go on:
+  # a UTF-8 degree sign guessed as MacRoman renders as two mojibake characters. The old gate asked
+  # cli::is_utf8_output(), which is a question about the TERMINAL - so the same script and data wrote
+  # different bytes depending on the session's locale.
+  s <- .run(list(A = .mk("A", withtbf = TRUE, withpaddle = TRUE), B = .mk("B")))
+  nonascii <- function(z) sum(grepl("[^ -~]", c(names(z), unlist(lapply(z, as.character)))))
+  for (st in c("internal", "report", "concise")) {
+    expect_identical(nonascii(format(s, style = st)), 0L)
+    expect_identical(nonascii(format(s, style = st, include.summary.row = FALSE)), 0L)
+    expect_gt(nonascii(format(s, style = st, symbols = "unicode")), 0L)
+  }
+  expect_true(any(grepl("+/-", unlist(format(s)), fixed = TRUE)))              # the summary row too
+  expect_true("Mean temp. (deg C)" %in% names(format(s, style = "report")))
+
+  # locale independence: the bytes must not follow the terminal
+  withr::with_options(list(cli.unicode = TRUE),  a <- format(s, style = "concise"))
+  withr::with_options(list(cli.unicode = FALSE), b <- format(s, style = "concise"))
+  expect_identical(a, b)
+
+  # and every header the dictionaries can produce folds to ASCII, so a symbol added later cannot escape
+  all_cols <- union(names(nautilus:::.summaryTemplate()), nautilus:::.summaryDiveCols())
+  for (st in c("report", "concise"))
+    expect_identical(sum(grepl("[^ -~]", nautilus:::.foldSymbols(
+      nautilus:::.summaryHeaders(all_cols, st)))), 0L)
 })
 
 test_that("datetime.format controls the record datetime columns", {
@@ -535,4 +564,112 @@ test_that("the summary states which backend its tail-beat mean came from", {
 test_that("a deployment with no tail-beat columns reports NA for both value and backend", {
   out <- .run(list(B = .mk("B")))
   expect_true(is.na(out$tbf_mean)); expect_true(is.na(out$tbf_method))
+})
+
+
+# ---------------------------------------------------------------------------
+# the metadata block, and what a deployment with no data still reports
+# ---------------------------------------------------------------------------
+
+.mkMeta <- function(id, traits = list(sex = "F", size_m = 9)) {
+  n <- 400
+  d <- data.table::data.table(ID = id, datetime = as.POSIXct("2020-01-01", tz = "UTC") + seq_len(n),
+                              depth = abs(sin(seq_len(n) / 40)) * 30, temp = 18)
+  m <- nautilus:::.newNautilusMeta(); m$id <- id
+  m$biometrics <- traits
+  m$deployment$datetime <- as.POSIXct("2019-12-31 08:00", tz = "UTC")
+  m$deployment$lon <- -25.1234; m$deployment$lat <- 36.9876
+  m$deployment$popup_lon <- -26.5; m$deployment$deployment_type <- "towed"
+  m$tag$package_id <- "71"; m$tag$logger_id <- "29"; m$tag$axis_config <- "cfg1"
+  nautilus:::new_nautilus_tag(d, m)
+}
+.mkRoster <- function(ids, ...) {
+  r <- data.frame(id = ids, tag_model = "CATS", tag_type = "MS", attachment_site = "pectoral",
+                  deploy_datetime = as.POSIXct("2019-12-31 08:00", tz = "UTC") + seq_along(ids) * 86400,
+                  deploy_lon = -25 - seq_along(ids) / 10, deploy_lat = 36 + seq_along(ids) / 10,
+                  sex = rep(c("F", "M"), length.out = length(ids)),
+                  size_m = seq_along(ids) + 5, stringsAsFactors = FALSE, ...)
+  class(r) <- c("nautilus_deployments", "data.frame"); r
+}
+
+test_that("metadata = 'standard' adds the traits and the tagging position by default", {
+  s <- .run(list(A = .mkMeta("A")))
+  expect_true(all(c("sex", "size_m", "deploy_datetime", "deploy_lon", "deploy_lat") %in% names(s)))
+  expect_identical(s$sex, "F"); expect_equal(s$size_m, 9)
+  expect_s3_class(s$deploy_datetime, "POSIXct")
+  expect_equal(s$deploy_lon, -25.1234); expect_equal(s$deploy_lat, 36.9876)
+  # traits first (who the animal was), then where and when it was tagged, then the record
+  expect_equal(names(s)[1:9], c("id", "tag_model", "tag_type", "attachment_site", "sex", "size_m",
+                                "deploy_datetime", "deploy_lon", "deploy_lat"))
+  expect_false(any(c("popup_lon", "package_id") %in% names(s)))
+})
+
+test_that("metadata keywords and explicit field lists select the block, and bad input aborts", {
+  tags <- list(A = .mkMeta("A"))
+  expect_false(any(c("sex", "deploy_lon") %in% names(.run(tags, metadata = "none"))))
+  all_s <- .run(tags, metadata = "all")
+  expect_true(all(c("popup_datetime", "popup_lon", "deployment_type", "package_id", "logger_id",
+                    "axis_config") %in% names(all_s)))
+  # explicit names come back in canonical order whatever order they were asked for
+  a <- .run(tags, metadata = c("deploy_lat", "sex", "deploy_lon"))
+  b <- .run(tags, metadata = c("sex", "deploy_lon", "deploy_lat"))
+  expect_identical(names(a), names(b))
+
+  expect_error(.run(tags, metadata = c("all", "sex")), "mixes the keyword")
+  expect_error(.run(tags, metadata = 42), "character vector")
+  expect_error(.run(tags, metadata = NA_character_), "character vector")
+  # a name that is neither a field nor a trait any deployment carries is taken as a trait, and said so
+  # (.run() muffles warnings, so this one goes through the function directly)
+  expect_warning(summarizeTagData(tags, metadata = c("sex", "deploy_long"), verbose = FALSE),
+                 "no deployment carries")
+})
+
+test_that("a deployment whose data never arrived still reports who, when and where", {
+  # The complaint this exists for: a tag that was never recovered used to come back with an identifier
+  # and nothing else, while the roster had been holding its tagging date and position all along.
+  s <- .run(list(A = .mkMeta("A")), deployments = .mkRoster(c("A", "GHOST")))
+  g <- s[s$id == "GHOST", ]
+  expect_identical(g$status, "excluded")
+  expect_identical(g$sex, "M"); expect_equal(g$size_m, 7)
+  expect_s3_class(g$deploy_datetime, "POSIXct"); expect_false(is.na(g$deploy_datetime))
+  expect_equal(g$deploy_lon, -25.2); expect_equal(g$deploy_lat, 36.2)
+  expect_true(is.na(g$record_duration_h))                       # it has no record, and says so
+  # the roster fill must not retype the column
+  expect_s3_class(s$deploy_datetime, "POSIXct")
+  expect_type(s$deploy_lon, "double")
+})
+
+test_that("a rejected window reaches the summary through the exclusions table", {
+  ex <- data.frame(id = "SHORT", reason = "deployment too short",
+                   detected_start = as.POSIXct("2020-06-01 08:01", tz = "UTC"),
+                   detected_end   = as.POSIXct("2020-06-01 08:08", tz = "UTC"),
+                   detected_duration_h = 0.1164, stringsAsFactors = FALSE)
+  s <- .run(list(A = .mkMeta("A")), deployments = .mkRoster(c("A", "SHORT")), exclusions = ex)
+  sh <- s[s$id == "SHORT", ]
+  expect_identical(sh$status, "excluded")
+  expect_identical(sh$status_reason, "deployment too short")
+  expect_equal(sh$record_duration_h, 0.1164)
+  expect_false(is.na(sh$record_start))
+  # a deployment that survived owns its own window - a stale table must not overwrite it
+  expect_identical(s$status_reason[s$id == "A"], NA_character_)
+  expect_equal(as.numeric(s$record_start[s$id == "A"]),
+               as.numeric(as.POSIXct("2020-01-01 00:00:01", tz = "UTC")))
+
+  expect_error(.run(list(A = .mkMeta("A")), exclusions = data.frame(id = "x")), "missing the column")
+  expect_error(.run(list(A = .mkMeta("A")), exclusions = "no-such-file.rds"), "data frame or the path")
+})
+
+test_that("video.metadata totals the per-file table, and absence is NA rather than zero", {
+  vm <- data.frame(ID = c("A", "A", "A"), duration = c(1200.5, 402.2, 421.0), stringsAsFactors = FALSE)
+  s <- .run(list(A = .mkMeta("A"), B = .mkMeta("B")), video.metadata = vm)
+  expect_equal(s$video_duration_h[s$id == "A"], sum(vm$duration) / 3600)
+  expect_true(is.na(s$video_duration_h[s$id == "B"]))          # no footage found is not zero hours
+  expect_false("video_duration_h" %in% names(.run(list(A = .mkMeta("A")))))
+
+  expect_error(.run(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "A")), "missing the column")
+  expect_error(.run(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "A", duration = "x")),
+               "must be numeric")
+  expect_warning(summarizeTagData(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "ZZ", duration = 10),
+                                  verbose = FALSE),
+                 "no 'video.metadata' ID matches")
 })

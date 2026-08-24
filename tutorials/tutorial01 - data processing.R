@@ -283,6 +283,7 @@ filterDeploymentData(data                    = list.files("./data interim/01_imp
                      plot                    = FALSE,   # one diagnostic panel per deployment...
                      plot.file               = "./plots/filtered_deployments.pdf",  # ...into a single PDF to review
                      plot.metrics            = c("temp", "az"),  # extra traces to overlay on the panel
+                     exclusions.file         = "./data interim/excluded_deployments.rds",  # who left, and why
                      return.data             = FALSE,
                      output.dir              = "./data interim/02_filtered",
                      verbose                 = "detailed")
@@ -692,16 +693,31 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
 # temperature ranges, sampling rate, positions, tail-beat and speed statistics, ...). Passing the
 # QC'd `deployments` object completes the roster (deployments with no processed data appear as
 # excluded rows), and `extra.metadata` joins any extra per-ID covariates.
+#
+# `metadata = "standard"` (the default) also brings in the biometric traits recorded at import (sex,
+# size, ...) and the tagging date and coordinates - the columns a deployment table is usually expected
+# to carry. Use "all" for the pop-up position and the package/logger identifiers, "none" for the bare
+# metric table, or name the fields and traits you want. These are filled from the roster for
+# deployments whose data never arrived, so a tag that was never recovered still reports who was tagged,
+# when and where instead of an empty row.
+#
+# `video.metadata` adds total footage per deployment (getVideoMetadata() returns one row per file; the
+# totalling is done for you). `exclusions` fills in the window of a deployment that filterDeploymentData
+# detected and then rejected as too short - see the `exclusions.file` written back in STEP 4.
 
 summary <- summarizeTagData(data           = list.files("./data interim/06_tailbeats", full.names = TRUE),
                             deployments    = deployments,
+                            metadata       = "standard",
+                            video.metadata = video_metadata,
+                            exclusions     = "./data interim/excluded_deployments.rds",
                             tbf.method     = "wavelet", 
                             error.stat     = "sd",
                             verbose        = "detailed")
 
 
-# For export, format() renders the publication-style version (write.csv2 + UTF-8 keeps the degree and
-# per-second unit symbols intact in the headers).
+# For export, format() renders the publication-style version. It is ASCII by default - a spreadsheet
+# opening a UTF-8 CSV with no byte-order mark guesses the encoding, and a degree sign then arrives as
+# mojibake. Pass symbols = "unicode" where the consumer handles UTF-8 (knitr, flextable, a manuscript).
 summary_table <- format(summary, style = "concise", include.summary.row = TRUE)
 write.csv2(summary_table, file = "./outputs/summary_table.csv", row.names = FALSE, fileEncoding = "UTF-8")
 

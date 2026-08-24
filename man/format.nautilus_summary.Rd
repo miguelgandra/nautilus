@@ -9,6 +9,7 @@
   style = c("internal", "report", "concise"),
   datetime.format = "\%d/\%b/\%Y \%H:\%M",
   include.summary.row = TRUE,
+  symbols = c("ascii", "unicode"),
   ...
 )
 }
@@ -29,6 +30,12 @@ names (lightly prettified).}
 \item{include.summary.row}{Logical. Append the display-only population \verb{mean +/- error} row (only
 meaningful with more than one deployment). Default \code{TRUE} (matches the console). Set \code{FALSE} for a
 pure per-deployment table.}
+
+\item{symbols}{Whether the rendered table may use typographic symbols: \code{"ascii"} (default) writes
+\verb{+/-}, \verb{deg C} and \code{m/s}; \code{"unicode"} writes the plus-minus, degree and superscript forms. ASCII is
+the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
+with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the degree
+sign as two characters. It also keeps the column names typeable and indexable from a script.}
 
 \item{...}{Unused.}
 }

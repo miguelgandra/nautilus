@@ -8,6 +8,9 @@ summarizeTagData(
   data,
   extra.metadata = NULL,
   deployments = NULL,
+  metadata = "standard",
+  video.metadata = NULL,
+  exclusions = NULL,
   error.stat = "sd",
   tbf.method = NULL,
   verbose = "detailed"
@@ -24,8 +27,8 @@ vector of \code{.rds} file paths (loaded lazily, one per deployment). The output
 by "/"). Fields already captured in the tag metadata (tag model/type, attachment site, sampling
 rate) are filled automatically and need not be provided here. This is also the route for any
 external per-deployment metric, e.g. total video duration from \code{\link[=getVideoMetadata]{getVideoMetadata()}}:
-\verb{v <- aggregate(duration ~ ID, getVideoMetadata(...), sum); v$duration <- v$duration / 3600} and
-pass \code{v} (renamed) as a covariate. Default \code{NULL}.}
+Default \code{NULL}. For total video duration use \code{video.metadata} instead, which totals the per-file
+table for you.}
 
 \item{deployments}{Optional \code{nautilus_deployments} object from \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}. When
 supplied, the summary is completed into the full study roster: every deployment in \code{deployments}
@@ -34,6 +37,32 @@ or \code{"excluded"} (in the roster but absent from \code{data} - NA metrics, id
 roster). The reason for exclusion is not inferred here; see \code{\link[=issues]{issues()}}. Default \code{NULL}. Supply it
 when reporting a study, so the table accounts for every animal tagged rather than only those whose
 data survived.}
+
+\item{metadata}{Which deployment metadata to include, as a single keyword or a vector of names:
+\code{"standard"} (default) adds every biometric trait the cohort carries plus the tagging date and
+coordinates; \code{"none"} reproduces the bare table; \code{"all"} adds the pop-up date and coordinates, the
+deployment type, and the package, logger and axis-configuration identifiers. Alternatively name the
+fields and traits you want - \code{c("sex", "deploy_lon", "deploy_lat")} - and they are emitted in the
+package's canonical order, so two calls requesting the same set still bind together. A named trait
+is given a column even where no deployment carries it (with a warning), which is how a cohort that
+recorded different traits can still be combined. Fields not carried onto the tag object by
+\code{\link[=importTagData]{importTagData()}}, such as \code{recovery_datetime}, are deliberately not offered.}
+
+\item{video.metadata}{Optional table from \code{\link[=getVideoMetadata]{getVideoMetadata()}} - one row per video file, with \code{ID}
+and \code{duration} (seconds). Adds \code{video_duration_h}, the total footage per deployment. The totalling
+happens here because that table has several rows per deployment, which the generic covariate join
+would collapse to a string. A deployment with no entry gets \code{NA}, never \code{0}: \code{\link[=getVideoMetadata]{getVideoMetadata()}}
+drops folders holding no video, so absence means "no footage found", which is a different claim
+from "the camera ran for zero hours". This is TOTAL footage and routinely exceeds the retained
+record - a camera started on deck records either side of the deployment. Default \code{NULL}.}
+
+\item{exclusions}{Optional exclusions table from \code{\link[=filterDeploymentData]{filterDeploymentData()}} - either the data frame it
+attaches to its result as \code{attr(x, "nautilus.exclusions")}, or the path to the file its
+\code{exclusions.file} argument wrote. Adds \code{status_reason}, and fills \code{record_start}, \code{record_end} and
+\code{record_duration_h} for a deployment that was detected and then rejected for being too short. That
+window is the evidence for the decision, so reporting the row as a bare \code{"excluded"} with no times
+discards the one number that justifies it. Never overwrites a deployment that has its own record.
+Default \code{NULL}.}
 
 \item{error.stat}{Which error statistic the display-only population row shows: \code{"sd"} (standard
 deviation, the default) describes the spread across deployments, while \code{"se"} (standard error)
@@ -66,7 +95,14 @@ recorded data span - the true on-animal window once the data have been deploymen
 \item \strong{speed_mean}, \strong{speed_max} (m/s): paddle-wheel speed, when available.
 \item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).
 \item \strong{n_positions}: total number of position fixes within the record span, when available.
-\item \strong{status}: \code{"included"}/\code{"excluded"} - only when \code{deployments} is supplied (see that argument).
+\item \strong{status}: \code{"included"}/\code{"excluded"} - only when \code{deployments} is supplied (see that
+argument); \strong{status_reason}, the rule that set a deployment aside, when \code{exclusions} is supplied.
+\item the \strong{metadata block} selected by \code{metadata}: biometric traits under the names they were
+declared with at import, then \code{deploy_datetime}, \code{deploy_lon}, \code{deploy_lat} and, with
+\code{metadata = "all"}, the pop-up and identifier fields. These are filled from each tag's own
+metadata, and from the roster for a deployment whose data never arrived - so a tag that was
+never recovered still reports who was tagged, when and where.
+\item \strong{video_duration_h}: total video recorded (h), when \code{video.metadata} is supplied.
 \item \strong{n_dives}; \strong{dive_duration_median_min}, \strong{dive_duration_max_min} (min);
 \strong{dive_depth_median_m}, \strong{dive_depth_max_m} (m, per-dive maximum depths);
 \strong{dives_incomplete}, \strong{dives_truncated}, \strong{dives_gapped}: the dive block -
@@ -109,6 +145,24 @@ an interruption in time or a depth channel that went dark bounds the dive. A div
 Deployments that have not been through \code{\link[=detectDives]{detectDives()}} simply have no dive columns, and in a mixed
 cohort they come back \code{NA}, as for any absent metric.
 }
+
+\subsection{What a deployment that produced no data still reports}{
+
+A tag that was never recovered, or one set aside during filtering, is not a deployment nothing is
+known about. Its row is completed from the roster through the same field declaration the processed
+rows are read through, so it carries the same identity, trait and tagging columns rather than a bare
+identifier. Supply \code{exclusions} as well and a deployment rejected for being too short also reports
+the window that was detected before it was rejected, which is the measurement the decision rested on.
+}
+
+\subsection{Exporting the table}{
+
+\code{format()} renders the publication version, and its output is ASCII by default: the table is written
+to a CSV far more often than it is read in a terminal, and a spreadsheet opening a UTF-8 file with no
+byte-order mark will guess the encoding and can turn a degree sign into mojibake. Pass
+\code{symbols = "unicode"} for the typographic forms where the consumer handles UTF-8 - \code{knitr::kable()},
+\code{flextable}, a paste into a manuscript.
+}
 }
 \examples{
 \dontrun{
@@ -123,5 +177,6 @@ summarizeTagData(list.files("./tailbeats", full.names = TRUE),
 }
 }
 \seealso{
-\code{\link[=processTagData]{processTagData()}}, \code{\link[=filterDeploymentData]{filterDeploymentData()}}, \code{\link[=detectDives]{detectDives()}}, \code{\link[=diveMetrics]{diveMetrics()}}.
+\code{\link[=processTagData]{processTagData()}}, \code{\link[=filterDeploymentData]{filterDeploymentData()}}, \code{\link[=detectDives]{detectDives()}}, \code{\link[=diveMetrics]{diveMetrics()}},
+\code{\link[=getVideoMetadata]{getVideoMetadata()}}, \code{\link[=metadataColumns]{metadataColumns()}}.
 }

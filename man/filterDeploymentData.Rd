@@ -18,6 +18,7 @@ filterDeploymentData(
   min.deployment.hours = 0.25,
   plot = FALSE,
   plot.file = NULL,
+  exclusions.file = NULL,
   plot.metrics = NULL,
   plot.metrics.labels = NULL,
   return.data = TRUE,
@@ -100,6 +101,15 @@ Default is \code{FALSE}.}
 panels (one page per individual). The parent directory must already exist (a missing directory is
 an error, not silently created). Must end in \code{.pdf}. If \code{NULL} (default), no file is written.
 Independent of \code{plot}: set \code{plot.file} to save without displaying, or set both to do both.}
+
+\item{exclusions.file}{Optional path to an \code{.rds} file recording every deployment that left without
+data: its identifier, the rule that set it aside, and - for one detected and then rejected as too
+short - the window that was detected. The table is always built and is always attached to the
+result as \code{attr(x, "nautilus.exclusions")}; this argument only decides whether it is also written.
+Write it when the next step reads \code{.rds} files from \code{output.dir} rather than the returned objects,
+because an attribute does not survive that hand-off, and pass the file to \code{\link[=summarizeTagData]{summarizeTagData()}} so
+an excluded deployment reports its window instead of an empty row. Do not place it inside
+\code{output.dir}, which the next step globs for tag data. Default \code{NULL}.}
 
 \item{plot.metrics}{An optional character vector of column names indicating additional metrics
 (e.g., acceleration or temperature) to include in the plot. These metrics are plotted

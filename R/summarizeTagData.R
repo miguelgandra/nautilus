@@ -29,8 +29,8 @@
 #'   by "/"). Fields already captured in the tag metadata (tag model/type, attachment site, sampling
 #'   rate) are filled automatically and need not be provided here. This is also the route for any
 #'   external per-deployment metric, e.g. total video duration from [getVideoMetadata()]:
-#'   `v <- aggregate(duration ~ ID, getVideoMetadata(...), sum); v$duration <- v$duration / 3600` and
-#'   pass `v` (renamed) as a covariate. Default `NULL`.
+#'   Default `NULL`. For total video duration use `video.metadata` instead, which totals the per-file
+#'   table for you.
 #' @param deployments Optional `nautilus_deployments` object from [checkDeploymentMetadata()]. When
 #'   supplied, the summary is completed into the full study roster: every deployment in `deployments`
 #'   gets a row, and a `status` column marks each as `"included"` (processed data present, full metrics)
@@ -38,6 +38,29 @@
 #'   roster). The reason for exclusion is not inferred here; see [issues()]. Default `NULL`. Supply it
 #'   when reporting a study, so the table accounts for every animal tagged rather than only those whose
 #'   data survived.
+#' @param metadata Which deployment metadata to include, as a single keyword or a vector of names:
+#'   `"standard"` (default) adds every biometric trait the cohort carries plus the tagging date and
+#'   coordinates; `"none"` reproduces the bare table; `"all"` adds the pop-up date and coordinates, the
+#'   deployment type, and the package, logger and axis-configuration identifiers. Alternatively name the
+#'   fields and traits you want - `c("sex", "deploy_lon", "deploy_lat")` - and they are emitted in the
+#'   package's canonical order, so two calls requesting the same set still bind together. A named trait
+#'   is given a column even where no deployment carries it (with a warning), which is how a cohort that
+#'   recorded different traits can still be combined. Fields not carried onto the tag object by
+#'   [importTagData()], such as `recovery_datetime`, are deliberately not offered.
+#' @param video.metadata Optional table from [getVideoMetadata()] - one row per video file, with `ID`
+#'   and `duration` (seconds). Adds `video_duration_h`, the total footage per deployment. The totalling
+#'   happens here because that table has several rows per deployment, which the generic covariate join
+#'   would collapse to a string. A deployment with no entry gets `NA`, never `0`: [getVideoMetadata()]
+#'   drops folders holding no video, so absence means "no footage found", which is a different claim
+#'   from "the camera ran for zero hours". This is TOTAL footage and routinely exceeds the retained
+#'   record - a camera started on deck records either side of the deployment. Default `NULL`.
+#' @param exclusions Optional exclusions table from [filterDeploymentData()] - either the data frame it
+#'   attaches to its result as `attr(x, "nautilus.exclusions")`, or the path to the file its
+#'   `exclusions.file` argument wrote. Adds `status_reason`, and fills `record_start`, `record_end` and
+#'   `record_duration_h` for a deployment that was detected and then rejected for being too short. That
+#'   window is the evidence for the decision, so reporting the row as a bare `"excluded"` with no times
+#'   discards the one number that justifies it. Never overwrites a deployment that has its own record.
+#'   Default `NULL`.
 #' @param tbf.method Which tail-beat backend to summarise, e.g. `"wavelet"`. `NULL` (default) resolves it
 #'   per deployment from the data -- whichever `tbf_hz_*` columns carry values, with the package's
 #'   documented order (`peaks`, then `wavelet`) breaking a tie. The backend actually used is reported as
@@ -66,7 +89,14 @@
 #'   \item **speed_mean**, **speed_max** (m/s): paddle-wheel speed, when available.
 #'   \item **descent_rate_max**, **ascent_rate_max** (m/s): fastest vertical speeds (descent positive).
 #'   \item **n_positions**: total number of position fixes within the record span, when available.
-#'   \item **status**: `"included"`/`"excluded"` - only when `deployments` is supplied (see that argument).
+#'   \item **status**: `"included"`/`"excluded"` - only when `deployments` is supplied (see that
+#'     argument); **status_reason**, the rule that set a deployment aside, when `exclusions` is supplied.
+#'   \item the **metadata block** selected by `metadata`: biometric traits under the names they were
+#'     declared with at import, then `deploy_datetime`, `deploy_lon`, `deploy_lat` and, with
+#'     `metadata = "all"`, the pop-up and identifier fields. These are filled from each tag's own
+#'     metadata, and from the roster for a deployment whose data never arrived - so a tag that was
+#'     never recovered still reports who was tagged, when and where.
+#'   \item **video_duration_h**: total video recorded (h), when `video.metadata` is supplied.
 #'   \item **n_dives**; **dive_duration_median_min**, **dive_duration_max_min** (min);
 #'     **dive_depth_median_m**, **dive_depth_max_m** (m, per-dive maximum depths);
 #'     **dives_incomplete**, **dives_truncated**, **dives_gapped**: the dive block -
@@ -93,7 +123,25 @@
 #' Deployments that have not been through [detectDives()] simply have no dive columns, and in a mixed
 #' cohort they come back `NA`, as for any absent metric.
 #'
-#' @seealso [processTagData()], [filterDeploymentData()], [detectDives()], [diveMetrics()].
+#' @details
+#' ## What a deployment that produced no data still reports
+#'
+#' A tag that was never recovered, or one set aside during filtering, is not a deployment nothing is
+#' known about. Its row is completed from the roster through the same field declaration the processed
+#' rows are read through, so it carries the same identity, trait and tagging columns rather than a bare
+#' identifier. Supply `exclusions` as well and a deployment rejected for being too short also reports
+#' the window that was detected before it was rejected, which is the measurement the decision rested on.
+#'
+#' ## Exporting the table
+#'
+#' `format()` renders the publication version, and its output is ASCII by default: the table is written
+#' to a CSV far more often than it is read in a terminal, and a spreadsheet opening a UTF-8 file with no
+#' byte-order mark will guess the encoding and can turn a degree sign into mojibake. Pass
+#' `symbols = "unicode"` for the typographic forms where the consumer handles UTF-8 - `knitr::kable()`,
+#' `flextable`, a paste into a manuscript.
+#'
+#' @seealso [processTagData()], [filterDeploymentData()], [detectDives()], [diveMetrics()],
+#'   [getVideoMetadata()], [metadataColumns()].
 #' @examples
 #' \dontrun{
 #' # One row per deployment from processed (and tail-beat-annotated) tags.
@@ -110,6 +158,9 @@
 summarizeTagData <- function(data,
                              extra.metadata = NULL,
                              deployments = NULL,
+                             metadata = "standard",
+                             video.metadata = NULL,
+                             exclusions = NULL,
                              error.stat = "sd",
                              tbf.method = NULL,
                              verbose = "detailed") {
@@ -128,6 +179,8 @@ summarizeTagData <- function(data,
 
   # resolve input: a list of processed datasets, a single aggregated data.frame (split by ID), or a
   # character vector of .rds file paths (loaded lazily) - consistent with the rest of the pipeline.
+  meta_req <- .summaryResolveMetadata(metadata)
+  .assert_video_metadata(video.metadata)
   r <- .resolveInput(data, id.col = "ID")
 
   .log_header(lvl, "summarizeTagData", "Summarising the deployments",
@@ -136,7 +189,9 @@ summarizeTagData <- function(data,
   # per-deployment summaries (the same engine that backs summary.nautilus_tag). Empty/malformed deployments
   # come back NULL (.summarize warns per case); report the omissions here rather than letting them vanish.
   pb      <- .log_progress_start(lvl, r$n, "Summarising")           # live bar at detailed verbosity (lvl >= 2)
-  parts   <- lapply(seq_len(r$n), function(i) { .log_progress_step(pb); .summarize(r$get(i), tbf.method) })
+  parts   <- lapply(seq_len(r$n), function(i) {
+    .log_progress_step(pb); .summarize(r$get(i), tbf.method, meta_req)
+  })
   .log_progress_done(pb)
   dropped <- vapply(parts, is.null, logical(1))
   if (any(dropped))
@@ -147,12 +202,15 @@ summarizeTagData <- function(data,
   summary_table <- if (any(!dropped)) as.data.frame(data.table::rbindlist(parts[!dropped], fill = TRUE))
                    else .summaryTemplate()
   rownames(summary_table) <- NULL
+  summary_table <- .summaryOrderMeta(summary_table, meta_req)
 
   # optionally complete the study roster: every deployment in `deployments` gets a row - processed ones
   # carry full metrics + status "included"; the rest get NA metrics, identity filled from the QC roster,
   # and status "excluded" (works on an empty summary too, so an all-excluded roster is still produced).
   # Done BEFORE the covariate join so external covariates attach to every row.
-  if (!is.null(deployments)) summary_table <- .completeRoster(summary_table, deployments)
+  if (!is.null(deployments)) summary_table <- .completeRoster(summary_table, deployments, meta_req)
+  summary_table <- .attachVideoDuration(summary_table, video.metadata)
+  summary_table <- .attachExclusions(summary_table, exclusions)
 
   # optional join of EXTERNAL per-animal covariates (those not already in the tag metadata)
   if (!is.null(extra.metadata) && nrow(summary_table) > 0) {
@@ -315,7 +373,8 @@ summarizeTagData <- function(data,
 #' @keywords internal
 #' @noRd
 
-.summarize <- function(data_individual, tbf.method = NULL) {
+.summarize <- function(data_individual, tbf.method = NULL,
+                       meta.req = list(fields = character(0), traits = character(0))) {
 
   if (is.null(data_individual) || nrow(data_individual) == 0) return(NULL)
   dt <- data_individual
@@ -410,6 +469,12 @@ summarizeTagData <- function(data,
     check.names           = FALSE
   )
 
+  # Requested deployment metadata and biometric traits, read through the shared declaration so a
+  # processed deployment and a roster-only one are filled from the same list of fields.
+  mb <- .summaryMetaRow(meta, meta.req$fields, meta.req$traits)
+  if (length(mb))
+    out <- cbind(out, as.data.frame(mb, stringsAsFactors = FALSE, check.names = FALSE))
+
   # optional dive block, appended only for data that have been through detectDives(). A non-numeric
   # dive_id is not a dive annotation, and is left out rather than guessed at (same tolerance as cstat()).
   if (all(c("dive_id", "dive_phase", "depth") %in% names(dt)) && is.numeric(dt[["dive_id"]]))
@@ -471,7 +536,8 @@ summarizeTagData <- function(data,
 #' read straight off it (optional roles such as tag_type/attachment_site/paddle_wheel may be absent).
 #' @keywords internal
 #' @noRd
-.completeRoster <- function(summary_table, deployments) {
+.completeRoster <- function(summary_table, deployments,
+                            meta.req = list(fields = character(0), traits = character(0))) {
   rid  <- as.character(deployments[["id"]])
   pick <- function(col) if (col %in% names(deployments)) deployments[[col]] else rep(NA, length(rid))
   lgl  <- function(v) {                          # NA-preserving (unknown paddle stays NA, not silently FALSE)
@@ -490,6 +556,41 @@ summarizeTagData <- function(data,
     if ("tag_type" %in% names(add))        add$tag_type        <- as.character(pick("tag_type"))[m]
     if ("attachment_site" %in% names(add)) add$attachment_site <- as.character(pick("attachment_site"))[m]
     if ("paddle_wheel" %in% names(add))    add$paddle_wheel    <- lgl(pick("paddle_wheel"))[m]
+
+    # The metadata a deployment came with does not stop being true because its data never arrived. A
+    # tag that was never recovered has no record, no depth and no dive - but it was still attached to a
+    # known animal, on a known date, at a known place, and the roster is holding all of it. Filled from
+    # the SAME field declaration the processed rows are read through, so the two cannot drift.
+    spec <- .summaryMetaFields()
+    for (f in intersect(meta.req$fields, names(add))) {
+      src <- spec[[f]]$roster
+      if (!src %in% names(deployments)) next
+      val <- deployments[[src]][m]
+      add[[f]] <- switch(spec[[f]]$type,
+        # pick() yields a logical NA vector for an absent role, and assigning that into a POSIXct
+        # column silently retypes the whole column, so datetimes are only taken when genuinely POSIXt
+        time = if (inherits(deployments[[src]], "POSIXt")) val else add[[f]],
+        num  = .asNumericSafe(val),
+        as.character(val))
+    }
+    # Traits keep the names they were declared with at import, so the roster carries them verbatim.
+    # When the caller asked for "whatever traits exist" and NO processed deployment carried any - every
+    # tag excluded, or a cohort imported without biometrics - the roster is the only source, so its
+    # non-role columns supply both the names and the values. metadataColumns() IS the role vocabulary,
+    # which is what lets a trait be told from a mapped field without a second list to keep in step.
+    tr <- setdiff(names(add), c(names(.summaryTemplate()), .summaryDiveCols(), meta.req$fields, "status"))
+    want <- meta.req$traits
+    if (length(want) == 1L && is.na(want)) {
+      roles <- setdiff(names(formals(metadataColumns)), "traits")
+      tr <- union(tr, setdiff(names(deployments), c(roles, names(.summaryMetaFields()), "id")))
+    } else tr <- union(tr, want)
+    for (tn in intersect(tr, names(deployments))) {
+      val <- deployments[[tn]][m]
+      if (!tn %in% names(add)) add[[tn]] <- rep(if (is.numeric(val)) NA_real_ else NA, nrow(add))
+      add[[tn]] <- if (is.numeric(add[[tn]]) || is.numeric(val)) .asNumericSafe(val) else as.character(val)
+      if (!tn %in% names(summary_table)) summary_table[[tn]] <- rep(NA, nrow(summary_table))
+    }
+    add <- add[, union(names(summary_table), names(add)), drop = FALSE]
     add$status <- "excluded"
     summary_table <- rbind(summary_table, add)
   }
@@ -558,24 +659,37 @@ summarizeTagData <- function(data,
 #' @param include.summary.row Logical. Append the display-only population `mean +/- error` row (only
 #'   meaningful with more than one deployment). Default `TRUE` (matches the console). Set `FALSE` for a
 #'   pure per-deployment table.
+#' @param symbols Whether the rendered table may use typographic symbols: `"ascii"` (default) writes
+#'   `+/-`, `deg C` and `m/s`; `"unicode"` writes the plus-minus, degree and superscript forms. ASCII is
+#'   the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
+#'   with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the degree
+#'   sign as two characters. It also keeps the column names typeable and indexable from a script.
 #' @param ... Unused.
 #' @return A character `data.frame` - the formatted table (0-row for an empty summary).
 #' @exportS3Method format nautilus_summary
 
 format.nautilus_summary <- function(x, style = c("internal", "report", "concise"),
-                                    datetime.format = "%d/%b/%Y %H:%M", include.summary.row = TRUE, ...) {
+                                    datetime.format = "%d/%b/%Y %H:%M", include.summary.row = TRUE,
+                                    symbols = c("ascii", "unicode"), ...) {
   style <- match.arg(style)
+  symbols <- match.arg(symbols)
   .assert_string(datetime.format, "datetime.format")
   df <- as.data.frame(x)
   if (nrow(df) == 0 || ncol(df) == 0) return(data.frame())
 
   err_stat <- attr(x, "error.stat") %||% "sd"
-  pm <- if (cli::is_utf8_output()) "\u00b1" else "+/-"           # locale-safe plus-minus marker
+  # ASCII by default, and NOT gated on cli::is_utf8_output(). That gate asks whether the TERMINAL can
+  # render a glyph, which is the right question for print() and the wrong one for a value headed to a
+  # file: the same script, data and package version wrote different CSV bytes depending on whether the
+  # session had a UTF-8 locale, which is not reproducible output. It also gated only the plus-minus, so
+  # a non-UTF-8 terminal still received a degree sign in the header next to a "+/-" in the body.
+  pm <- if (identical(symbols, "unicode")) "\u00b1" else "+/-"
   errfun <- if (err_stat == "se") function(v) stats::sd(v, na.rm = TRUE) / sqrt(sum(is.finite(v)))
             else function(v) stats::sd(v, na.rm = TRUE)
 
   # fixed, predictable display precision per metric (default 2 dp for anything unlisted)
   prec_map <- c(record_duration_h = 1, sampling_hz = 0,
+                deploy_lon = 4, deploy_lat = 4, popup_lon = 4, popup_lat = 4, video_duration_h = 2,
                 depth_mean = 1, depth_max = 1, temp_mean = 1, temp_min = 1, temp_max = 1,
                 vedba_mean = 3, odba_mean = 3, tbf_mean = 2, pct_swimming = 1, speed_mean = 2, speed_max = 2,
                 descent_rate_max = 2, ascent_rate_max = 2, n_samples = 0, n_positions = 0,
@@ -585,8 +699,10 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   prec_of <- function(nm) { p <- unname(prec_map[nm]); if (is.na(p)) 2L else as.integer(p) }
 
   num_cols <- names(df)[vapply(df, is.numeric, logical(1))]
-  # columns where a cross-individual mean is meaningless (the per-tag acquisition constant)
-  agg_cols <- setdiff(num_cols, "sampling_hz")
+  # columns where a cross-individual mean is meaningless: the per-tag acquisition constant, and the
+  # tagging coordinates - averaging those gives the centroid of the study area, which is a real
+  # quantity but not the one a "mean +/- sd" row in a deployment table is read as.
+  agg_cols <- setdiff(num_cols, c("sampling_hz", "deploy_lon", "deploy_lat", "popup_lon", "popup_lat"))
 
   # character display table: datetimes formatted, numerics rounded to their precision
   disp <- as.data.frame(lapply(names(df), function(nm) {
@@ -613,7 +729,112 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   }
   disp[is.na(disp)] <- "-"
   if (style != "internal") names(disp) <- .summaryHeaders(names(disp), style)
+  if (identical(symbols, "ascii")) names(disp) <- .foldSymbols(names(disp))
   disp
+}
+
+
+#' Replace the typographic symbols a header may carry with ASCII spellings.
+#'
+#' Applied to headers on the way out of `format()` rather than kept out of the dictionaries, so the
+#' dictionaries stay readable and one function owns every substitution. A degree sign in a column NAME
+#' is the worst of these: besides surviving no encoding guess, it makes the column awkward to reference
+#' - `x[["Mean temp. (deg C)"]]` can be typed on any keyboard and pasted into a script that must remain
+#' ASCII, the degree-sign spelling cannot.
+#' @keywords internal
+#' @noRd
+.foldSymbols <- function(s) {
+  s <- gsub("\u00b0C", "deg C", s, fixed = TRUE)
+  s <- gsub("m s\u207b\u00b9", "m/s", s, fixed = TRUE)
+  s <- gsub("(\u00b0)", "(deg)", s, fixed = TRUE)   # a bare unit, not a value: no leading space
+  s <- gsub("\u00b0", " deg", s, fixed = TRUE)
+  s <- gsub("\u00b1", "+/-", s, fixed = TRUE)
+  s <- gsub("\u207b\u00b9", "^-1", s, fixed = TRUE)
+  s
+}
+
+
+#' The deployment-metadata fields the summary can surface, declared ONCE.
+#'
+#' Each entry says where the field lives on a tag's own metadata AND which column of a
+#' `nautilus_deployments` roster carries the same thing. Both readers walk this list, which is what
+#' makes a deployment that never produced data get exactly the columns a processed one gets: the
+#' alternative - two hand-written lists - is why a non-recovered tag used to come back with four fields
+#' out of thirty and no tagging date, when the roster had known it all along.
+#'
+#' `recovery_datetime` and `tag_format` are deliberately absent: `metadataColumns()` maps them, but
+#' nothing carries them onto the tag object, so they can only ever be roster-side and would be NA for
+#' every processed deployment.
+#' @keywords internal
+#' @noRd
+.summaryMetaFields <- function() list(
+  deploy_datetime = list(get = function(m) m$deployment$datetime,        roster = "deploy_datetime", type = "time"),
+  deploy_lon      = list(get = function(m) m$deployment$lon,             roster = "deploy_lon",      type = "num"),
+  deploy_lat      = list(get = function(m) m$deployment$lat,             roster = "deploy_lat",      type = "num"),
+  popup_datetime  = list(get = function(m) m$deployment$popup_datetime,  roster = "popup_datetime",  type = "time"),
+  popup_lon       = list(get = function(m) m$deployment$popup_lon,       roster = "popup_lon",       type = "num"),
+  popup_lat       = list(get = function(m) m$deployment$popup_lat,       roster = "popup_lat",       type = "num"),
+  deployment_type = list(get = function(m) m$deployment$deployment_type, roster = "deployment_type", type = "chr"),
+  attachment_site = list(get = function(m) m$deployment$attachment_site, roster = "attachment_site", type = "chr"),
+  package_id      = list(get = function(m) m$tag$package_id,             roster = "package_id",      type = "chr"),
+  logger_id       = list(get = function(m) m$tag$logger_id,              roster = "logger_id",       type = "chr"),
+  axis_config     = list(get = function(m) m$tag$axis_config,            roster = "axis_config",     type = "chr"))
+
+#' The keyword shorthands for `metadata =`.
+#' @keywords internal
+#' @noRd
+.summaryMetaSets <- function() list(
+  none     = character(0),
+  standard = c("deploy_datetime", "deploy_lon", "deploy_lat"),
+  all      = setdiff(names(.summaryMetaFields()), "attachment_site"))   # already in the identity block
+
+#' Resolve `metadata =` into the fields and traits to emit.
+#'
+#' Returns `traits = NA_character_` for "every trait the cohort happens to carry" (the keyword forms)
+#' and an explicit character vector when the caller named them, which is the escape hatch that pins the
+#' schema across cohorts that recorded different traits.
+#' @keywords internal
+#' @noRd
+.summaryResolveMetadata <- function(metadata) {
+  if (!is.character(metadata) || !length(metadata) || anyNA(metadata))
+    .abort(c("{.arg metadata} must be a character vector with no {.val NA}.",
+             "i" = "One of {.val none}, {.val standard}, {.val all}, or field/trait names."))
+  sets  <- .summaryMetaSets()
+  known <- names(.summaryMetaFields())
+  if (length(metadata) == 1L && metadata %in% names(sets))
+    return(list(fields = sets[[metadata]],
+                traits = if (identical(metadata, "none")) character(0) else NA_character_))
+  hit <- intersect(metadata, names(sets))
+  if (length(hit))
+    .abort(c("{.arg metadata} mixes the keyword{?s} {.val {hit}} with field names.",
+             "i" = "Pass a single keyword, or list the fields and traits you want."))
+  # anything not a known field is taken to name a trait - traits are user-defined at import, so the
+  # package cannot hold a vocabulary for them
+  list(fields = known[known %in% metadata], traits = setdiff(metadata, known))
+}
+
+#' Read the requested metadata fields off one tag's metadata.
+#' @keywords internal
+#' @noRd
+.summaryMetaRow <- function(meta, fields, traits) {
+  spec <- .summaryMetaFields()
+  cast <- function(v, type) switch(type,
+    time = { v <- v %||% NA; if (length(v) != 1 || !inherits(v, "POSIXt")) .POSIXct(NA_real_, tz = "UTC") else v },
+    num  = { v <- .asNumericSafe(v %||% NA_real_); if (length(v) != 1) NA_real_ else v },
+    { v <- v %||% NA_character_; if (length(v) != 1) NA_character_ else as.character(v) })
+  out <- lapply(fields, function(f) cast(spec[[f]]$get(meta), spec[[f]]$type))
+  names(out) <- fields
+  bio <- meta$biometrics %||% list()
+  # Only traits this tag actually carries. A requested-but-absent one is NOT filled in here: leaving the
+  # column off makes "no deployment carried it" visible once, after binding, where it can be reported -
+  # emitting NA per row instead made a typo indistinguishable from a trait nobody recorded.
+  keep <- if (length(traits) == 1L && is.na(traits)) names(bio) else intersect(traits, names(bio))
+  for (tn in keep) {
+    v <- bio[[tn]]
+    if (is.null(v) || length(v) != 1) next
+    out[[tn]] <- if (is.numeric(v) || is.logical(v)) v else as.character(v)
+  }
+  out
 }
 
 
@@ -628,7 +849,13 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 .summaryHeaders <- function(cols, style = "report") {
   report <- c(
     id = "ID", tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attachment site",
-    status = "Status", record_start = "Record start", record_end = "Record end",
+    status = "Status", status_reason = "Exclusion reason",
+    deploy_datetime = "Tagging date", deploy_lon = "Tagging longitude (\u00b0)",
+    deploy_lat = "Tagging latitude (\u00b0)", popup_datetime = "Pop-up date",
+    popup_lon = "Pop-up longitude (\u00b0)", popup_lat = "Pop-up latitude (\u00b0)",
+    deployment_type = "Deployment type", package_id = "Package ID", logger_id = "Logger ID",
+    axis_config = "Axis configuration", video_duration_h = "Video recorded (h)",
+    record_start = "Record start", record_end = "Record end",
     record_duration_h = "Recording duration (h)", n_samples = "Samples (n)", sampling_hz = "Sampling rate (Hz)",
     depth_mean = "Mean depth (m)", depth_max = "Max depth (m)",
     temp_mean = "Mean temp. (\u00b0C)", temp_min = "Min temp. (\u00b0C)", temp_max = "Max temp. (\u00b0C)",
@@ -643,7 +870,12 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     dives_truncated = "Boundary-truncated dives (n)", dives_gapped = "Gap-interrupted dives (n)")
   concise <- c(
     id = "ID", tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attach. site",
-    status = "Status", record_start = "Start", record_end = "End",
+    status = "Status", status_reason = "Reason",
+    deploy_datetime = "Tagged", deploy_lon = "Lon (\u00b0)", deploy_lat = "Lat (\u00b0)",
+    popup_datetime = "Pop-up", popup_lon = "Pop-up lon (\u00b0)", popup_lat = "Pop-up lat (\u00b0)",
+    deployment_type = "Deploy. type", package_id = "Package", logger_id = "Logger",
+    axis_config = "Axis config", video_duration_h = "Video (h)",
+    record_start = "Start", record_end = "End",
     record_duration_h = "Duration (h)", n_samples = "Samples (n)", sampling_hz = "Rate (Hz)",
     depth_mean = "Mean depth (m)", depth_max = "Max depth (m)",
     temp_mean = "Mean temp. (\u00b0C)", temp_min = "Min temp. (\u00b0C)", temp_max = "Max temp. (\u00b0C)",
@@ -680,11 +912,15 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 print.nautilus_summary <- function(x, ...) {
   df <- as.data.frame(x)
   if (nrow(df) == 0) { cat("<nautilus_summary> 0 deployments\n"); return(invisible(x)) }
-  pm <- if (cli::is_utf8_output()) "\u00b1" else "+/-"
+  # The console IS the right place to ask what the terminal can render - and to ask it ONCE, for the
+  # banner and the table together. Gating only the banner left a "+/-" beside a header still carrying a
+  # degree sign on a terminal cli had just declared incapable of UTF-8.
+  uni <- cli::is_utf8_output()
+  pm <- if (uni) "\u00b1" else "+/-"
   err_stat <- attr(x, "error.stat") %||% "sd"
   cat(sprintf("<nautilus_summary> %d deployment%s%s\n", nrow(df), if (nrow(df) != 1) "s" else "",
               if (nrow(df) > 1) sprintf(" (final row: mean %s %s)", pm, err_stat) else ""))
-  print(format(x), row.names = FALSE)
+  print(format(x, symbols = if (uni) "unicode" else "ascii"), row.names = FALSE)
   invisible(x)
 }
 
@@ -692,3 +928,153 @@ print.nautilus_summary <- function(x, ...) {
 #######################################################################################################
 #######################################################################################################
 #######################################################################################################
+
+
+#' The dive block's column names, in the documented order. Declared once so the block can be told apart
+#' from a biometric trait, both of which are absent from the base template.
+#' @keywords internal
+#' @noRd
+.summaryDiveCols <- function()
+  c("n_dives", "dive_duration_median_min", "dive_duration_max_min", "dive_depth_median_m",
+    "dive_depth_max_m", "dives_incomplete", "dives_truncated", "dives_gapped")
+
+
+#' Put the metadata/trait block in a fixed place, whatever order the deployments arrived in.
+#'
+#' `rbindlist(fill = TRUE)` unions the columns of a ragged cohort, so a trait first seen on deployment
+#' seventeen lands wherever it lands. Two calls on the same animals must not produce differently ordered
+#' tables, so the block is re-seated here: traits (who the animal was), then metadata fields (where and
+#' when it was tagged), then everything the tag recorded. Explicitly named traits are also MATERIALISED
+#' when no deployment carried them, which is what lets two cohorts that recorded different traits still
+#' bind together.
+#' @keywords internal
+#' @noRd
+.summaryOrderMeta <- function(tbl, meta.req) {
+  fields <- meta.req$fields
+  traits <- meta.req$traits
+  if (length(traits) == 1L && is.na(traits)) {
+    # Whatever the cohort carried. Inferred by exclusion, so everything the summary itself produces has
+    # to be excluded - the base schema AND the dive block, which is appended per deployment and is
+    # therefore just as absent from the template as a trait is.
+    traits <- setdiff(names(tbl), c(names(.summaryTemplate()), .summaryDiveCols(), fields))
+  } else {
+    # Named but carried by no deployment. The column is still created - that is the whole point of
+    # naming traits explicitly - but a silent all-NA column is indistinguishable from a typo, and the
+    # package cannot hold a vocabulary for user-declared traits to check the spelling against.
+    absent <- setdiff(traits, names(tbl))
+    for (tn in absent) tbl[[tn]] <- NA
+    if (length(absent))
+      warning(sprintf("summarizeTagData: no deployment carries the requested trait(s) %s - column(s) added as all-NA (check the spelling, or metadataColumns(traits = ) at import).",
+                      paste(sprintf("'%s'", absent), collapse = ", ")), call. = FALSE)
+  }
+  # Requested FIELDS are materialised whether or not any deployment carried them, so column presence
+  # follows the argument and nothing else - the fixed-schema promise. Without this an all-excluded
+  # cohort (every deployment in the roster, none with data) came back with no metadata columns for
+  # .completeRoster to fill, which is exactly the case this whole block exists for.
+  spec <- .summaryMetaFields()
+  for (f in setdiff(fields, names(tbl)))
+    tbl[[f]] <- switch(spec[[f]]$type,
+                       time = .POSIXct(rep(NA_real_, nrow(tbl)), tz = "UTC"),
+                       num  = rep(NA_real_, nrow(tbl)),
+                       rep(NA_character_, nrow(tbl)))
+  ident <- intersect(c("id", "tag_model", "tag_type", "attachment_site"), names(tbl))
+  block <- c(intersect(traits, names(tbl)), intersect(fields, names(tbl)))
+  rest  <- setdiff(names(tbl), c(ident, block))
+  tbl[, c(ident, block, rest), drop = FALSE]
+}
+
+
+#' Validate a `video.metadata` table (the getVideoMetadata() contract this function relies on).
+#' @keywords internal
+#' @noRd
+.assert_video_metadata <- function(v) {
+  if (is.null(v)) return(invisible(NULL))
+  if (!is.data.frame(v))
+    .abort("{.arg video.metadata} must be a data frame as returned by {.fn getVideoMetadata}.")
+  miss <- setdiff(c("ID", "duration"), names(v))
+  if (length(miss))
+    .abort(c("{.arg video.metadata} is missing the column{?s} {.field {miss}}.",
+             "i" = "Pass the table {.fn getVideoMetadata} returns, unaggregated."))
+  if (!is.numeric(v[["duration"]]))
+    .abort("{.field duration} in {.arg video.metadata} must be numeric (seconds).")
+  invisible(NULL)
+}
+
+
+#' Total recorded video per deployment, in hours.
+#'
+#' getVideoMetadata() returns one row per FILE, so the totalling belongs here rather than in the
+#' caller's script: handed the raw table, the generic covariate join would collapse the several
+#' durations of one deployment into the string "403.4/404.1/404.7" and then turn it into NA.
+#'
+#' NA, never 0, for a deployment with no entry. A folder holding no video is dropped by
+#' getVideoMetadata() entirely, so absence in this table means "no footage was found", which is not the
+#' same claim as "the camera ran for zero hours", and only one of those is safe to average.
+#'
+#' This is TOTAL footage, which routinely exceeds the retained record window - a camera started on deck
+#' keeps recording either side of the deployment (measured on PIN_CAM_06: 0.90 h of video against a
+#' 0.54 h overlap). It answers "how much video is there", not "how much video covers analysed data".
+#' @keywords internal
+#' @noRd
+.attachVideoDuration <- function(tbl, video.metadata) {
+  if (is.null(video.metadata) || !nrow(tbl)) return(tbl)
+  v <- as.data.frame(video.metadata)
+  ids <- as.character(v[["ID"]])
+  secs <- .asNumericSafe(v[["duration"]])
+  ok <- !is.na(ids) & is.finite(secs)
+  tot <- if (any(ok)) tapply(secs[ok], ids[ok], sum) else numeric(0)
+  tbl$video_duration_h <- unname(as.numeric(tot[match(tbl$id, names(tot))]) / 3600)
+  if (!any(tbl$id %in% names(tot)))
+    warning("summarizeTagData: no 'video.metadata' ID matches any deployment - video_duration_h is all NA (check the ID values).",
+            call. = FALSE)
+  tbl
+}
+
+
+#' Fill the record window of a deployment that filterDeploymentData() detected and then rejected.
+#'
+#' A deployment excluded for being shorter than `min.deployment.hours` is not a deployment nothing is
+#' known about: a window WAS found, and the reason it was dropped is precisely that the window was
+#' short. Reporting it as a bare "excluded" with no times throws away the one number that justifies the
+#' decision. So its `record_start`, `record_end` and `record_duration_h` are filled from the exclusions
+#' table, and `status_reason` says which rule set it aside.
+#'
+#' Only ever writes into rows whose metrics are absent - a deployment that survived filtering owns its
+#' record window, and an exclusions table left over from an earlier run must not overwrite it.
+#' @keywords internal
+#' @noRd
+.attachExclusions <- function(tbl, exclusions) {
+  if (is.null(exclusions) || !nrow(tbl)) return(tbl)
+  ex <- if (is.character(exclusions)) {
+    if (length(exclusions) != 1L || !file.exists(exclusions))
+      .abort("{.arg exclusions} must be a data frame or the path to one saved {.file .rds} file.")
+    readRDS(exclusions)
+  } else exclusions
+  if (!is.data.frame(ex))
+    .abort("{.arg exclusions} must be a data frame as attached by {.fn filterDeploymentData}.")
+  miss <- setdiff(c("id", "reason"), names(ex))
+  if (length(miss))
+    .abort(c("{.arg exclusions} is missing the column{?s} {.field {miss}}.",
+             "i" = "Pass the table {.fn filterDeploymentData} attaches, or the file it wrote."))
+  if (!nrow(ex)) return(tbl)
+
+  m <- match(tbl$id, as.character(ex$id))
+  hit <- !is.na(m)
+  if (!any(hit)) {
+    warning("summarizeTagData: no 'exclusions' ID matches any deployment - nothing filled (check the ID values).",
+            call. = FALSE)
+    return(tbl)
+  }
+  if (!"status_reason" %in% names(tbl)) tbl$status_reason <- NA_character_
+  tbl$status_reason[hit] <- as.character(ex$reason)[m[hit]]
+
+  # never overwrite a deployment that has its own record: only a row with no window gets one
+  fill <- hit & is.na(tbl$record_start)
+  if (any(fill) && all(c("detected_start", "detected_end") %in% names(ex))) {
+    tbl$record_start[fill] <- ex$detected_start[m[fill]]
+    tbl$record_end[fill]   <- ex$detected_end[m[fill]]
+    if ("detected_duration_h" %in% names(ex))
+      tbl$record_duration_h[fill] <- as.numeric(ex$detected_duration_h)[m[fill]]
+  }
+  tbl
+}

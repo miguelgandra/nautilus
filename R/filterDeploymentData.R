@@ -103,6 +103,14 @@
 #' panels (one page per individual). The parent directory must already exist (a missing directory is
 #' an error, not silently created). Must end in `.pdf`. If `NULL` (default), no file is written.
 #' Independent of `plot`: set `plot.file` to save without displaying, or set both to do both.
+#' @param exclusions.file Optional path to an `.rds` file recording every deployment that left without
+#'   data: its identifier, the rule that set it aside, and - for one detected and then rejected as too
+#'   short - the window that was detected. The table is always built and is always attached to the
+#'   result as `attr(x, "nautilus.exclusions")`; this argument only decides whether it is also written.
+#'   Write it when the next step reads `.rds` files from `output.dir` rather than the returned objects,
+#'   because an attribute does not survive that hand-off, and pass the file to [summarizeTagData()] so
+#'   an excluded deployment reports its window instead of an empty row. Do not place it inside
+#'   `output.dir`, which the next step globs for tag data. Default `NULL`.
 #' @param plot.metrics An optional character vector of column names indicating additional metrics
 #' (e.g., acceleration or temperature) to include in the plot. These metrics are plotted
 #' alongside the depth data to aid in visually reviewing the deployment period assignments.
@@ -164,6 +172,7 @@ filterDeploymentData <- function(data,
                                  min.deployment.hours = 0.25,
                                  plot = FALSE,
                                  plot.file = NULL,
+                                 exclusions.file = NULL,
                                  plot.metrics = NULL,
                                  plot.metrics.labels = NULL,
                                  return.data = TRUE,
@@ -202,7 +211,8 @@ filterDeploymentData <- function(data,
   .assert_string(temp.col, "temp.col")
   .assert_flag(use.temperature, "use.temperature")
   .assert_number(min.deployment.hours, "min.deployment.hours", min = 0)
-  .assert_writable_file(plot.file, "plot.file", ext = "pdf")   # fail-fast: parent dir must exist
+  .assert_writable_file(plot.file, "plot.file", ext = "pdf")
+  .assert_writable_file(exclusions.file, "exclusions.file", ext = "rds")   # fail-fast: parent dir must exist
   .assert_dir(output.dir, "output.dir")                        # fail-fast: must exist
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
   .assert_compress(compress)
@@ -332,6 +342,18 @@ filterDeploymentData <- function(data,
   }
   if (plot) on.exit({ if (caller_dev %in% grDevices::dev.list()) { grDevices::dev.set(caller_dev); graphics::par(oldpar) } }, add = TRUE)
   n_filtered <- 0L; n_discarded <- 0L; n_custom <- 0L; n_auto <- 0L   # n_custom/n_auto: realized method mix
+  # Every deployment that leaves without data, and what was known about it when it did. Until now the
+  # only trace was a console line: the detected-but-too-short window lived in a loop-local, was drawn on
+  # a diagnostic panel, and died with the iteration - so a summary table built afterwards could not say
+  # when a rejected deployment started, and reported it as a bare "excluded" with no times at all.
+  exclusions <- list()
+  note_exclusion <- function(id, reason, from = NULL, to = NULL, hours = NA_real_) {
+    exclusions[[length(exclusions) + 1L]] <<- data.frame(
+      id = as.character(id), reason = as.character(reason),
+      detected_start = if (inherits(from, "POSIXt")) from else .POSIXct(NA_real_, tz = "UTC"),
+      detected_end   = if (inherits(to,   "POSIXt")) to   else .POSIXct(NA_real_, tz = "UTC"),
+      detected_duration_h = as.numeric(hours), stringsAsFactors = FALSE)
+  }
 
   # iterate over each element in 'data'
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
@@ -362,6 +384,7 @@ filterDeploymentData <- function(data,
         .log_skip(lvl, tools::file_path_sans_ext(basename(file_path)), "  ", skip_reason,
                   " ", cli::symbol$bullet, " skipped")
         skipped_ids <- c(skipped_ids, tools::file_path_sans_ext(basename(file_path)))
+        note_exclusion(tools::file_path_sans_ext(basename(file_path)), skip_reason)
         .log_gap(lvl)
         next
       }
@@ -706,12 +729,14 @@ filterDeploymentData <- function(data,
     if (!valid_dataset) {
       if (is.null(short_window)) {
         .log_skip(lvl, id, "  no deployment detected ", cli::symbol$bullet, " discarded")
+        note_exclusion(id, "no deployment detected")
       } else {
         .log_skip(lvl, id, "  deployment too short ", cli::symbol$bullet, " discarded")
         .log_arrow(lvl, sprintf("detected %s %s %s (%.2f h), below min.deployment.hours = %g",
                                 strftime(short_window$from, "%H:%M", tz = "UTC"), cli::symbol$arrow_right,
                                 strftime(short_window$to,   "%H:%M", tz = "UTC"),
                                 short_window$hours, min.deployment.hours))
+        note_exclusion(id, "deployment too short", short_window$from, short_window$to, short_window$hours)
       }
       n_discarded <- n_discarded + 1L
       if (is.null(short_window) || !make_plots) {
@@ -894,6 +919,9 @@ filterDeploymentData <- function(data,
     hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
               "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
 
+  excl <- .filterExclusionsTable(exclusions)
+  if (!is.null(exclusions.file)) saveRDS(excl, exclusions.file)
+
   if (lvl >= 1L) {
     .log_summary(lvl)
     # realized custom/automatic split shown only when custom windows were supplied
@@ -901,6 +929,11 @@ filterDeploymentData <- function(data,
       paste0(" (", n_custom, " custom, ", n_auto, " automatic)") else ""
     .log_done(lvl, n_filtered, " dataset", if (n_filtered != 1) "s", " filtered", split_note)
     if (n_discarded > 0) cli::cli_text("{cli::symbol$bullet} {n_discarded} dataset{?s} discarded")
+    if (nrow(excl)) {
+      tb <- table(excl$reason)
+      cli::cli_text("{cli::symbol$bullet} set aside: {paste(sprintf('%d %s', as.integer(tb), names(tb)), collapse = ', ')}")
+    }
+    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
@@ -911,10 +944,19 @@ filterDeploymentData <- function(data,
   # return.data = TRUE -> the retained tag objects as a named list keyed by ID (discarded/empty individuals
   # dropped); return.data = FALSE -> the written `.rds` paths, invisibly, which chain into the next step's
   # `data` argument. Both feed downstream without unwrapping.
+  # The exclusions ride along on BOTH contracts, so a caller who keeps the objects in memory has them
+  # without a second argument. An attribute does not survive the saveRDS-per-deployment + list.files()
+  # hand-off the pipeline is built on, which is what `exclusions.file` is for.
   if (return.data) {
-    return(processed_data[!vapply(processed_data, is.null, logical(1))])
+    out <- processed_data[!vapply(processed_data, is.null, logical(1))]
+    attr(out, "nautilus.exclusions") <- excl
+    return(out)
   }
-  invisible(unlist(saved, use.names = FALSE))
+  # `unlist()` of an all-NULL list is NULL, and NULL takes no attributes - which is exactly the run
+  # where the exclusions table matters most, because nothing survived to be written.
+  paths <- unlist(saved, use.names = FALSE)
+  if (is.null(paths)) paths <- character(0)
+  invisible(structure(paths, nautilus.exclusions = excl))
 
 }
 
@@ -1192,3 +1234,26 @@ filterDeploymentData <- function(data,
 #######################################################################################################
 #######################################################################################################
 #######################################################################################################
+
+
+#' The fixed-schema table of deployments that left without data.
+#'
+#' Zero rows rather than NULL when nothing was set aside, so a caller can bind, filter and count it
+#' without first testing whether anything went wrong - the same contract the issues table uses.
+#'
+#' `detected_start`/`detected_end`/`detected_duration_h` are populated only for the one reason that HAS
+#' a window: a deployment found and then rejected for being shorter than `min.deployment.hours`. That
+#' distinction is the point of the table. A deployment where nothing was detected at all has no window
+#' to report, and inventing one would make the two indistinguishable.
+#' @keywords internal
+#' @noRd
+.filterExclusionsTable <- function(exclusions) {
+  empty <- data.frame(id = character(0), reason = character(0),
+                      detected_start = .POSIXct(numeric(0), tz = "UTC"),
+                      detected_end = .POSIXct(numeric(0), tz = "UTC"),
+                      detected_duration_h = numeric(0), stringsAsFactors = FALSE)
+  if (!length(exclusions)) return(empty)
+  out <- do.call(rbind, exclusions)
+  rownames(out) <- NULL
+  out
+}
