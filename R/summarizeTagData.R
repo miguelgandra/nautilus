@@ -821,6 +821,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 #' @noRd
 .summaryMetaFields <- function() list(
   deploy_datetime = list(get = function(m) m$deployment$datetime,        roster = "deploy_datetime", type = "time"),
+  deploy_site     = list(get = function(m) m$deployment$site,            roster = "deploy_site",     type = "chr"),
   deploy_lon      = list(get = function(m) m$deployment$lon,             roster = "deploy_lon",      type = "num"),
   deploy_lat      = list(get = function(m) m$deployment$lat,             roster = "deploy_lat",      type = "num"),
   popup_datetime  = list(get = function(m) m$deployment$popup_datetime,  roster = "popup_datetime",  type = "time"),
@@ -837,7 +838,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 #' @noRd
 .summaryMetaSets <- function() list(
   none     = character(0),
-  standard = c("deploy_datetime", "deploy_lon", "deploy_lat"),
+  standard = c("deploy_datetime", "deploy_site", "deploy_lon", "deploy_lat"),
   all      = setdiff(names(.summaryMetaFields()), "attachment_site"))   # already in the identity block
 
 #' Resolve `metadata =` into the fields and traits to emit.
@@ -903,7 +904,8 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     id = "ID", animal_id = "Animal ID",
     tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attachment site",
     status = "Status", status_reason = "Exclusion reason",
-    deploy_datetime = "Tagging date", deploy_lon = "Tagging longitude (\u00b0)",
+    deploy_datetime = "Tagging date", deploy_site = "Tagging site",
+    deploy_lon = "Tagging longitude (\u00b0)",
     deploy_lat = "Tagging latitude (\u00b0)", popup_datetime = "Pop-up date",
     popup_lon = "Pop-up longitude (\u00b0)", popup_lat = "Pop-up latitude (\u00b0)",
     deployment_type = "Deployment type", package_id = "Package ID", logger_id = "Logger ID",
@@ -925,7 +927,8 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
     id = "ID", animal_id = "Animal",
     tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attach. site",
     status = "Status", status_reason = "Reason",
-    deploy_datetime = "Tagged", deploy_lon = "Lon (\u00b0)", deploy_lat = "Lat (\u00b0)",
+    deploy_datetime = "Tagged", deploy_site = "Site",
+    deploy_lon = "Lon (\u00b0)", deploy_lat = "Lat (\u00b0)",
     popup_datetime = "Pop-up", popup_lon = "Pop-up lon (\u00b0)", popup_lat = "Pop-up lat (\u00b0)",
     deployment_type = "Deploy. type", package_id = "Package", logger_id = "Logger",
     axis_config = "Axis config", video_duration_h = "Video (h)",

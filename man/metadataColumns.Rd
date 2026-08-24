@@ -10,6 +10,7 @@ metadataColumns(
   tag_model = "tag",
   tag_type = NULL,
   deploy_datetime = "tagging_date",
+  deploy_site = NULL,
   deploy_lon = "deploy_lon",
   deploy_lat = "deploy_lat",
   recovery_datetime = NULL,
@@ -43,6 +44,10 @@ ID (\code{"CAM"} in the ID -> "Camera", otherwise "MS"). Default \code{NULL}.}
 
 \item{deploy_datetime}{Column holding the deployment (tagging) datetime, POSIXct (default
 \code{"tagging_date"}). Required.}
+
+\item{deploy_site}{Column naming WHERE the animal was tagged - a site, station or locality. The
+coordinates say where to a metre; the name is what a reader groups and reports by, and the two are
+not interchangeable. \code{NULL} (default) when the study has no site names.}
 
 \item{deploy_lon, deploy_lat}{Columns holding the deployment longitude / latitude. Required
 (defaults \code{"deploy_lon"} / \code{"deploy_lat"}).}

@@ -18,6 +18,9 @@
 #' @param animal_id Column holding the ANIMAL identifier, when it is not the same thing as `id`. One
 #'   individual can carry several tags over a season, and a deployment table then needs both: `id` says
 #'   which record, `animal_id` says which animal. `NULL` (default) when a deployment IS an animal.
+#' @param deploy_site Column naming WHERE the animal was tagged - a site, station or locality. The
+#'   coordinates say where to a metre; the name is what a reader groups and reports by, and the two are
+#'   not interchangeable. `NULL` (default) when the study has no site names.
 #' @param tag_model Column holding the tag model (default `"tag"`). Required.
 #' @param tag_type Column holding the tag type (e.g. "Camera", "MS"), or `NULL` to infer it from the
 #'   ID (`"CAM"` in the ID -> "Camera", otherwise "MS"). Default `NULL`.
@@ -120,6 +123,7 @@ metadataColumns <- function(id = "ID",
                         tag_model = "tag",
                         tag_type = NULL,
                         deploy_datetime = "tagging_date",
+                        deploy_site = NULL,
                         deploy_lon = "deploy_lon",
                         deploy_lat = "deploy_lat",
                         recovery_datetime = NULL,
@@ -140,7 +144,8 @@ metadataColumns <- function(id = "ID",
   # role fields (each maps ONE column, so each is a single string); `traits` is the one vector-valued
   # field (a set of passive attribute columns) and is validated separately below.
   fields <- list(id = id, animal_id = animal_id, tag_model = tag_model, tag_type = tag_type,
-                 deploy_datetime = deploy_datetime, deploy_lon = deploy_lon, deploy_lat = deploy_lat,
+                 deploy_datetime = deploy_datetime, deploy_site = deploy_site,
+                 deploy_lon = deploy_lon, deploy_lat = deploy_lat,
                  recovery_datetime = recovery_datetime,
                  popup_datetime = popup_datetime, popup_lon = popup_lon, popup_lat = popup_lat,
                  package_id = package_id, logger_id = logger_id, exclude_sensors = exclude_sensors,

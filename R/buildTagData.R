@@ -306,6 +306,7 @@ buildTagData <- function(data,
   if (!is.null(v <- num(.metaField(md, "deploy_lon"))))       meta$deployment$lon <- v
   if (!is.null(v <- num(.metaField(md, "deploy_lat"))))       meta$deployment$lat <- v
   if (!is.null(v <- .metaField(md, "deploy_datetime")))       meta$deployment$datetime <- v
+  if (!is.null(v <- chr(.metaField(md, "deploy_site"))))      meta$deployment$site <- v
   if (!is.null(v <- num(.metaField(md, "popup_lon"))))        meta$deployment$popup_lon <- v
   if (!is.null(v <- num(.metaField(md, "popup_lat"))))        meta$deployment$popup_lat <- v
   if (!is.null(v <- .metaField(md, "popup_datetime")))        meta$deployment$popup_datetime <- v

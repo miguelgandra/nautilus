@@ -600,9 +600,9 @@ test_that("metadata = 'standard' adds the traits and the tagging position by def
   expect_s3_class(s$deploy_datetime, "POSIXct")
   expect_equal(s$deploy_lon, -25.1234); expect_equal(s$deploy_lat, 36.9876)
   # traits first (who the animal was), then where and when it was tagged, then the record
-  expect_equal(names(s)[1:10], c("id", "animal_id", "sex", "size_m", "tag_model", "tag_type",
+  expect_equal(names(s)[1:11], c("id", "animal_id", "sex", "size_m", "tag_model", "tag_type",
                                  "attachment_site", "paddle_wheel",
-                                 "deploy_datetime", "deploy_lon"))
+                                 "deploy_datetime", "deploy_site", "deploy_lon"))
   expect_false(any(c("popup_lon", "package_id") %in% names(s)))
 })
 
@@ -730,4 +730,30 @@ test_that("only DECLARED traits ride in from the roster, not every column of the
   expect_false(any(c("site", "argos_ptt", "deploy_year") %in% names(s)))
   expect_true(all(c("sex", "size_m") %in% names(s)))
   expect_identical(s$sex[s$id == "GHOST"], "M")                    # the declared ones still arrive
+})
+
+
+test_that("deploy_site is a role, sits beside the coordinates, and completes from the roster", {
+  expect_true("deploy_site" %in% names(formals(metadataColumns)))
+  expect_equal(metadataColumns(deploy_site = "locality")$deploy_site, "locality")
+  expect_true("site" %in% names(nautilus:::.newNautilusMeta()$deployment))
+  expect_true("deploy_site" %in% nautilus:::.summaryMetaSets()$standard)
+
+  # the name and the coordinates answer different questions - one groups, the other locates - so the
+  # name reads immediately before the pair rather than arriving as a study column of unknown provenance
+  tg <- .mkMeta("A"); m <- nautilus:::.getMeta(tg); m$deployment$site <- "SMA"
+  tg <- nautilus:::.restoreMeta(tg, m)
+  s <- .run(list(A = tg))
+  expect_identical(s$deploy_site, "SMA")
+  n <- names(s)
+  expect_equal(match("deploy_site", n), match("deploy_datetime", n) + 1L)
+  expect_equal(match("deploy_lon", n),  match("deploy_site", n) + 1L)
+
+  # and a deployment whose data never arrived takes it from the roster
+  ros <- .mkRoster(c("A", "GHOST")); ros$deploy_site <- c("SMA", "FAI")
+  attr(ros, "nautilus.columns") <- list(traits = c("sex", "size_m"))
+  s2 <- .run(list(A = tg), deployments = ros)
+  expect_identical(s2$deploy_site[s2$id == "GHOST"], "FAI")
+  expect_identical(s2$deploy_site[s2$id == "A"], "SMA")            # the tag stays authoritative
+  expect_false("deploy_site" %in% names(.run(list(A = tg), metadata = "none")))
 })
