@@ -711,6 +711,10 @@ summarizeTagData <- function(data,
 #' @param include.summary.row Logical. Append the display-only population `mean +/- error` row (only
 #'   meaningful with more than one deployment). Default `TRUE` (matches the console). Set `FALSE` for a
 #'   pure per-deployment table.
+#'
+#'   Numeric biometric traits and `extra.metadata` covariates are averaged in this row like any other
+#'   metric. If a column should not be treated as a continuous variable - an identifier, a code, a year -
+#'   supply it as character or factor rather than numeric, and it is left out of the row.
 #' @param symbols Whether the rendered table may use typographic symbols: `"ascii"` (default) writes
 #'   `+/-`, `deg C` and `m/s`; `"unicode"` writes the plus-minus, degree and superscript forms. ASCII is
 #'   the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV

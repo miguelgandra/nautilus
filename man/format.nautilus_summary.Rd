@@ -29,7 +29,11 @@ names (lightly prettified).}
 
 \item{include.summary.row}{Logical. Append the display-only population \verb{mean +/- error} row (only
 meaningful with more than one deployment). Default \code{TRUE} (matches the console). Set \code{FALSE} for a
-pure per-deployment table.}
+pure per-deployment table.
+
+Numeric biometric traits and \code{extra.metadata} covariates are averaged in this row like any other
+metric. If a column should not be treated as a continuous variable - an identifier, a code, a year -
+supply it as character or factor rather than numeric, and it is left out of the row.}
 
 \item{symbols}{Whether the rendered table may use typographic symbols: \code{"ascii"} (default) writes
 \verb{+/-}, \verb{deg C} and \code{m/s}; \code{"unicode"} writes the plus-minus, degree and superscript forms. ASCII is
