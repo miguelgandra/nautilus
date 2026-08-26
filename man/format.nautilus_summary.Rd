@@ -10,6 +10,7 @@
   datetime.format = "\%d/\%b/\%Y \%H:\%M",
   include.summary.row = TRUE,
   symbols = c("ascii", "unicode"),
+  decimals = NULL,
   ...
 )
 }
@@ -40,6 +41,15 @@ supply it as character or factor rather than numeric, and it is left out of the 
 the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
 with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the degree
 sign as two characters. It also keeps the column names typeable and indexable from a script.}
+
+\item{decimals}{Optional per-column override of the display precision, as a named numeric vector of
+decimal places - \code{c(video_duration_h = 1, depth_max = 0)}. Merged OVER the built-in precision, so
+naming one column leaves every other exactly as it was, and both the value and the
+\verb{mean +/- error} row follow the override. Named by the INTERNAL column names (the ones
+\code{style = "internal"} shows and \verb{@return} lists), not by the rendered headers: a header belongs to a
+style - \code{video_duration_h} reads "Video recorded (h)" under \code{report} and "Video (h)" under
+\code{concise} - so an override keyed on one would quietly stop applying when the style changed. Pass a
+header by mistake and the error names the column to use instead. Default \code{NULL}.}
 
 \item{...}{Unused.}
 }

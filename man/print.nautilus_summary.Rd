@@ -9,7 +9,8 @@
 \arguments{
 \item{x}{A \code{nautilus_summary} object.}
 
-\item{...}{Unused.}
+\item{...}{Passed to \code{\link[=format.nautilus_summary]{format}}, so the display can be tuned in
+place - \code{print(x, decimals = c(video_duration_h = 1))} - before settling on an export.}
 }
 \value{
 \code{x}, invisibly. Called for the printed output.

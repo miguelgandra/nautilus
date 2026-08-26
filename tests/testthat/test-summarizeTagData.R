@@ -757,3 +757,65 @@ test_that("deploy_site is a role, sits beside the coordinates, and completes fro
   expect_identical(s2$deploy_site[s2$id == "A"], "SMA")            # the tag stays authoritative
   expect_false("deploy_site" %in% names(.run(list(A = tg), metadata = "none")))
 })
+
+
+# ---------------------------------------------------------------------------
+# per-column display precision
+# ---------------------------------------------------------------------------
+
+test_that("decimals overrides one column's precision and leaves the rest alone", {
+  s <- .run(list(A = .mk("A"), B = .mk("B"), C = .mk("C")))
+  base <- format(s, style = "internal", include.summary.row = FALSE)
+  one  <- format(s, style = "internal", include.summary.row = FALSE, decimals = c(depth_max = 0))
+  expect_equal(base$depth_max, rep("50.0", 3))                         # the built-in 1 dp
+  expect_equal(one$depth_max,  rep("50", 3))                           # overridden to 0 dp
+  expect_identical(one$temp_max, base$temp_max)                        # untouched
+  expect_identical(one$vedba_mean, base$vedba_mean)
+
+  # several at once, each independent
+  many <- format(s, style = "internal", include.summary.row = FALSE,
+                 decimals = c(depth_max = 3, vedba_mean = 1, record_duration_h = 4))
+  expect_match(many$depth_max[1], "^[0-9]+\\.[0-9]{3}$")
+  expect_match(many$vedba_mean[1], "^[0-9]+\\.[0-9]{1}$")
+  expect_match(many$record_duration_h[1], "^[0-9]+\\.[0-9]{4}$")
+  expect_identical(many$temp_min, base$temp_min)
+})
+
+test_that("the mean +/- error row follows the override too", {
+  s <- .run(list(A = .mk("A"), B = .mk("B")))
+  f <- format(s, style = "internal", decimals = c(depth_max = 0))
+  foot <- f$depth_max[nrow(f)]
+  expect_match(foot, "^[0-9]+ \\+/- [0-9]+$")                          # no decimal point either side
+  expect_false(grepl(".", foot, fixed = TRUE))
+})
+
+test_that("decimals is keyed on internal names, and a header is resolved back to one", {
+  s <- .run(list(A = .mk("A"), B = .mk("B")))
+  # the same override applies under every style, because the key does not depend on the style
+  a <- format(s, style = "report",  decimals = c(depth_max = 0))
+  b <- format(s, style = "concise", decimals = c(depth_max = 0))
+  expect_identical(unname(unlist(a[1, ])), unname(unlist(b[1, ])))
+  expect_error(format(s, decimals = c("Max depth (m)" = 0)), "display header")
+  expect_error(format(s, decimals = c("Max depth (m)" = 0)), "depth_max")
+})
+
+test_that("decimals rejects what is certainly a mistake", {
+  s <- .run(list(A = .mk("A"), B = .mk("B")))
+  expect_error(format(s, decimals = c(nope = 1)), "not in this summary")
+  expect_error(format(s, decimals = c(depth_max = 1.5)), "whole numbers")
+  expect_error(format(s, decimals = c(depth_max = -1)), "whole numbers")
+  expect_error(format(s, decimals = c(tag_model = 1)), "non-numeric")
+  expect_error(format(s, decimals = 2), "named after a column")
+  expect_error(format(s, decimals = "two"), "named numeric vector")
+  expect_error(format(s, decimals = c(depth_max = 1, depth_max = 2)), "more than once")
+  expect_identical(format(s, decimals = NULL), format(s))              # NULL is the default path
+})
+
+test_that("print() forwards to format(), so the display can be tuned in place", {
+  s <- .run(list(A = .mk("A"), B = .mk("B")))
+  out <- capture.output(print(s, decimals = c(depth_max = 0)))
+  expect_false(any(grepl("50\\.0", out)))                              # the override reached the console
+  expect_true(any(grepl("\\b50\\b", out)))
+  expect_s3_class(withVisible(print(s))$value, "nautilus_summary")     # still returns x invisibly
+  expect_false(withVisible(print(s))$visible)
+})

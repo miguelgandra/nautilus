@@ -715,6 +715,14 @@ summarizeTagData <- function(data,
 #'   Numeric biometric traits and `extra.metadata` covariates are averaged in this row like any other
 #'   metric. If a column should not be treated as a continuous variable - an identifier, a code, a year -
 #'   supply it as character or factor rather than numeric, and it is left out of the row.
+#' @param decimals Optional per-column override of the display precision, as a named numeric vector of
+#'   decimal places - `c(video_duration_h = 1, depth_max = 0)`. Merged OVER the built-in precision, so
+#'   naming one column leaves every other exactly as it was, and both the value and the
+#'   `mean +/- error` row follow the override. Named by the INTERNAL column names (the ones
+#'   `style = "internal"` shows and `@return` lists), not by the rendered headers: a header belongs to a
+#'   style - `video_duration_h` reads "Video recorded (h)" under `report` and "Video (h)" under
+#'   `concise` - so an override keyed on one would quietly stop applying when the style changed. Pass a
+#'   header by mistake and the error names the column to use instead. Default `NULL`.
 #' @param symbols Whether the rendered table may use typographic symbols: `"ascii"` (default) writes
 #'   `+/-`, `deg C` and `m/s`; `"unicode"` writes the plus-minus, degree and superscript forms. ASCII is
 #'   the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
@@ -726,13 +734,14 @@ summarizeTagData <- function(data,
 
 format.nautilus_summary <- function(x, style = c("internal", "report", "concise"),
                                     datetime.format = "%d/%b/%Y %H:%M", include.summary.row = TRUE,
-                                    symbols = c("ascii", "unicode"), ...) {
+                                    symbols = c("ascii", "unicode"), decimals = NULL, ...) {
   style <- match.arg(style)
   symbols <- match.arg(symbols)
   .assert_string(datetime.format, "datetime.format")
   df <- as.data.frame(x)
   if (nrow(df) == 0 || ncol(df) == 0) return(data.frame())
 
+  dec <- .assert_decimals(decimals, df, style)
   err_stat <- attr(x, "error.stat") %||% "sd"
   # ASCII by default, and NOT gated on cli::is_utf8_output(). That gate asks whether the TERMINAL can
   # render a glyph, which is the right question for print() and the wrong one for a value headed to a
@@ -752,6 +761,9 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
                 n_dives = 0, dive_duration_median_min = 1, dive_duration_max_min = 1,
                 dive_depth_median_m = 1, dive_depth_max_m = 1,
                 dives_incomplete = 0, dives_truncated = 0, dives_gapped = 0)
+  # User overrides MERGE over the defaults rather than replacing them, so naming one column leaves every
+  # other column - and the 2 dp fallback for traits and covariates - exactly as it was.
+  prec_map[names(dec)] <- dec
   prec_of <- function(nm) { p <- unname(prec_map[nm]); if (is.na(p)) 2L else as.integer(p) }
 
   num_cols <- names(df)[vapply(df, is.numeric, logical(1))]
@@ -966,7 +978,8 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
 #' The underlying object stays numeric/POSIXct - this only affects what is shown. To export the formatted
 #' table, use `format(x)` (e.g. `write.csv(format(x), file, row.names = FALSE)`).
 #' @param x A `nautilus_summary` object.
-#' @param ... Unused.
+#' @param ... Passed to \code{\link[=format.nautilus_summary]{format}}, so the display can be tuned in
+#'   place - `print(x, decimals = c(video_duration_h = 1))` - before settling on an export.
 #' @return `x`, invisibly. Called for the printed output.
 #' @exportS3Method print nautilus_summary
 
@@ -981,7 +994,7 @@ print.nautilus_summary <- function(x, ...) {
   err_stat <- attr(x, "error.stat") %||% "sd"
   cat(sprintf("<nautilus_summary> %d deployment%s%s\n", nrow(df), if (nrow(df) != 1) "s" else "",
               if (nrow(df) > 1) sprintf(" (final row: mean %s %s)", pm, err_stat) else ""))
-  print(format(x, symbols = if (uni) "unicode" else "ascii"), row.names = FALSE)
+  print(format(x, symbols = if (uni) "unicode" else "ascii", ...), row.names = FALSE)
   invisible(x)
 }
 
@@ -1164,4 +1177,58 @@ print.nautilus_summary <- function(x, ...) {
       tbl$record_duration_h[fill] <- as.numeric(ex$detected_duration_h)[m[fill]]
   }
   tbl
+}
+
+
+#' Validate `decimals =` and return it as a named integer vector (empty when nothing was asked for).
+#'
+#' Keyed on the INTERNAL column names, never the rendered headers, because a header is a property of
+#' the style: `video_duration_h` reads "Video recorded (h)" under `report` and "Video (h)" under
+#' `concise`, and `symbols = "ascii"` rewrites others again. An override keyed on what the table happens
+#' to be called would silently stop applying the moment the style changed - not error, just quietly do
+#' nothing, which is the worst way for a formatting argument to fail.
+#'
+#' That costs the caller some ergonomics, since the header is what they are looking at when they decide
+#' a column needs another decimal place. So an unrecognised name is resolved BACK through the header
+#' dictionaries: ask for `"Video (h)"` and the error names `video_duration_h` rather than listing thirty
+#' valid columns.
+#' @param df The table being formatted, so a name is checked against the columns that actually exist.
+#' @param style The style being rendered, for the header-to-column suggestion.
+#' @keywords internal
+#' @noRd
+.assert_decimals <- function(decimals, df, style) {
+  if (is.null(decimals)) return(stats::setNames(integer(0), character(0)))
+  if (!is.numeric(decimals) || !length(decimals))
+    .abort(c("{.arg decimals} must be a named numeric vector, e.g. {.code c(video_duration_h = 1)}.",
+             "i" = "Use the column names {.code format(x, style = \"internal\")} shows."))
+  nms <- names(decimals)
+  if (is.null(nms) || any(!nzchar(nms)) || anyNA(nms))
+    .abort(c("Every element of {.arg decimals} must be named after a column.",
+             "i" = "e.g. {.code decimals = c(video_duration_h = 1, depth_max = 0)}"))
+  if (anyNA(decimals) || any(!is.finite(decimals)) || any(decimals < 0) || any(decimals != trunc(decimals)))
+    .abort("{.arg decimals} must be whole numbers of decimal places, zero or more.")
+  if (anyDuplicated(nms))
+    .abort("{.arg decimals} names the column{?s} {.field {unique(nms[duplicated(nms)])}} more than once.")
+
+  unknown <- setdiff(nms, names(df))
+  if (length(unknown)) {
+    # a header the caller read off the formatted table, mapped back to the column it came from
+    hits <- unlist(lapply(c("report", "concise"), function(st) {
+      h <- .foldSymbols(.summaryHeaders(names(df), st))
+      stats::setNames(names(df), h)[intersect(unknown, h)]
+    }))
+    # the two styles share many headers verbatim ("Max depth (m)"), so the same suggestion arrives twice
+    hits <- hits[!duplicated(names(hits))]
+    hint <- if (length(hits))
+      c("i" = "{.val {names(hits)}} {?is/are} a display header; use {.field {unname(hits)}}.")
+    else
+      c("i" = "Column names are the ones {.code format(x, style = \"internal\")} shows.")
+    .abort(c("{.arg decimals} names {cli::qty(length(unknown))}column{?s} not in this summary: {.val {unknown}}.",
+             hint))
+  }
+  bad <- nms[!vapply(df[nms], is.numeric, logical(1))]
+  if (length(bad))
+    .abort(c("{.arg decimals} sets a decimal place on the non-numeric column{?s} {.field {bad}}.",
+             "i" = "Decimal places apply to numeric columns only."))
+  stats::setNames(as.integer(decimals), nms)
 }
