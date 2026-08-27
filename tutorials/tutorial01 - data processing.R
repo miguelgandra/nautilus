@@ -185,6 +185,11 @@ deployments <- checkDeploymentMetadata(
     paddle_wheel      = "paddle_wheel",
     attachment_site   = "attachment_site",
     deployment_type   = "deployment_type",    # "towed" or "rigid"; selects the posture scorer
+    deploy_site       = "deploy_site",        # the tagging locality by name: the coordinates say where
+                                              # to a metre, the name is what you group and report by
+    # animal_id belongs here when one animal can carry several tags - `id` identifies the deployment,
+    # animal_id the animal, and summarizeTagData() reports both. This sheet has no separate animal
+    # identifier (one deployment is one animal), so the role is left unmapped.
     # Passive biological traits: carried verbatim into each object's metadata (tagMetadata(x)$biometrics)
     # so they're available later for grouping, filtering and plotting (e.g. plotTimeAtDepth(group = "sex")).
     # A corrected value can be re-stamped later with updateBiometrics() - no re-import needed.
@@ -474,7 +479,7 @@ mapping_qc <- checkTagMapping(data                     = list.files("./data inte
                               dba.window               = 5,
                               use.dynamics             = TRUE,     # use dive dynamics to resolve the fore-aft axis
                               locomotor.band           = c(0.2, 3),
-                              locomotor.axis           = "sway",   # tail beats show up on the lateral axis (see STEP 12's notes)
+                              locomotor.axis           = "sway",   # tail beats show up on the lateral axis (see STEP 13's notes)
                               plot                     = FALSE,
                               plot.file                = "./plots/axis_mapping.pdf",
                               verbose                  = "detailed")
@@ -579,31 +584,17 @@ calibrateMagnetometer(data          = list.files("./data interim/04_oriented", f
 
 
 ################################################################################
-# STEP 10. Impute paddle-wheel speed calibration (optional; paddle tags)      #
+# STEP 10. Read the paddle-wheel calibrations (optional; paddle tags)          #
 ################################################################################
 
-# Some tags carry a magnetic paddle wheel that spins as the animal swims; processTagData() turns its
-# rotation frequency into speed (speed = slope x frequency, zero intercept), where the slope is
-# tag-specific. It needs a slope for EVERY deployed paddle tag-year, but only some are ever
-# calibrated. imputePaddleCalibration() fills the gaps: it learns how the slope drifts with age
-# (paddle-wheel efficiency declines, so the slope rises) and projects a gap-free table ready to pass
-# straight to processTagData(). See ?imputePaddleCalibration for the alternative methods and the
-# provenance / quality columns it returns.
+# Some tags carry a magnetic paddle wheel that spins as the animal swims. processTagData() recovers
+# its rotation rate from the magnetometer and stores it as `paddle_freq`; turning that into a speed
+# needs one number per tag, measured by calibrating it before deployment. That step comes after
+# processing (STEP 12), so a calibration can be revised or checked without reprocessing anything.
 
 # Measured calibration slopes (one row per calibration): year, package_id, slope (+ fit quality).
 calibration_regression <- read.csv("./paddle wheel calibration/Velocity_RotationHz_Regression.csv")
 colnames(calibration_regression) <- c("year", "package_id", "slope", "r.squared", "adj.r.squared")
-
-# The deployments that need a slope (rename deploy_year -> year to match the calibration table).
-paddle_deployments <- animal_metadata[, c("package_id", "deploy_year", "paddle_wheel")]
-colnames(paddle_deployments)[colnames(paddle_deployments) == "deploy_year"] <- "year"
-
-paddle_calibration <- imputePaddleCalibration(calibration       = calibration_regression,
-                                              deployments       = paddle_deployments,
-                                              method            = "shared-rate",   # one pooled wear rate, per-tag levels
-                                              weights.col       = "r.squared",     # trust better-fit calibrations more
-                                              slope.range       = c(0.02, 0.30),   # clamp imputed slopes to plausible values
-                                              max.extrapolation = 3)               # flag slopes projected far beyond the data
 
 
 ################################################################################
@@ -615,7 +606,7 @@ paddle_calibration <- imputePaddleCalibration(calibration       = calibration_re
 # splits acceleration into the static (gravity/posture) and dynamic (movement) parts, and computes the
 # full metric suite - dynamic body acceleration (VeDBA/ODBA, a proxy for movement intensity widely used
 # to estimate activity and, with species-specific calibration, energy expenditure), surge/sway/heave,
-# vertical velocity, and paddle-wheel speed where available. It must run on the
+# vertical velocity, and the paddle-wheel rotation rate where available. It must run on the
 # oriented files, since every posture metric depends on a correct body frame. Downsampling the output
 # (here to 20 Hz) keeps the files manageable for downstream analysis without losing the behaviour.
  
@@ -634,11 +625,10 @@ processTagData(
   calibration = calibrationControl(hard.iron = TRUE, soft.iron = TRUE, use.stored = TRUE),
   # Smoothing windows, in seconds. 'static' sets the gravity/movement split and can't be switched off;
   # the rest are optional post-smoothers (set any to NULL to disable it).
-  smoothing = smoothingControl(static = 5, orientation = 1, dba = 2, depth = 10, speed = 1),
+  smoothing = smoothingControl(static = 5, orientation = 1, dba = 2, depth = 10, vertical = 1),
   # Correct the slow (mostly thermal) drift in the pressure sensor's zero, anchored to moments the tag
   # is known to be at the surface (the wet/dry sensor and GPS fixes). Set method = "none" to skip it.
   depth.drift = depthDriftControl(method = "surface", surface.evidence = c("dry", "gps")),
-  paddle.calibration = paddle_calibration,  # from STEP 10; omit for non-paddle tags
   burst.quantiles    = c(0.95, 0.99),       # acceleration thresholds that mark high-effort "burst" events
   plot               = FALSE,
   plot.file          = "./plots/processed_data.pdf",
@@ -655,7 +645,37 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 
 
 ################################################################################
-# STEP 12. Estimate tail-beat frequencies                                      #
+# STEP 12. Paddle-wheel swimming speed (optional; paddle tags)                 #
+################################################################################
+
+# calculatePaddleSpeed() turns the rotation rate recorded in STEP 11 into a swimming speed, using one
+# calibration slope per tag and season. Tags that were never calibrated get a slope estimated from the
+# ones that were ("shared-rate"); `method = "in-situ"` estimates it from the deployment itself instead,
+# from how fast the animal changed depth while swimming at a steep angle.
+#
+# validate = TRUE additionally checks every tag against that same in-situ estimate, whether or not it
+# needed one. The agreement is their ratio: 1 means the two agree, and anything more than
+# agreement.threshold away from it is flagged as worth a look. Because only one column depends on the
+# calibration, a revised slope can be applied in seconds - there is no need to process the raw sensor
+# data again.
+
+paddle <- calculatePaddleSpeed(
+  data        = list.files("./data interim/05_processed", full.names = TRUE),
+  calibration = calibration_regression,
+  method      = "shared-rate",   # fill missing slopes from the calibrations that do exist
+  validate    = TRUE,            # off by default; check every tag against the animal's own diving
+  plot.file   = "./plots/paddle_calibration.pdf",
+  return.data = FALSE,
+  output.dir  = "./data interim/05_processed",
+  verbose     = "detailed")
+
+# One row per tag and season: the slope applied, where it came from, and how it compares in situ.
+paddle_calibration <- attr(paddle, "calibration")
+write.csv(paddle_calibration, "./outputs/paddle_calibration.csv", row.names = FALSE)
+
+
+################################################################################
+# STEP 13. Estimate tail-beat frequencies                                      #
 ################################################################################
 
 # calculateTailBeats() estimates the tail-beat frequency from a motion channel. Each backend names its
@@ -686,7 +706,7 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
                   
 
 ################################################################################
-# STEP 13. Summarize each deployment                                           #
+# STEP 14. Summarize each deployment                                           #
 ################################################################################
 
 # summarizeTagData() builds a one-row-per-deployment table of headline metrics (duration, depth and
@@ -695,8 +715,9 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
 # excluded rows), and `extra.metadata` joins any extra per-ID covariates.
 #
 # `metadata = "standard"` (the default) also brings in the biometric traits recorded at import (sex,
-# size, ...) and the tagging date and coordinates - the columns a deployment table is usually expected
-# to carry. Use "all" for the pop-up position and the package/logger identifiers, "none" for the bare
+# size, ...) and the tagging date, site and coordinates - the columns a deployment table is usually
+# expected to carry. `animal_id` and `deploy_site` are roles (STEP 2), so they appear automatically
+# wherever they were mapped. Use "all" for the pop-up position and the package/logger identifiers, "none" for the bare
 # metric table, or name the fields and traits you want. These are filled from the roster for
 # deployments whose data never arrived, so a tag that was never recovered still reports who was tagged,
 # when and where instead of an empty row.
@@ -723,7 +744,7 @@ write.csv2(summary_table, file = "./outputs/summary_table.csv", row.names = FALS
 
 
 ################################################################################
-# STEP 14. Plot depth profiles                                                 #
+# STEP 15. Plot depth profiles                                                 #
 ################################################################################
 
 # A depth-versus-time profile is the most immediate portrait of a deployment: dive shape, vertical
@@ -742,7 +763,7 @@ plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", f
                   nrows            = 7)
 
 ################################################################################
-# STEP 15. Compare metric distributions across the cohort                      #
+# STEP 16. Compare metric distributions across the cohort                      #
 ################################################################################
 
 # Where STEP 13 gives one number per animal, plotDistributions() shows the whole shape of a metric: a
@@ -758,7 +779,7 @@ dist_summary <- plotDistributions(data      = list.files("./data interim/06_tail
 
 
 ################################################################################
-# STEP 16. Map how the cohort uses the water column                            #
+# STEP 17. Map how the cohort uses the water column                            #
 ################################################################################
 
 # Finally, a population view of habitat use: plotTimeAtDepth() shows how much time the animals spent at

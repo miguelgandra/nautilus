@@ -20,7 +20,7 @@ checkTagMapping(
   g.value = 1,
   dba.window = 2.5,
   depth.smoothing = 10,
-  speed.smoothing = 1,
+  vertical.smoothing = 1,
   tie.tolerance = 2,
   use.dynamics = TRUE,
   dive.speed.threshold = 0.2,
@@ -90,7 +90,7 @@ threshold of 1g are considered static. Defaults to 0.1g.}
 
 \item{dba.window}{The window size (in seconds) for calculating static acceleration using a rolling mean. Defaults to 2.5 seconds.}
 
-\item{depth.smoothing, speed.smoothing}{Smoothing windows (seconds) for the vertical-velocity estimate
+\item{depth.smoothing, vertical.smoothing}{Smoothing windows (seconds) for the vertical-velocity estimate
 used by the surge anchor (centered difference on smoothed depth, then optional velocity smoothing -
 the same estimate as \code{\link[=processTagData]{processTagData()}}). Low-passing removes the quantization staircase
 that otherwise degrades the pitch / depth-rate relationship. Defaults 10 and 1; \code{NULL} disables.}

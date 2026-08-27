@@ -5,22 +5,23 @@
 #' Describe your deployment-metadata columns
 #'
 #' @description
-#' Deployment tables differ from study to study: the animal identifier might be `ID`, `shark_id` or
-#' `individual`, and the tagging date `tagging_date`, `deploy_date` or `dateTime`. Rather than
-#' requiring you to rename your columns, nautilus asks you to describe them once.
+#' Deployment tables differ from study to study: the deployment identifier might be `ID`, `tag_id` or
+#' `record`, and the tagging date `tagging_date`, `deploy_date` or `dateTime`. Rather than requiring
+#' you to rename your columns, nautilus asks you to describe them once.
 #'
 #' `metadataColumns()` builds that description. Each field names the column holding one piece of
 #' deployment information. Fields default to the canonical nautilus names, so a table that already uses
 #' them needs no configuration - name only the columns that differ.
 #'
-#' @param id Column holding the DEPLOYMENT ID (default `"ID"`). Required. This identifies one tag
-#'   attachment, and is what every nautilus function keys on.
-#' @param animal_id Column holding the ANIMAL identifier, when it is not the same thing as `id`. One
-#'   individual can carry several tags over a season, and a deployment table then needs both: `id` says
-#'   which record, `animal_id` says which animal. `NULL` (default) when a deployment IS an animal.
-#' @param deploy_site Column naming WHERE the animal was tagged - a site, station or locality. The
-#'   coordinates say where to a metre; the name is what a reader groups and reports by, and the two are
-#'   not interchangeable. `NULL` (default) when the study has no site names.
+#' @param id Column holding the deployment ID (default `"ID"`). Required. One row is one tag
+#'   attachment, and this is the identifier every nautilus function keys on.
+#' @param animal_id Column holding the animal's own identifier, for studies where one individual can
+#'   carry more than one tag, or `NULL`. Mapping it lets [summarizeTagData()] report the animal
+#'   alongside the deployment. Leave it `NULL` when each deployment is a different animal. Default
+#'   `NULL`.
+#' @param deploy_site Column naming the tagging site, station or locality, or `NULL`. The deployment
+#'   coordinates give the position; the site name is what you group and report by. Carried onto each
+#'   tag's metadata at import and reported by [summarizeTagData()]. Default `NULL`.
 #' @param tag_model Column holding the tag model (default `"tag"`). Required.
 #' @param tag_type Column holding the tag type (e.g. "Camera", "MS"), or `NULL` to infer it from the
 #'   ID (`"CAM"` in the ID -> "Camera", otherwise "MS"). Default `NULL`.
@@ -75,6 +76,10 @@
 #'   they are carried through unchanged and stored with each tag, so they remain available for grouping,
 #'   filtering and plotting later - for example `group = "sex"`. Default `NULL`.
 #'
+#'   Traits describe the animal, so an identifier or a date does not belong here: use the `animal_id`
+#'   and `deploy_site` roles instead, which are checked and reported as roles rather than carried
+#'   blindly.
+#'
 #' @details
 #' Each field maps one column of your metadata table to a *role* that nautilus understands. Mapping a
 #' role does more than rename a column: it tells the package what the column *means*, and so unlocks the
@@ -85,8 +90,10 @@
 #' \tabular{lll}{
 #'   \strong{Role} \tab \strong{Required?} \tab \strong{Enables}\cr
 #'   `id` \tab required \tab the deployment key; missing-ID and duplicate-ID checks\cr
+#'   `animal_id` \tab optional \tab names the animal behind the deployment, for repeat tagging\cr
 #'   `deploy_datetime` \tab required \tab deployment window; temporal-validity and future-date checks\cr
 #'   `deploy_lon`/`deploy_lat` \tab required \tab declination correction; location-plausibility check\cr
+#'   `deploy_site` \tab optional \tab names the tagging site, for grouping and reporting\cr
 #'   `tag_model` \tab required \tab posture scorer; axis-mapping keying\cr
 #'   `tag_type` \tab optional (inferred) \tab Camera/MS-specific handling\cr
 #'   `package_id` \tab optional \tab per-package axis consensus; package-overlap check (needs `recovery_datetime` too); paddle calibration\cr
@@ -116,6 +123,8 @@
 #' metadataColumns()
 #' # override only the columns that differ:
 #' metadataColumns(deploy_datetime = "tagging_date", package_id = "PackageID")
+#' # one animal tagged more than once, and a named tagging site:
+#' metadataColumns(animal_id = "shark", deploy_site = "site")
 #' @export
 
 metadataColumns <- function(id = "ID",

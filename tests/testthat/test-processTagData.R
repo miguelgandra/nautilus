@@ -766,7 +766,7 @@ test_that("a CONSTANT imported paddle channel is dropped to NA and warned about 
   # exactly the path where the verdict used to be discarded
   w <- testthat::capture_warnings(
     invisible(capture.output(
-      out <- processTagData(tags, paddle.calibration = data.frame(year = 2024, package_id = 99, slope = 0.35),
+      out <- processTagData(tags,
                             verbose = FALSE))))
 
   expect_equal(sum(is.finite(out[["DEAD_01"]]$paddle_speed)), 0)   # dropped

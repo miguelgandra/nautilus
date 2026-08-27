@@ -50,7 +50,7 @@
                             step.size = 1,
                             min.freq.Hz = 0.1,
                             max.freq.Hz = 100,
-                            calibration.slope,
+                            calibration.slope = NULL,
                             smooth.window = NULL,
                             quality.check = TRUE,
                             verbose = FALSE) {
@@ -65,9 +65,11 @@
   if (min.freq.Hz >= max.freq.Hz) stop("`min.freq.Hz` must be less than `max.freq.Hz`.")
   if (!is.null(smooth.window) && smooth.window <= 0) stop("`smooth.window` must be positive if provided.")
 
-  # Validate calibration.slope
-  if (!is.numeric(calibration.slope) || length(calibration.slope) != 1) {
-    stop("`calibration.slope` must be a single numeric value.")
+  # Validate calibration.slope. NULL is allowed and means "frequency only": turning the rotation rate
+  # into a speed is calculatePaddleSpeed()'s job, and it needs a slope this function has no business
+  # knowing about.
+  if (!is.null(calibration.slope) && (!is.numeric(calibration.slope) || length(calibration.slope) != 1)) {
+    stop("`calibration.slope` must be a single numeric value, or NULL for frequency only.")
   }
 
   n <- length(mz)
@@ -160,12 +162,9 @@
 
   # --- Calculate Speed using the Calibration Slope ---
   # Apply the linear calibration: speed = slope * frequency (intercept is 0)
-  speed_full <- freq_full * calibration.slope
-
-  # --- Return Results ---
   return_list <- list(
-    freq = freq_full,
-    speed = speed_full
+    freq  = freq_full,
+    speed = if (is.null(calibration.slope)) NULL else freq_full * calibration.slope
   )
 
   if (quality.check) {

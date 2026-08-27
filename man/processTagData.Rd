@@ -12,7 +12,6 @@ processTagData(
   calibration = calibrationControl(),
   smoothing = smoothingControl(),
   depth.drift = depthDriftControl(),
-  paddle.calibration = NULL,
   burst.quantiles = c(0.95, 0.99),
   plot = FALSE,
   plot.file = NULL,
@@ -59,13 +58,6 @@ change it.}
 
 \item{depth.drift}{A control object from \code{\link[=depthDriftControl]{depthDriftControl()}} governing the depth zero-offset
 correction. Pass \code{depthDriftControl(method = "none")} to disable it.}
-
-\item{paddle.calibration}{A data frame of paddle-wheel calibration values. Supplying it is what
-enables paddle-wheel speed estimation - there is no separate switch - so leave it \code{NULL} to skip
-speed entirely. It needs at least three columns: \code{year}, the year the calibration was performed;
-\code{package_id}, matching the tag's own identifier; and \code{slope}, the calibration slope.
-\code{\link[=imputePaddleCalibration]{imputePaddleCalibration()}} builds a complete, gap-free table of this form from a set of measured
-calibrations, projecting slopes for tag-years that were never calibrated.}
 
 \item{burst.quantiles}{Quantiles of instantaneous VeDBA used to flag burst swimming, or \code{NULL} to
 skip it (default \code{c(0.95, 0.99)}). Each is a threshold relative to the deployment itself: \code{0.95}
@@ -297,9 +289,9 @@ does and does not affect.}
 \code{\link[=applyAxisMapping]{applyAxisMapping()}} first unless the data is already in that frame.}
 \item{constant paddle channel, now set to NA}{The imported paddle column held one fixed value for
 the whole deployment - a dead or absent paddle wheel, not a measurement. Left in place it would
-count as that many genuine speed samples in any pooled statistic. Supply a \code{paddle.calibration}
-row so speed can be estimated from the magnetometer, or exclude these deployments from speed
-analyses.}
+count as that many genuine speed samples in any pooled statistic. The rotation frequency is
+re-estimated from the magnetometer where the recording is fast enough; turn it into a speed with
+\code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.}
 \item{already processed and re-run}{The input already carried a \code{processTagData} step. Calibration
 and downsampling are skipped, but \strong{the metrics are recomputed from the already-downsampled
 columns, so they will not reproduce the first run} - jerk and the separation of gravity from
@@ -318,8 +310,7 @@ was not written to \code{output.dir}. A channel removed by \code{\link[=checkSen
 oriented <- applyAxisMapping(imported)
 tag <- processTagData(oriented,
                       downsample.to = 1,
-                      orientation.algorithm = "tilt_compass",
-                      paddle.calibration = paddle_cal)
+                      orientation.algorithm = "tilt_compass")
 
 # A batch of saved deployments: write a diagnostic PDF and save incrementally.
 processTagData(list.files("./oriented", full.names = TRUE),

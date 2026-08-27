@@ -11,7 +11,7 @@
   step.size = 1,
   min.freq.Hz = 0.1,
   max.freq.Hz = 100,
-  calibration.slope,
+  calibration.slope = NULL,
   smooth.window = NULL,
   quality.check = TRUE,
   verbose = FALSE

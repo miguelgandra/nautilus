@@ -64,7 +64,7 @@
 #' @param stable.horizontal.window Numeric. Window size (s) for stable horizontal identification. Default 10.
 #' @param g.value The gravitational acceleration value (in g's) expected when static. Defaults to 1.
 #' @param dba.window The window size (in seconds) for calculating static acceleration using a rolling mean. Defaults to 2.5 seconds.
-#' @param depth.smoothing,speed.smoothing Smoothing windows (seconds) for the vertical-velocity estimate
+#' @param depth.smoothing,vertical.smoothing Smoothing windows (seconds) for the vertical-velocity estimate
 #'   used by the surge anchor (centered difference on smoothed depth, then optional velocity smoothing -
 #'   the same estimate as [processTagData()]). Low-passing removes the quantization staircase
 #'   that otherwise degrades the pitch / depth-rate relationship. Defaults 10 and 1; `NULL` disables.
@@ -205,7 +205,7 @@ checkTagMapping <- function(data,
                             g.value = 1,
                             dba.window = 2.5,
                             depth.smoothing = 10,
-                            speed.smoothing = 1,
+                            vertical.smoothing = 1,
                             tie.tolerance = 2,
                             use.dynamics = TRUE,
                             dive.speed.threshold = 0.2,
@@ -237,7 +237,7 @@ checkTagMapping <- function(data,
   .assert_number(g.value, "g.value", min = 0)
   .assert_number(dba.window, "dba.window", min = 0)
   if (!is.null(depth.smoothing)) .assert_number(depth.smoothing, "depth.smoothing", min = 0)
-  if (!is.null(speed.smoothing)) .assert_number(speed.smoothing, "speed.smoothing", min = 0)
+  if (!is.null(vertical.smoothing)) .assert_number(vertical.smoothing, "vertical.smoothing", min = 0)
   .assert_number(tie.tolerance, "tie.tolerance", min = 0)
   .assert_number(dive.speed.threshold, "dive.speed.threshold", min = 0)
   .assert_number(max.vertical.speed, "max.vertical.speed", min = 0)
@@ -561,7 +561,7 @@ checkTagMapping <- function(data,
     individual_data[, vertical_speed := .verticalVelocity(individual_data[[depth.col]],
                                                           individual_data[[datetime.col]], sampling_freq,
                                                           depth.smoothing = depth.smoothing,
-                                                          speed.smoothing = speed.smoothing)$velocity]
+                                                          velocity.smoothing = vertical.smoothing)$velocity]
 
     # snapshot the full (unfiltered) series for the dynamic anchors below (surge, gyro, mag): they
     # need the DIVING / manoeuvring periods that the horizontal filter is about to discard. Carry

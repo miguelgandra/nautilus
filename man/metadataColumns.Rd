@@ -30,12 +30,13 @@ metadataColumns(
 )
 }
 \arguments{
-\item{id}{Column holding the DEPLOYMENT ID (default \code{"ID"}). Required. This identifies one tag
-attachment, and is what every nautilus function keys on.}
+\item{id}{Column holding the deployment ID (default \code{"ID"}). Required. One row is one tag
+attachment, and this is the identifier every nautilus function keys on.}
 
-\item{animal_id}{Column holding the ANIMAL identifier, when it is not the same thing as \code{id}. One
-individual can carry several tags over a season, and a deployment table then needs both: \code{id} says
-which record, \code{animal_id} says which animal. \code{NULL} (default) when a deployment IS an animal.}
+\item{animal_id}{Column holding the animal's own identifier, for studies where one individual can
+carry more than one tag, or \code{NULL}. Mapping it lets \code{\link[=summarizeTagData]{summarizeTagData()}} report the animal
+alongside the deployment. Leave it \code{NULL} when each deployment is a different animal. Default
+\code{NULL}.}
 
 \item{tag_model}{Column holding the tag model (default \code{"tag"}). Required.}
 
@@ -45,9 +46,9 @@ ID (\code{"CAM"} in the ID -> "Camera", otherwise "MS"). Default \code{NULL}.}
 \item{deploy_datetime}{Column holding the deployment (tagging) datetime, POSIXct (default
 \code{"tagging_date"}). Required.}
 
-\item{deploy_site}{Column naming WHERE the animal was tagged - a site, station or locality. The
-coordinates say where to a metre; the name is what a reader groups and reports by, and the two are
-not interchangeable. \code{NULL} (default) when the study has no site names.}
+\item{deploy_site}{Column naming the tagging site, station or locality, or \code{NULL}. The deployment
+coordinates give the position; the site name is what you group and report by. Carried onto each
+tag's metadata at import and reported by \code{\link[=summarizeTagData]{summarizeTagData()}}. Default \code{NULL}.}
 
 \item{deploy_lon, deploy_lat}{Columns holding the deployment longitude / latitude. Required
 (defaults \code{"deploy_lon"} / \code{"deploy_lat"}).}
@@ -108,16 +109,20 @@ released, and using the wrong one shifts the whole record. Default \code{NULL}.}
 \item{traits}{Column names holding passive biological attributes of the animal, for example
 \code{c("sex", "length", "maturity", "species")}. Unlike the roles above, traits drive no processing:
 they are carried through unchanged and stored with each tag, so they remain available for grouping,
-filtering and plotting later - for example \code{group = "sex"}. Default \code{NULL}.}
+filtering and plotting later - for example \code{group = "sex"}. Default \code{NULL}.
+
+Traits describe the animal, so an identifier or a date does not belong here: use the \code{animal_id}
+and \code{deploy_site} roles instead, which are checked and reported as roles rather than carried
+blindly.}
 }
 \value{
 A validated \code{nautilus_metadata_columns} object (a named list) for the \code{columns} argument of
 \code{\link[=importTagData]{importTagData()}} and \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}.
 }
 \description{
-Deployment tables differ from study to study: the animal identifier might be \code{ID}, \code{shark_id} or
-\code{individual}, and the tagging date \code{tagging_date}, \code{deploy_date} or \code{dateTime}. Rather than
-requiring you to rename your columns, nautilus asks you to describe them once.
+Deployment tables differ from study to study: the deployment identifier might be \code{ID}, \code{tag_id} or
+\code{record}, and the tagging date \code{tagging_date}, \code{deploy_date} or \code{dateTime}. Rather than requiring
+you to rename your columns, nautilus asks you to describe them once.
 
 \code{metadataColumns()} builds that description. Each field names the column holding one piece of
 deployment information. Fields default to the canonical nautilus names, so a table that already uses
@@ -133,8 +138,10 @@ need them are silently disabled. Nothing is reported for a role you did not map,
 \tabular{lll}{
 \strong{Role} \tab \strong{Required?} \tab \strong{Enables}\cr
 \code{id} \tab required \tab the deployment key; missing-ID and duplicate-ID checks\cr
+\code{animal_id} \tab optional \tab names the animal behind the deployment, for repeat tagging\cr
 \code{deploy_datetime} \tab required \tab deployment window; temporal-validity and future-date checks\cr
 \code{deploy_lon}/\code{deploy_lat} \tab required \tab declination correction; location-plausibility check\cr
+\code{deploy_site} \tab optional \tab names the tagging site, for grouping and reporting\cr
 \code{tag_model} \tab required \tab posture scorer; axis-mapping keying\cr
 \code{tag_type} \tab optional (inferred) \tab Camera/MS-specific handling\cr
 \code{package_id} \tab optional \tab per-package axis consensus; package-overlap check (needs \code{recovery_datetime} too); paddle calibration\cr
@@ -160,6 +167,8 @@ no check, for grouping, filtering and plotting later.
 metadataColumns()
 # override only the columns that differ:
 metadataColumns(deploy_datetime = "tagging_date", package_id = "PackageID")
+# one animal tagged more than once, and a named tagging site:
+metadataColumns(animal_id = "shark", deploy_site = "site")
 }
 \seealso{
 \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} to screen the table once described; \code{\link[=importTagData]{importTagData()}} to read

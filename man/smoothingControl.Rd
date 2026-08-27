@@ -4,7 +4,13 @@
 \alias{smoothingControl}
 \title{Smoothing windows for processTagData()}
 \usage{
-smoothingControl(static = 3, orientation = 1, dba = 2, depth = 10, speed = 1)
+smoothingControl(
+  static = 3,
+  orientation = 1,
+  dba = 2,
+  depth = 10,
+  vertical = 1
+)
 }
 \arguments{
 \item{static}{Window (s) setting the static/gravity separation: the acceleration is split into a
@@ -25,7 +31,9 @@ differentiated from. Default 10. This does NOT smooth the stored \code{depth} ch
 kept drift-corrected but unsmoothed - a centred boxcar attenuates any excursion shorter than
 its window, which would shrink short dives (a 3 m / 8 s dive reads 1.2 m at the 10 s default).}
 
-\item{speed}{Window (s) for derived speed/velocity. Default 1.}
+\item{vertical}{Window (s) applied to the vertical velocity derived from depth. Default 1.
+Paddle-wheel speed is not smoothed here: that window belongs to
+\code{\link{calculatePaddleSpeed}}, which turns the recorded paddle frequency into a speed.}
 }
 \value{
 A validated \code{nautilus_smoothing} object for the \code{smoothing} argument of \code{\link{processTagData}}.

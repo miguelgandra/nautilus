@@ -23,14 +23,16 @@
 #'   differentiated from. Default 10. This does NOT smooth the stored `depth` channel, which is
 #'   kept drift-corrected but unsmoothed - a centred boxcar attenuates any excursion shorter than
 #'   its window, which would shrink short dives (a 3 m / 8 s dive reads 1.2 m at the 10 s default).
-#' @param speed Window (s) for derived speed/velocity. Default 1.
+#' @param vertical Window (s) applied to the vertical velocity derived from depth. Default 1.
+#'   Paddle-wheel speed is not smoothed here: that window belongs to
+#'   \code{\link{calculatePaddleSpeed}}, which turns the recorded paddle frequency into a speed.
 #' @return A validated `nautilus_smoothing` object for the `smoothing` argument of \code{\link{processTagData}}.
 #' @seealso \code{\link{processTagData}}, \code{\link{calibrationControl}}
 #' @examples
 #' smoothingControl(depth = 15, dba = NULL)   # 15 s depth window; disable DBA post-smoothing
 #' @export
-smoothingControl <- function(static = 3, orientation = 1, dba = 2, depth = 10, speed = 1) {
-  fields <- list(static = static, orientation = orientation, dba = dba, depth = depth, speed = speed)
+smoothingControl <- function(static = 3, orientation = 1, dba = 2, depth = 10, vertical = 1) {
+  fields <- list(static = static, orientation = orientation, dba = dba, depth = depth, vertical = vertical)
   for (nm in names(fields)) if (!is.null(fields[[nm]])) .assert_number(fields[[nm]], paste0("smoothing$", nm), min = 0)
   if (is.null(fields$static) || fields$static <= 0)
     .abort("{.arg smoothing$static} must be a positive number (the gravity-separation window cannot be disabled).")

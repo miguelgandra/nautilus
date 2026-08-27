@@ -243,6 +243,14 @@ reconstructTrack <- function(data,
   }
   .log_progress_done(pb)
 
+  # Asking for paddle speed and getting none from any deployment is a missing step, not a run with
+  # nothing to show: a track scaled by an absent speed would be built entirely from the fallback and
+  # would look like a result.
+  if (identical(control$speed.method, "paddle") && n_ok == 0L && r$n > 0L)
+    .abort(c("No deployment carries {.field paddle_speed}, which {.code speed.method = \"paddle\"} needs.",
+             "i" = "{.fn processTagData} records the paddle rotation as {.field paddle_freq};
+                    {.fn calculatePaddleSpeed} turns it into a speed."))
+
   # heading-trust warnings (aggregated, emitted once). Untrusted = a raw uncalibrated field -> loud; partial
   # = a diagonal/2D/low-confidence fit -> a lighter note. Both compound into dead-reckoning drift.
   if (length(untrusted_ids))
@@ -292,7 +300,12 @@ reconstructTrack <- function(data,
   if (control$speed.method == "depth_rate") req <- c(req, "vertical_velocity")
   if (control$speed.method == "vedba")      req <- c(req, "vedba")
   missing_cols <- setdiff(req, names(dt))
-  if (length(missing_cols)) stop("missing column(s): ", paste(missing_cols, collapse = ", "))
+  if (length(missing_cols)) {
+    # paddle_speed is produced by calculatePaddleSpeed(), not by processTagData(), so its absence is
+    # usually a missing pipeline step rather than a tag without a paddle wheel
+    hint <- if ("paddle_speed" %in% missing_cols) " - run calculatePaddleSpeed() first" else ""
+    stop("missing column(s): ", paste(missing_cols, collapse = ", "), hint)
+  }
 
   deploy_lat <- meta$deployment$lat; deploy_lon <- meta$deployment$lon
   if (is.null(deploy_lat) || is.null(deploy_lon) || is.na(deploy_lat) || is.na(deploy_lon))

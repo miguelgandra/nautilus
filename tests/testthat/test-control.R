@@ -6,6 +6,12 @@ test_that("smoothingControl validates windows and allows NULL to disable", {
   expect_s3_class(s, "nautilus_smoothing")
   expect_equal(s$depth, 10)
   expect_null(smoothingControl(dba = NULL)$dba)
+  # `vertical` conditions the vertical velocity only; paddle-wheel smoothing belongs to
+  # calculatePaddleSpeed(), so one window no longer governs two unrelated quantities
+  expect_equal(smoothingControl()$vertical, 1)
+  expect_equal(smoothingControl(vertical = 4)$vertical, 4)
+  expect_null(smoothingControl()$speed)
+  expect_error(smoothingControl(vertical = -1), "smoothing\\$vertical")
   expect_error(smoothingControl(depth = -1), "smoothing\\$depth")
   expect_error(smoothingControl(depth = "x"), "smoothing\\$depth")
 })

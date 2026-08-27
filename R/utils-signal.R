@@ -325,11 +325,11 @@
 #' @param depth Numeric depth (m).
 #' @param datetime POSIXct timestamps.
 #' @param fs Sampling frequency (Hz), used to convert the smoothing windows (seconds) to samples.
-#' @param depth.smoothing,speed.smoothing Smoothing windows in seconds, or `NULL` to disable.
+#' @param depth.smoothing,velocity.smoothing Smoothing windows in seconds, or `NULL` to disable.
 #' @return A list with `depth` (the possibly-smoothed depth) and `velocity` (vertical velocity).
 #' @keywords internal
 #' @noRd
-.verticalVelocity <- function(depth, datetime, fs, depth.smoothing = NULL, speed.smoothing = NULL) {
+.verticalVelocity <- function(depth, datetime, fs, depth.smoothing = NULL, velocity.smoothing = NULL) {
   if (!is.null(depth.smoothing)) {
     depth <- data.table::frollmean(depth, n = max(1L, round(fs * depth.smoothing)), fill = NA, align = "center")
   }
@@ -341,8 +341,8 @@
   velocity <- dz / dt
   velocity[1] <- (depth[2] - depth[1]) / as.numeric(difftime(datetime[2], datetime[1], units = "secs"))
   velocity[n] <- (depth[n] - depth[n - 1]) / as.numeric(difftime(datetime[n], datetime[n - 1], units = "secs"))
-  if (!is.null(speed.smoothing)) {
-    velocity <- data.table::frollmean(velocity, n = max(1L, round(fs * speed.smoothing)), fill = NA, align = "center")
+  if (!is.null(velocity.smoothing)) {
+    velocity <- data.table::frollmean(velocity, n = max(1L, round(fs * velocity.smoothing)), fill = NA, align = "center")
   }
   list(depth = depth, velocity = velocity)
 }

@@ -49,12 +49,6 @@
 #'   change it.
 #' @param depth.drift A control object from [depthDriftControl()] governing the depth zero-offset
 #'   correction. Pass `depthDriftControl(method = "none")` to disable it.
-#' @param paddle.calibration A data frame of paddle-wheel calibration values. Supplying it is what
-#'   enables paddle-wheel speed estimation - there is no separate switch - so leave it `NULL` to skip
-#'   speed entirely. It needs at least three columns: `year`, the year the calibration was performed;
-#'   `package_id`, matching the tag's own identifier; and `slope`, the calibration slope.
-#'   [imputePaddleCalibration()] builds a complete, gap-free table of this form from a set of measured
-#'   calibrations, projecting slopes for tag-years that were never calibrated.
 #' @param burst.quantiles Quantiles of instantaneous VeDBA used to flag burst swimming, or `NULL` to
 #'   skip it (default `c(0.95, 0.99)`). Each is a threshold relative to the deployment itself: `0.95`
 #'   always flags the most active 5 per cent of that record's samples, whatever the animal was doing.
@@ -247,9 +241,9 @@
 #'     [applyAxisMapping()] first unless the data is already in that frame.}
 #'   \item{constant paddle channel, now set to NA}{The imported paddle column held one fixed value for
 #'     the whole deployment - a dead or absent paddle wheel, not a measurement. Left in place it would
-#'     count as that many genuine speed samples in any pooled statistic. Supply a `paddle.calibration`
-#'     row so speed can be estimated from the magnetometer, or exclude these deployments from speed
-#'     analyses.}
+#'     count as that many genuine speed samples in any pooled statistic. The rotation frequency is
+#'     re-estimated from the magnetometer where the recording is fast enough; turn it into a speed with
+#'     [calculatePaddleSpeed()].}
 #'   \item{already processed and re-run}{The input already carried a `processTagData` step. Calibration
 #'     and downsampling are skipped, but **the metrics are recomputed from the already-downsampled
 #'     columns, so they will not reproduce the first run** - jerk and the separation of gravity from
@@ -286,8 +280,7 @@
 #' oriented <- applyAxisMapping(imported)
 #' tag <- processTagData(oriented,
 #'                       downsample.to = 1,
-#'                       orientation.algorithm = "tilt_compass",
-#'                       paddle.calibration = paddle_cal)
+#'                       orientation.algorithm = "tilt_compass")
 #'
 #' # A batch of saved deployments: write a diagnostic PDF and save incrementally.
 #' processTagData(list.files("./oriented", full.names = TRUE),
@@ -302,7 +295,6 @@ processTagData <- function(data,
                            calibration = calibrationControl(),
                            smoothing = smoothingControl(),
                            depth.drift = depthDriftControl(),
-                           paddle.calibration = NULL,
                            burst.quantiles = c(0.95, 0.99),
                            plot = FALSE,
                            plot.file = NULL,
@@ -333,7 +325,7 @@ processTagData <- function(data,
   orientation.smoothing <- smoothing$orientation
   dba.smoothing         <- smoothing$dba
   depth.smoothing       <- smoothing$depth
-  speed.smoothing       <- smoothing$speed
+  vertical.smoothing    <- smoothing$vertical
 
 
   ##############################################################################
@@ -405,18 +397,6 @@ processTagData <- function(data,
     }
   }
 
-  # validate paddle.calibration if supplied (its presence is what enables paddle-speed estimation)
-  if (!is.null(paddle.calibration)) {
-    # coerce to data.frame if it's a data.table
-    if (data.table::is.data.table(paddle.calibration)) paddle.calibration <- as.data.frame(paddle.calibration)
-    if (!is.data.frame(paddle.calibration)) .abort("{.arg paddle.calibration} must be a data.frame.")
-    missing_cols <- setdiff(c("year", "package_id", "slope"), names(paddle.calibration))
-    if (length(missing_cols) > 0) {
-      .abort("{.arg paddle.calibration} is missing required column(s): {.val {missing_cols}}.")
-    }
-    if (!is.numeric(paddle.calibration$year)) .abort("Column {.field year} in {.arg paddle.calibration} must be numeric.")
-    if (!is.numeric(paddle.calibration$slope)) .abort("Column {.field slope} in {.arg paddle.calibration} must be numeric.")
-  }
 
   # validate data.table threads if specified
   if (!is.null(data.table.threads)) {
@@ -1008,7 +988,7 @@ processTagData <- function(data,
     # this package was first used on and severe for short-dive taxa. Consumers that want a smoothed depth
     # should smooth it themselves, at a window chosen for their own question.
     .vv <- .verticalVelocity(individual_data$depth, individual_data$datetime, sampling_freq,
-                             depth.smoothing = depth.smoothing, speed.smoothing = speed.smoothing)
+                             depth.smoothing = depth.smoothing, velocity.smoothing = vertical.smoothing)
     individual_data[, vertical_velocity := .vv$velocity]
     rm(.vv)
 
@@ -1380,7 +1360,11 @@ processTagData <- function(data,
     # Estimate paddle wheel rotation frequency #################################
     ############################################################################
 
-    if (!is.null(paddle.calibration)) {
+    {
+      # Frequency only. Turning a rotation rate into a swimming speed needs a calibration slope, which
+      # is a property of the physical tag rather than of this recording, so it lives downstream in
+      # calculatePaddleSpeed() - where it can be revised, or checked against the animal's own pitch and
+      # vertical velocity, without reprocessing the raw sensors.
 
       # determine if pre-calculated columns exist
       has_precalculated_freq <- "paddle_freq" %in% names(individual_data)
@@ -1420,44 +1404,24 @@ processTagData <- function(data,
 
       # check if the tag was equipped with a paddle wheel
       if (perform_internal_calculation) {
-        has_paddle_info <- !is.null(imeta) && !is.na(imeta$tag$paddle_wheel)
+        # length-checked: an absent flag is NULL, and is.na(NULL) is logical(0), which `if` cannot take.
+        # The old gate on a supplied calibration hid this; frequency extraction now runs on every tag.
+        pw <- if (is.null(imeta)) NULL else imeta$tag$paddle_wheel
+        has_paddle_info <- length(pw) == 1L && !is.na(pw)
         if (!has_paddle_info) {
           diag["speed"] <- "speed: skipped (no paddle-wheel info)"
           perform_internal_calculation <- FALSE
-        } else if (isFALSE(imeta$tag$paddle_wheel)) {
+        } else if (isFALSE(pw)) {
           diag["speed"] <- "speed: skipped (no paddle wheel)"
           perform_internal_calculation <- FALSE
         }
       }
 
-      # check package ID and calibration
-      if (perform_internal_calculation) {
-        package_id <- if (!is.null(imeta)) imeta$tag$package_id else NA
-        has_package <- !is.null(package_id) && !all(is.na(package_id))
-        if (!has_package) {
-          diag["speed"] <- "speed: skipped (no package_id)"
-          perform_internal_calculation <- FALSE
-        } else {
-
-          # Determine deployment year for calibration lookup
-          if (!is.null(imeta) && !is.na(imeta$deployment$datetime)) {
-            deploy_year <- as.integer(format(imeta$deployment$datetime, "%Y"))
-          } else {
-            deploy_year <- as.integer(format(individual_data$datetime[1], "%Y"))
-          }
-
-          tag_calibration <- paddle.calibration[paddle.calibration$year == deploy_year &
-                                                        paddle.calibration$package_id == package_id, ]
-          has_calibration_info <- nrow(tag_calibration) > 0
-
-          if (!has_calibration_info) {
-            diag["speed"] <- "speed: skipped (no calibration values)"
-            perform_internal_calculation <- FALSE
-          } else if (sampling_freq < 50) {
-            diag["speed"] <- "speed: skipped (sampling < 50 Hz)"
-            perform_internal_calculation <- FALSE
-          }
-        }
+      # the rotation peak is picked out of the magnetometer, so the record has to be fast enough to
+      # carry it
+      if (perform_internal_calculation && sampling_freq < 50) {
+        diag["speed"] <- "paddle: skipped (sampling < 50 Hz)"
+        perform_internal_calculation <- FALSE
       }
 
       #############################################################
@@ -1465,22 +1429,16 @@ processTagData <- function(data,
 
       if (perform_internal_calculation) {
 
-        # calculate frequencies and speed
-        paddle_data <- .getPaddleSpeed(
-          mz = mz_raw,
-          sampling.rate = sampling_freq,
-          calibration.slope = tag_calibration$slope,
-          smooth.window = speed.smoothing
-        )
+        # rotation frequency from the raw magnetometer. Unsmoothed: the smoothing window belongs with
+        # the speed calculation, and this series is already a 5 s windowed estimate stepped every second.
+        paddle_data <- .getPaddleSpeed(mz = mz_raw, sampling.rate = sampling_freq)
 
-        # add to sensor data
         individual_data[, paddle_freq := paddle_data$freq]
-        individual_data[, paddle_speed := paddle_data$speed]
 
-        # diagnostic: estimated speed range + calibration slope used
         if (lvl >= 2L) {
-          sp_r <- range(paddle_data$speed, na.rm = TRUE)
-          diag["speed"] <- sprintf("speed: %.2f \u2013 %.2f m/s (paddle wheel \u00b7 slope %.4f)", sp_r[1], sp_r[2], tag_calibration$slope)
+          fr <- range(paddle_data$freq, na.rm = TRUE)
+          diag["speed"] <- sprintf("paddle: %.2f \u2013 %.2f Hz (speed via {.fn calculatePaddleSpeed})",
+                                   fr[1], fr[2])
         }
       }
 
@@ -1698,7 +1656,7 @@ processTagData <- function(data,
                                 static_window           = static.window,
                                 dba_smoothing           = dba.smoothing %||% NA_real_,
                                 orientation_smoothing   = orientation.smoothing %||% NA_real_,
-                                speed_smoothing         = speed.smoothing %||% NA_real_,
+                                vertical_smoothing      = vertical.smoothing %||% NA_real_,
                                 depth_smoothing         = depth.smoothing %||% NA_real_,
                                 pitch_offset_deg        = pitch_offset_deg %||% NA_real_,
                                 pitch_offset_r2         = pitch_offset_r2 %||% NA_real_,
