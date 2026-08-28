@@ -63,6 +63,8 @@
   keys <- unique(vapply(scan, function(z) z$key, character(1)))
   cal <- do.call(rbind, lapply(keys, function(k) {
     w <- Filter(function(z) identical(z$key, k), scan)
+    hf <- vapply(w, function(z) z$has_freq, logical(1))
+    hs <- vapply(w, function(z) z$has_speed, logical(1))
     Sxy <- sum(vapply(w, function(z) z$Sxy %||% NA_real_, numeric(1)), na.rm = TRUE)
     Sxx <- sum(vapply(w, function(z) z$Sxx %||% NA_real_, numeric(1)), na.rm = TRUE)
     Syy <- sum(vapply(w, function(z) z$Syy %||% NA_real_, numeric(1)), na.rm = TRUE)
@@ -73,8 +75,11 @@
     se  <- if (n > 2 && is.finite(ins)) sqrt(max(0, (Syy - ins * Sxy)) / ((n - 1) * Sxx)) else NA_real_
     data.frame(key = k, year = w[[1]]$year, package_id = w[[1]]$pkg,
                n_deployments = length(w),
-               has_paddle = any(vapply(w, function(z) z$has_freq || z$has_speed || z$paddle_flag,
-                                       logical(1))),
+               has_paddle = any(hf | hs | vapply(w, function(z) z$paddle_flag, logical(1))),
+               # a slope only converts a rotation rate, so only a tag that recorded one has a use for
+               # it; `as_recorded` separates "finished without a slope" from "nothing was recorded"
+               needs_slope = any(hf),
+               as_recorded = !any(hf) && any(hs),
                in_situ_slope = ins, in_situ_r = r,
                in_situ_lo = ins - 1.96 * se, in_situ_hi = ins + 1.96 * se,
                in_situ_n = n, stringsAsFactors = FALSE)
@@ -88,7 +93,12 @@
     cal$slope_source[m[ok]] <- "measured"
   }
 
-  gap <- is.na(cal$slope)
+  # Estimating a slope for a tag that never recorded a rotation rate manufactures a number that gets
+  # reported in the calibration table and then never applied: the deployments that wrote a speed
+  # directly are already finished, and the ones that recorded nothing cannot be rescued by a slope.
+  # This is the same defect as imputing for a tag with no paddle, reached by a different route. A
+  # MEASURED calibration is left alone even so - it is a real observation, not a guess.
+  gap <- is.na(cal$slope) & cal$needs_slope
   if (any(gap)) {
     if (identical(method, "in-situ")) {
       cal$slope[gap] <- cal$in_situ_slope[gap]
@@ -97,6 +107,9 @@
       cal <- .paddleImputeGaps(cal, calibration, method, gap, lvl)
     }
   }
+  # left without a slope, but for a reason worth naming: the logger reported speed itself
+  cal$slope_source[is.na(cal$slope) & cal$as_recorded] <- "as-recorded"
+
   cal$agreement <- cal$slope / cal$in_situ_slope
   # `agreement.threshold` is a proportion, but agreement is a RATIO, so the band is applied
   # multiplicatively rather than as 1 +/- t. A slope 35% above the in-situ estimate and one 35% below it
@@ -134,97 +147,186 @@
 }
 
 #' Apply one tag's slope to one deployment.
+#'
+#' Also returns what the per-deployment log needs - the row count, the sampling rate and the resulting
+#' speed distribution - so the caller can report the deployment without walking the data a second time.
 #' @keywords internal
 #' @noRd
 .paddleApplyOne <- function(dt, sc, row, smoothing, max.speed) {
-  status <- "applied"; slope <- NA_real_; src <- NA_character_
+  # every early return goes through out(), so the fields the per-deployment log reads are always present
+  out <- function(data, status, slope = NA_real_, slope_source = NA_character_, speed = NULL)
+    list(data = data, status = status, slope = slope, slope_source = slope_source,
+         speed = speed, n_rows = nrow(data), fs = .estimateHz(data$datetime))
 
   if (!sc$has_freq) {
     if (sc$has_speed) {
       # the logger wrote a speed itself, so there is no rotation rate to calibrate: keep what it recorded
-      status <- "as-recorded"; src <- "as-recorded"
-    } else {
-      if (!"paddle_speed" %in% names(dt)) dt[, paddle_speed := NA_real_]
-      status <- if (sc$paddle_flag) "no paddle data" else "no paddle wheel"
+      return(out(dt, "as-recorded", slope_source = "as-recorded",
+                 speed = .paddleSpeedStats(dt$paddle_speed)))
     }
-    return(list(data = dt, status = status, slope = slope, slope_source = src))
+    if (!"paddle_speed" %in% names(dt)) dt[, paddle_speed := NA_real_]
+    return(out(dt, if (sc$paddle_flag) "no paddle data" else "no paddle wheel"))
   }
 
   if (!nrow(row) || !is.finite(row$slope)) {
     dt[, paddle_speed := NA_real_]
-    return(list(data = dt, status = "no calibration", slope = NA_real_, slope_source = NA_character_))
+    return(out(dt, "no calibration"))
   }
-  slope <- row$slope; src <- row$slope_source
-
   fq <- dt$paddle_freq
+  slope <- row$slope
+  fs <- .estimateHz(dt$datetime)      # also reported as the deployment's sampling rate
   if (!is.null(smoothing) && smoothing > 0 && nrow(dt) > 2) {
-    fs <- .estimateHz(dt$datetime)
     k <- if (is.finite(fs)) max(1L, round(fs * smoothing)) else 1L
     if (k > 1L && k <= nrow(dt)) fq <- data.table::frollmean(fq, n = k, fill = NA, align = "center")
   }
   sp <- fq * slope
   if (!is.null(max.speed)) sp[is.finite(sp) & sp > max.speed / 3.6] <- NA_real_
   dt[, paddle_speed := sp]
-  list(data = dt, status = status, slope = slope, slope_source = src)
+  list(data = dt, status = "applied", slope = row$slope, slope_source = row$slope_source,
+       speed = .paddleSpeedStats(sp), n_rows = nrow(dt), fs = fs)
 }
 
-
-#' The calibration block: one line per tag and season, saying where its slope came from.
+#' Median and range of a speed column, or NULL when it holds nothing finite.
 #' @keywords internal
 #' @noRd
-.reportPaddleCalibration <- function(lvl, cal, method, validate) {
-  if (lvl < 1L || !nrow(cal)) return(invisible(NULL))
-  lab <- c(measured = "measured", `in-situ` = "in situ", `tag-model` = "estimated (tag model)",
-           baseline = "estimated (baseline)", imputed = "estimated", `as-recorded` = "as recorded")
-  rows <- vapply(seq_len(nrow(cal)), function(i) {
-    s <- cal$slope_source[i]
-    if (is.na(cal$slope[i])) return("no calibration")
-    sprintf("%.4f  %s", cal$slope[i], if (!is.na(s) && s %in% names(lab)) unname(lab[s]) else "estimated")
-  }, character(1))
-  .log_section(lvl, "Calibration")
-  .log_rows(lvl, stats::setNames(rows, sprintf("%s / package %s", cal$year, cal$package_id)))
+.paddleSpeedStats <- function(v) {
+  if (is.null(v)) return(NULL)
+  ok <- is.finite(v)
+  if (!any(ok)) return(NULL)
+  c(med = stats::median(v[ok]), lo = min(v[ok]), hi = max(v[ok]))
+}
 
-  if (isTRUE(validate) && any(is.finite(cal$in_situ_slope))) {
-    v <- vapply(seq_len(nrow(cal)), function(i) {
-      if (!is.finite(cal$in_situ_slope[i])) return("not enough steep swimming to check")
-      sprintf("in situ %.4f %s agreement %.2f%s", cal$in_situ_slope[i], cli::symbol$bullet,
-              cal$agreement[i], if (isTRUE(cal$flag[i])) "  (worth a look)" else "")
-    }, character(1))
-    .log_section(lvl, "Check against the animal's own diving")
-    .log_rows(lvl, stats::setNames(v, sprintf("%s / package %s", cal$year, cal$package_id)))
+#' Where a slope came from, in words.
+#'
+#' Two registers for the same fact: the long form reads as prose in a per-deployment line, the short one
+#' fits a table column. Keeping them in one place stops the two from drifting apart.
+#' @keywords internal
+#' @noRd
+.paddleSourceLabel <- function(src, long = TRUE) {
+  if (length(src) != 1L || is.na(src)) return(NA_character_)
+  tab <- if (long)
+    c(measured = "measured", `in-situ` = "estimated (in situ)", `tag-model` = "estimated (tag model)",
+      baseline = "estimated (baseline)", imputed = "estimated", `as-recorded` = "as recorded")
+  else
+    c(measured = "measured", `in-situ` = "in situ", `tag-model` = "tag model",
+      baseline = "baseline", imputed = "estimated", `as-recorded` = "as recorded")
+  if (src %in% names(tab)) unname(tab[src]) else "estimated"
+}
+
+#' One deployment's block: what came in, which slope was applied, and what speed came out.
+#'
+#' Mirrors the per-deployment layout used by calculateTailBeats(): an `input:` line, the setting that
+#' actually varies between deployments (here the slope and its provenance), then the result indented
+#' under it. A deployment that gets no speed prints the skip line only, as the tail-beat blocks do.
+#' @keywords internal
+#' @noRd
+.logPaddleDeployment <- function(lvl, id, sc, res) {
+  if (lvl < 1L) return(invisible(NULL))
+  # `\u00b7` separates facts WITHIN a line and the heavier bullet marks the skip line, as in
+  # calculateTailBeats(): the two glyphs are doing different jobs and are not interchangeable.
+  dot <- "\u00b7"
+  if (!res$status %in% c("applied", "as-recorded")) {
+    why <- switch(res$status,
+                  "no calibration" = "no calibration for this tag and season",
+                  "no paddle data" = "no paddle data",
+                  "no paddle wheel" = "no paddle wheel", res$status)
+    .log_skip(lvl, id, "  ", why, " ", cli::symbol$bullet, " skipped")
+    return(invisible(NULL))
   }
+
+  key <- if (!is.na(sc$pkg) && length(sc$year) == 1L && is.finite(sc$year))
+    sprintf(" %s package %s %s %d", dot, sc$pkg, dot, sc$year) else ""
+  hz <- if (is.finite(res$fs)) sprintf("%g Hz", res$fs) else "rate unknown"
+  .log_detail(lvl, sprintf("input: %s rows %s %s%s", .formatLargeNumber(res$n_rows), dot, hz, key))
+
+  if (identical(res$status, "as-recorded"))
+    .log_detail(lvl, sprintf("calibration: not needed %s speed recorded by the logger", dot))
+  else
+    .log_detail(lvl, sprintf("calibration: %.4f m/s per Hz %s %s", res$slope, dot,
+                             .paddleSourceLabel(res$slope_source, long = TRUE)))
+
+  if (!is.null(res$speed))
+    .log_subdetail_aligned(lvl, sprintf("speed:   median %.2f m/s (%.2f \u2013 %.2f)",
+                                        res$speed[["med"]], res$speed[["lo"]], res$speed[["hi"]]))
+  else
+    .log_subdetail_aligned(lvl, "speed:   no finite values")
+  .log_ok(lvl, id, " processed")
   invisible(NULL)
 }
 
-#' The summary block.
+#' The calibration roll-up, as a table: one row per tag and season.
+#'
+#' The in-situ columns appear only when there is an in-situ estimate to show, so a run without
+#' `validate` gets a three-column provenance table rather than two columns of dashes.
 #' @keywords internal
 #' @noRd
-.reportPaddleCohort <- function(lvl, cal, statuses, output.dir) {
+.paddleCalTable <- function(cal) {
+  num <- function(x, d = 4) ifelse(is.finite(x), formatC(x, format = "f", digits = d), "-")
+  tab <- data.frame(Tag = sprintf("%s / pkg %s", cal$year, cal$package_id),
+                    Slope = num(cal$slope),
+                    Source = vapply(cal$slope_source, .paddleSourceLabel, character(1),
+                                    long = FALSE, USE.NAMES = FALSE),
+                    stringsAsFactors = FALSE, check.names = FALSE)
+  tab$Source[is.na(tab$Source)] <- "-"
+  if (any(is.finite(cal$in_situ_slope))) {
+    tab[["In situ"]] <- num(cal$in_situ_slope)
+    agr <- ifelse(is.finite(cal$agreement), formatC(cal$agreement, format = "f", digits = 2), "-")
+    # the flag rides in the agreement column: it is a statement ABOUT that number, and a separate
+    # column of mostly-blank cells would cost a column's width to say the same thing
+    tab[["Agreement"]] <- ifelse(cal$flag %in% TRUE, paste0(agr, " !"), agr)
+  }
+  tab[["Deployments"]] <- format(cal$n_deployments)
+  tab
+}
+
+#' The SUMMARY block: the outcome tally, then the calibration behind it, then where it was written.
+#'
+#' The calibration belongs here rather than in the header because it is a RESULT - one slope per tag and
+#' season, resolved by looking at the cohort - and nautilus headers carry settings only. It is also a
+#' cohort-level fact, so it reads once at the end rather than being repeated under every deployment.
+#' @keywords internal
+#' @noRd
+.reportPaddleCohort <- function(lvl, cal, statuses, agreement.threshold, output.dir, plot.file) {
   if (lvl < 1L) return(invisible(NULL))
-  tick <- cli::col_green(cli::symbol$tick)
-  n_ok <- sum(statuses %in% c("applied", "as-recorded"))
-  rows <- c(`Speed calculated` = sprintf("%d/%d", n_ok, length(statuses)))
-  other <- statuses[!statuses %in% c("applied", "as-recorded")]
-  if (length(other)) {
-    tb <- table(other)
-    rows <- c(rows, Skipped = paste(sprintf("%d (%s)", as.integer(tb), names(tb)), collapse = ", "))
+  n <- length(statuses)
+  n_speed <- sum(statuses %in% c("applied", "as-recorded"))
+  .log_done(lvl, sprintf("%d of %d deployment%s given a speed", n_speed, n, if (n != 1) "s" else ""))
+
+  # A mutually exclusive tally in a fixed order, so the rows visibly sum to the cohort and the block
+  # looks the same on every run. "as-recorded" is one of the ways a deployment gets a speed, so it is
+  # listed as its own outcome rather than counted twice.
+  labs <- c(applied = "Speed calculated", `as-recorded` = "Speed as recorded",
+            `no calibration` = "No calibration", `no paddle data` = "No paddle data",
+            `no paddle wheel` = "No paddle wheel")
+  tally <- table(factor(statuses, levels = names(labs)))
+  keep <- as.integer(tally) > 0L
+  if (any(keep)) {
+    rows <- stats::setNames(as.integer(tally)[keep], unname(labs[names(labs)[keep]]))
+    .log_section(lvl, "Deployments")
+    .log_rows(lvl, rows, symbols = c(cli::col_green(cli::symbol$tick),
+                                     rep(cli::symbol$bullet, max(0L, sum(keep) - 1L))))
   }
-  if (any(statuses == "as-recorded"))
-    rows <- c(rows, `Speed as recorded` = format(sum(statuses == "as-recorded")))
-  src <- stats::na.omit(cal$slope_source)
-  if (length(src)) {
-    tb <- table(src)
-    rows <- c(rows, Calibrations = paste(sprintf("%d %s", as.integer(tb), names(tb)), collapse = ", "))
+
+  if (nrow(cal)) {
+    .log_section(lvl, "Calibration")
+    .log_table(lvl, .paddleCalTable(cal))
+    if (any(cal$flag %in% TRUE)) {
+      w <- which(cal$flag %in% TRUE)
+      cli::cli_text("")
+      .log_attention(lvl, sprintf(
+        "%d calibration%s by more than %g%% from the in-situ estimate: %s",
+        length(w), if (length(w) != 1) "s differ" else " differs", 100 * agreement.threshold,
+        paste(sprintf("%s/pkg %s", cal$year[w], cal$package_id[w]), collapse = ", ")))
+    }
   }
-  if (any(cal$flag, na.rm = TRUE))
-    rows <- c(rows, `Worth a look` = paste(sprintf("%s/%s", cal$year[which(cal$flag)],
-                                                   cal$package_id[which(cal$flag)]), collapse = ", "))
-  .log_section(lvl, "Results")
-  .log_rows(lvl, rows, symbols = c(tick, rep(cli::symbol$bullet, length(rows) - 1L)))
-  if (!is.null(output.dir)) { .log_section(lvl, "Output"); .log_rows(lvl, c(Directory = output.dir)) }
+
+  out_rows <- c(if (!is.null(output.dir)) c(Directory = output.dir),
+                if (!is.null(plot.file)) c(Plots = plot.file))
+  if (length(out_rows)) { .log_section(lvl, "Output"); .log_rows(lvl, out_rows) }
   cli::cli_text("")
   invisible(NULL)
 }
+
 
 #' One panel per tag: the slope applied against the in-situ estimate, with its interval.
 #' @keywords internal

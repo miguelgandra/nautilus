@@ -152,9 +152,21 @@ calculatePaddleSpeed <- function(data,
                     from the deployments themselves."))
 
   src <- .resolveInput(data, id.col)
+  # header config, one fact per line, shown once and never repeated per deployment. The calibration
+  # itself is a RESULT - it is resolved from the cohort further down - so it belongs in the summary.
   .log_header(lvl, "calculatePaddleSpeed", "Converting paddle rotation into swimming speed",
               bullets = sprintf("Input: %d deployment%s", src$n, if (src$n != 1) "s" else ""),
-              close = FALSE)
+              arrow = c(
+                if (identical(method, "in-situ"))
+                  "Calibration: in-situ (every slope estimated from the deployment's own diving)"
+                else sprintf("Calibration: %s (missing slopes estimated from the measured ones)", method),
+                if (!is.null(smoothing) && smoothing > 0)
+                  sprintf("Smoothing: %g s on the rotation frequency", smoothing) else "Smoothing: none",
+                if (!is.null(max.speed)) sprintf("Speed cap: %g km/h", max.speed) else "Speed cap: none",
+                if (isTRUE(validate))
+                  sprintf("Validation: in situ, from pitch and vertical velocity (pitch >= %g deg)",
+                          min.pitch)
+                else "Validation: off (validate = FALSE)"))
 
   ## ---- pass 1: what each deployment carries, and its in-situ sufficient statistics ---------------
   # Accumulated rather than stored: the in-situ slope is a through-origin fit, so its sums add across
@@ -170,8 +182,6 @@ calculatePaddleSpeed <- function(data,
 
   ## ---- resolve one slope per tag and season -----------------------------------------------------
   cal <- .paddleResolve(scan, calibration, method, agreement.threshold, lvl)
-  .reportPaddleCalibration(lvl, cal, method, validate)
-  .log_header_close(lvl)
 
   ## ---- pass 2: apply -----------------------------------------------------------------------------
   data_list <- vector("list", src$n); saved <- vector("list", src$n)
@@ -180,9 +190,11 @@ calculatePaddleSpeed <- function(data,
   for (i in seq_len(src$n)) {
     x <- data.table::as.data.table(src$get(i))
     id <- as.character(.getMeta(x)$id %||% src$ids[i]); ids[i] <- id
+    .log_h2(lvl, sprintf("%s (%d/%d)", id, i, src$n))
     row <- cal[match(scan[[i]]$key, cal$key), , drop = FALSE]
     res <- .paddleApplyOne(x, scan[[i]], row, smoothing, max.speed)
     statuses <- c(statuses, res$status)
+    .logPaddleDeployment(lvl, id, scan[[i]], res)
 
     meta <- .getMeta(res$data)
     meta <- .appendProcessing(meta, "calculatePaddleSpeed",
@@ -198,11 +210,12 @@ calculatePaddleSpeed <- function(data,
     saved[i] <- list(.saveOutput(x, id, output.dir = output.dir,
                                  output.suffix = output.suffix, compress = compress))
     data_list[[i]] <- x
+    .log_gap(lvl)
   }
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .reportPaddleCohort(lvl, cal, statuses, output.dir)
+    .reportPaddleCohort(lvl, cal, statuses, agreement.threshold, output.dir, plot.file)
     .log_runtime(lvl, start.time)
   }
   if (isTRUE(plot) || !is.null(plot.file)) .renderPaddleDiagnostic(cal, plot = plot, plot.file = plot.file)
@@ -211,6 +224,7 @@ calculatePaddleSpeed <- function(data,
   # `return.data = FALSE` with no `output.dir` leaves nothing to return, and NULL takes no attributes -
   # which is exactly the run where the calibration table is the only thing the caller wanted.
   if (is.null(out)) out <- character(0)
-  attr(out, "calibration") <- cal[, setdiff(names(cal), c("key", "has_paddle")), drop = FALSE]
+  attr(out, "calibration") <- cal[, setdiff(names(cal), c("key", "has_paddle", "needs_slope",
+                                                          "as_recorded")), drop = FALSE]
   out
 }
