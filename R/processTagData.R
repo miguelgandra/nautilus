@@ -1,262 +1,254 @@
 #######################################################################################################
-# Derive movement and orientation metrics from raw sensor data #########################################
+# Derive movement, orientation and vertical-motion metrics from archival tag data ######################
 #######################################################################################################
 
-#' Derive movement and orientation metrics from raw sensor data
+#' Derive movement, orientation and vertical-motion metrics from archival tag data
 #'
 #' @description
-#' An archival tag records acceleration along three axes, a magnetic field vector, pressure and, on some
-#' tags, angular velocity. None of these is a quantity behaviour is described in. Between them and a
-#' sentence such as "the animal descended at 0.8 m/s, rolled 30 degrees to its left and swam hardest in
-#' the hour after dusk" sits a chain of corrections and derivations, each of which can be got wrong
-#' quietly.
+#' Processes calibrated and axis-mapped archival tag data to derive movement, orientation and
+#' vertical-motion metrics from accelerometer, magnetometer, gyroscope and pressure measurements. The
+#' function applies the required sensor corrections and derives the standardised set of variables used
+#' by subsequent analyses in \pkg{nautilus}.
 #'
-#' This function performs that chain in one pass. It separates the animal's own acceleration from
-#' gravity, estimates body orientation, corrects the depth record for sensor drift and the pitch and roll
-#' for how the tag was mounted, calibrates the magnetometer for the iron the tag carries, and derives
-#' the activity, posture and vertical-motion channels the rest of the package works from. It can then
-#' downsample the result, since most analyses do not need hundreds of samples per second.
+#' Processing includes magnetometer calibration, separation of static (gravitational) and dynamic
+#' acceleration, estimation of body orientation, correction for tag mounting offsets, correction of
+#' depth drift, estimation of vertical velocity, and calculation of movement and orientation metrics.
+#' The processed data can then be downsampled to reduce its size while retaining the metrics required
+#' for lower-frequency analyses.
 #'
-#' Run it after [applyAxisMapping()], so the sensor axes are already in the animal's frame. Every
-#' correction it applies is reported and recorded in the deployment's metadata, and any that had to
-#' abstain says so rather than proceeding on an assumption.
+#' The function should be applied after [applyAxisMapping()], which expresses the inertial sensor axes
+#' in the animal's body frame. Each processing step and its outcome are recorded in the deployment
+#' metadata, providing a reproducible processing history. Corrections that cannot be estimated reliably
+#' from a deployment are not applied, and are recorded as such rather than silently assumed.
 #'
-#' @param data A tag object, a list of them, a single table holding several deployments in a column
-#'   named `ID`, or a character vector of `.rds` paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-#'   processed without ever holding it all. The output of [importTagData()] is strongly recommended, as
-#'   it puts the data in the form every later step expects. The inertial axes must already be in the
-#'   animal's body frame: run [applyAxisMapping()] first, or the orientation metrics will be wrong
-#'   without appearing so. A warning is raised for any deployment whose axis mapping has not been
-#'   applied.
-#' @param downsample.to The rate in Hz to reduce the data to after the metrics are computed, or `NULL`
-#'   to keep the original resolution (default `1`). The metrics are always derived at the full recorded
-#'   rate, so downsampling costs nothing in accuracy for the channels it averages; but it does bound
-#'   what remains measurable afterwards, since averaging into bins attenuates any event shorter than a
-#'   bin. Keep the native rate if you intend to study individual jerk spikes or short dives.
-#' @param orientation.algorithm How to estimate body orientation. `"tilt_compass"` (default) is a
-#'   lightweight six-axis method using the accelerometer and magnetometer only. `"madgwick"` adds the
-#'   gyroscope, giving a nine-axis fusion that rides through brief disturbances better, at a higher
-#'   computational cost and requiring gyroscope data. Which is better is deployment-dependent rather
-#'   than universal.
-#' @param orientation A control object from [orientationControl()] governing the estimator's tuning and
-#'   the mounting-offset corrections. Pass `orientationControl(...)` to change it.
-#' @param calibration A control object from [calibrationControl()] governing whether the magnetometer is
-#'   corrected for the tag's own iron, and whether a calibration already stored by
-#'   [calibrateMagnetometer()] is preferred over one fitted here. Pass `calibrationControl(...)` to
-#'   change it.
-#' @param smoothing A control object from [smoothingControl()] governing the window lengths used to
-#'   separate gravity from motion and to condition the derived channels. Pass `smoothingControl(...)` to
-#'   change it.
-#' @param depth.drift A control object from [depthDriftControl()] governing the depth zero-offset
-#'   correction. Pass `depthDriftControl(method = "none")` to disable it.
-#' @param burst.quantiles Quantiles of instantaneous VeDBA used to flag burst swimming, or `NULL` to
-#'   skip it (default `c(0.95, 0.99)`). Each is a threshold relative to the deployment itself: `0.95`
-#'   always flags the most active 5 per cent of that record's samples, whatever the animal was doing.
-#'   That makes the flags comparable in fraction of samples across deployments, but not in absolute
-#'   activity level - and only before downsampling, which flags a bin whenever any sample in it was
-#'   flagged.
-#' @param plot Whether to render the correction diagnostics to the active graphics device (default
-#'   `FALSE`). Intended for a single deployment; for a batch use `plot.file`, since `TRUE` on more than
-#'   one deployment warns and floods the device.
-#' @param plot.file Path to a single multi-page PDF holding the diagnostic report, or `NULL` (default)
-#'   to render nothing. Each deployment gets a page showing the magnetometer calibration as the raw
-#'   cloud collapses onto a sphere, the depth zero-offset drift, and the pitch and roll mounting-offset
-#'   fits, so each correction can be checked by eye. The bundle is gathered while the raw data is in
-#'   memory; the processing itself stays headless. Must end in `.pdf`.
-#' @param return.data Whether to return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument - so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Directory in which to write one `<id>.rds` file per deployment. Providing a
-#'   directory is what triggers saving; `NULL` (default) writes nothing. The directory must already
-#'   exist.
-#' @param output.suffix Optional suffix appended to each saved file name, before `.rds`, to tag a
-#'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is set.
-#' @param compress Compression for the saved `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
-#'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is set. See [base::saveRDS()].
-#' @param data.table.threads How many threads data.table may use, or `NULL` (default) to leave its
-#'   current setting alone. More threads speed up large operations at the cost of memory. Set it
-#'   permanently with `data.table::setDTthreads()` and read the current value with
-#'   `data.table::getDTthreads()`.
+#' @param data A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+#'   identified by an `ID` column, or a character vector of `.rds` file paths. The output of
+#'   [importTagData()] is recommended. When file paths are supplied, deployments are processed
+#'   sequentially, allowing large datasets to be processed without loading everything into memory. The
+#'   inertial axes must already be in the animal's body frame; a deployment whose axis mapping has not
+#'   been applied is processed but raises a warning, since its orientation metrics will be wrong without
+#'   appearing so.
+#' @param downsample.to Sampling frequency in Hz to which the processed data are downsampled (default
+#'   `1`); `NULL` retains the original frequency. Movement metrics are calculated at the original
+#'   sampling frequency before downsampling, so accuracy is unaffected, but short transient events are
+#'   attenuated by the binning and may not be recoverable from the downsampled data.
+#' @param orientation.algorithm Method used to estimate body orientation. `"tilt_compass"` (default)
+#'   estimates orientation from the accelerometer and magnetometer; `"madgwick"` uses accelerometer,
+#'   magnetometer and gyroscope data through a nine-axis sensor-fusion algorithm. The latter requires
+#'   gyroscope measurements and is computationally more intensive. Which performs better is
+#'   deployment-dependent rather than universal.
+#' @param orientation A control object from [orientationControl()] specifying parameters for
+#'   orientation estimation and tag-mounting corrections.
+#' @param calibration A control object from [calibrationControl()] specifying magnetometer calibration
+#'   options, and whether a previously estimated calibration should be reused.
+#' @param smoothing A control object from [smoothingControl()] specifying the temporal windows used to
+#'   separate static and dynamic acceleration and to smooth derived movement variables.
+#' @param depth.drift A control object from [depthDriftControl()] specifying the method and parameters
+#'   used to correct depth sensor drift. Use `depthDriftControl(method = "none")` to disable it.
+#' @param burst.quantiles Numeric vector of quantiles of instantaneous VeDBA used to identify periods of
+#'   elevated swimming activity (default `c(0.95, 0.99)`, the upper 5% and 1% of values within each
+#'   deployment); `NULL` disables burst detection. Because the thresholds are calculated separately for
+#'   each deployment, burst flags represent relative rather than absolute activity levels.
+#' @param plot Logical; whether to display processing diagnostics on the active graphics device (default
+#'   `FALSE`). Intended for individual deployments: a batch renders a page-set per deployment and raises
+#'   a warning, so use `plot.file` instead.
+#' @param plot.file Path to a PDF file in which processing diagnostics are saved, or `NULL` (default).
+#'   Each deployment contributes a page with diagnostics for magnetometer calibration, depth-drift
+#'   correction and tag-mounting corrections, allowing each correction to be checked visually. Must end
+#'   in `.pdf`.
+#' @param return.data Logical; whether to return the processed datasets in memory (default `TRUE`). If
+#'   `FALSE`, the function returns the paths of the `.rds` files written to `output.dir`; pair it with
+#'   `output.dir`, since without one there are no paths to return and the function returns `NULL`.
+#' @param output.dir An existing directory in which processed deployments are saved as individual
+#'   `.rds` files, named `<id>.rds`. Supplying a directory is what triggers saving; `NULL` (default)
+#'   writes nothing.
+#' @param output.suffix Optional string appended to the deployment identifier in saved file names,
+#'   before `.rds`, to label a processing run or avoid overwriting an earlier one. Only used when
+#'   `output.dir` is specified.
+#' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
+#'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is specified. See [base::saveRDS()].
+#' @param data.table.threads Number of threads available to \pkg{data.table}, or `NULL` (default) to
+#'   leave the current setting unchanged. More threads may improve speed at the cost of memory. See
+#'   `data.table::setDTthreads()`.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (header, per-deployment
-#'   outcome and summary), or `2`/`"detailed"` (default), which adds the full per-step log.
+#'   outcome and summary), or `2`/`"detailed"` (default), which adds a log of each processing step.
 #'
 #' @details
-#' ## What is computed
+#' ## Processing steps
 #'
-#' Acceleration, once gravity has been separated from the animal's own motion:
+#' For each deployment, the function:
 #'
-#' - **Total acceleration (g)** - the overall strength of the signal at each instant, combining the
-#'   animal's movement and the constant pull of gravity.
-#' - **Vectorial dynamic body acceleration, VeDBA (g)** - how vigorously the animal is moving once the
-#'   steady pull of gravity is set aside. One of the most widely used indices of activity and energy
-#'   use. Because it does not depend on which way the tag is facing, it stays reliable even on tags that
-#'   can shift or rotate on the animal.
-#' - **Overall dynamic body acceleration, ODBA (g)** - the sum of the absolute dynamic acceleration
-#'   along the three axes. Retained for comparability with the wider literature, but it is
-#'   orientation-dependent, so **VeDBA is the better choice for towed or loosely attached tags**.
-#' - **Jerk (g/s)** - how suddenly the movement changes from one moment to the next. Steady swimming
-#'   gives low jerk; a strike at prey, a startle or an abrupt turn give brief spikes, which is why jerk
-#'   is often used as a clue to possible prey capture, particularly on fast tags mounted near the head
-#'   (Ydesen et al. 2014). **It flags sudden movement, not confirmed feeding**: any quick motion raises
-#'   it, including the animal breaking the surface or a knock to the tag, so check events against video
-#'   where you can. Jerk only carries this detail on tags recording at roughly 30 Hz or more; on slower
-#'   tags it is mostly noise, and a caution is shown. On downsampled output it becomes an average level
-#'   of jerkiness rather than a record of individual spikes, so use the full-resolution data to see
-#'   single events and read it alongside the original sampling rate (`sampling_hz_original`).
-#' - **Burst swimming events** - a flag marking each animal's most energetic moments, where its overall
-#'   activity is among the highest for that deployment. The cut-off is set relative to that deployment's
-#'   own record, so at full resolution it always marks the same fraction of samples. Downsampling then
-#'   flags a whole bin whenever any sample in it was flagged, so the fraction of returned rows carrying
-#'   a flag grows with the tag's native rate: at the default `downsample.to = 1`, a 1 Hz and a 100 Hz
-#'   tag do not return comparable fractions. Compare bursts at full resolution, or between tags
-#'   recording at the same rate. Use it to ask when the animal was working hardest or sustaining high
-#'   effort, as opposed to the brief, sudden movements jerk captures. Set the fraction flagged with
-#'   `burst.quantiles`.
+#' \enumerate{
+#'   \item calibrates the magnetometer, where valid magnetometer data are available and the calibration
+#'     can be estimated with sufficient confidence;
+#'   \item separates accelerometer measurements into static acceleration, associated primarily with
+#'     gravity, and dynamic acceleration, associated with animal movement;
+#'   \item calculates acceleration-based activity metrics, including ODBA, VeDBA and jerk;
+#'   \item identifies periods of elevated activity using deployment-specific VeDBA quantiles;
+#'   \item estimates roll, pitch and heading;
+#'   \item estimates and, where supported by the data, corrects constant pitch and roll offsets caused
+#'     by tag attachment;
+#'   \item corrects depth measurements for sensor drift;
+#'   \item calculates vertical velocity from the corrected depth record;
+#'   \item estimates paddle-wheel rotation frequency, where applicable; and
+#'   \item optionally downsamples the processed dataset to the requested sampling frequency.
+#' }
 #'
-#' Orientation, in degrees:
+#' The original sampling frequency is retained in `meta$sensors$sampling_hz_original`, and that of the
+#' processed dataset in `meta$sensors$sampling_hz_processed`. Processing parameters and outcomes are
+#' recorded in the deployment's processing history.
 #'
-#' - **Roll** - rotation about the animal's longitudinal axis.
-#' - **Pitch** - rotation about its lateral axis.
-#' - **Heading** - the compass direction the tag faces. See the two sections below, which cover what
-#'   heading can and cannot be used for.
-#' - **Turning angle** - the change in heading between consecutive samples, taken as the smallest
-#'   angular difference and constrained to -180 to 180 degrees.
+#' ## Derived movement metrics
 #'
-#' Linear motion:
+#' \describe{
+#'   \item{`accel`}{Total acceleration magnitude (g), the Euclidean norm of the three accelerometer
+#'     axes.}
+#'   \item{`odba`}{Overall Dynamic Body Acceleration (g), the sum of the absolute dynamic acceleration
+#'     across the three body axes.}
+#'   \item{`vedba`}{Vectorial Dynamic Body Acceleration (g), the Euclidean norm of the dynamic
+#'     acceleration vector.}
+#'   \item{`jerk`}{Rate of change of acceleration (g/s), representing rapid changes in movement.}
+#'   \item{`surge`, `sway`, `heave`}{The forward-backward, lateral and dorsoventral components of the
+#'     animal's own acceleration (g), along its body axes.}
+#'   \item{`burst95`, `burst99`}{Binary flags marking samples in the upper quantiles of instantaneous
+#'     VeDBA, named after the quantiles given in `burst.quantiles`.}
+#' }
 #'
-#' - **Surge, sway and heave (g)** - the forward-and-back, side-to-side and up-and-down components of
-#'   the animal's own acceleration, along its body axes.
-#' - **Vertical velocity (m/s)** - the rate of change of depth, positive on descent. It is computed by
-#'   central differences on a smoothed copy of the depth series, with the window set by
-#'   `smoothing$depth`, because differentiating a raw pressure trace amplifies its quantisation noise.
-#'   The stored `depth` column itself is drift-corrected but not smoothed, so short vertical excursions
-#'   keep their true amplitude.
+#' ODBA depends on the orientation of the sensor axes, whereas VeDBA is invariant to rotation of the
+#' coordinate system. VeDBA is therefore preferable when comparing activity across deployments in which
+#' tag orientation is not identical, and for towed or loosely attached tags.
 #'
-#' ## Estimating orientation
+#' Jerk is most informative at relatively high sampling frequencies, of roughly 30 Hz or more; below
+#' this it largely reflects noise, and a caution is issued. It responds to any abrupt movement,
+#' including surfacing or a knock to the tag, and should not be interpreted as direct evidence of prey
+#' capture or feeding behaviour (Ydesen et al. 2014). On downsampled output it describes an average
+#' level of jerkiness rather than individual events.
 #'
-#' The **tilt-compensated compass** (default) fuses the accelerometer and magnetometer. It reads the
-#' tilt angles from gravity, then uses them to level the magnetometer before computing heading (Gunner
-#' et al. 2021). It cannot drift, having no integration step, but it is affected by magnetic
-#' disturbance and by the animal's own acceleration masquerading as gravity.
+#' Burst flags identify samples within the specified upper quantiles of instantaneous VeDBA for that
+#' deployment, and are therefore relative rather than absolute measures of activity intensity.
+#' Downsampling flags a bin whenever any sample within it was flagged, so the proportion of flagged rows
+#' increases with the tag's original sampling frequency; bursts are best compared at full resolution, or
+#' between tags recording at the same rate.
 #'
-#' The **Madgwick filter** adds the gyroscope, using a quaternion gradient-descent fusion. It rides
-#' through transient disturbances better, at a higher computational cost, and its accelerometer-against-
-#' gyroscope trade-off is set by `madgwick.beta` in [orientationControl()].
+#' ## Orientation metrics
+#'
+#' \describe{
+#'   \item{`roll`}{Rotation about the animal's longitudinal axis (degrees).}
+#'   \item{`pitch`}{Rotation about the animal's lateral axis (degrees).}
+#'   \item{`heading`}{Horizontal orientation of the tag relative to magnetic or geographic north
+#'     (degrees), depending on whether magnetic declination could be determined.}
+#'   \item{`turning_angle`}{Smallest angular difference in heading between consecutive observations,
+#'     constrained to -180 to 180 degrees.}
+#' }
+#'
+#' The tilt-compensated compass estimates orientation from accelerometer and magnetometer measurements,
+#' levelling the magnetometer using the tilt angles read from gravity (Gunner et al. 2021). It has no
+#' integration step and so cannot drift, but it is sensitive to magnetic disturbance and to the animal's
+#' own acceleration being read as gravity. The Madgwick algorithm additionally incorporates gyroscope
+#' measurements, providing greater robustness to short-term disturbances at greater computational cost.
+#'
+#' Heading describes the orientation of the tag, and so depends on tag attachment and sensor-axis
+#' alignment. Mounting corrections applied to pitch and roll are not propagated to heading, and residual
+#' rotation about the vertical axis is not estimated. Heading should therefore be interpreted with
+#' greater caution than the other orientation variables.
+#'
+#' ## Depth, vertical velocity and paddle-wheel rotation
+#'
+#' \describe{
+#'   \item{`depth`}{Depth (m), corrected for sensor drift. The returned series is not smoothed, so short
+#'     vertical excursions retain their true amplitude.}
+#'   \item{`vertical_velocity`}{Rate of change of depth (m/s), positive during descent and negative
+#'     during ascent. It is derived from a smoothed copy of the depth record, since differentiating the
+#'     raw pressure trace amplifies its quantisation noise; the window is set by `smoothing$depth`.}
+#'   \item{`paddle_freq`}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
+#'     carrying a paddle wheel, where the recording rate is sufficient. This is a rotation rate, not a
+#'     speed: converting it to swimming speed requires a tag-specific calibration and is done by
+#'     [calculatePaddleSpeed()].}
+#' }
+#'
+#' Depth drift is corrected before vertical velocity is calculated.
 #'
 #' ## Geographic and magnetic heading
 #'
-#' Where a deployment position is available, from the metadata or else the first usable coordinates in
-#' the data, the magnetic declination for that place and date is obtained from a global geomagnetic
-#' model and added, giving a *geographic* heading relative to true north. Where no position is
-#' available the declination cannot be computed and the heading is left *magnetic*, relative to
-#' magnetic north, rather than discarded. Which one you have is recorded in
-#' `meta$deployment$heading_reference`, and a magnetic heading is reported in a warning.
+#' Where deployment coordinates are available, magnetic declination is obtained from a global
+#' geomagnetic model and applied to the calculated heading, giving a geographic heading relative to true
+#' north. Where coordinates are unavailable the declination cannot be computed and the heading is
+#' retained relative to magnetic north rather than discarded. The reference frame is recorded in
+#' `meta$deployment$heading_reference`.
 #'
-#' **A magnetic heading is still valid for relative orientation.** It differs from a geographic one by a
-#' constant offset, the declination, which is a few degrees in some regions and more than 25 in others
-#' (about -8 degrees in the Azores, -26 near Cape Town, +22 off New Zealand). Any
-#' measure built from angle *differences*, or from the length of a resultant vector, is therefore
-#' unaffected, because the offset cancels exactly: turning angle and turning rate, angular velocity,
-#' circular variance, standard deviation and mean resultant length, heading autocorrelation, net and
-#' cumulative heading change, and circling or turn detection all give identical answers either way.
+#' The distinction matters only for absolute measures. A magnetic heading differs from a geographic one
+#' by a constant offset, which cancels in any quantity built from angular differences: turning angle and
+#' turning rate, angular velocity, circular variance and mean resultant length, and heading
+#' autocorrelation are all unaffected. Absolute measures, including circular means, dead-reckoned tracks
+#' from [reconstructTrack()], and comparisons against GPS or Argos positions, require a geographic
+#' heading. Functions computing those check `heading_reference` and warn where it is magnetic.
 #'
-#' What a magnetic heading must not be used for is any absolute claim about direction, where the offset
-#' rotates the result instead of cancelling: a circular mean or median heading, a dead-reckoned track
-#' from [reconstructTrack()], comparison against GPS or Argos fixes, or any figure whose north
-#' orientation is read off the page. Functions computing those check `heading_reference` and warn, while
-#' the rotation-invariant ones stay silent, so a warning means the distinction genuinely affects what
-#' you asked for.
+#' ## Tag-mounting corrections
 #'
-#' Heading describes the orientation of the tag rather than of the animal, so its accuracy depends on
-#' how well the two are aligned - and **no mounting correction reaches heading**. Heading is computed
-#' from the raw pitch and roll, and the mounting offsets described next are subtracted afterwards
-#' without heading being recomputed. [applyAxisMapping()] resolves the sensor-axis orientation it can
-#' determine, but where the mapping was derived from the accelerometer alone the magnetometer is left in
-#' its raw chip frame, and residual mounting rotation about the vertical axis is never estimated. Treat
-#' heading as the least well constrained of the orientation outputs.
+#' Constant pitch and roll offsets caused by tag attachment are indistinguishable from the animal's
+#' posture unless estimated and removed, and both corrections assume the tag is approximately aligned
+#' with the animal. They have opposite data requirements. The roll offset is estimated from periods of
+#' relatively horizontal swimming, whereas the pitch offset is estimated from the relationship between
+#' pitch and vertical velocity (Kawatsu et al. 2010) and therefore requires sufficient vertical
+#' movement; it is not applied where the relationship is insufficiently supported by the data.
 #'
-#' ## Mounting offsets
-#'
-#' A tag is never attached perfectly level, and the resulting constant pitch and roll offsets are
-#' indistinguishable from the animal's posture unless they are estimated and removed. Both corrections
-#' assume the tag is approximately aligned with the animal, and they have opposite data requirements.
-#' The roll offset is the median roll over the most level part of the record, so it needs level
-#' swimming. The pitch offset is read from the relationship between pitch and vertical speed, so it
-#' needs *diving*, and it is declined outright on a record with too little vertical movement, reported
-#' as an insufficient diving signal. The pitch correction follows Kawatsu et al. (2010).
-#'
-#' Large mounting deviations may leave errors in every derived orientation and movement estimate. See
-#' `vignette("orientation-methods", package = "nautilus")` for how each correction is estimated and what
-#' it can and cannot recover.
+#' Large or poorly characterised mounting offsets may affect the accuracy of orientation and movement
+#' metrics. See `vignette("orientation-methods", package = "nautilus")` for a detailed description of
+#' the assumptions and limitations of these corrections.
 #'
 #' ## Magnetometer calibration
 #'
-#' The magnetometer is corrected for the tag's own iron before heading is computed, using the same
-#' engine as [calibrateMagnetometer()], whose Details give the full method. Where the field cloud is
-#' genuinely three-dimensional it fits the full ellipsoid; for the thin band a level swimmer usually
-#' produces it estimates the offset only, pinning the unobservable perpendicular component from the
-#' geomagnetic inclination.
+#' Magnetometer measurements can be affected by hard-iron and soft-iron distortions caused by the tag
+#' and its mounting environment. When requested, these corrections are estimated and applied using the
+#' same procedure as [calibrateMagnetometer()]. Where the measured field describes a genuinely
+#' three-dimensional cloud the full ellipsoid is fitted; for the narrow band typical of a level swimmer,
+#' only the offset is estimated.
 #'
-#' Either way the correction is applied only when it clears the confidence gate: if the animal did not
-#' rotate through enough headings to constrain the estimate, the heading is left raw rather than
-#' distorted. A calibration already computed and stored by [calibrateMagnetometer()], such as a pooled
-#' or externally sourced fit, is used when present and trusted; otherwise one is fitted here. The
-#' switches are in [calibrationControl()].
+#' A previously estimated calibration can be supplied through the deployment metadata and is reused when
+#' compatible with the current sensor-axis mapping; otherwise a calibration is estimated from the
+#' deployment data. Corrections are applied only where the available magnetic-field coverage provides
+#' sufficient support. If a calibration cannot be reliably estimated, the raw magnetometer measurements
+#' are retained.
 #'
-#' @section End-of-run warnings:
-#' Findings are aggregated by type rather than by deployment. Each raises at most one warning, naming
-#' the count and then listing the affected deployments inline with the value that differs:
+#' ## Quality control and warnings
 #'
-#' ```
-#'   3 deployments have an unusual mounting roll, corrected (offset).
-#'   PIN_10 (-45.0 deg), PIN_11 (-43.2 deg), PIN_12 (-39.8 deg)
-#' ```
-#'
-#' The warning says what happened and to which deployments; what it means and what to do about it is
-#' below. The per-deployment log at `verbose = "detailed"` reports each finding where it occurred, with
-#' the value that triggered it.
+#' The function performs deployment-level quality-control checks and reports conditions that may affect
+#' interpretation of the derived variables. Findings are aggregated by type, so each raises at most one
+#' warning naming the affected deployments, rather than one warning per deployment. Deployment-specific
+#' detail is available with `verbose = "detailed"`.
 #'
 #' \describe{
-#'   \item{potential pitch anomaly}{The median pitch exceeds `orientation$warning.threshold`. Either the
-#'     tag is mounted far from the body axis or the axis mapping is wrong; check [checkTagMapping()]
-#'     before using any posture metric.}
-#'   \item{unusual mounting roll, corrected or not corrected}{The estimated mounting roll exceeds
-#'     `orientation$warning.threshold`. Corrected means it was below `orientation$mount.roll.max` and has
-#'     been subtracted, so the orientation is usable and the value is reported only so that an unusual
-#'     mount is not silent. Not corrected means it exceeded that gate and was left in place, so roll and
-#'     heading are rotated by roughly that amount.}
-#'   \item{roll residual after correction}{The median roll is large and is not explained by a mounting
-#'     offset that was measured but deliberately left uncorrected. Where the roll correction ran, this
-#'     means it did not take; where it was disabled or could not be estimated, it means a large roll was
-#'     left in place. Usually an axis-mapping problem rather than a mounting one.}
-#'   \item{no magnetometer calibration}{Neither a trusted stored fit nor a coverage-passing inline
-#'     estimate was available, so the heading carries the tag's uncorrected offset - the dominant source
-#'     of dead-reckoning drift. Supply a fit through `calibrateMagnetometer(calibration.data = )`, or
-#'     collect more rotation coverage. Recorded as `"uncalibrated_raw"` in `meta$mag_calibration$status`.}
-#'   \item{magnetic heading}{No deployment position was available, so the declination could not be
-#'     applied and the heading refers to magnetic north. See the heading section above for what this
-#'     does and does not affect.}
-#'   \item{processed without an applied axis mapping}{Orientation assumes body-frame inertial axes. Run
-#'     [applyAxisMapping()] first unless the data is already in that frame.}
-#'   \item{constant paddle channel, now set to NA}{The imported paddle column held one fixed value for
-#'     the whole deployment - a dead or absent paddle wheel, not a measurement. Left in place it would
-#'     count as that many genuine speed samples in any pooled statistic. The rotation frequency is
-#'     re-estimated from the magnetometer where the recording is fast enough; turn it into a speed with
-#'     [calculatePaddleSpeed()].}
-#'   \item{already processed and re-run}{The input already carried a `processTagData` step. Calibration
-#'     and downsampling are skipped, but **the metrics are recomputed from the already-downsampled
-#'     columns, so they will not reproduce the first run** - jerk and the separation of gravity from
-#'     motion both depend on the sampling rate. Re-process from the imported data rather than from
-#'     processed output.}
-#'   \item{skipped for missing or unusable input}{The deployment has no entry in the returned data and
-#'     was not written to `output.dir`. A channel removed by [checkSensorIntegrity()] is recorded in
-#'     `meta$sensors$excluded`.}
+#'   \item{potential pitch anomaly}{The median pitch exceeds `orientation$warning.threshold`, indicating
+#'     either substantial tag misalignment or an incorrect sensor-axis mapping. Check
+#'     [checkTagMapping()] before using any posture metric.}
+#'   \item{unusual mounting roll}{The estimated roll offset exceeds `orientation$warning.threshold`.
+#'     Where it also exceeds `orientation$mount.roll.max` it is left uncorrected, and roll and heading
+#'     remain rotated by approximately that amount.}
+#'   \item{roll residual after correction}{A substantial roll remains after mounting correction,
+#'     usually indicating an incorrect axis mapping rather than a mounting problem.}
+#'   \item{no magnetometer calibration}{No sufficiently supported calibration was available, so the
+#'     magnetometer was retained uncalibrated and the heading carries the tag's offset, the dominant
+#'     source of dead-reckoning drift. Recorded as `"uncalibrated_raw"` in `meta$mag_calibration$status`.}
+#'   \item{magnetic heading}{No deployment position was available to estimate magnetic declination, so
+#'     heading remains relative to magnetic north.}
+#'   \item{processed without an applied axis mapping}{The deployment was processed without
+#'     [applyAxisMapping()], so orientation metrics may not represent the animal's body frame.}
+#'   \item{constant paddle channel}{The paddle-wheel channel held a single constant value for the whole
+#'     deployment, indicating an absent or failed sensor rather than a measurement, and was set to `NA`.
+#'     The rotation frequency is re-estimated from the magnetometer where the recording rate allows.}
+#'   \item{already processed}{The input already contained a `processTagData` step. Calibration and
+#'     downsampling are not repeated, but derived metrics are recalculated from the already-downsampled
+#'     columns and will not reproduce the first run, since jerk and the separation of gravity from
+#'     motion both depend on sampling rate. Re-process from the imported data instead.}
+#'   \item{skipped deployment}{A deployment lacking required input variables is excluded from the
+#'     returned dataset and is not written to `output.dir`. Channels removed by [checkSensorIntegrity()]
+#'     are recorded in `meta$sensors$excluded`.}
 #' }
 #'
-#' @return If `return.data = TRUE`, a named list holding one processed deployment per element. If
-#'   `return.data = FALSE`, a character vector of the written `.rds` file paths. Files are written
-#'   whenever `output.dir` is set, regardless of what is returned.
+#' @return If `return.data = TRUE`, a named list containing one processed dataset per successfully
+#'   processed deployment. If `return.data = FALSE`, a character vector of the paths to the processed
+#'   `.rds` files, returned invisibly. Files are written whenever `output.dir` is specified, regardless
+#'   of the value of `return.data`.
 #'
 #' @references
 #' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal movements in R: a
@@ -270,21 +262,24 @@
 #' engulfment revealed by high-rate, super-cranial accelerometry on a harbour seal. *Journal of
 #' Experimental Biology* 217:2239-2243. \doi{10.1242/jeb.100016}
 #'
-#' @seealso [importTagData()] for reading the raw files; [applyAxisMapping()] for the step that must
-#'   come first; [detectDives()] and [calculateTailBeats()] for what typically follows.
+#' @seealso [importTagData()] for importing archival tag data; [applyAxisMapping()] for aligning sensor
+#'   axes with the animal's body frame; [calibrateMagnetometer()] for independent magnetometer
+#'   calibration; [calculatePaddleSpeed()] for converting `paddle_freq` into a swimming speed;
+#'   [detectDives()] and [calculateTailBeats()] for what typically follows.
 #'
 #' @examples
 #' \dontrun{
-#' # Axis-map the imported data into the body frame first, then derive
-#' # kinematics and orientation and downsample to 1 Hz.
+#' # Align sensor axes with the animal's body frame before processing.
 #' oriented <- applyAxisMapping(imported)
-#' tag <- processTagData(oriented,
-#'                       downsample.to = 1,
-#'                       orientation.algorithm = "tilt_compass")
 #'
-#' # A batch of saved deployments: write a diagnostic PDF and save incrementally.
+#' # Derive movement and orientation metrics and downsample to 1 Hz.
+#' processed <- processTagData(oriented,
+#'                             downsample.to = 1,
+#'                             orientation.algorithm = "tilt_compass")
+#'
+#' # Process a batch of saved deployments and write the results to disk.
 #' processTagData(list.files("./oriented", full.names = TRUE),
-#'                plot.file = "./qc/corrections.pdf",
+#'                plot.file = "./qc/process_diagnostics.pdf",
 #'                return.data = FALSE, output.dir = "./processed")
 #' }
 #' @export

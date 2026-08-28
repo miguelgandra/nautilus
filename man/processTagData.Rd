@@ -2,7 +2,7 @@
 % Please edit documentation in R/processTagData.R
 \name{processTagData}
 \alias{processTagData}
-\title{Derive movement and orientation metrics from raw sensor data}
+\title{Derive movement, orientation and vertical-motion metrics from archival tag data}
 \usage{
 processTagData(
   data,
@@ -24,297 +24,289 @@ processTagData(
 )
 }
 \arguments{
-\item{data}{A tag object, a list of them, a single table holding several deployments in a column
-named \code{ID}, or a character vector of \code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-processed without ever holding it all. The output of \code{\link[=importTagData]{importTagData()}} is strongly recommended, as
-it puts the data in the form every later step expects. The inertial axes must already be in the
-animal's body frame: run \code{\link[=applyAxisMapping]{applyAxisMapping()}} first, or the orientation metrics will be wrong
-without appearing so. A warning is raised for any deployment whose axis mapping has not been
-applied.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+identified by an \code{ID} column, or a character vector of \code{.rds} file paths. The output of
+\code{\link[=importTagData]{importTagData()}} is recommended. When file paths are supplied, deployments are processed
+sequentially, allowing large datasets to be processed without loading everything into memory. The
+inertial axes must already be in the animal's body frame; a deployment whose axis mapping has not
+been applied is processed but raises a warning, since its orientation metrics will be wrong without
+appearing so.}
 
-\item{downsample.to}{The rate in Hz to reduce the data to after the metrics are computed, or \code{NULL}
-to keep the original resolution (default \code{1}). The metrics are always derived at the full recorded
-rate, so downsampling costs nothing in accuracy for the channels it averages; but it does bound
-what remains measurable afterwards, since averaging into bins attenuates any event shorter than a
-bin. Keep the native rate if you intend to study individual jerk spikes or short dives.}
+\item{downsample.to}{Sampling frequency in Hz to which the processed data are downsampled (default
+\code{1}); \code{NULL} retains the original frequency. Movement metrics are calculated at the original
+sampling frequency before downsampling, so accuracy is unaffected, but short transient events are
+attenuated by the binning and may not be recoverable from the downsampled data.}
 
-\item{orientation.algorithm}{How to estimate body orientation. \code{"tilt_compass"} (default) is a
-lightweight six-axis method using the accelerometer and magnetometer only. \code{"madgwick"} adds the
-gyroscope, giving a nine-axis fusion that rides through brief disturbances better, at a higher
-computational cost and requiring gyroscope data. Which is better is deployment-dependent rather
-than universal.}
+\item{orientation.algorithm}{Method used to estimate body orientation. \code{"tilt_compass"} (default)
+estimates orientation from the accelerometer and magnetometer; \code{"madgwick"} uses accelerometer,
+magnetometer and gyroscope data through a nine-axis sensor-fusion algorithm. The latter requires
+gyroscope measurements and is computationally more intensive. Which performs better is
+deployment-dependent rather than universal.}
 
-\item{orientation}{A control object from \code{\link[=orientationControl]{orientationControl()}} governing the estimator's tuning and
-the mounting-offset corrections. Pass \code{orientationControl(...)} to change it.}
+\item{orientation}{A control object from \code{\link[=orientationControl]{orientationControl()}} specifying parameters for
+orientation estimation and tag-mounting corrections.}
 
-\item{calibration}{A control object from \code{\link[=calibrationControl]{calibrationControl()}} governing whether the magnetometer is
-corrected for the tag's own iron, and whether a calibration already stored by
-\code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}} is preferred over one fitted here. Pass \code{calibrationControl(...)} to
-change it.}
+\item{calibration}{A control object from \code{\link[=calibrationControl]{calibrationControl()}} specifying magnetometer calibration
+options, and whether a previously estimated calibration should be reused.}
 
-\item{smoothing}{A control object from \code{\link[=smoothingControl]{smoothingControl()}} governing the window lengths used to
-separate gravity from motion and to condition the derived channels. Pass \code{smoothingControl(...)} to
-change it.}
+\item{smoothing}{A control object from \code{\link[=smoothingControl]{smoothingControl()}} specifying the temporal windows used to
+separate static and dynamic acceleration and to smooth derived movement variables.}
 
-\item{depth.drift}{A control object from \code{\link[=depthDriftControl]{depthDriftControl()}} governing the depth zero-offset
-correction. Pass \code{depthDriftControl(method = "none")} to disable it.}
+\item{depth.drift}{A control object from \code{\link[=depthDriftControl]{depthDriftControl()}} specifying the method and parameters
+used to correct depth sensor drift. Use \code{depthDriftControl(method = "none")} to disable it.}
 
-\item{burst.quantiles}{Quantiles of instantaneous VeDBA used to flag burst swimming, or \code{NULL} to
-skip it (default \code{c(0.95, 0.99)}). Each is a threshold relative to the deployment itself: \code{0.95}
-always flags the most active 5 per cent of that record's samples, whatever the animal was doing.
-That makes the flags comparable in fraction of samples across deployments, but not in absolute
-activity level - and only before downsampling, which flags a bin whenever any sample in it was
-flagged.}
+\item{burst.quantiles}{Numeric vector of quantiles of instantaneous VeDBA used to identify periods of
+elevated swimming activity (default \code{c(0.95, 0.99)}, the upper 5\% and 1\% of values within each
+deployment); \code{NULL} disables burst detection. Because the thresholds are calculated separately for
+each deployment, burst flags represent relative rather than absolute activity levels.}
 
-\item{plot}{Whether to render the correction diagnostics to the active graphics device (default
-\code{FALSE}). Intended for a single deployment; for a batch use \code{plot.file}, since \code{TRUE} on more than
-one deployment warns and floods the device.}
+\item{plot}{Logical; whether to display processing diagnostics on the active graphics device (default
+\code{FALSE}). Intended for individual deployments: a batch renders a page-set per deployment and raises
+a warning, so use \code{plot.file} instead.}
 
-\item{plot.file}{Path to a single multi-page PDF holding the diagnostic report, or \code{NULL} (default)
-to render nothing. Each deployment gets a page showing the magnetometer calibration as the raw
-cloud collapses onto a sphere, the depth zero-offset drift, and the pitch and roll mounting-offset
-fits, so each correction can be checked by eye. The bundle is gathered while the raw data is in
-memory; the processing itself stays headless. Must end in \code{.pdf}.}
+\item{plot.file}{Path to a PDF file in which processing diagnostics are saved, or \code{NULL} (default).
+Each deployment contributes a page with diagnostics for magnetometer calibration, depth-drift
+correction and tag-mounting corrections, allowing each correction to be checked visually. Must end
+in \code{.pdf}.}
 
-\item{return.data}{Whether to return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument - so a large fleet can be processed without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{return.data}{Logical; whether to return the processed datasets in memory (default \code{TRUE}). If
+\code{FALSE}, the function returns the paths of the \code{.rds} files written to \code{output.dir}; pair it with
+\code{output.dir}, since without one there are no paths to return and the function returns \code{NULL}.}
 
-\item{output.dir}{Directory in which to write one \verb{<id>.rds} file per deployment. Providing a
-directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already
-exist.}
+\item{output.dir}{An existing directory in which processed deployments are saved as individual
+\code{.rds} files, named \verb{<id>.rds}. Supplying a directory is what triggers saving; \code{NULL} (default)
+writes nothing.}
 
-\item{output.suffix}{Optional suffix appended to each saved file name, before \code{.rds}, to tag a
-processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is set.}
+\item{output.suffix}{Optional string appended to the deployment identifier in saved file names,
+before \code{.rds}, to label a processing run or avoid overwriting an earlier one. Only used when
+\code{output.dir} is specified.}
 
-\item{compress}{Compression for the saved \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
-\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is set. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
+\item{compress}{Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
+\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is specified. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{data.table.threads}{How many threads data.table may use, or \code{NULL} (default) to leave its
-current setting alone. More threads speed up large operations at the cost of memory. Set it
-permanently with \code{data.table::setDTthreads()} and read the current value with
-\code{data.table::getDTthreads()}.}
+\item{data.table.threads}{Number of threads available to \pkg{data.table}, or \code{NULL} (default) to
+leave the current setting unchanged. More threads may improve speed at the cost of memory. See
+\code{data.table::setDTthreads()}.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header, per-deployment
-outcome and summary), or \code{2}/\code{"detailed"} (default), which adds the full per-step log.}
+outcome and summary), or \code{2}/\code{"detailed"} (default), which adds a log of each processing step.}
 }
 \value{
-If \code{return.data = TRUE}, a named list holding one processed deployment per element. If
-\code{return.data = FALSE}, a character vector of the written \code{.rds} file paths. Files are written
-whenever \code{output.dir} is set, regardless of what is returned.
+If \code{return.data = TRUE}, a named list containing one processed dataset per successfully
+processed deployment. If \code{return.data = FALSE}, a character vector of the paths to the processed
+\code{.rds} files, returned invisibly. Files are written whenever \code{output.dir} is specified, regardless
+of the value of \code{return.data}.
 }
 \description{
-An archival tag records acceleration along three axes, a magnetic field vector, pressure and, on some
-tags, angular velocity. None of these is a quantity behaviour is described in. Between them and a
-sentence such as "the animal descended at 0.8 m/s, rolled 30 degrees to its left and swam hardest in
-the hour after dusk" sits a chain of corrections and derivations, each of which can be got wrong
-quietly.
+Processes calibrated and axis-mapped archival tag data to derive movement, orientation and
+vertical-motion metrics from accelerometer, magnetometer, gyroscope and pressure measurements. The
+function applies the required sensor corrections and derives the standardised set of variables used
+by subsequent analyses in \pkg{nautilus}.
 
-This function performs that chain in one pass. It separates the animal's own acceleration from
-gravity, estimates body orientation, corrects the depth record for sensor drift and the pitch and roll
-for how the tag was mounted, calibrates the magnetometer for the iron the tag carries, and derives
-the activity, posture and vertical-motion channels the rest of the package works from. It can then
-downsample the result, since most analyses do not need hundreds of samples per second.
+Processing includes magnetometer calibration, separation of static (gravitational) and dynamic
+acceleration, estimation of body orientation, correction for tag mounting offsets, correction of
+depth drift, estimation of vertical velocity, and calculation of movement and orientation metrics.
+The processed data can then be downsampled to reduce its size while retaining the metrics required
+for lower-frequency analyses.
 
-Run it after \code{\link[=applyAxisMapping]{applyAxisMapping()}}, so the sensor axes are already in the animal's frame. Every
-correction it applies is reported and recorded in the deployment's metadata, and any that had to
-abstain says so rather than proceeding on an assumption.
+The function should be applied after \code{\link[=applyAxisMapping]{applyAxisMapping()}}, which expresses the inertial sensor axes
+in the animal's body frame. Each processing step and its outcome are recorded in the deployment
+metadata, providing a reproducible processing history. Corrections that cannot be estimated reliably
+from a deployment are not applied, and are recorded as such rather than silently assumed.
 }
 \details{
-\subsection{What is computed}{
+\subsection{Processing steps}{
 
-Acceleration, once gravity has been separated from the animal's own motion:
-\itemize{
-\item \strong{Total acceleration (g)} - the overall strength of the signal at each instant, combining the
-animal's movement and the constant pull of gravity.
-\item \strong{Vectorial dynamic body acceleration, VeDBA (g)} - how vigorously the animal is moving once the
-steady pull of gravity is set aside. One of the most widely used indices of activity and energy
-use. Because it does not depend on which way the tag is facing, it stays reliable even on tags that
-can shift or rotate on the animal.
-\item \strong{Overall dynamic body acceleration, ODBA (g)} - the sum of the absolute dynamic acceleration
-along the three axes. Retained for comparability with the wider literature, but it is
-orientation-dependent, so \strong{VeDBA is the better choice for towed or loosely attached tags}.
-\item \strong{Jerk (g/s)} - how suddenly the movement changes from one moment to the next. Steady swimming
-gives low jerk; a strike at prey, a startle or an abrupt turn give brief spikes, which is why jerk
-is often used as a clue to possible prey capture, particularly on fast tags mounted near the head
-(Ydesen et al. 2014). \strong{It flags sudden movement, not confirmed feeding}: any quick motion raises
-it, including the animal breaking the surface or a knock to the tag, so check events against video
-where you can. Jerk only carries this detail on tags recording at roughly 30 Hz or more; on slower
-tags it is mostly noise, and a caution is shown. On downsampled output it becomes an average level
-of jerkiness rather than a record of individual spikes, so use the full-resolution data to see
-single events and read it alongside the original sampling rate (\code{sampling_hz_original}).
-\item \strong{Burst swimming events} - a flag marking each animal's most energetic moments, where its overall
-activity is among the highest for that deployment. The cut-off is set relative to that deployment's
-own record, so at full resolution it always marks the same fraction of samples. Downsampling then
-flags a whole bin whenever any sample in it was flagged, so the fraction of returned rows carrying
-a flag grows with the tag's native rate: at the default \code{downsample.to = 1}, a 1 Hz and a 100 Hz
-tag do not return comparable fractions. Compare bursts at full resolution, or between tags
-recording at the same rate. Use it to ask when the animal was working hardest or sustaining high
-effort, as opposed to the brief, sudden movements jerk captures. Set the fraction flagged with
-\code{burst.quantiles}.
+For each deployment, the function:
+
+\enumerate{
+\item calibrates the magnetometer, where valid magnetometer data are available and the calibration
+can be estimated with sufficient confidence;
+\item separates accelerometer measurements into static acceleration, associated primarily with
+gravity, and dynamic acceleration, associated with animal movement;
+\item calculates acceleration-based activity metrics, including ODBA, VeDBA and jerk;
+\item identifies periods of elevated activity using deployment-specific VeDBA quantiles;
+\item estimates roll, pitch and heading;
+\item estimates and, where supported by the data, corrects constant pitch and roll offsets caused
+by tag attachment;
+\item corrects depth measurements for sensor drift;
+\item calculates vertical velocity from the corrected depth record;
+\item estimates paddle-wheel rotation frequency, where applicable; and
+\item optionally downsamples the processed dataset to the requested sampling frequency.
 }
 
-Orientation, in degrees:
-\itemize{
-\item \strong{Roll} - rotation about the animal's longitudinal axis.
-\item \strong{Pitch} - rotation about its lateral axis.
-\item \strong{Heading} - the compass direction the tag faces. See the two sections below, which cover what
-heading can and cannot be used for.
-\item \strong{Turning angle} - the change in heading between consecutive samples, taken as the smallest
-angular difference and constrained to -180 to 180 degrees.
+The original sampling frequency is retained in \code{meta$sensors$sampling_hz_original}, and that of the
+processed dataset in \code{meta$sensors$sampling_hz_processed}. Processing parameters and outcomes are
+recorded in the deployment's processing history.
 }
 
-Linear motion:
-\itemize{
-\item \strong{Surge, sway and heave (g)} - the forward-and-back, side-to-side and up-and-down components of
-the animal's own acceleration, along its body axes.
-\item \strong{Vertical velocity (m/s)} - the rate of change of depth, positive on descent. It is computed by
-central differences on a smoothed copy of the depth series, with the window set by
-\code{smoothing$depth}, because differentiating a raw pressure trace amplifies its quantisation noise.
-The stored \code{depth} column itself is drift-corrected but not smoothed, so short vertical excursions
-keep their true amplitude.
+\subsection{Derived movement metrics}{
+
+\describe{
+\item{\code{accel}}{Total acceleration magnitude (g), the Euclidean norm of the three accelerometer
+axes.}
+\item{\code{odba}}{Overall Dynamic Body Acceleration (g), the sum of the absolute dynamic acceleration
+across the three body axes.}
+\item{\code{vedba}}{Vectorial Dynamic Body Acceleration (g), the Euclidean norm of the dynamic
+acceleration vector.}
+\item{\code{jerk}}{Rate of change of acceleration (g/s), representing rapid changes in movement.}
+\item{\code{surge}, \code{sway}, \code{heave}}{The forward-backward, lateral and dorsoventral components of the
+animal's own acceleration (g), along its body axes.}
+\item{\code{burst95}, \code{burst99}}{Binary flags marking samples in the upper quantiles of instantaneous
+VeDBA, named after the quantiles given in \code{burst.quantiles}.}
 }
+
+ODBA depends on the orientation of the sensor axes, whereas VeDBA is invariant to rotation of the
+coordinate system. VeDBA is therefore preferable when comparing activity across deployments in which
+tag orientation is not identical, and for towed or loosely attached tags.
+
+Jerk is most informative at relatively high sampling frequencies, of roughly 30 Hz or more; below
+this it largely reflects noise, and a caution is issued. It responds to any abrupt movement,
+including surfacing or a knock to the tag, and should not be interpreted as direct evidence of prey
+capture or feeding behaviour (Ydesen et al. 2014). On downsampled output it describes an average
+level of jerkiness rather than individual events.
+
+Burst flags identify samples within the specified upper quantiles of instantaneous VeDBA for that
+deployment, and are therefore relative rather than absolute measures of activity intensity.
+Downsampling flags a bin whenever any sample within it was flagged, so the proportion of flagged rows
+increases with the tag's original sampling frequency; bursts are best compared at full resolution, or
+between tags recording at the same rate.
 }
 
-\subsection{Estimating orientation}{
+\subsection{Orientation metrics}{
 
-The \strong{tilt-compensated compass} (default) fuses the accelerometer and magnetometer. It reads the
-tilt angles from gravity, then uses them to level the magnetometer before computing heading (Gunner
-et al. 2021). It cannot drift, having no integration step, but it is affected by magnetic
-disturbance and by the animal's own acceleration masquerading as gravity.
+\describe{
+\item{\code{roll}}{Rotation about the animal's longitudinal axis (degrees).}
+\item{\code{pitch}}{Rotation about the animal's lateral axis (degrees).}
+\item{\code{heading}}{Horizontal orientation of the tag relative to magnetic or geographic north
+(degrees), depending on whether magnetic declination could be determined.}
+\item{\code{turning_angle}}{Smallest angular difference in heading between consecutive observations,
+constrained to -180 to 180 degrees.}
+}
 
-The \strong{Madgwick filter} adds the gyroscope, using a quaternion gradient-descent fusion. It rides
-through transient disturbances better, at a higher computational cost, and its accelerometer-against-
-gyroscope trade-off is set by \code{madgwick.beta} in \code{\link[=orientationControl]{orientationControl()}}.
+The tilt-compensated compass estimates orientation from accelerometer and magnetometer measurements,
+levelling the magnetometer using the tilt angles read from gravity (Gunner et al. 2021). It has no
+integration step and so cannot drift, but it is sensitive to magnetic disturbance and to the animal's
+own acceleration being read as gravity. The Madgwick algorithm additionally incorporates gyroscope
+measurements, providing greater robustness to short-term disturbances at greater computational cost.
+
+Heading describes the orientation of the tag, and so depends on tag attachment and sensor-axis
+alignment. Mounting corrections applied to pitch and roll are not propagated to heading, and residual
+rotation about the vertical axis is not estimated. Heading should therefore be interpreted with
+greater caution than the other orientation variables.
+}
+
+\subsection{Depth, vertical velocity and paddle-wheel rotation}{
+
+\describe{
+\item{\code{depth}}{Depth (m), corrected for sensor drift. The returned series is not smoothed, so short
+vertical excursions retain their true amplitude.}
+\item{\code{vertical_velocity}}{Rate of change of depth (m/s), positive during descent and negative
+during ascent. It is derived from a smoothed copy of the depth record, since differentiating the
+raw pressure trace amplifies its quantisation noise; the window is set by \code{smoothing$depth}.}
+\item{\code{paddle_freq}}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
+carrying a paddle wheel, where the recording rate is sufficient. This is a rotation rate, not a
+speed: converting it to swimming speed requires a tag-specific calibration and is done by
+\code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.}
+}
+
+Depth drift is corrected before vertical velocity is calculated.
 }
 
 \subsection{Geographic and magnetic heading}{
 
-Where a deployment position is available, from the metadata or else the first usable coordinates in
-the data, the magnetic declination for that place and date is obtained from a global geomagnetic
-model and added, giving a \emph{geographic} heading relative to true north. Where no position is
-available the declination cannot be computed and the heading is left \emph{magnetic}, relative to
-magnetic north, rather than discarded. Which one you have is recorded in
-\code{meta$deployment$heading_reference}, and a magnetic heading is reported in a warning.
+Where deployment coordinates are available, magnetic declination is obtained from a global
+geomagnetic model and applied to the calculated heading, giving a geographic heading relative to true
+north. Where coordinates are unavailable the declination cannot be computed and the heading is
+retained relative to magnetic north rather than discarded. The reference frame is recorded in
+\code{meta$deployment$heading_reference}.
 
-\strong{A magnetic heading is still valid for relative orientation.} It differs from a geographic one by a
-constant offset, the declination, which is a few degrees in some regions and more than 25 in others
-(about -8 degrees in the Azores, -26 near Cape Town, +22 off New Zealand). Any
-measure built from angle \emph{differences}, or from the length of a resultant vector, is therefore
-unaffected, because the offset cancels exactly: turning angle and turning rate, angular velocity,
-circular variance, standard deviation and mean resultant length, heading autocorrelation, net and
-cumulative heading change, and circling or turn detection all give identical answers either way.
-
-What a magnetic heading must not be used for is any absolute claim about direction, where the offset
-rotates the result instead of cancelling: a circular mean or median heading, a dead-reckoned track
-from \code{\link[=reconstructTrack]{reconstructTrack()}}, comparison against GPS or Argos fixes, or any figure whose north
-orientation is read off the page. Functions computing those check \code{heading_reference} and warn, while
-the rotation-invariant ones stay silent, so a warning means the distinction genuinely affects what
-you asked for.
-
-Heading describes the orientation of the tag rather than of the animal, so its accuracy depends on
-how well the two are aligned - and \strong{no mounting correction reaches heading}. Heading is computed
-from the raw pitch and roll, and the mounting offsets described next are subtracted afterwards
-without heading being recomputed. \code{\link[=applyAxisMapping]{applyAxisMapping()}} resolves the sensor-axis orientation it can
-determine, but where the mapping was derived from the accelerometer alone the magnetometer is left in
-its raw chip frame, and residual mounting rotation about the vertical axis is never estimated. Treat
-heading as the least well constrained of the orientation outputs.
+The distinction matters only for absolute measures. A magnetic heading differs from a geographic one
+by a constant offset, which cancels in any quantity built from angular differences: turning angle and
+turning rate, angular velocity, circular variance and mean resultant length, and heading
+autocorrelation are all unaffected. Absolute measures, including circular means, dead-reckoned tracks
+from \code{\link[=reconstructTrack]{reconstructTrack()}}, and comparisons against GPS or Argos positions, require a geographic
+heading. Functions computing those check \code{heading_reference} and warn where it is magnetic.
 }
 
-\subsection{Mounting offsets}{
+\subsection{Tag-mounting corrections}{
 
-A tag is never attached perfectly level, and the resulting constant pitch and roll offsets are
-indistinguishable from the animal's posture unless they are estimated and removed. Both corrections
-assume the tag is approximately aligned with the animal, and they have opposite data requirements.
-The roll offset is the median roll over the most level part of the record, so it needs level
-swimming. The pitch offset is read from the relationship between pitch and vertical speed, so it
-needs \emph{diving}, and it is declined outright on a record with too little vertical movement, reported
-as an insufficient diving signal. The pitch correction follows Kawatsu et al. (2010).
+Constant pitch and roll offsets caused by tag attachment are indistinguishable from the animal's
+posture unless estimated and removed, and both corrections assume the tag is approximately aligned
+with the animal. They have opposite data requirements. The roll offset is estimated from periods of
+relatively horizontal swimming, whereas the pitch offset is estimated from the relationship between
+pitch and vertical velocity (Kawatsu et al. 2010) and therefore requires sufficient vertical
+movement; it is not applied where the relationship is insufficiently supported by the data.
 
-Large mounting deviations may leave errors in every derived orientation and movement estimate. See
-\code{vignette("orientation-methods", package = "nautilus")} for how each correction is estimated and what
-it can and cannot recover.
+Large or poorly characterised mounting offsets may affect the accuracy of orientation and movement
+metrics. See \code{vignette("orientation-methods", package = "nautilus")} for a detailed description of
+the assumptions and limitations of these corrections.
 }
 
 \subsection{Magnetometer calibration}{
 
-The magnetometer is corrected for the tag's own iron before heading is computed, using the same
-engine as \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}, whose Details give the full method. Where the field cloud is
-genuinely three-dimensional it fits the full ellipsoid; for the thin band a level swimmer usually
-produces it estimates the offset only, pinning the unobservable perpendicular component from the
-geomagnetic inclination.
+Magnetometer measurements can be affected by hard-iron and soft-iron distortions caused by the tag
+and its mounting environment. When requested, these corrections are estimated and applied using the
+same procedure as \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}. Where the measured field describes a genuinely
+three-dimensional cloud the full ellipsoid is fitted; for the narrow band typical of a level swimmer,
+only the offset is estimated.
 
-Either way the correction is applied only when it clears the confidence gate: if the animal did not
-rotate through enough headings to constrain the estimate, the heading is left raw rather than
-distorted. A calibration already computed and stored by \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}, such as a pooled
-or externally sourced fit, is used when present and trusted; otherwise one is fitted here. The
-switches are in \code{\link[=calibrationControl]{calibrationControl()}}.
+A previously estimated calibration can be supplied through the deployment metadata and is reused when
+compatible with the current sensor-axis mapping; otherwise a calibration is estimated from the
+deployment data. Corrections are applied only where the available magnetic-field coverage provides
+sufficient support. If a calibration cannot be reliably estimated, the raw magnetometer measurements
+are retained.
 }
-}
-\section{End-of-run warnings}{
 
-Findings are aggregated by type rather than by deployment. Each raises at most one warning, naming
-the count and then listing the affected deployments inline with the value that differs:
+\subsection{Quality control and warnings}{
 
-\if{html}{\out{<div class="sourceCode">}}\preformatted{  3 deployments have an unusual mounting roll, corrected (offset).
-  PIN_10 (-45.0 deg), PIN_11 (-43.2 deg), PIN_12 (-39.8 deg)
-}\if{html}{\out{</div>}}
-
-The warning says what happened and to which deployments; what it means and what to do about it is
-below. The per-deployment log at \code{verbose = "detailed"} reports each finding where it occurred, with
-the value that triggered it.
+The function performs deployment-level quality-control checks and reports conditions that may affect
+interpretation of the derived variables. Findings are aggregated by type, so each raises at most one
+warning naming the affected deployments, rather than one warning per deployment. Deployment-specific
+detail is available with \code{verbose = "detailed"}.
 
 \describe{
-\item{potential pitch anomaly}{The median pitch exceeds \code{orientation$warning.threshold}. Either the
-tag is mounted far from the body axis or the axis mapping is wrong; check \code{\link[=checkTagMapping]{checkTagMapping()}}
-before using any posture metric.}
-\item{unusual mounting roll, corrected or not corrected}{The estimated mounting roll exceeds
-\code{orientation$warning.threshold}. Corrected means it was below \code{orientation$mount.roll.max} and has
-been subtracted, so the orientation is usable and the value is reported only so that an unusual
-mount is not silent. Not corrected means it exceeded that gate and was left in place, so roll and
-heading are rotated by roughly that amount.}
-\item{roll residual after correction}{The median roll is large and is not explained by a mounting
-offset that was measured but deliberately left uncorrected. Where the roll correction ran, this
-means it did not take; where it was disabled or could not be estimated, it means a large roll was
-left in place. Usually an axis-mapping problem rather than a mounting one.}
-\item{no magnetometer calibration}{Neither a trusted stored fit nor a coverage-passing inline
-estimate was available, so the heading carries the tag's uncorrected offset - the dominant source
-of dead-reckoning drift. Supply a fit through \code{calibrateMagnetometer(calibration.data = )}, or
-collect more rotation coverage. Recorded as \code{"uncalibrated_raw"} in \code{meta$mag_calibration$status}.}
-\item{magnetic heading}{No deployment position was available, so the declination could not be
-applied and the heading refers to magnetic north. See the heading section above for what this
-does and does not affect.}
-\item{processed without an applied axis mapping}{Orientation assumes body-frame inertial axes. Run
-\code{\link[=applyAxisMapping]{applyAxisMapping()}} first unless the data is already in that frame.}
-\item{constant paddle channel, now set to NA}{The imported paddle column held one fixed value for
-the whole deployment - a dead or absent paddle wheel, not a measurement. Left in place it would
-count as that many genuine speed samples in any pooled statistic. The rotation frequency is
-re-estimated from the magnetometer where the recording is fast enough; turn it into a speed with
-\code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.}
-\item{already processed and re-run}{The input already carried a \code{processTagData} step. Calibration
-and downsampling are skipped, but \strong{the metrics are recomputed from the already-downsampled
-columns, so they will not reproduce the first run} - jerk and the separation of gravity from
-motion both depend on the sampling rate. Re-process from the imported data rather than from
-processed output.}
-\item{skipped for missing or unusable input}{The deployment has no entry in the returned data and
-was not written to \code{output.dir}. A channel removed by \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}} is recorded in
-\code{meta$sensors$excluded}.}
+\item{potential pitch anomaly}{The median pitch exceeds \code{orientation$warning.threshold}, indicating
+either substantial tag misalignment or an incorrect sensor-axis mapping. Check
+\code{\link[=checkTagMapping]{checkTagMapping()}} before using any posture metric.}
+\item{unusual mounting roll}{The estimated roll offset exceeds \code{orientation$warning.threshold}.
+Where it also exceeds \code{orientation$mount.roll.max} it is left uncorrected, and roll and heading
+remain rotated by approximately that amount.}
+\item{roll residual after correction}{A substantial roll remains after mounting correction,
+usually indicating an incorrect axis mapping rather than a mounting problem.}
+\item{no magnetometer calibration}{No sufficiently supported calibration was available, so the
+magnetometer was retained uncalibrated and the heading carries the tag's offset, the dominant
+source of dead-reckoning drift. Recorded as \code{"uncalibrated_raw"} in \code{meta$mag_calibration$status}.}
+\item{magnetic heading}{No deployment position was available to estimate magnetic declination, so
+heading remains relative to magnetic north.}
+\item{processed without an applied axis mapping}{The deployment was processed without
+\code{\link[=applyAxisMapping]{applyAxisMapping()}}, so orientation metrics may not represent the animal's body frame.}
+\item{constant paddle channel}{The paddle-wheel channel held a single constant value for the whole
+deployment, indicating an absent or failed sensor rather than a measurement, and was set to \code{NA}.
+The rotation frequency is re-estimated from the magnetometer where the recording rate allows.}
+\item{already processed}{The input already contained a \code{processTagData} step. Calibration and
+downsampling are not repeated, but derived metrics are recalculated from the already-downsampled
+columns and will not reproduce the first run, since jerk and the separation of gravity from
+motion both depend on sampling rate. Re-process from the imported data instead.}
+\item{skipped deployment}{A deployment lacking required input variables is excluded from the
+returned dataset and is not written to \code{output.dir}. Channels removed by \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}
+are recorded in \code{meta$sensors$excluded}.}
 }
 }
-
+}
 \examples{
 \dontrun{
-# Axis-map the imported data into the body frame first, then derive
-# kinematics and orientation and downsample to 1 Hz.
+# Align sensor axes with the animal's body frame before processing.
 oriented <- applyAxisMapping(imported)
-tag <- processTagData(oriented,
-                      downsample.to = 1,
-                      orientation.algorithm = "tilt_compass")
 
-# A batch of saved deployments: write a diagnostic PDF and save incrementally.
+# Derive movement and orientation metrics and downsample to 1 Hz.
+processed <- processTagData(oriented,
+                            downsample.to = 1,
+                            orientation.algorithm = "tilt_compass")
+
+# Process a batch of saved deployments and write the results to disk.
 processTagData(list.files("./oriented", full.names = TRUE),
-               plot.file = "./qc/corrections.pdf",
+               plot.file = "./qc/process_diagnostics.pdf",
                return.data = FALSE, output.dir = "./processed")
 }
 }
@@ -331,6 +323,8 @@ engulfment revealed by high-rate, super-cranial accelerometry on a harbour seal.
 Experimental Biology} 217:2239-2243. \doi{10.1242/jeb.100016}
 }
 \seealso{
-\code{\link[=importTagData]{importTagData()}} for reading the raw files; \code{\link[=applyAxisMapping]{applyAxisMapping()}} for the step that must
-come first; \code{\link[=detectDives]{detectDives()}} and \code{\link[=calculateTailBeats]{calculateTailBeats()}} for what typically follows.
+\code{\link[=importTagData]{importTagData()}} for importing archival tag data; \code{\link[=applyAxisMapping]{applyAxisMapping()}} for aligning sensor
+axes with the animal's body frame; \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}} for independent magnetometer
+calibration; \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}} for converting \code{paddle_freq} into a swimming speed;
+\code{\link[=detectDives]{detectDives()}} and \code{\link[=calculateTailBeats]{calculateTailBeats()}} for what typically follows.
 }
