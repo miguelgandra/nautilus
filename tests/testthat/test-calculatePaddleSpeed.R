@@ -342,9 +342,11 @@ test_that("the SUMMARY tally is mutually exclusive and adds up to the cohort", {
   expect_match(out, "Speed calculated: +2")
   expect_match(out, "Speed as recorded: +1")
   expect_match(out, "No paddle wheel: +1")
-  # the headline counts the as-recorded deployment; the tally must not count it twice
-  n <- as.integer(regmatches(out, regexpr("(?<=Speed calculated: {0,20})[0-9]+", out, perl = TRUE)))
-  expect_identical(n, 2L)
+  # The headline counts the as-recorded deployment; the tally must not count it twice. Read off the
+  # line with a capture group rather than a lookbehind: a variable-length lookbehind needs a recent
+  # PCRE2 and is rejected outright by older ones.
+  ln <- grep("Speed calculated", strsplit(out, "\n", fixed = TRUE)[[1]], value = TRUE)[1]
+  expect_identical(as.integer(sub(".*Speed calculated:[^0-9]*([0-9]+).*", "\\1", ln)), 2L)
 })
 
 
