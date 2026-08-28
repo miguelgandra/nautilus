@@ -72,7 +72,10 @@
     # standard error of a through-origin slope, from the residual sum of squares
     se  <- if (n > 2 && is.finite(ins)) sqrt(max(0, (Syy - ins * Sxy)) / ((n - 1) * Sxx)) else NA_real_
     data.frame(key = k, year = w[[1]]$year, package_id = w[[1]]$pkg,
-               n_deployments = length(w), in_situ_slope = ins, in_situ_r = r,
+               n_deployments = length(w),
+               has_paddle = any(vapply(w, function(z) z$has_freq || z$has_speed || z$paddle_flag,
+                                       logical(1))),
+               in_situ_slope = ins, in_situ_r = r,
                in_situ_lo = ins - 1.96 * se, in_situ_hi = ins + 1.96 * se,
                in_situ_n = n, stringsAsFactors = FALSE)
   }))
@@ -108,7 +111,11 @@
 #' @keywords internal
 #' @noRd
 .paddleImputeGaps <- function(cal, calibration, method, gap, lvl) {
-  need <- data.frame(package_id = cal$package_id[gap], year = cal$year[gap], stringsAsFactors = FALSE)
+  # `paddle_wheel` is passed explicitly: imputePaddleCalibration() uses it to skip tags that never had a
+  # paddle, and warns when it is absent. This function already knows the answer from each tag's own
+  # metadata, so there is nothing to guess at.
+  need <- data.frame(package_id = cal$package_id[gap], year = cal$year[gap],
+                     paddle_wheel = cal$has_paddle[gap], stringsAsFactors = FALSE)
   filled <- try(suppressMessages(
     imputePaddleCalibration(calibration = calibration, deployments = need, method = method,
                             verbose = 0)), silent = TRUE)
@@ -225,8 +232,10 @@
 .renderPaddleDiagnostic <- function(cal, plot = FALSE, plot.file = NULL) {
   keep <- cal[is.finite(cal$in_situ_slope) | is.finite(cal$slope), , drop = FALSE]
   if (!nrow(keep)) return(invisible(NULL))
-  draw <- function() {
-    op <- graphics::par(mar = c(4.4, 8.5, 3.2, 1.2)); on.exit(graphics::par(op), add = TRUE)
+  draw <- function(to.file = FALSE, unicode = TRUE) {
+    theme <- plotTheme()
+    op <- graphics::par(family = theme$font.family, mar = c(4.4, 8.5, 3.2, 1.2), no.readonly = TRUE)
+    on.exit(graphics::par(op), add = TRUE)
     y <- seq_len(nrow(keep))
     xr <- range(c(keep$slope, keep$in_situ_slope, keep$in_situ_lo, keep$in_situ_hi), na.rm = TRUE)
     if (!all(is.finite(xr))) xr <- c(0, 1)
@@ -245,7 +254,7 @@
                      col = c("#1F6FB4", "#C8892A", "grey30"), bty = "n", cex = 0.8)
     graphics::mtext("Paddle-wheel calibration", side = 3, line = 1.4, adj = 0, font = 2)
   }
-  .renderToDevices(draw, plot = plot, plot.file = plot.file,
+  .renderToDevices(draw, plot = plot, plot.file = plot.file, cairo = TRUE,
                    width = 8, height = max(3.2, 1.6 + 0.32 * nrow(keep)))
   invisible(NULL)
 }

@@ -1391,11 +1391,9 @@ processTagData <- function(data,
         length(unique(na.omit(individual_data$paddle_speed))) > 1
 
       if (is_freq_meaningful && is_speed_meaningful) {
-        diag["speed"] <- "speed: paddle freq + speed already present (kept)"
         perform_internal_calculation <- FALSE
 
       } else if (has_precalculated_speed && !has_precalculated_freq && is_speed_meaningful) {
-        diag["speed"] <- "speed: paddle speed already present (freq set NA)"
         perform_internal_calculation <- FALSE
       }
 
@@ -1409,10 +1407,8 @@ processTagData <- function(data,
         pw <- if (is.null(imeta)) NULL else imeta$tag$paddle_wheel
         has_paddle_info <- length(pw) == 1L && !is.na(pw)
         if (!has_paddle_info) {
-          diag["speed"] <- "speed: skipped (no paddle-wheel info)"
           perform_internal_calculation <- FALSE
         } else if (isFALSE(pw)) {
-          diag["speed"] <- "speed: skipped (no paddle wheel)"
           perform_internal_calculation <- FALSE
         }
       }
@@ -1420,7 +1416,6 @@ processTagData <- function(data,
       # the rotation peak is picked out of the magnetometer, so the record has to be fast enough to
       # carry it
       if (perform_internal_calculation && sampling_freq < 50) {
-        diag["speed"] <- "paddle: skipped (sampling < 50 Hz)"
         perform_internal_calculation <- FALSE
       }
 
@@ -1434,12 +1429,6 @@ processTagData <- function(data,
         paddle_data <- .getPaddleSpeed(mz = mz_raw, sampling.rate = sampling_freq)
 
         individual_data[, paddle_freq := paddle_data$freq]
-
-        if (lvl >= 2L) {
-          fr <- range(paddle_data$freq, na.rm = TRUE)
-          diag["speed"] <- sprintf("paddle: %.2f \u2013 %.2f Hz (speed via {.fn calculatePaddleSpeed})",
-                                   fr[1], fr[2])
-        }
       }
 
       #############################################################
@@ -1461,13 +1450,8 @@ processTagData <- function(data,
         if (has_precalculated_freq && !is_freq_meaningful && !all(is.na(individual_data$paddle_freq))) {
           individual_data[, paddle_freq := NA_real_]; dropped <- c(dropped, "freq")
         }
-        if (length(dropped)) {
-          dead_paddle_ids <- c(dead_paddle_ids, id)
-          prev <- if ("speed" %in% names(diag)) diag[["speed"]] else "speed: not estimated"
-          diag["speed"] <- sprintf("%s \u00b7 dropped constant paddle %s%s", prev,
-                                   paste(dropped, collapse = " + "),
-                                   if (length(held)) sprintf(" (held %g throughout)", held) else "")
-        }
+        # reported once for the cohort by the grouped warning below, not per deployment
+        if (length(dropped)) dead_paddle_ids <- c(dead_paddle_ids, id)
       }
     }
 
@@ -1696,13 +1680,15 @@ processTagData <- function(data,
     saved[i] <- list(saved_to)                  # single-bracket keeps the slot (a NULL path must not shrink the list)
 
     # emit the collected diagnostics as one ordered block (detailed level only): the tag attributes
-    # line, then each finding in pipeline order. Slots left unset (e.g. speed when not requested)
-    # are simply skipped, so the block always reflects exactly what happened for this deployment.
+    # line, then each finding in pipeline order. Slots left unset are simply skipped, so the block
+    # always reflects exactly what happened for this deployment. The paddle wheel is absent by design:
+    # this function only recovers the rotation frequency, and calculatePaddleSpeed() reports what it
+    # then makes of it.
     if (lvl >= 2L) {
       # the tag identity and re-processing alert were emitted up front (right after the header); this
       # block is the findings, in pipeline order. Jerk sits immediately after motion (related kinematics).
       for (k in c("input", "calibration", "denoise", "orientation", "offsets",
-                  "motion", "jerk", "depthdrift", "depth", "speed", "downsample")) {
+                  "motion", "jerk", "depthdrift", "depth", "downsample")) {
         if (!is.na(diag[k])) say(diag[[k]])
       }
     }

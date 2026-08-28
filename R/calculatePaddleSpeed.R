@@ -211,6 +211,6 @@ calculatePaddleSpeed <- function(data,
   # `return.data = FALSE` with no `output.dir` leaves nothing to return, and NULL takes no attributes -
   # which is exactly the run where the calibration table is the only thing the caller wanted.
   if (is.null(out)) out <- character(0)
-  attr(out, "calibration") <- cal[, setdiff(names(cal), "key"), drop = FALSE]
+  attr(out, "calibration") <- cal[, setdiff(names(cal), c("key", "has_paddle")), drop = FALSE]
   out
 }
