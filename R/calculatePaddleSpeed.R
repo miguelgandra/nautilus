@@ -5,36 +5,44 @@
 #' Turn paddle-wheel rotation into swimming speed
 #'
 #' @description
-#' Tags fitted with a paddle wheel record how fast it spins. [processTagData()] recovers that rotation
-#' rate from the magnetometer and stores it as `paddle_freq`; this function turns it into a speed.
+#' A paddle-wheel tag carries a small magnetic rotor that spins as water flows past it: the faster the
+#' animal swims, the faster the rotor turns. [processTagData()] recovers that rotation rate from the
+#' magnetometer and stores it as `paddle_freq`, in hertz. This function converts it into a swimming
+#' speed, in metres per second.
 #'
-#' The conversion is one number per tag - `speed = slope x frequency` - and that number comes from
-#' calibrating the tag before it goes in the water. Calibrations are not always available for every tag
-#' and every season, so this function also fills the gaps, and can check the result against the animal's
-#' own behaviour.
+#' The conversion is a single number per tag, the *calibration slope*, applied as
+#' `speed = slope x frequency` with no intercept. The slope belongs to the physical tag rather than to
+#' the animal, and comes from calibrating the tag before deployment - typically a controlled vertical
+#' drop, in which the tag is released through the water column under a range of weights and its
+#' rotation rate recorded against the known descent speed.
 #'
-#' Keeping this separate from [processTagData()] means a calibration can be revised, or checked, without
-#' reprocessing the raw sensor data: only one column is affected, and it is recomputed in seconds.
+#' Calibration records are rarely complete: not every tag is calibrated, and rarely in every year it was
+#' deployed. This function therefore also estimates the slopes that are missing, and can check the slope
+#' it applied against the animal's own diving.
 #'
 #' @param data Processed deployments, in any of the forms used across the pipeline: a list of datasets,
 #'   a single table with an `id.col`, or a character vector of `.rds` paths. The output of
 #'   [processTagData()] is expected.
-#' @param calibration A table of calibration values with columns `year`, `package_id` and `slope`.
-#'   Rows matching a deployment's own tag and season are used as they are. `NULL` (default) means no
-#'   calibration is supplied, in which case `method = "in-situ"` is the only way to get a speed.
-#' @param method How to fill a gap when a deployment has no calibration of its own: `"shared-rate"`
-#'   (default), `"fixed-rate"` and `"per-tag"` estimate it from the calibrations you do have, following
-#'   [imputePaddleCalibration()]; `"in-situ"` estimates it from the deployment itself, using how fast
-#'   the animal changed depth while swimming at a steep angle. See Details.
-#' @param validate Whether to also check each calibration against the in-situ estimate and report the
-#'   agreement (default `FALSE`). The function's job is to calculate speed; checking the calibration is
-#'   a separate question, so ask for it explicitly. Needs `pitch` and `vertical_velocity`, and is
-#'   skipped with a note where they are absent.
-#' @param agreement.threshold How far the applied calibration and the in-situ estimate may differ
-#'   before the tag is flagged, as a proportion (default `0.35`, so more than 35% apart in either
-#'   direction). Only used when `validate = TRUE`. The default is deliberately loose: the in-situ
-#'   estimate cannot resolve differences much below this, so a tighter setting flags tags that simply
-#'   cannot be told apart.
+#' @param calibration A table of measured calibrations with columns `year`, `package_id` and `slope`.
+#'   A row matching a deployment's own tag and season is used exactly as measured. `NULL` (default)
+#'   supplies no calibration at all, in which case `method = "in-situ"` is the only way to get a speed.
+#' @param method How to fill a gap when a deployment has no measured calibration of its own.
+#'   `"shared-rate"` (default), `"fixed-rate"` and `"per-tag"` estimate the missing slope from the
+#'   calibrations you do have, following [imputePaddleCalibration()]; `"in-situ"` estimates it from the
+#'   deployment itself. A measured calibration is never overridden, whichever method is chosen. See
+#'   Details.
+#' @param degradation.rate The annual increase in the calibration slope, describing how fast the paddle
+#'   wheel loses efficiency. Required for `method = "fixed-rate"`; for the other methods it is an
+#'   optional fallback, used only when there are too few repeat calibrations to estimate a rate from.
+#'   `NULL` (default) supplies none.
+#' @param validate Whether to also check each calibration against the in-situ estimate and report how
+#'   well the two agree (default `FALSE`). Needs `pitch` and `vertical_velocity`, and is skipped with a
+#'   note where they are absent. Validation only reports; it never changes the speed.
+#' @param agreement.threshold How far the applied calibration and the in-situ estimate may differ before
+#'   the tag is flagged, as a proportion (default `0.35`, so more than 35% apart in either direction).
+#'   Only used when `validate = TRUE`. The default is deliberately loose: the in-situ estimate cannot
+#'   resolve differences much below this, so a tighter setting flags tags that simply cannot be told
+#'   apart.
 #' @param smoothing Window, in seconds, applied to the rotation frequency before converting it to a
 #'   speed. Default `1`; `NULL` disables it. On data downsampled to 1 Hz or coarser the binning has
 #'   already smoothed at least this much, so the window has little left to do.
@@ -59,49 +67,135 @@
 #' @details
 #' ## Where a calibration comes from
 #'
-#' Every deployment's speed rests on one slope, and the table reports where that slope came from:
+#' Every deployment's speed rests on one slope, and `slope_source` records where that slope came from:
 #'
 #' \itemize{
-#'   \item `measured` - the tag was calibrated for that season and the value is used unchanged. This is
-#'     the one to prefer.
-#'   \item `tag-model` / `baseline` - no calibration for that tag and season, so it was estimated from
-#'     the calibrations of other tags, or of the same tag in other seasons. See
-#'     [imputePaddleCalibration()].
-#'   \item `in-situ` - estimated from the deployment itself, with `method = "in-situ"`.
-#'   \item `as-recorded` - the tag wrote a speed directly and there is no frequency to calibrate, so the
-#'     recorded values are kept untouched.
+#'   \item `"measured"` - a calibration exists for that tag and that season, and is used exactly as
+#'     measured. This is the one to prefer.
+#'   \item `"tag-model"` - no calibration for that tag and season, but the tag was calibrated in other
+#'     years, so its slope is projected from its own record.
+#'   \item `"baseline"` - the tag was never calibrated, so its slope starts from the level typical of the
+#'     other tags.
+#'   \item `"in-situ"` - estimated from the deployment itself, with `method = "in-situ"`.
+#'   \item `"as-recorded"` - the tag wrote a speed directly and recorded no rotation rate, so its values
+#'     are kept untouched and no slope applies.
 #' }
+#'
+#' A measured calibration is always used as it stands: estimation fills gaps, it does not smooth or
+#' revise what you observed.
+#'
+#' ## Choosing a method
+#'
+#' `method` decides only how a *missing* slope is filled, and the choice matters most where the
+#' calibration record is thin.
+#'
+#' The first three read the calibration table and nothing else. They rest on the observation that
+#' paddle wheels wear: efficiency declines with age, so the slope rises over time, and a slope measured
+#' three years earlier is not the slope that applied.
+#'
+#' \itemize{
+#'   \item `"shared-rate"` (default) pools one annual wear rate across every tag calibrated more than
+#'     once, while keeping a separate level for each tag. It is the steadiest choice on the short
+#'     calibration series a tag record usually holds.
+#'   \item `"per-tag"` fits a separate line to each tag with at least two calibrations and averages
+#'     those rates for the rest. It follows an individual tag more closely, but a rate fitted to two or
+#'     three points is mostly noise, so prefer it only with long, clean series.
+#'   \item `"fixed-rate"` applies the wear rate you pass as `degradation.rate` rather than estimating
+#'     one. Use it when the calibration record is too thin to carry a trend of its own but a rate is
+#'     available from elsewhere - a longer record, or other tags of the same design.
+#' }
+#'
+#' `"in-situ"` is different in kind. It ignores the other tags entirely and estimates the slope from
+#' the deployment's own diving, so it is the only option when there is no calibration table at all. It
+#' buys that independence with a stronger assumption about the animal, described next.
+#'
+#' Put simply: the first three ask what tags like this one have done, and are limited by how much
+#' calibration history exists; `"in-situ"` asks what this animal is doing, and is limited by how much
+#' steep swimming it did.
 #'
 #' ## The in-situ estimate
 #'
-#' While an animal swims steeply up or down, how fast its depth changes depends on how fast it is
-#' swimming and how steeply it is angled. Comparing the two gives a speed that owes nothing to the
-#' paddle wheel, so it can be used to fill a missing calibration or to check one you already have.
+#' While an animal swims steeply up or down, how fast its depth changes depends on both how fast it is
+#' swimming and how steeply it is angled, as `vertical speed = swimming speed x sin(pitch)`. Reading
+#' depth change against pitch therefore gives a speed that owes nothing to the paddle wheel, and the
+#' rotation rate recorded at the same moments gives the slope that would reproduce it.
 #'
-#' It is the weaker of the two: it assumes the animal travels along the direction it is pointing, and it
-#' needs enough steep swimming to measure. Treat it as a way to catch a calibration that is clearly
-#' wrong rather than as a replacement for calibrating the tag, and prefer a measured value wherever one
-#' exists.
+#' Only samples steeper than `min.pitch` contribute: near level, depth change says almost nothing about
+#' speed, and small pitch errors are magnified. The estimate needs `pitch` and `vertical_velocity`, both
+#' produced by [processTagData()], and enough steep swimming to measure. Where they are missing, or too
+#' sparse, the estimate is withheld rather than guessed.
 #'
-#' ## Checking a calibration
+#' ## Checking a calibration against the animal's own diving
 #'
 #' With `validate = TRUE` the in-situ estimate is computed for every tag, including those with a
-#' measured calibration, and reported beside the slope actually applied. Agreement is their ratio: `1`
-#' means they say the same thing. Small differences are expected and are not worth acting on; a tag
-#' whose two estimates differ by more than `agreement.threshold` is flagged as worth looking into.
+#' measured calibration, and reported beside the slope actually applied. `agreement` is their ratio: `1`
+#' means the two say the same thing, `1.5` that the applied slope is half again the in-situ estimate,
+#' and `0.7` that it is nearly a third below.
 #'
-#' @return The input with `paddle_speed` added, or, when `return.data = FALSE`, the written file paths,
-#'   invisibly. Either way the resolved calibration is attached as the `"calibration"` attribute: one
-#'   row per tag and season, with the slope applied, where it came from, and - when validated - the
-#'   in-situ estimate, its confidence interval and the agreement. Each deployment also carries the same
-#'   information in its own processing record, so it survives being saved and reloaded.
+#' Read a disagreement as a reason to look, not as a verdict, and note that it does not say which of the
+#' two is wrong. A sharp disagreement is worth checking against a fouled or damaged rotor, a calibration
+#' matched to the wrong season, and whether the animal did enough steep swimming for the comparison to
+#' carry any weight. Small differences are expected and are not worth acting on.
 #'
-#' @seealso [processTagData()], which recovers `paddle_freq`; [imputePaddleCalibration()] for the
-#'   calibration table on its own; [reconstructTrack()], which can use the speed produced here.
+#' ## When a deployment gets no speed
+#'
+#' `paddle_speed` is still added, filled with `NA`, and the run reports which of these applied:
+#'
+#' \itemize{
+#'   \item `"no paddle wheel"` - the tag never carried one.
+#'   \item `"no paddle data"` - it carried one, but no rotation rate was recorded.
+#'   \item `"no calibration"` - a rotation rate exists, but no slope could be found or estimated for it.
+#' }
+#'
+#' No slope is estimated for a deployment that has no rotation rate for it to convert, so a tag that
+#' recorded speed directly, or recorded nothing at all, is never given a number it cannot use. Each
+#' outcome is recorded in the deployment's own processing record.
+#'
+#' ## Assumptions and limitations
+#'
+#' \itemize{
+#'   \item Speed is measured through the water, not over the ground. In a current, the animal's track
+#'     over the seabed will not match the distance this speed implies.
+#'   \item The conversion is linear with no intercept, and every rotor has a speed below which it does
+#'     not turn at all. Very slow swimming therefore reads as zero rather than as slow, and time spent
+#'     below that threshold is indistinguishable from rest.
+#'   \item Wear is real and is only partly modelled. Treat a heavily projected slope, and any
+#'     `baseline` slope, as approximate.
+#'   \item The slope describes the tag as it was calibrated. Biofouling, a bent guard, or a different
+#'     mounting position all change it, and none of them are visible in the rotation rate alone.
+#'   \item The in-situ estimate assumes the animal travels along the direction it is pointing. A body
+#'     angled away from the swim path biases it, and that bias cannot be told apart from a genuine
+#'     calibration error.
+#'   \item An error in the slope scales the whole speed series by a constant. A track reconstructed from
+#'     an approximate slope will tend to have the right shape at the wrong size, which is worth
+#'     remembering before reading distances off it.
+#' }
+#'
+#' @return The input with `paddle_speed` added, in metres per second, or, when `return.data = FALSE`,
+#'   the written file paths, invisibly.
+#'
+#'   Either way the resolved calibration is attached as the `"calibration"` attribute, one row per tag
+#'   and season, with:
+#'
+#'   - `slope` and `slope_source` - the slope applied and where it came from.
+#'   - `n_deployments` - how many deployments that slope covers.
+#'   - `in_situ_slope`, `in_situ_lo`, `in_situ_hi` - the in-situ estimate and its 95% interval, present
+#'     when the estimate was computed.
+#'   - `in_situ_n` and `in_situ_r` - the number of steep-swimming samples behind the estimate, and how
+#'     closely depth change tracked rotation rate and pitch across them.
+#'   - `agreement` and `flag` - the ratio of the two slopes, and whether it falls outside
+#'     `agreement.threshold`.
+#'
+#'   Each deployment also carries the slope it used, where that slope came from and how it ended up in
+#'   its own processing record, so the provenance survives being saved and reloaded.
+#'
+#' @seealso [processTagData()] for the step that must come first, which recovers `paddle_freq`;
+#'   [imputePaddleCalibration()] for building or inspecting a calibration table on its own;
+#'   [reconstructTrack()] for what the resulting speed feeds into.
 #'
 #' @examples
 #' \dontrun{
-#' # A calibration for every tag.
+#' # A measured calibration for every tag and season.
 #' tags <- calculatePaddleSpeed(processed, calibration = paddle_cal)
 #'
 #' # Gaps filled from the calibrations that do exist, and every tag checked against its own diving.
@@ -109,14 +203,20 @@
 #'                              validate = TRUE)
 #' attr(tags, "calibration")
 #'
-#' # Gaps filled from the animals themselves.
-#' tags <- calculatePaddleSpeed(processed, calibration = paddle_cal, method = "in-situ")
+#' # No calibration record at all: estimate every slope from the animals themselves.
+#' tags <- calculatePaddleSpeed(processed, method = "in-situ")
+#'
+#' # Reapply a corrected calibration table, saving one annotated file per deployment.
+#' calculatePaddleSpeed(list.files("./processed", full.names = TRUE), calibration = paddle_cal_v2,
+#'                      plot.file = "./plots/paddle_calibration.pdf",
+#'                      return.data = FALSE, output.dir = "./speed")
 #' }
 #' @export
 
 calculatePaddleSpeed <- function(data,
                                  calibration = NULL,
                                  method = c("shared-rate", "fixed-rate", "per-tag", "in-situ"),
+                                 degradation.rate = NULL,
                                  validate = FALSE,
                                  agreement.threshold = 0.35,
                                  smoothing = 1,
@@ -145,6 +245,11 @@ calculatePaddleSpeed <- function(data,
   if (!is.null(max.speed)) .assert_number(max.speed, "max.speed", min = 0)
   .assert_number(min.pitch, "min.pitch", min = 0)
   if (min.pitch >= 90) .abort("{.arg min.pitch} must be below 90 degrees; got {.val {min.pitch}}.")
+  if (!is.null(degradation.rate)) .assert_number(degradation.rate, "degradation.rate")
+  if (identical(method, "fixed-rate") && is.null(degradation.rate))
+    .abort(c("{.code method = \"fixed-rate\"} needs {.arg degradation.rate} to be supplied.",
+             "i" = "It is the annual increase in the calibration slope. The other methods estimate it
+                    from the calibrations you already have."))
   calibration <- .assert_calibration(calibration)
   if (is.null(calibration) && !identical(method, "in-situ"))
     .abort(c("No {.arg calibration} was supplied, so there is nothing to fill the gaps from.",
@@ -160,6 +265,8 @@ calculatePaddleSpeed <- function(data,
                 if (identical(method, "in-situ"))
                   "Calibration: in-situ (every slope estimated from the deployment's own diving)"
                 else sprintf("Calibration: %s (missing slopes estimated from the measured ones)", method),
+                if (!is.null(degradation.rate))
+                  sprintf("Wear rate: %g per year", degradation.rate),
                 if (!is.null(smoothing) && smoothing > 0)
                   sprintf("Smoothing: %g s on the rotation frequency", smoothing) else "Smoothing: none",
                 if (!is.null(max.speed)) sprintf("Speed cap: %g km/h", max.speed) else "Speed cap: none",
@@ -181,7 +288,7 @@ calculatePaddleSpeed <- function(data,
   .log_progress_done(pb)
 
   ## ---- resolve one slope per tag and season -----------------------------------------------------
-  cal <- .paddleResolve(scan, calibration, method, agreement.threshold, lvl)
+  cal <- .paddleResolve(scan, calibration, method, degradation.rate, agreement.threshold, lvl)
 
   ## ---- pass 2: apply -----------------------------------------------------------------------------
   data_list <- vector("list", src$n); saved <- vector("list", src$n)
@@ -199,7 +306,8 @@ calculatePaddleSpeed <- function(data,
     meta <- .getMeta(res$data)
     meta <- .appendProcessing(meta, "calculatePaddleSpeed",
                               slope = res$slope, slope_source = res$slope_source,
-                              method = method, smoothing_s = smoothing %||% NA_real_,
+                              method = method, degradation_rate = degradation.rate %||% NA_real_,
+                              smoothing_s = smoothing %||% NA_real_,
                               max_speed_kmh = max.speed %||% NA_real_,
                               in_situ_slope = if (nrow(row)) row$in_situ_slope else NA_real_,
                               in_situ_n = if (nrow(row)) row$in_situ_n else NA_integer_,

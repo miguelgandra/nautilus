@@ -431,3 +431,68 @@ test_that("nothing is printed at all when verbose is off", {
   expect_length(cli::cli_fmt(suppressWarnings(
     calculatePaddleSpeed(.pwCohort(), calibration = .pwCal3(), verbose = 0))), 0L)
 })
+
+
+# ---- the wear rate -----------------------------------------------------------------------------
+# A missing slope is projected forward at an annual wear rate. "fixed-rate" takes that rate from the
+# caller instead of estimating it, so it cannot run without one; the other methods fall back to it only
+# when the calibrations are too sparse to estimate a rate of their own.
+
+test_that("'fixed-rate' projects a missing slope at exactly the rate supplied", {
+  set.seed(40)
+  out <- .pwRun(list(A = .pwTag("A", "51", 2022, n = 2000)),
+                calibration = .pwCal(0.074, "51", 2019), method = "fixed-rate",
+                degradation.rate = 0.01)
+  cal <- attr(out, "calibration")
+  expect_equal(cal$slope, 0.074 + 3 * 0.01)        # three years of wear at the stated rate
+  expect_identical(cal$slope_source, "tag-model")
+})
+
+
+test_that("'fixed-rate' aborts when no rate is supplied, naming the argument that is missing", {
+  set.seed(41)
+  expect_error(
+    calculatePaddleSpeed(list(A = .pwTag("A", "51", 2022, n = 2000)),
+                         calibration = .pwCal(0.074, "51", 2019), method = "fixed-rate", verbose = 0),
+    "degradation.rate")
+})
+
+
+test_that("the rate is a fallback for the estimating methods when no trend can be fitted", {
+  # a single calibration for the tag, so there is no repeat series to estimate a rate from
+  set.seed(42)
+  tags <- list(A = .pwTag("A", "51", 2022, n = 2000))
+  slope <- function(rate) attr(.pwRun(tags, calibration = .pwCal(0.074, "51", 2019),
+                                      degradation.rate = rate), "calibration")$slope
+  expect_equal(slope(0.02), 0.074 + 3 * 0.02)
+  expect_equal(slope(0.05), 0.074 + 3 * 0.05)      # the supplied rate is really what drives it
+})
+
+
+test_that("a degradation.rate that is not a number is rejected", {
+  set.seed(43)
+  expect_error(calculatePaddleSpeed(list(A = .pwTag("A", "51", 2022, n = 2000)),
+                                    calibration = .pwCal(0.074, "51", 2019),
+                                    degradation.rate = "fast", verbose = 0), "degradation.rate")
+})
+
+
+test_that("the wear rate is reported on its own header line, and only when supplied", {
+  set.seed(44)
+  tags <- list(A = .pwTag("A", "51", 2022, n = 2000))
+  cal <- .pwCal(0.074, "51", 2019)
+  expect_match(.pwLog(tags, calibration = cal, method = "fixed-rate", degradation.rate = 0.01),
+               "Wear rate: 0.01 per year")
+  expect_false(grepl("Wear rate", .pwLog(tags, calibration = cal), fixed = TRUE))
+})
+
+
+test_that("the wear rate travels in each deployment's processing record", {
+  set.seed(45)
+  out <- .pwRun(list(A = .pwTag("A", "51", 2022, n = 2000)),
+                calibration = .pwCal(0.074, "51", 2019), method = "fixed-rate",
+                degradation.rate = 0.01)
+  pr <- nautilus:::.getMeta(out$A)$processing
+  expect_equal(pr[[length(pr)]]$degradation_rate, 0.01)
+  expect_identical(pr[[length(pr)]]$method, "fixed-rate")
+})

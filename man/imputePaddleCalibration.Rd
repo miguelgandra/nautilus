@@ -73,7 +73,7 @@ tells you which rows to distrust.}
 }
 \value{
 A data frame with one row per deployed tag-year and columns \code{year}, \code{package_id} and \code{slope},
-usable directly as \code{processTagData(paddle.calibration = )}, plus \code{slope_source} and
+usable directly as \code{calculatePaddleSpeed(calibration = )}, plus \code{slope_source} and
 \code{n_calibrations}, the number of measured calibrations available for that tag. The estimated
 degradation rate, its standard error and the method used are attached as attributes
 (\code{degradation.rate}, \code{degradation.rate.se}, \code{method}).
@@ -81,7 +81,7 @@ degradation rate, its standard error and the method used are attached as attribu
 \description{
 A magnetic paddle-wheel tag measures swimming speed from how fast the wheel turns, converted through
 a calibration slope that is specific to the physical tag: \verb{speed = slope x frequency}, with no
-intercept. \code{\link[=processTagData]{processTagData()}} reads those slopes from the table you pass it.
+intercept. \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}} applies those slopes to the rotation rates a tag recorded.
 
 In practice only some tags are ever calibrated, and rarely in every year they were deployed, so the
 table has holes - and a deployment whose slope is missing gets no speed at all. Paddle wheels also
@@ -90,7 +90,7 @@ years earlier is not the slope that applied.
 
 This function fills the gaps. It learns how the slope drifts with time from the calibrations you do
 have, projects a value for every deployed tag-year, and returns a complete table ready to hand
-straight to \code{\link[=processTagData]{processTagData()}}, with each row labelled by where its number came from.
+straight to \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}, with each row labelled by where its number came from.
 }
 \details{
 \subsection{How the drift is modelled}{
@@ -128,6 +128,7 @@ dep <- data.frame(package_id = c("51", "52", "91", "134"),
 imputePaddleCalibration(cal, dep, verbose = FALSE)
 }
 \seealso{
-\code{\link[=processTagData]{processTagData()}} for the function that consumes the table; \code{\link[=reconstructTrack]{reconstructTrack()}} for what
-the resulting speed feeds into.
+\code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}} for the function that consumes the table; \code{\link[=processTagData]{processTagData()}} for
+the step that recovers the rotation rate in the first place; \code{\link[=reconstructTrack]{reconstructTrack()}} for what the
+resulting speed feeds into.
 }

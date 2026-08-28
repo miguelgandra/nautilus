@@ -223,13 +223,15 @@ rotational coverage. The calibration is only *applied* downstream when it is tru
 
 Finally, the single pivot. `processTagData()` derives orientation (a tilt-compensated
 compass by default, or Madgwick sensor fusion), kinematics, dynamic body acceleration and
-paddle-wheel swimming speed, applying the magnetometer calibration when it is trusted:
+paddle-wheel rotation rate, applying the magnetometer calibration when it is trusted:
 
 ```{r spine-process}
 tags <- processTagData(tags)
 ```
 
-The result is your analysis-ready `nautilus_tag`. From here you branch.
+The result is your analysis-ready `nautilus_tag`. Turning the recorded paddle-wheel
+rotation into a swimming speed is a separate step, `calculatePaddleSpeed()`, since it needs
+a calibration for the tag. From here you branch.
 
 ## Choosing your workflow {#choosing-your-workflow}
 

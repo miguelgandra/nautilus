@@ -7,7 +7,7 @@
 #' @description
 #' A magnetic paddle-wheel tag measures swimming speed from how fast the wheel turns, converted through
 #' a calibration slope that is specific to the physical tag: `speed = slope x frequency`, with no
-#' intercept. [processTagData()] reads those slopes from the table you pass it.
+#' intercept. [calculatePaddleSpeed()] applies those slopes to the rotation rates a tag recorded.
 #'
 #' In practice only some tags are ever calibrated, and rarely in every year they were deployed, so the
 #' table has holes - and a deployment whose slope is missing gets no speed at all. Paddle wheels also
@@ -16,7 +16,7 @@
 #'
 #' This function fills the gaps. It learns how the slope drifts with time from the calibrations you do
 #' have, projects a value for every deployed tag-year, and returns a complete table ready to hand
-#' straight to [processTagData()], with each row labelled by where its number came from.
+#' straight to [calculatePaddleSpeed()], with each row labelled by where its number came from.
 #'
 #' @param calibration A table of measured calibrations, one row per calibration, carrying at least the
 #'   tag identifier, the calibration year and the slope.
@@ -81,13 +81,14 @@
 #' track rather than distorting its shape.
 #'
 #' @return A data frame with one row per deployed tag-year and columns `year`, `package_id` and `slope`,
-#'   usable directly as `processTagData(paddle.calibration = )`, plus `slope_source` and
+#'   usable directly as `calculatePaddleSpeed(calibration = )`, plus `slope_source` and
 #'   `n_calibrations`, the number of measured calibrations available for that tag. The estimated
 #'   degradation rate, its standard error and the method used are attached as attributes
 #'   (`degradation.rate`, `degradation.rate.se`, `method`).
 #'
-#' @seealso [processTagData()] for the function that consumes the table; [reconstructTrack()] for what
-#'   the resulting speed feeds into.
+#' @seealso [calculatePaddleSpeed()] for the function that consumes the table; [processTagData()] for
+#'   the step that recovers the rotation rate in the first place; [reconstructTrack()] for what the
+#'   resulting speed feeds into.
 #'
 #' @examples
 #' cal <- data.frame(package_id = c("51", "51", "52", "91"),

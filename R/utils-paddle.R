@@ -59,7 +59,7 @@
 #' One slope per tag and season, and where it came from.
 #' @keywords internal
 #' @noRd
-.paddleResolve <- function(scan, calibration, method, agreement.threshold, lvl) {
+.paddleResolve <- function(scan, calibration, method, degradation.rate, agreement.threshold, lvl) {
   keys <- unique(vapply(scan, function(z) z$key, character(1)))
   cal <- do.call(rbind, lapply(keys, function(k) {
     w <- Filter(function(z) identical(z$key, k), scan)
@@ -104,7 +104,7 @@
       cal$slope[gap] <- cal$in_situ_slope[gap]
       cal$slope_source[gap] <- ifelse(is.finite(cal$in_situ_slope[gap]), "in-situ", NA_character_)
     } else if (!is.null(calibration)) {
-      cal <- .paddleImputeGaps(cal, calibration, method, gap, lvl)
+      cal <- .paddleImputeGaps(cal, calibration, method, degradation.rate, gap, lvl)
     }
   }
   # left without a slope, but for a reason worth naming: the logger reported speed itself
@@ -123,7 +123,7 @@
 #' Fill the remaining gaps through imputePaddleCalibration(), keeping its provenance labels.
 #' @keywords internal
 #' @noRd
-.paddleImputeGaps <- function(cal, calibration, method, gap, lvl) {
+.paddleImputeGaps <- function(cal, calibration, method, degradation.rate, gap, lvl) {
   # `paddle_wheel` is passed explicitly: imputePaddleCalibration() uses it to skip tags that never had a
   # paddle, and warns when it is absent. This function already knows the answer from each tag's own
   # metadata, so there is nothing to guess at.
@@ -131,7 +131,7 @@
                      paddle_wheel = cal$has_paddle[gap], stringsAsFactors = FALSE)
   filled <- try(suppressMessages(
     imputePaddleCalibration(calibration = calibration, deployments = need, method = method,
-                            verbose = 0)), silent = TRUE)
+                            degradation.rate = degradation.rate, verbose = 0)), silent = TRUE)
   if (inherits(filled, "try-error") || !is.data.frame(filled)) {
     cli::cli_warn(c("Could not estimate the missing calibration{?s} with {.val {method}}.",
                     "i" = "Those deployments get no speed. {.code method = \"in-situ\"} estimates the
