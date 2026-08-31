@@ -2,7 +2,7 @@
 % Please edit documentation in R/regularizeTimeSeries.R
 \name{regularizeTimeSeries}
 \alias{regularizeTimeSeries}
-\title{Place a record on a regular time grid}
+\title{Place archival tag records on a regular time grid}
 \usage{
 regularizeTimeSeries(
   data,
@@ -23,146 +23,194 @@ regularizeTimeSeries(
 )
 }
 \arguments{
-\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
-\code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-processed without ever holding it all.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+identified by \code{id.col}, or a character vector of \code{.rds} file paths. When file paths are supplied,
+deployments are processed sequentially, allowing large collections to be regularised without
+loading them all into memory.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col}{Column identifying individuals (default \code{"ID"}).}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+\item{datetime.col}{Column containing timestamps (default \code{"datetime"}).}
 
-\item{time.threshold}{How far, in seconds, a sample may sit from a grid point and still be assigned
-to it. \code{NULL} (default) uses half the nominal sampling interval, so every sample belongs to exactly
-one grid point. Widen it only where a tag's timestamps are known to be coarse; too wide and distinct
-samples compete for the same slot.}
+\item{time.threshold}{How far, in seconds, an observation may sit from a grid point and still be
+assigned to it. \code{NULL} (default) uses half the nominal sampling interval, so each observation
+belongs to exactly one grid point. Widen it only where a tag's timestamps are known to be coarse:
+too wide and distinct observations compete for the same grid point.}
 
-\item{gap.threshold}{The longest gap, in seconds, that will be interpolated (default 5). Gaps beyond
-it stay missing. Choose it from what your sensor and animal can change over: a value that spans a
-whole dive will invent one. Set \code{0} to interpolate nothing.}
+\item{gap.threshold}{Longest gap, in seconds, that will be interpolated (default \code{5}). Longer gaps
+are retained as missing. Set to \code{0} to interpolate nothing.}
 
-\item{interpolation.method}{Character. Interpolation method for small gaps. One of:
-\itemize{
-\item "linear" (default) - Linear interpolation via \code{zoo::na.approx}
-\item "spline" - Spline interpolation via \code{zoo::na.spline}
-\item "locf" - Last observation carried forward via \code{zoo::na.locf}
-}}
+\item{interpolation.method}{Method used to fill gaps up to \code{gap.threshold}: \code{"linear"} (default,
+\code{\link[zoo:na.approx]{zoo::na.approx()}}), \code{"spline"} (\code{\link[zoo:na.spline]{zoo::na.spline()}}), or \code{"locf"}, last observation carried forward
+(\code{\link[zoo:na.locf]{zoo::na.locf()}}).}
 
-\item{plot}{Logical. If \code{TRUE}, draw the diagnostic report (see \code{plot.file}) to the active
-graphics device. Default \code{FALSE}.}
+\item{plot}{Whether to draw the diagnostic report to the active graphics device (default \code{FALSE}).}
 
-\item{plot.file}{Character. Path to a single multi-page PDF for the diagnostic report. The report
-is a two-level triage: a \strong{global summary page} (a worst-first table of all deployments with
-their status and key regularization metrics) followed by \strong{detailed pages only for deployments
-that exceed the review thresholds} (regularization impact, gap diagnostics, an annotated
-coverage strip, and a zoom on the most severe event). Healthy deployments get no detailed page.
-The parent directory must already exist; must end in \code{.pdf}. If \code{NULL} (default), no file is
-written. Independent of \code{plot}. Regardless of plotting, the per-deployment status and key
-coverage statistics are always recorded in the processing audit trail.}
+\item{plot.file}{Path to a multi-page PDF holding the diagnostic report, or \code{NULL} (default). The
+parent directory must already exist, and the path must end in \code{.pdf}. Independent of \code{plot}: set
+either, or both. See Details for what the report contains.}
 
 \item{review.thresholds}{Named list overriding the thresholds that classify a deployment as
-\code{"review"} or \code{"critical"} (and thus earns a detailed page). Recognised fields:
-\code{gap_pct_review}/\code{gap_pct_critical} (default 1 / 5), \code{interp_pct_review}/\code{interp_pct_critical}
-(5 / 20), \code{rows_added_pct_review}/\code{rows_added_pct_critical} (10 / 100), and the optional absolute
-\code{large_gap_seconds} (default \code{NULL}, off). \code{NULL} (default) uses all defaults.}
+\code{"review"} or \code{"critical"}, or \code{NULL} (default) to use the defaults throughout. See Details for the
+recognised fields.}
 
-\item{force.plots}{Logical. If \code{TRUE}, generate a detailed page for every deployment, not only
-the flagged ones (restores the old one-page-per-deployment behaviour). Default \code{FALSE}.}
+\item{force.plots}{Whether to produce a detailed page for every deployment rather than only the
+flagged ones (default \code{FALSE}).}
 
-\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{return.data}{Whether to return the regularised datasets in memory (default \code{TRUE}). When
+\code{FALSE}, the function returns the paths of the \code{.rds} files written to \code{output.dir}, which feed
+directly into the next step's \code{data} argument; this requires \code{output.dir} to be specified.}
 
-\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
-a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+\item{output.dir}{An existing directory in which to save one regularised \verb{<id>.rds} file per
+deployment. Supplying a directory is what triggers saving; \code{NULL} (default) writes nothing.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{output.suffix}{Optional string appended to each saved file name, before \code{.rds}, to label a
+processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is specified.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
-(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+\item{compress}{Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
+\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is specified. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or
-\code{2}/"detailed" (default; adds low-level per-step diagnostics). Defaults to \code{"detailed"}.}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
+(default), which adds per-deployment diagnostics.}
 }
 \value{
-If \code{return.data = TRUE}, a named list of regularized \code{data.table}s (one element
-per individual), regardless of whether the input was a single dataset, a list, or a
-vector of file paths; if \code{return.data = FALSE}, a character vector of the written \code{.rds}
-file paths.
+When \code{return.data = TRUE}, a named list of regularised \code{data.table} objects keyed by
+identifier, one per deployment, whether the input was a single dataset, a list, or a vector of file
+paths. When \code{return.data = FALSE}, a character vector of the paths to the written \code{.rds} files.
+Files are written whenever \code{output.dir} is specified, regardless of the value of \code{return.data}.
 }
 \description{
-Archival tags rarely produce the perfectly even series their nominal sampling rate implies. Clocks
-drift, buffers flush late, and power saving or memory pressure drops samples outright, so the interval
-between consecutive records wanders and occasionally jumps.
+Resamples each deployment onto an evenly spaced time grid at its nominal sampling rate. Original
+observations are assigned to the nearest grid point, short gaps are interpolated, and longer gaps are
+retained as missing values so that periods without measurement remain visible to later analyses.
 
-Most of what follows in an analysis assumes even spacing. Anything working in the frequency domain -
-tail-beat estimation, spectral checks - reads an uneven series as if it were even and returns a
-distorted answer; dead-reckoning integrates over assumed time steps; dive detection measures durations
-in samples. Irregularity does not announce itself in any of these, which is what makes it worth
-removing first.
+Archival tags rarely produce the perfectly even series their nominal rate implies: clocks drift,
+buffers flush late, and power saving or memory pressure drops samples outright. Most subsequent
+analyses assume even spacing. Frequency-domain methods such as tail-beat estimation read an uneven
+series as though it were even, dead-reckoning integrates over assumed time steps, and dive metrics
+measure durations in samples. None of these signal the problem, which is why it is worth resolving
+beforehand.
 
-\code{regularizeTimeSeries()} places each record on an even grid at its nominal rate, assigns the original
-samples to the nearest grid point, and fills only gaps short enough to be filled honestly. Longer gaps
-stay missing, because a gap is information: the tag was not recording, and inventing values across it
-would hide that from every later step.
+The function is intended to be applied after the record has been trimmed to the deployment period
+with \code{\link[=filterDeploymentData]{filterDeploymentData()}}, and before \code{\link[=processTagData]{processTagData()}}. Each deployment is classified by how
+much its coverage was affected, and that classification, with the supporting statistics, is recorded
+in the deployment metadata.
 }
 \details{
-\subsection{What happens to a sample}{
+\subsection{Regularisation procedure}{
 
-Each original record is assigned to the nearest timestamp on the regular grid, provided it falls
-within \code{time.threshold} of it. A record further away than that is not forced onto a grid point it does
-not belong to; the grid point is left empty and treated as a gap.
+For each deployment:
+
+\enumerate{
+\item The nominal sampling interval is taken as the median of the observed timestamp differences.
+\item A regular time sequence is generated at that interval, spanning the first to the last
+timestamp of the original record.
+\item Each original observation is assigned to its nearest grid point, provided it falls within
+\code{time.threshold} of it. A grid point with no observation within that distance is left missing.
+\item Gaps no longer than \code{gap.threshold} are filled using \code{interpolation.method}; longer gaps are
+retained as missing.
+}
+}
+
+\subsection{Assigning observations to the grid}{
+
+An observation further from every grid point than \code{time.threshold} is not forced onto one it does not
+belong to: the grid point is left empty and treated as a gap. The default of half the nominal interval
+partitions the timeline exactly, so no observation is discarded and none is assigned twice.
 }
 
 \subsection{Which gaps are filled}{
 
-Gaps up to \code{gap.threshold} are interpolated; anything longer is left missing. The distinction matters
-because the two are different events. A dropped sample or two is a recording artefact, and
-interpolating across it restores a series the sensor would have produced anyway. A gap of minutes is a
-period with no measurement, and filling it fabricates behaviour - a dive that was never recorded, a
-stretch of level swimming that never happened. Set \code{gap.threshold = 0} to fill nothing.
-
-Channels sampled more slowly than the sensor grid - depth on some tags, temperature on most - are
-recognised as such and are not densified onto every grid point, which would otherwise turn a
-once-per-second measurement into a spuriously high-resolution one.
+The distinction drawn by \code{gap.threshold} is between two different events. A dropped observation or two
+is a recording artefact, and interpolating across it restores a series the sensor would otherwise have
+produced. A gap of minutes is a period with no measurement, and filling it fabricates behaviour: a
+dive that was never recorded, or a stretch of level swimming that never happened. Choose the threshold
+from what the sensor and the animal can change over; a value spanning a whole dive will invent one.
 }
 
-The regularization algorithm proceeds as follows for each individual's dataset:
-\enumerate{
-\item The \strong{median sampling interval} is calculated from the observed \code{datetime}
-differences. This median is used as the nominal interval for regularization.
-\item A \strong{complete, regular time sequence} is generated, spanning from the
-first to the last timestamp of the original data, at the calculated
-nominal interval.
-\item Each original record is then \strong{assigned to its nearest timestamp} in
-this regular sequence. An assignment is only considered valid if the
-time difference between the original record and the nearest regular
-timestamp is within the \code{time.threshold}. Records outside this threshold
-(or where no original record is near a regular timestamp) result in \code{NA}
-values in the data columns for those regular time points.
-\item For any \code{NA} values introduced during regularization (or existing initially),
-\strong{gap-filling strategies} are applied. Gaps equal to or shorter than
-\code{gap.threshold} are interpolated using the specified \code{interpolation.method}.
-Longer gaps remain as \code{NA} to avoid spurious data generation.
+\subsection{Channels sampled below the grid rate}{
+
+Some tags log a channel more slowly than the inertial sensors, typically depth or temperature. Such
+channels are recognised and left at their own cadence rather than being densified onto every grid
+point, which would turn a once-per-second measurement into a spuriously high-resolution one and make
+its empty rows look like missing data in the coverage statistics.
 }
+
+\subsection{Records already on a regular grid}{
+
+A record whose intervals all fall within \code{time.threshold} of the nominal interval is already regular.
+It is passed through unchanged: no grid is constructed and nothing is interpolated. The processing
+history records this as \code{regularization_performed = FALSE}, so a record that needed no work remains
+distinguishable from one that was never processed.
 }
-\note{
-For large datasets, consider processing in batches with an \code{output.dir} and
-\code{return.data = FALSE} to avoid memory overload.
+
+\subsection{Quality classification}{
+
+Each deployment is classified \code{"ok"}, \code{"review"} or \code{"critical"} from three coverage metrics: the
+percentage of grid points left as gaps, the percentage filled by interpolation, and the percentage by
+which the row count grew relative to the original record. Reaching any critical threshold gives
+\code{"critical"}, reaching any review threshold gives \code{"review"}, and otherwise the deployment is \code{"ok"}.
+
+\code{review.thresholds} overrides the defaults, field by field:
+
+\describe{
+\item{\code{gap_pct_review}, \code{gap_pct_critical}}{Percentage of grid points left as gaps. Defaults \code{1}
+and \code{5}.}
+\item{\code{interp_pct_review}, \code{interp_pct_critical}}{Percentage of grid points filled by
+interpolation. Defaults \code{5} and \code{20}.}
+\item{\code{rows_added_pct_review}, \code{rows_added_pct_critical}}{Percentage increase in row count over the
+original record. Defaults \code{10} and \code{100}.}
+\item{\code{large_gap_seconds}}{Optional absolute limit: a record whose longest single gap reaches this
+many seconds is classified \code{"critical"}. Default \code{NULL}, disabled. This field has no review tier.}
+}
+
+The classification governs which deployments receive a detailed diagnostic page. It does not affect
+the returned data: a \code{"critical"} deployment is regularised and returned like any other, flagged
+rather than withheld.
+}
+
+\subsection{Diagnostic report}{
+
+The report is a two-level triage. A global summary page tabulates every deployment, worst first, with
+its status and key metrics. Detailed pages follow only for deployments classified \code{"review"} or
+\code{"critical"}, each showing the regularisation impact, gap diagnostics, an annotated coverage strip and
+a zoom on the most severe event. Healthy deployments in a batch get no detailed page, so the report
+stays short on a large, clean collection.
+
+A call processing a single deployment always produces its detailed page, and \code{force.plots = TRUE}
+produces one for every deployment regardless of status.
+}
+
+\subsection{Processing history}{
+
+Whether or not plots are drawn, each deployment records a \code{regularizeTimeSeries} step giving the
+nominal rate and timestamp jitter, the row counts before and after, the numbers and percentages of
+interpolated and missing grid points, the longest gap, the settings applied, and the resulting status.
+The coverage statistics are therefore available without rerunning the function or reading the report.
+}
 }
 \examples{
-# Snap an irregular, jittered series onto a uniform grid, filling short gaps:
+# An irregular, jittered series placed on a uniform grid, with short gaps filled.
 d <- data.frame(ID = "shark01",
                 datetime = as.POSIXct("2020-01-01 00:00:00", tz = "UTC") +
                            c(0, 0.9, 2.1, 3.0, 4.2, 7.0, 8.1, 9.0),
                 depth = c(1.0, 1.2, 1.5, 1.8, 2.0, 3.1, 3.4, 3.6))
 reg <- regularizeTimeSeries(d, gap.threshold = 2, verbose = FALSE)
 reg[["shark01"]]
+
+\dontrun{
+# A batch, with a diagnostic report and stricter gap tolerance.
+regularised <- regularizeTimeSeries(deployed,
+                                    gap.threshold = 2,
+                                    plot.file = "./qc/regularization.pdf")
+
+# A collection too large to hold in memory: write each deployment and pass the paths on.
+regularizeTimeSeries(list.files("./deployed", full.names = TRUE),
+                     return.data = FALSE, output.dir = "./regularized")
+}
 }
 \seealso{
-\link{importTagData}
-\link{filterDeploymentData}
-\code{\link[zoo]{na.approx}} for interpolation methods
-\code{\link[data.table]{as.data.table}} for efficient data handling
+\code{\link[=filterDeploymentData]{filterDeploymentData()}} for trimming the record to the deployment period, which should come
+first; \code{\link[=processTagData]{processTagData()}} for the movement and orientation processing that follows;
+\code{\link[=importTagData]{importTagData()}} for reading the raw exports; \code{\link[zoo:na.approx]{zoo::na.approx()}} for the interpolation methods.
 }

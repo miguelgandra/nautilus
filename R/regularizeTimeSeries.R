@@ -1,137 +1,180 @@
 #######################################################################################################
-# Function to check and correct irregular time series in tag data #####################################
+# Place archival tag records on a regular time grid ###################################################
 #######################################################################################################
 
-#' Place a record on a regular time grid
+#' Place archival tag records on a regular time grid
 #'
 #' @description
-#' Archival tags rarely produce the perfectly even series their nominal sampling rate implies. Clocks
-#' drift, buffers flush late, and power saving or memory pressure drops samples outright, so the interval
-#' between consecutive records wanders and occasionally jumps.
+#' Resamples each deployment onto an evenly spaced time grid at its nominal sampling rate. Original
+#' observations are assigned to the nearest grid point, short gaps are interpolated, and longer gaps are
+#' retained as missing values so that periods without measurement remain visible to later analyses.
 #'
-#' Most of what follows in an analysis assumes even spacing. Anything working in the frequency domain -
-#' tail-beat estimation, spectral checks - reads an uneven series as if it were even and returns a
-#' distorted answer; dead-reckoning integrates over assumed time steps; dive detection measures durations
-#' in samples. Irregularity does not announce itself in any of these, which is what makes it worth
-#' removing first.
+#' Archival tags rarely produce the perfectly even series their nominal rate implies: clocks drift,
+#' buffers flush late, and power saving or memory pressure drops samples outright. Most subsequent
+#' analyses assume even spacing. Frequency-domain methods such as tail-beat estimation read an uneven
+#' series as though it were even, dead-reckoning integrates over assumed time steps, and dive metrics
+#' measure durations in samples. None of these signal the problem, which is why it is worth resolving
+#' beforehand.
 #'
-#' `regularizeTimeSeries()` places each record on an even grid at its nominal rate, assigns the original
-#' samples to the nearest grid point, and fills only gaps short enough to be filled honestly. Longer gaps
-#' stay missing, because a gap is information: the tag was not recording, and inventing values across it
-#' would hide that from every later step.
+#' The function is intended to be applied after the record has been trimmed to the deployment period
+#' with [filterDeploymentData()], and before [processTagData()]. Each deployment is classified by how
+#' much its coverage was affected, and that classification, with the supporting statistics, is recorded
+#' in the deployment metadata.
 #'
-#' @details
-#' ## What happens to a sample
-#' Each original record is assigned to the nearest timestamp on the regular grid, provided it falls
-#' within `time.threshold` of it. A record further away than that is not forced onto a grid point it does
-#' not belong to; the grid point is left empty and treated as a gap.
-#'
-#' ## Which gaps are filled
-#' Gaps up to `gap.threshold` are interpolated; anything longer is left missing. The distinction matters
-#' because the two are different events. A dropped sample or two is a recording artefact, and
-#' interpolating across it restores a series the sensor would have produced anyway. A gap of minutes is a
-#' period with no measurement, and filling it fabricates behaviour - a dive that was never recorded, a
-#' stretch of level swimming that never happened. Set `gap.threshold = 0` to fill nothing.
-#'
-#' Channels sampled more slowly than the sensor grid - depth on some tags, temperature on most - are
-#' recognised as such and are not densified onto every grid point, which would otherwise turn a
-#' once-per-second measurement into a spuriously high-resolution one.
-#'
-#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
-#'   `.rds` paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-#'   processed without ever holding it all.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param time.threshold How far, in seconds, a sample may sit from a grid point and still be assigned
-#'   to it. `NULL` (default) uses half the nominal sampling interval, so every sample belongs to exactly
-#'   one grid point. Widen it only where a tag's timestamps are known to be coarse; too wide and distinct
-#'   samples compete for the same slot.
-#' @param gap.threshold The longest gap, in seconds, that will be interpolated (default 5). Gaps beyond
-#'   it stay missing. Choose it from what your sensor and animal can change over: a value that spans a
-#'   whole dive will invent one. Set `0` to interpolate nothing.
-#' @param interpolation.method Character. Interpolation method for small gaps. One of:
-#'   \itemize{
-#'     \item "linear" (default) - Linear interpolation via `zoo::na.approx`
-#'     \item "spline" - Spline interpolation via `zoo::na.spline`
-#'     \item "locf" - Last observation carried forward via `zoo::na.locf`
-#'   }
-#' @param plot Logical. If `TRUE`, draw the diagnostic report (see `plot.file`) to the active
-#'   graphics device. Default `FALSE`.
-#' @param plot.file Character. Path to a single multi-page PDF for the diagnostic report. The report
-#'   is a two-level triage: a **global summary page** (a worst-first table of all deployments with
-#'   their status and key regularization metrics) followed by **detailed pages only for deployments
-#'   that exceed the review thresholds** (regularization impact, gap diagnostics, an annotated
-#'   coverage strip, and a zoom on the most severe event). Healthy deployments get no detailed page.
-#'   The parent directory must already exist; must end in `.pdf`. If `NULL` (default), no file is
-#'   written. Independent of `plot`. Regardless of plotting, the per-deployment status and key
-#'   coverage statistics are always recorded in the processing audit trail.
+#' @param data A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+#'   identified by `id.col`, or a character vector of `.rds` file paths. When file paths are supplied,
+#'   deployments are processed sequentially, allowing large collections to be regularised without
+#'   loading them all into memory.
+#' @param id.col Column identifying individuals (default `"ID"`).
+#' @param datetime.col Column containing timestamps (default `"datetime"`).
+#' @param time.threshold How far, in seconds, an observation may sit from a grid point and still be
+#'   assigned to it. `NULL` (default) uses half the nominal sampling interval, so each observation
+#'   belongs to exactly one grid point. Widen it only where a tag's timestamps are known to be coarse:
+#'   too wide and distinct observations compete for the same grid point.
+#' @param gap.threshold Longest gap, in seconds, that will be interpolated (default `5`). Longer gaps
+#'   are retained as missing. Set to `0` to interpolate nothing.
+#' @param interpolation.method Method used to fill gaps up to `gap.threshold`: `"linear"` (default,
+#'   [zoo::na.approx()]), `"spline"` ([zoo::na.spline()]), or `"locf"`, last observation carried forward
+#'   ([zoo::na.locf()]).
+#' @param plot Whether to draw the diagnostic report to the active graphics device (default `FALSE`).
+#' @param plot.file Path to a multi-page PDF holding the diagnostic report, or `NULL` (default). The
+#'   parent directory must already exist, and the path must end in `.pdf`. Independent of `plot`: set
+#'   either, or both. See Details for what the report contains.
 #' @param review.thresholds Named list overriding the thresholds that classify a deployment as
-#'   `"review"` or `"critical"` (and thus earns a detailed page). Recognised fields:
-#'   `gap_pct_review`/`gap_pct_critical` (default 1 / 5), `interp_pct_review`/`interp_pct_critical`
-#'   (5 / 20), `rows_added_pct_review`/`rows_added_pct_critical` (10 / 100), and the optional absolute
-#'   `large_gap_seconds` (default `NULL`, off). `NULL` (default) uses all defaults.
-#' @param force.plots Logical. If `TRUE`, generate a detailed page for every deployment, not only
-#'   the flagged ones (restores the old one-page-per-deployment behaviour). Default `FALSE`.
-#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
-#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
-#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
-#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
-#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
-#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
-#' @param verbose Verbosity level: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or
-#'   `2`/"detailed" (default; adds low-level per-step diagnostics). Defaults to `"detailed"`.
-#'
-#' @return If `return.data = TRUE`, a named list of regularized `data.table`s (one element
-#'   per individual), regardless of whether the input was a single dataset, a list, or a
-#'   vector of file paths; if `return.data = FALSE`, a character vector of the written `.rds`
-#'   file paths.
+#'   `"review"` or `"critical"`, or `NULL` (default) to use the defaults throughout. See Details for the
+#'   recognised fields.
+#' @param force.plots Whether to produce a detailed page for every deployment rather than only the
+#'   flagged ones (default `FALSE`).
+#' @param return.data Whether to return the regularised datasets in memory (default `TRUE`). When
+#'   `FALSE`, the function returns the paths of the `.rds` files written to `output.dir`, which feed
+#'   directly into the next step's `data` argument; this requires `output.dir` to be specified.
+#' @param output.dir An existing directory in which to save one regularised `<id>.rds` file per
+#'   deployment. Supplying a directory is what triggers saving; `NULL` (default) writes nothing.
+#' @param output.suffix Optional string appended to each saved file name, before `.rds`, to label a
+#'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is specified.
+#' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
+#'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is specified. See [base::saveRDS()].
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default), which adds per-deployment diagnostics.
 #'
 #' @details
-#' The regularization algorithm proceeds as follows for each individual's dataset:
+#' ## Regularisation procedure
+#'
+#' For each deployment:
+#'
 #' \enumerate{
-#'   \item The **median sampling interval** is calculated from the observed `datetime`
-#'         differences. This median is used as the nominal interval for regularization.
-#'   \item A **complete, regular time sequence** is generated, spanning from the
-#'         first to the last timestamp of the original data, at the calculated
-#'         nominal interval.
-#'   \item Each original record is then **assigned to its nearest timestamp** in
-#'         this regular sequence. An assignment is only considered valid if the
-#'         time difference between the original record and the nearest regular
-#'         timestamp is within the `time.threshold`. Records outside this threshold
-#'         (or where no original record is near a regular timestamp) result in `NA`
-#'         values in the data columns for those regular time points.
-#'   \item For any `NA` values introduced during regularization (or existing initially),
-#'         **gap-filling strategies** are applied. Gaps equal to or shorter than
-#'         `gap.threshold` are interpolated using the specified `interpolation.method`.
-#'         Longer gaps remain as `NA` to avoid spurious data generation.
+#'   \item The nominal sampling interval is taken as the median of the observed timestamp differences.
+#'   \item A regular time sequence is generated at that interval, spanning the first to the last
+#'     timestamp of the original record.
+#'   \item Each original observation is assigned to its nearest grid point, provided it falls within
+#'     `time.threshold` of it. A grid point with no observation within that distance is left missing.
+#'   \item Gaps no longer than `gap.threshold` are filled using `interpolation.method`; longer gaps are
+#'     retained as missing.
 #' }
 #'
-#' @note For large datasets, consider processing in batches with an `output.dir` and
-#' `return.data = FALSE` to avoid memory overload.
+#' ## Assigning observations to the grid
 #'
-#' @seealso
-#' \link{importTagData}
-#' \link{filterDeploymentData}
-#' \code{\link[zoo]{na.approx}} for interpolation methods
-#' \code{\link[data.table]{as.data.table}} for efficient data handling
+#' An observation further from every grid point than `time.threshold` is not forced onto one it does not
+#' belong to: the grid point is left empty and treated as a gap. The default of half the nominal interval
+#' partitions the timeline exactly, so no observation is discarded and none is assigned twice.
+#'
+#' ## Which gaps are filled
+#'
+#' The distinction drawn by `gap.threshold` is between two different events. A dropped observation or two
+#' is a recording artefact, and interpolating across it restores a series the sensor would otherwise have
+#' produced. A gap of minutes is a period with no measurement, and filling it fabricates behaviour: a
+#' dive that was never recorded, or a stretch of level swimming that never happened. Choose the threshold
+#' from what the sensor and the animal can change over; a value spanning a whole dive will invent one.
+#'
+#' ## Channels sampled below the grid rate
+#'
+#' Some tags log a channel more slowly than the inertial sensors, typically depth or temperature. Such
+#' channels are recognised and left at their own cadence rather than being densified onto every grid
+#' point, which would turn a once-per-second measurement into a spuriously high-resolution one and make
+#' its empty rows look like missing data in the coverage statistics.
+#'
+#' ## Records already on a regular grid
+#'
+#' A record whose intervals all fall within `time.threshold` of the nominal interval is already regular.
+#' It is passed through unchanged: no grid is constructed and nothing is interpolated. The processing
+#' history records this as `regularization_performed = FALSE`, so a record that needed no work remains
+#' distinguishable from one that was never processed.
+#'
+#' ## Quality classification
+#'
+#' Each deployment is classified `"ok"`, `"review"` or `"critical"` from three coverage metrics: the
+#' percentage of grid points left as gaps, the percentage filled by interpolation, and the percentage by
+#' which the row count grew relative to the original record. Reaching any critical threshold gives
+#' `"critical"`, reaching any review threshold gives `"review"`, and otherwise the deployment is `"ok"`.
+#'
+#' `review.thresholds` overrides the defaults, field by field:
+#'
+#' \describe{
+#'   \item{`gap_pct_review`, `gap_pct_critical`}{Percentage of grid points left as gaps. Defaults `1`
+#'     and `5`.}
+#'   \item{`interp_pct_review`, `interp_pct_critical`}{Percentage of grid points filled by
+#'     interpolation. Defaults `5` and `20`.}
+#'   \item{`rows_added_pct_review`, `rows_added_pct_critical`}{Percentage increase in row count over the
+#'     original record. Defaults `10` and `100`.}
+#'   \item{`large_gap_seconds`}{Optional absolute limit: a record whose longest single gap reaches this
+#'     many seconds is classified `"critical"`. Default `NULL`, disabled. This field has no review tier.}
+#' }
+#'
+#' The classification governs which deployments receive a detailed diagnostic page. It does not affect
+#' the returned data: a `"critical"` deployment is regularised and returned like any other, flagged
+#' rather than withheld.
+#'
+#' ## Diagnostic report
+#'
+#' The report is a two-level triage. A global summary page tabulates every deployment, worst first, with
+#' its status and key metrics. Detailed pages follow only for deployments classified `"review"` or
+#' `"critical"`, each showing the regularisation impact, gap diagnostics, an annotated coverage strip and
+#' a zoom on the most severe event. Healthy deployments in a batch get no detailed page, so the report
+#' stays short on a large, clean collection.
+#'
+#' A call processing a single deployment always produces its detailed page, and `force.plots = TRUE`
+#' produces one for every deployment regardless of status.
+#'
+#' ## Processing history
+#'
+#' Whether or not plots are drawn, each deployment records a `regularizeTimeSeries` step giving the
+#' nominal rate and timestamp jitter, the row counts before and after, the numbers and percentages of
+#' interpolated and missing grid points, the longest gap, the settings applied, and the resulting status.
+#' The coverage statistics are therefore available without rerunning the function or reading the report.
+#'
+#' @return When `return.data = TRUE`, a named list of regularised `data.table` objects keyed by
+#'   identifier, one per deployment, whether the input was a single dataset, a list, or a vector of file
+#'   paths. When `return.data = FALSE`, a character vector of the paths to the written `.rds` files.
+#'   Files are written whenever `output.dir` is specified, regardless of the value of `return.data`.
+#'
+#' @seealso [filterDeploymentData()] for trimming the record to the deployment period, which should come
+#'   first; [processTagData()] for the movement and orientation processing that follows;
+#'   [importTagData()] for reading the raw exports; [zoo::na.approx()] for the interpolation methods.
 #'
 #' @importFrom data.table as.data.table setorder setnames setcolorder
 #' @importFrom zoo na.approx na.spline na.locf
 #' @importFrom stats median mad
+#'
 #' @examples
-#' # Snap an irregular, jittered series onto a uniform grid, filling short gaps:
+#' # An irregular, jittered series placed on a uniform grid, with short gaps filled.
 #' d <- data.frame(ID = "shark01",
 #'                 datetime = as.POSIXct("2020-01-01 00:00:00", tz = "UTC") +
 #'                            c(0, 0.9, 2.1, 3.0, 4.2, 7.0, 8.1, 9.0),
 #'                 depth = c(1.0, 1.2, 1.5, 1.8, 2.0, 3.1, 3.4, 3.6))
 #' reg <- regularizeTimeSeries(d, gap.threshold = 2, verbose = FALSE)
 #' reg[["shark01"]]
+#'
+#' \dontrun{
+#' # A batch, with a diagnostic report and stricter gap tolerance.
+#' regularised <- regularizeTimeSeries(deployed,
+#'                                     gap.threshold = 2,
+#'                                     plot.file = "./qc/regularization.pdf")
+#'
+#' # A collection too large to hold in memory: write each deployment and pass the paths on.
+#' regularizeTimeSeries(list.files("./deployed", full.names = TRUE),
+#'                      return.data = FALSE, output.dir = "./regularized")
+#' }
 #' @export
-
 regularizeTimeSeries <- function(data,
                                  id.col = "ID",
                                  datetime.col = "datetime",
