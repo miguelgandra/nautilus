@@ -355,7 +355,7 @@ test_that("a window rejected on duration says so, and names the window and the f
   txt <- .fddReport(filterDeploymentData(list(A01 = f$data), use.temperature = FALSE,
                                          min.deployment.hours = 5,   # far above the window -> rejected
                                          plot = FALSE, return.data = TRUE, verbose = "detailed"))
-  expect_match(txt, "deployment too short")
+  expect_match(txt, "detected window too short")                # names the input at fault
   expect_match(txt, "min.deployment.hours = 5", fixed = TRUE)   # the floor that rejected it
   expect_match(txt, "detected 00:29 . 01:29 \\(1\\.00 h\\)")       # ...and the window it rejected
   expect_false(grepl("no deployment detected", txt, fixed = TRUE))
@@ -367,18 +367,23 @@ test_that("a record with no deployment at all still reports the original message
                                          min.deployment.hours = 0.25,
                                          plot = FALSE, return.data = TRUE, verbose = "detailed"))
   expect_match(txt, "no deployment detected")
-  expect_false(grepl("deployment too short", txt, fixed = TRUE))
+  expect_false(grepl("too short", txt, fixed = TRUE))
 })
 
-test_that("the duration floor does not apply to a fully custom window", {
-  # the escape hatch the message points at has to actually work
+test_that("the duration floor applies to a fully custom window too", {
   f <- .make_deployment()
   custom <- data.frame(ID = "A01", start = f$t0 + f$surf, end = f$t0 + f$surf + f$mid)
   r <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
                                       min.deployment.hours = 99, plot = FALSE, return.data = TRUE,
                                       verbose = FALSE))
-  d <- if (is.data.frame(r)) r else r[[1]]
-  expect_gt(nrow(d), 0L)                        # kept despite a floor it could never clear
+  expect_length(r, 0)                           # a supplied window is not exempt
+  expect_identical(attr(r, "nautilus.exclusions")$reason, "custom window too short")
+
+  # lowering the floor is the escape hatch the documentation points at, and it has to work
+  keep <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                         min.deployment.hours = 0, plot = FALSE, return.data = TRUE,
+                                         verbose = FALSE))
+  expect_gt(nrow(if (is.data.frame(keep)) keep else keep[[1]]), 0L)
 })
 
 
@@ -464,14 +469,29 @@ test_that("the duration floor reaches the estimated half of a partial custom win
 })
 
 
-test_that("a fully specified custom window is exempt from the duration floor", {
+test_that("a fully specified custom window is held to the floor like any other", {
   f <- .make_spike()
   custom <- data.frame(ID = "A01", start = f$t0 + f$surf,
                        end = f$t0 + f$surf + f$spike - 1)          # ~5 min, well under the default
   res <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
                                         plot = FALSE, return.data = TRUE))
-  expect_false(is.null(res$A01))
-  expect_lt(as.numeric(difftime(max(res$A01$datetime), min(res$A01$datetime), units = "hours")), 0.25)
+  expect_length(res, 0)
+  # and the exclusion points at the field notes rather than the detection thresholds
+  expect_identical(attr(res, "nautilus.exclusions")$reason, "custom window too short")
+})
+
+
+test_that("the floor measures the retained record, not the window that was asked for", {
+  # a custom window far longer than the data: clamping leaves only the ~5 min the tag recorded, which
+  # is what must be tested. Measuring the requested window would let this through.
+  f <- .make_spike(surf = 0L, spike = 300L)                        # a 5-minute record
+  custom <- data.frame(ID = "A01", start = f$t0 - 7200, end = f$t0 + 7200)   # 4 h requested
+  res <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                        plot = FALSE, return.data = TRUE))
+  expect_length(res, 0)
+  ex <- attr(res, "nautilus.exclusions")
+  expect_identical(ex$reason, "custom window too short")
+  expect_lt(ex$detected_duration_h, 0.25)                          # the retained extent, not 4 h
 })
 
 

@@ -65,9 +65,9 @@ Corroboration is skipped without error where the column is absent.}
 detection (default \code{TRUE}). Temperature can extend or rescue a depth-based window but never shorten
 one. Ignored where custom boundaries are supplied.}
 
-\item{min.deployment.hours}{Minimum duration, in hours, for a detected deployment to be retained
-(default \code{0.25}, i.e. 15 minutes). Shorter windows are excluded. Applies to any window carrying a
-detected boundary; a fully specified custom window is exempt. See Details.}
+\item{min.deployment.hours}{Minimum duration, in hours, for a deployment to be retained (default
+\code{0.25}, i.e. 15 minutes). Applies to every deployment, however its boundaries were determined, and
+is measured on the record actually retained. Set to \code{0} to disable. See Details.}
 
 \item{plot}{Whether to draw diagnostic plots to the active graphics device (default \code{FALSE}).
 Plotting long, high-resolution series to screen is slow; for a batch, prefer \code{plot.file}.}
@@ -184,15 +184,25 @@ single call, giving explicit times for awkward records and letting the remainder
 
 \subsection{Minimum deployment duration}{
 
-Detected deployment periods shorter than \code{min.deployment.hours} are excluded, which removes transient
-depth excursions, sensor spikes and brief test dives that would otherwise be identified as
-deployments.
+Deployment periods shorter than \code{min.deployment.hours} are excluded. This removes transient depth
+excursions, sensor spikes and brief test dives that automatic detection would otherwise report as
+deployments, and it guarantees that every returned deployment carries a usable minimum of record.
 
-The criterion applies to every window carrying a boundary the function detected, including the
-estimated half of a partially specified custom pair: that boundary is a detection like any other and
-can be spurious in the same way. It does \strong{not} apply where both boundaries were supplied through
-\code{custom.deployment.times}. A fully specified window is taken as given, which is how to retain a
-deployment that is genuinely shorter than the floor.
+The criterion applies to \strong{every} deployment, whether its boundaries were detected, partly detected
+or supplied in full through \code{custom.deployment.times}. A supplied window is not exempt: a deployment
+too short to support analysis is too short however its boundaries were established.
+
+Duration is measured on the record actually retained, not on the window requested. A custom window is
+clamped to the available data, so field notes describing a two-hour deployment against a tag that
+recorded eight minutes yield an eight-minute dataset, and it is the eight minutes that are tested.
+
+The exclusion names the input at fault: \code{"detected window too short"} where either boundary came from
+the depth record, and \code{"custom window too short"} where both were supplied. The first points at the
+detection thresholds, the second at the deployment times themselves.
+
+To retain a deployment genuinely shorter than the default, lower \code{min.deployment.hours}, or set it to
+\code{0} to disable the criterion. It applies to the whole call, so a batch mixing genuinely short
+deployments with records needing a strict detection guard is best processed in separate calls.
 
 Deployments rejected as too short are recorded separately from records in which no deployment period
 could be identified at all: the two mean different things and call for different responses. A
