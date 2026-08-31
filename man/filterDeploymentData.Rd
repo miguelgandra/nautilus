@@ -65,9 +65,9 @@ Corroboration is skipped without error where the column is absent.}
 detection (default \code{TRUE}). Temperature can extend or rescue a depth-based window but never shorten
 one. Ignored where custom boundaries are supplied.}
 
-\item{min.deployment.hours}{Minimum duration, in hours, for an automatically detected deployment to
-be retained (default \code{0.25}, i.e. 15 minutes). Shorter windows are excluded. The criterion applies
-only to fully automatic detection; see Details.}
+\item{min.deployment.hours}{Minimum duration, in hours, for a detected deployment to be retained
+(default \code{0.25}, i.e. 15 minutes). Shorter windows are excluded. Applies to any window carrying a
+detected boundary; a fully specified custom window is exempt. See Details.}
 
 \item{plot}{Whether to draw diagnostic plots to the active graphics device (default \code{FALSE}).
 Plotting long, high-resolution series to screen is slow; for a batch, prefer \code{plot.file}.}
@@ -188,9 +188,11 @@ Detected deployment periods shorter than \code{min.deployment.hours} are exclude
 depth excursions, sensor spikes and brief test dives that would otherwise be identified as
 deployments.
 
-\strong{The criterion applies only to fully automatic detection.} It is not applied where either boundary
-was supplied through \code{custom.deployment.times}, including the partially specified case in which one
-boundary was estimated from the depth record. A supplied boundary is taken as given.
+The criterion applies to every window carrying a boundary the function detected, including the
+estimated half of a partially specified custom pair: that boundary is a detection like any other and
+can be spurious in the same way. It does \strong{not} apply where both boundaries were supplied through
+\code{custom.deployment.times}. A fully specified window is taken as given, which is how to retain a
+deployment that is genuinely shorter than the floor.
 
 Deployments rejected as too short are recorded separately from records in which no deployment period
 could be identified at all: the two mean different things and call for different responses. A

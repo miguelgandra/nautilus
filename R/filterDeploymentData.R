@@ -46,9 +46,9 @@
 #' @param use.temperature Whether temperature may be used as a secondary signal during fully automatic
 #'   detection (default `TRUE`). Temperature can extend or rescue a depth-based window but never shorten
 #'   one. Ignored where custom boundaries are supplied.
-#' @param min.deployment.hours Minimum duration, in hours, for an automatically detected deployment to
-#'   be retained (default `0.25`, i.e. 15 minutes). Shorter windows are excluded. The criterion applies
-#'   only to fully automatic detection; see Details.
+#' @param min.deployment.hours Minimum duration, in hours, for a detected deployment to be retained
+#'   (default `0.25`, i.e. 15 minutes). Shorter windows are excluded. Applies to any window carrying a
+#'   detected boundary; a fully specified custom window is exempt. See Details.
 #' @param plot Whether to draw diagnostic plots to the active graphics device (default `FALSE`).
 #'   Plotting long, high-resolution series to screen is slow; for a batch, prefer `plot.file`.
 #' @param plot.file Path to a multi-page PDF in which diagnostic plots are saved, one page per
@@ -130,9 +130,11 @@
 #' depth excursions, sensor spikes and brief test dives that would otherwise be identified as
 #' deployments.
 #'
-#' **The criterion applies only to fully automatic detection.** It is not applied where either boundary
-#' was supplied through `custom.deployment.times`, including the partially specified case in which one
-#' boundary was estimated from the depth record. A supplied boundary is taken as given.
+#' The criterion applies to every window carrying a boundary the function detected, including the
+#' estimated half of a partially specified custom pair: that boundary is a detection like any other and
+#' can be spurious in the same way. It does **not** apply where both boundaries were supplied through
+#' `custom.deployment.times`. A fully specified window is taken as given, which is how to retain a
+#' deployment that is genuinely shorter than the floor.
 #'
 #' Deployments rejected as too short are recorded separately from records in which no deployment period
 #' could be identified at all: the two mean different things and call for different responses. A
@@ -723,17 +725,30 @@ filterDeploymentData <- function(data,
         temp_rescued <- !depth_found && deployment_found
       }
 
-      # ---- minimum-duration guard (fully-automated windows only): reject transient depth spikes or
-      # brief diver test-dives that are too short to be a real deployment.
-      if (deployment_found && !partial_deployment_times) {
-        dur_h <- as.numeric(difftime(reduced_data[[datetime.col]][pop_idx],
-                                     reduced_data[[datetime.col]][attach_idx], units = "hours"))
+      # ---- minimum-duration guard: reject transient depth spikes or brief diver test-dives that are
+      # too short to be a real deployment. It guards every window this branch DETECTED, which includes
+      # the estimated half of a partially specified custom pair - that boundary is a detection like any
+      # other and can be spurious in the same way. A FULLY specified custom window never reaches here
+      # (detection is gated out above), so supplying both boundaries remains the way to keep a
+      # deployment genuinely shorter than the floor.
+      if (deployment_found) {
+        # Re-derive a custom-side boundary into the PADDED frame before measuring. That index was
+        # computed against the unpadded record, while the changepoint padding prepended an hour of
+        # samples (the same reason both indices are re-derived from the times further below), so
+        # reading it here unadjusted would place the boundary an hour early and let a short window
+        # through. A detected boundary is already on the padded basis and is used as it stands.
+        from_i <- if (isTRUE(custom_start_only))
+          which.min(abs(reduced_data[[datetime.col]] - attachtime)) else attach_idx
+        to_i   <- if (isTRUE(custom_end_only))
+          which.min(abs(reduced_data[[datetime.col]] - poptime))    else pop_idx
+        dur_h <- as.numeric(difftime(reduced_data[[datetime.col]][to_i],
+                                     reduced_data[[datetime.col]][from_i], units = "hours"))
         if (is.finite(dur_h) && dur_h < min.deployment.hours) {
           # the indices are about to be clobbered below, so keep them: they are what lets the panel
           # DRAW the window that was rejected, which two timestamps in the log cannot convey
-          short_window <- list(from  = reduced_data[[datetime.col]][attach_idx],
-                               to    = reduced_data[[datetime.col]][pop_idx],
-                               hours = dur_h, attach_idx = attach_idx, pop_idx = pop_idx)
+          short_window <- list(from  = reduced_data[[datetime.col]][from_i],
+                               to    = reduced_data[[datetime.col]][to_i],
+                               hours = dur_h, attach_idx = from_i, pop_idx = to_i)
           deployment_found <- FALSE
         }
       }

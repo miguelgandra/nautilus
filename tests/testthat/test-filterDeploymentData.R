@@ -425,3 +425,72 @@ test_that("a retained deployment is unaffected by the rejected-window path", {
                                  output.dir = dir, verbose = FALSE))
   expect_length(list.files(dir), 1L)                   # still written, still one file
 })
+
+
+# --- the minimum-duration floor guards every DETECTED boundary --------------------------------------
+# A partially specified custom pair has one boundary supplied and the other estimated from the depth
+# record. That estimate is a detection like any other and can be spurious, so the floor must reach it;
+# only a FULLY specified window is exempt, which is what makes supplying both boundaries the way to
+# keep a genuinely short deployment.
+
+# surface | 5-minute deep spike | surface, at 1 Hz: shorter than the 0.25 h default floor
+.make_spike <- function(id = "A01", surf = 1800L, spike = 300L) {
+  set.seed(11)
+  n <- 2L * surf + spike
+  t0 <- as.POSIXct("2020-01-01 00:00:00", tz = "UTC"); dt <- t0 + seq_len(n) - 1
+  depth <- c(rep(0, surf), 20 + stats::rnorm(spike), rep(0, surf))
+  d <- data.table::data.table(ID = id, dt, pmax(0, depth), 15 + stats::rnorm(n, 0, 0.1))
+  data.table::setnames(d, c("ID", "datetime", "depth", "temp"))
+  data.table::setattr(d, "nautilus.version", "test")
+  list(data = d, t0 = t0, surf = surf, spike = spike)
+}
+
+
+test_that("the duration floor reaches the estimated half of a partial custom window", {
+  f <- .make_spike()
+  # start supplied at the spike, end left to detection: the detected window is ~5 min
+  custom <- data.frame(ID = "A01", start = f$t0 + f$surf, end = as.POSIXct(NA, tz = "UTC"))
+  res <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                        plot = FALSE, return.data = TRUE))
+  expect_length(res, 0)
+  expect_true(grepl("short", paste(attr(res, "nautilus.exclusions")$reason, collapse = " "),
+                    ignore.case = TRUE))
+
+  # the same window is kept once the floor is lowered, so it is the floor that removed it and not a
+  # failure to estimate the missing boundary
+  keep <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                         min.deployment.hours = 0, plot = FALSE, return.data = TRUE))
+  expect_false(is.null(keep$A01))
+})
+
+
+test_that("a fully specified custom window is exempt from the duration floor", {
+  f <- .make_spike()
+  custom <- data.frame(ID = "A01", start = f$t0 + f$surf,
+                       end = f$t0 + f$surf + f$spike - 1)          # ~5 min, well under the default
+  res <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                        plot = FALSE, return.data = TRUE))
+  expect_false(is.null(res$A01))
+  expect_lt(as.numeric(difftime(max(res$A01$datetime), min(res$A01$datetime), units = "hours")), 0.25)
+})
+
+
+test_that("an end-only custom window is guarded the same way as a start-only one", {
+  f <- .make_spike()
+  custom <- data.frame(ID = "A01", start = as.POSIXct(NA, tz = "UTC"),
+                       end = f$t0 + f$surf + f$spike - 1)
+  res <- run_quiet(filterDeploymentData(list(A01 = f$data), custom.deployment.times = custom,
+                                        plot = FALSE, return.data = TRUE))
+  expect_length(res, 0)
+})
+
+
+test_that("fully automatic detection is unaffected by the change", {
+  f <- .make_spike()
+  expect_length(run_quiet(filterDeploymentData(list(A01 = f$data), plot = FALSE,
+                                               return.data = TRUE)), 0)
+  # and a window comfortably above the floor still survives
+  g <- .make_deployment()                                          # 1 h deep phase
+  expect_false(is.null(run_quiet(filterDeploymentData(list(A01 = g$data), plot = FALSE,
+                                                      return.data = TRUE))$A01))
+})
