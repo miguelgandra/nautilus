@@ -1,148 +1,249 @@
 #######################################################################################################
-# Function to import and standardize archival tag data ################################################
+# Import and standardise archival tag data ############################################################
 #######################################################################################################
 
-#' Import archival tag data into a standard structure
+#' Import and standardise archival tag data
 #'
 #' @description
-#' Archival biologging tags record continuously for days to months, and every manufacturer exports
-#' that record in its own layout, with its own column names and units. Before any analysis can begin
-#' the exports must be read, placed on a single time base, converted to common units and matched to
-#' the deployment they came from - work that is tedious to do correctly and easy to get quietly wrong.
+#' Imports archival tag data from deployment-specific folders and converts supported raw exports into
+#' the standardised data structure used by \pkg{nautilus}. Sensor channels are mapped to standardised
+#' names and units, timestamps are converted to `POSIXct`, and deployment metadata are attached to each
+#' imported dataset.
 #'
-#' `importTagData()` is the entry point to a nautilus analysis. It reads one deployment or a whole
-#' fleet from disk, standardises the sensor channels, attaches the deployment metadata, and returns
-#' tag objects that every later step accepts. Use it once, at the start of a study. If your data are
-#' already in R, use [buildTagData()] instead.
+#' The function supports multiple archival tag formats and can process a single deployment or a whole
+#' collection in one call. Format-specific readers are selected through `format`, while `import.mapping`
+#' defines the mapping for exports the readers do not recognise.
+#'
+#' Imported datasets are returned as `nautilus_tag` objects carrying sensor data, deployment metadata,
+#' sensor provenance and a processing history. Alternatively they can be written to individual `.rds`
+#' files and returned as paths, allowing large collections to be processed without holding the complete
+#' dataset in memory.
+#'
+#' This is the entry point to a \pkg{nautilus} analysis, used once at the start of a study. Deployment
+#' metadata should preferably be validated with [checkDeploymentMetadata()] beforehand, and the metadata
+#' schema can be specified with [metadataColumns()]. For data already in R, use [buildTagData()].
+#'
+#' @param data.folders Character vector of paths to deployment folders, one per deployment to import.
+#' @param sensor.subdirectory Subdirectory within each deployment folder holding the primary sensor
+#'   files (default `"CMD"`). Change it to match your own folder layout.
+#' @param format Format of the raw tag data: `"cats"` (default), `"little_leonardo"`, or `"auto"` to
+#'   identify each deployment from its own files. See Details.
+#' @param wc.subdirectory Subdirectory holding paired Wildlife Computers data, or `NULL` (default) to
+#'   locate it automatically. Set it only where automatic detection selects the wrong folder.
+#' @param timezone Time zone used by the tag clock (default `"UTC"`, which matches standard CATS
+#'   exports). The value labels the recorded timestamps; it does not shift their clock times.
+#' @param import.mapping Optional data frame defining a custom mapping between source-column names and
+#'   standardised \pkg{nautilus} sensor channels, or `NULL` (default) to use the built-in
+#'   format-specific mappings. See Details for the required columns and accepted values.
+#' @param required.sensors Optional character vector of sensor channels a deployment must carry to be
+#'   imported. `NULL` (default) accepts any record with usable timestamps and at least one recognised
+#'   channel.
+#' @param metadata Data frame of deployment-level metadata identifying the deployment and its animal
+#'   and tag, and optionally carrying deployment times, locations and other fields recognised by
+#'   [metadataColumns()]. An object returned by [checkDeploymentMetadata()] is recommended.
+#' @param columns Metadata-column mapping built with [metadataColumns()] (default `metadataColumns()`).
+#'   Needed only where your metadata column names differ from the package defaults.
+#' @param return.data Whether to return the imported datasets in memory (default `TRUE`). When `FALSE`,
+#'   the function returns the paths of the `.rds` files written to `output.dir`, which feed directly
+#'   into the next step's `data` argument; this requires `output.dir` to be specified.
+#' @param output.dir An existing directory in which to write one `.rds` file per successfully imported
+#'   deployment. Supplying a directory is what triggers saving; `NULL` (default) writes nothing.
+#' @param output.suffix Optional string appended to each output file name, before `.rds`, to
+#'   distinguish one import run from another. Only used when `output.dir` is specified.
+#' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
+#'   `"gzip"`, `"bzip2"` or `"xz"`. See [base::saveRDS()].
+#' @param data.table.threads Number of threads available to \pkg{data.table}, or `NULL` (default) to
+#'   leave the current setting unchanged. More threads may speed up large imports at the cost of memory.
+#' @param import.calibration Whether calibration information supplied with the source export is retained
+#'   as provenance (default `TRUE`). These values are recorded, never re-applied. See Details.
+#' @param alignment Control object from [alignmentControl()] specifying how the archival tag clock is
+#'   aligned with paired Wildlife Computers data. Use `alignmentControl(method = "none")` to retain the
+#'   original clocks.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
+#'   (default), which reports deployment-level diagnostics.
 #'
 #' @details
-#' ## Formats and automatic detection
-#' The built-in readers cover the CATS/CEiiA multi-sensor CSV export (`format = "cats"`) and Little
-#' Leonardo archival loggers (`format = "little_leonardo"`, an `_A.txt` acceleration file with an
-#' optional `_DT.txt` depth and temperature file). Little Leonardo files carry no clock, so they
-#' additionally need a `data_start` entry in the metadata; see [metadataColumns()].
+#' ## Data import and standardisation
 #'
-#' `format = "auto"` inspects each deployment's files and routes it to the matching reader. It does
-#' not guess: a folder that matches two readers, or none, is reported rather than assumed, so a
-#' misidentified deployment fails visibly instead of being read as the wrong make. Detection
-#' recognises stock exports only - a custom export that needs `import.mapping` is reported as
-#' unidentifiable and should be named explicitly.
+#' Each deployment folder is read with the reader corresponding to `format`. Two formats are supported:
+#' the CATS/CEiiA multi-sensor CSV export (`"cats"`), and Little Leonardo archival loggers
+#' (`"little_leonardo"`, an `_A.txt` acceleration file with an optional `_DT.txt` depth and temperature
+#' file). Little Leonardo loggers record no clock, so they additionally require a `data_start` entry in
+#' the metadata giving the recording start; see [metadataColumns()].
 #'
-#' To import several tag makes in a single call, either use `"auto"` or add a `tag_format` column to
-#' the metadata. A per-deployment value overrides `format`, and the two combine: `"auto"` with a
+#' With `format = "auto"` the reader is selected separately for each deployment from its own files.
+#' Detection does not guess: a folder matching two readers, or none, is reported rather than assumed, so
+#' a misidentified deployment fails visibly instead of being read as the wrong make. Only stock exports
+#' are recognised; an export needing `import.mapping` is reported as unidentifiable and should be named
+#' explicitly.
+#'
+#' To import several tag makes in one call, either use `"auto"` or add a `tag_format` column to the
+#' metadata. A per-deployment value takes precedence over `format`, and the two combine: `"auto"` with a
 #' `tag_format` column naming only some deployments honours those and detects the rest.
 #'
-#' ## Units and axis frame
-#' Sensor channels are converted to acceleration in g, angular velocity in rad/s and magnetic field
-#' in \eqn{\mu}T, preserving the original sampling rate. Data are imported in the tag's own axis
-#' frame; rotating them into an animal-centred frame is a separate, explicit step, via
-#' [applyAxisMapping()] and optionally checked against the data with [checkTagMapping()].
+#' ## Sensor channels and units
+#'
+#' Recognised sensor channels are mapped to a common \pkg{nautilus} vocabulary:
+#'
+#' \describe{
+#'   \item{`datetime`}{Timestamp of each observation, as `POSIXct`.}
+#'   \item{`ax`, `ay`, `az`}{Tri-axial acceleration, in g.}
+#'   \item{`gx`, `gy`, `gz`}{Tri-axial angular velocity, in rad/s, where a gyroscope is present.}
+#'   \item{`mx`, `my`, `mz`}{Tri-axial magnetic field, in microtesla, where a magnetometer is present.}
+#'   \item{`depth`}{Depth, in metres.}
+#'   \item{`temp`}{Water temperature, in degrees Celsius, where a suitable channel is available.}
+#'   \item{`paddle_freq`}{Paddle-wheel rotation frequency, in Hz, where the tag recorded one.}
+#'   \item{`paddle_speed`}{Paddle-wheel swimming speed, in m/s, where the logger recorded a speed
+#'     directly rather than a rotation rate.}
+#' }
+#'
+#' Format-specific column names and units are converted to this representation, and the original
+#' sampling rate is preserved. Unrecognised or explicitly excluded channels are not imported.
+#'
+#' Data are imported in the tag's own axis frame. Rotating them into an animal-centred frame is a
+#' separate, explicit step, performed by [applyAxisMapping()] and optionally checked against the data
+#' with [checkTagMapping()]. Orientation metrics computed before that step will not describe the animal.
+#'
+#' ## Metadata
+#'
+#' The `metadata` argument supplies deployment-level information associated with each imported dataset:
+#' the deployment identifier, tag information, deployment and pop-up times and locations, and any other
+#' fields defined through [metadataColumns()].
+#'
+#' Metadata are preferably supplied as an object returned by [checkDeploymentMetadata()], which carries
+#' the metadata-column schema and a quality-control verdict. A plain data frame is also accepted and is
+#' checked during import.
+#'
+#' Metadata fields are stored separately from the sensor time series and are carried through subsequent
+#' processing stages.
+#'
+#' ## Time handling
+#'
+#' Timestamps are stored as `POSIXct` values using the time zone given by `timezone`. That value labels
+#' the recorded clock time; it does not shift observations between zones.
+#'
+#' The time zone is therefore expected to match the one the tag used while recording. An incorrect zone
+#' places the record at the wrong point in the solar day and will bias any analysis involving time of
+#' day, including diel activity and movement patterns.
+#'
+#' Where the source data provide a recording UTC offset, it is checked against `timezone` and retained
+#' as provenance.
+#'
+#' ## Custom column mappings
+#'
+#' Non-standard exports can be imported through `import.mapping`, a data frame with one row per channel
+#' to import and three columns:
+#'
+#' \describe{
+#'   \item{`colname`}{The column name in the source file.}
+#'   \item{`sensor`}{The \pkg{nautilus} channel it supplies: one of `"datetime"`, `"date"`, `"time"`,
+#'     `"ax"`, `"ay"`, `"az"`, `"gx"`, `"gy"`, `"gz"`, `"mx"`, `"my"`, `"mz"`, `"depth"`, `"temp"`,
+#'     `"paddle_freq"` or `"paddle_speed"`.}
+#'   \item{`units`}{The units the source column is in: one of `"UTC"`, `"m/s2"`, `"g"`, `"mrad/s"`,
+#'     `"rad/s"`, `"deg/s"`, `"uT"`, `"C"`, `"m"`, `"Hz"`, `"m/s"`, or `""` for a dimensionless
+#'     channel.}
+#' }
+#'
+#' A user-supplied mapping takes precedence over the built-in ones, so an export the readers do not
+#' recognise can be imported without modifying the package's defaults.
+#'
+#' ## Required sensors
+#'
+#' By default a deployment is imported when it carries usable timestamps and at least one recognised
+#' sensor channel, so accelerometer-only and depth-and-temperature-only tags enter the common workflow
+#' normally.
+#'
+#' `required.sensors` imposes stricter requirements at import. Naming the channels an analysis cannot
+#' proceed without, for example `c("depth", "temp")`, causes deployments lacking either to be rejected
+#' at import rather than partway through the pipeline.
 #'
 #' ## Temperature channels
-#' Only water-temperature channels are mapped to `temp`. Tag-electronics channels - the magnetometer
-#' chip and the IMU board - report the temperature inside the housing rather than the animal's
-#' environment, and are never mapped automatically; a deployment whose only temperature channel is
-#' one of these is imported without `temp`, with a warning. Mapping such a channel explicitly through
-#' `import.mapping` overrides this, and still warns.
+#'
+#' Only water-temperature channels are mapped to `temp`. Tag-electronics channels, such as those on the
+#' magnetometer chip or the IMU board, report the temperature inside the housing rather than the
+#' animal's environment, and are never mapped automatically. A deployment whose only temperature channel
+#' is one of these is imported without `temp`, and the discard is reported.
+#'
+#' Mapping such a channel explicitly through `import.mapping` overrides this, and is still flagged in
+#' the import diagnostics.
+#'
+#' ## Calibration provenance
+#'
+#' With `import.calibration = TRUE`, calibration information accompanying the export is recorded as
+#' provenance where available. These constants document processing already performed by the tag
+#' firmware and are not re-applied during import. The one field that is acted on is the recording UTC
+#' offset, which is checked for consistency with `timezone`.
 #'
 #' ## Paired Wildlife Computers tags
-#' Where a deployment also carries a Wildlife Computers tag (MiniPAT, MK10, SPOT), its locations and
-#' wet/dry record are read and attached. The two tags keep independent clocks, so their timelines are
-#' aligned before the data are combined; see `alignment` and [alignmentControl()].
 #'
-#' ## Large deployments
-#' Deployments are read one at a time, so memory use does not grow with fleet size. For records of
-#' tens of millions of rows, writing to disk with `output.dir` and `return.data = FALSE` keeps the
-#' whole fleet out of memory, and `compress = FALSE` removes the compression step, which can
-#' otherwise dominate the import.
+#' Where a deployment also carries a Wildlife Computers tag (MiniPAT, MK10, SPOT), its position records
+#' and wet/dry events are read and attached to the deployment metadata as ancillary streams. Video
+#' coverage is not read here; see [getVideoMetadata()].
 #'
-#' ## How problems are reported
-#' Deployments with no readable sensor file, positions outside the recording period, time-zone
-#' disagreements and discarded channels are reported in the console while the import runs, and
-#' collected in the closing summary. When `verbose = 0` the same issues are raised as R warnings
-#' instead, so that scripted callers can capture them.
+#' The two tags keep independent clocks, so `alignment` controls whether they are aligned before the
+#' records are combined. The alignment metadata are retained, so the offset applied, or the decision not
+#' to align, remains traceable. Pass `alignmentControl(method = "none")` to retain the original clocks.
 #'
-#' @param data.folders Paths to the deployment folders to import, one per animal. Pass several to
-#'   import a whole fleet in one call.
-#' @param sensor.subdirectory Name of the subdirectory inside each deployment folder that holds the
-#'   sensor files (default `"CMD"`). Change it to match your own folder layout.
-#' @param format Which raw format to read: `"cats"` (default), `"little_leonardo"`, or `"auto"` to
-#'   identify each deployment from its own files. Use `"auto"` for an archive containing more than
-#'   one tag make; see Details.
-#' @param wc.subdirectory Name of the subdirectory holding paired Wildlife Computers data, or `NULL`
-#'   (default) to locate it automatically. Set it only if detection picks the wrong folder.
-#' @param timezone The time zone the tag's clock was set to (default `"UTC"`, which matches standard
-#'   CATS exports). Timestamps are labelled with this zone, never shifted by it. Set it only if the
-#'   tag was configured to log local time: an incorrect zone places the record at the wrong point in
-#'   the solar day and will bias any analysis of diel behaviour.
-#' @param import.mapping A data frame describing how the columns of a non-standard export map onto
-#'   sensor channels and units, or `NULL` (default) to use the built-in mappings. Supply it when an
-#'   export the readers do not recognise fails to import. It needs three columns - `colname`,
-#'   `sensor` and `units` - one row per channel to import.
+#' ## Output and large datasets
 #'
-#'   `sensor` accepts `"datetime"`, `"date"`, `"time"`, `"ax"`, `"ay"`, `"az"`, `"gx"`, `"gy"`,
-#'   `"gz"`, `"mx"`, `"my"`, `"mz"`, `"depth"`, `"temp"`, `"paddle_freq"` and `"paddle_speed"`;
-#'   `units` accepts `"UTC"`, `"m/s2"`, `"g"`, `"mrad/s"`, `"rad/s"`, `"deg/s"`, `"uT"`, `"C"`,
-#'   `"m"`, `"Hz"`, `"m/s"`, or `""` for a dimensionless channel.
-#' @param required.sensors The sensor channels a deployment must carry to be imported. `NULL`
-#'   (default) accepts any record with usable timestamps and at least one recognised channel, so
-#'   accelerometer-only and depth-and-temperature-only tags import normally. Name the channels your
-#'   analysis cannot proceed without - for example `c("depth", "temp")` - to have incomplete
-#'   deployments rejected at import rather than partway through the pipeline.
-#' @param metadata The deployment metadata: which animal, which tag, and when and where it was
-#'   deployed. Ideally the object returned by [checkDeploymentMetadata()], which carries its own
-#'   column schema and a quality verdict. A plain data frame is accepted and checked as it is read.
-#' @param columns How your metadata columns map onto the fields nautilus expects, built with
-#'   [metadataColumns()]. Needed only where your column names differ from the defaults.
-#' @param return.data Return the imported data in memory (default `TRUE`), or, when `FALSE`, the
-#'   paths of the files written. The paths feed directly into the next step, so a fleet too large to
-#'   hold in memory can be processed a deployment at a time. Requires `output.dir`.
-#' @param output.dir Directory in which to write one `.rds` file per deployment. Supplying a
-#'   directory is what triggers saving; `NULL` (default) writes nothing. It must already exist.
-#' @param output.suffix Optional text added to each file name before `.rds`, to distinguish one
-#'   processing run from another.
-#' @param compress Compression for the saved files: `TRUE` (default, gzip), `FALSE`, or one of
-#'   `"gzip"`, `"bzip2"`, `"xz"`. Uncompressed files are markedly faster to write and roughly 1.5-2
-#'   times larger; the contents are identical and `readRDS()` reads either.
-#' @param data.table.threads Number of threads data.table may use, or `NULL` (default) to leave its
-#'   current setting unchanged. More threads speed up large imports at the cost of memory.
-#' @param import.calibration Whether to record the calibration constants the tag firmware applied,
-#'   where a sidecar file accompanies the export (default `TRUE`). These are kept as an audit record
-#'   and never re-applied. The one field that is used is the recording UTC offset, which is checked
-#'   against `timezone`.
-#' @param alignment How to align the clocks of the archival tag and a paired Wildlife Computers tag,
-#'   built with [alignmentControl()]. Pass `alignmentControl(method = "none")` to leave both as
-#'   recorded.
-#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default).
+#' Deployments are read one at a time, so memory use does not grow with the size of the collection.
+#' Supplying `output.dir` writes one `.rds` file per successfully imported deployment; adding
+#' `return.data = FALSE` returns those paths instead of the data, keeping the whole collection out of
+#' memory. The returned paths can be passed directly to subsequent \pkg{nautilus} functions.
 #'
-#' @return A named list of `nautilus_tag` objects, one per deployment, each carrying its sensor data,
-#'   deployment metadata and a processing record. When `return.data = FALSE`, a character vector of
-#'   the file paths written instead.
+#' For records of tens of millions of rows, `compress = FALSE` removes the compression step, which can
+#' otherwise dominate the import. The files are roughly 1.5 to 2 times larger; their contents are
+#' identical, and `readRDS()` reads either.
 #'
-#' @seealso [buildTagData()] for data already in R; [checkDeploymentMetadata()] and
-#'   [metadataColumns()] for preparing the metadata; [applyAxisMapping()] for the axis frame;
-#'   [processTagData()] for the next step.
+#' ## Processing history
+#'
+#' Each imported dataset records an `importTagData` processing step giving the source directory, the
+#' columns imported and the time zone applied. This provenance travels with the deployment metadata and
+#' can be used to trace the origin and processing history of the dataset.
+#'
+#' ## Quality control and skipped deployments
+#'
+#' Structural and metadata checks run before and during import. A deployment may be skipped or rejected
+#' where sensor files are missing, the source data cannot be read, required sensors are unavailable,
+#' positions fall outside the recording period, or other import requirements are not met.
+#'
+#' Diagnostics are reported as the import runs and collected in the closing summary. With `verbose = 0`
+#' the same issues are raised as R warnings instead of console messages, so that scripted callers can
+#' capture them.
+#'
+#' @return When `return.data = TRUE`, a named list of `nautilus_tag` objects, one per successfully
+#'   imported deployment, each carrying its standardised sensor data, deployment metadata, sensor
+#'   provenance and processing history. When `return.data = FALSE`, a character vector of the paths to
+#'   the `.rds` files written to `output.dir`.
+#'
+#' @seealso [checkDeploymentMetadata()] for validating deployment metadata; [metadataColumns()] for the
+#'   metadata-column schema; [buildTagData()] for constructing `nautilus_tag` objects from data already
+#'   in R; [filterDeploymentData()] for trimming each record to the deployment period;
+#'   [applyAxisMapping()] for mapping sensor axes to the animal's body frame; [processTagData()] for
+#'   deriving movement and orientation metrics.
 #'
 #' @examples
 #' \dontrun{
-#' # Check the deployment metadata, then import against it
+#' # Validate the deployment metadata before importing against it.
 #' meta <- checkDeploymentMetadata(raw_metadata)
-#' tags <- importTagData(
-#'   data.folders = list.dirs("./tags", recursive = FALSE),
-#'   metadata     = meta,
-#'   timezone     = "UTC")
 #'
-#' # A fleet too large to hold in memory: write to disk and pass the paths on
-#' files <- importTagData(
-#'   data.folders = list.dirs("./tags", recursive = FALSE),
-#'   metadata     = meta,
-#'   output.dir   = "./imported",
-#'   return.data  = FALSE)
+#' # Import a collection of CATS deployments.
+#' tags <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
+#'                       metadata = meta,
+#'                       timezone = "UTC")
+#'
+#' # An archive holding more than one tag make: identify each deployment from its own files.
+#' tags <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
+#'                       metadata = meta,
+#'                       format = "auto")
+#'
+#' # A collection too large to hold in memory: write each deployment to disk and pass the paths on.
+#' files <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
+#'                        metadata = meta,
+#'                        output.dir = "./imported",
+#'                        return.data = FALSE)
 #' }
 #' @export
-
-
 importTagData <- function(data.folders,
                           sensor.subdirectory = "CMD",
                           format = "cats",
