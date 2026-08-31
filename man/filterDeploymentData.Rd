@@ -2,7 +2,7 @@
 % Please edit documentation in R/filterDeploymentData.R
 \name{filterDeploymentData}
 \alias{filterDeploymentData}
-\title{Trim a record to the period the tag was on the animal}
+\title{Identify and extract deployment periods from archival tag data}
 \usage{
 filterDeploymentData(
   data,
@@ -29,185 +29,226 @@ filterDeploymentData(
 )
 }
 \arguments{
-\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
-\code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-processed without ever holding it all.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple individuals
+identified by \code{id.col}, or a character vector of \code{.rds} file paths. When file paths are supplied,
+deployments are processed sequentially, allowing large collections to be filtered without loading
+them all into memory.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col}{Column identifying individuals (default \code{"ID"}).}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+\item{datetime.col}{Column containing timestamps (default \code{"datetime"}). Must be of class \code{POSIXct}.}
 
-\item{depth.col}{Which column holds depth (default \code{"depth"}). This is the channel detection reads,
-so it must be present unless you supply the deployment times yourself.}
+\item{depth.col}{Column containing depth measurements (default \code{"depth"}). Required for automatic
+detection, and for estimating a missing boundary when custom deployment times are only partially
+specified.}
 
-\item{custom.deployment.times}{An optional \code{data.frame} or \code{data.table} with three columns: the ID column
-(named as given by \code{id.col}, default "ID"), \code{start}, and \code{end}.
-This allows users to manually specify deployment periods for each individual, overriding or supplementing the depth-based detection.
-\code{start} and \code{end} must be in "POSIXct" format. Users can provide:
-\itemize{
-\item Both \code{start} and \code{end} times to fully override automatic detection
-\item Only \code{start} time (with \code{end} as NA) - the end time will be estimated using depth analysis
-\item Only \code{end} time (with \code{start} as NA) - the start time will be estimated using depth analysis
-}
-When partial times are provided, the missing boundary is inferred using the same depth-based changepoint analysis
-as the automated approach. If provided, \code{depth.threshold}, \code{variance.threshold}, and \code{max.changepoints}
-are ignored for fully specified periods but used for estimating missing boundaries in partial specifications.
-Default is \code{NULL}.}
+\item{custom.deployment.times}{Optional data frame or data table of known deployment boundaries,
+containing the column named by \code{id.col} together with \code{start} and \code{end} columns of class \code{POSIXct}.
+Either boundary may be given as \code{NA} and estimated automatically. Each individual may have at most
+one entry. Default \code{NULL}.}
 
-\item{depth.threshold}{A numeric value specifying the minimum mean depth to classify a segment as part of
-the deployment period (default is 3.5). This parameter is ignored for fully specified custom deployment times
-but used when estimating missing boundaries in partial custom specifications.}
+\item{depth.threshold}{Minimum mean depth, in metres, for a segment to be classified as part of the
+deployment period (default \code{3.5}). Ignored where both custom boundaries are supplied.}
 
-\item{variance.threshold}{A numeric value specifying the minimum variance in depth measurements to classify
-a segment as part of the deployment period. Segments with variance below this value are considered spurious (default is 6).
-This parameter is ignored for fully specified custom deployment times but used when estimating missing boundaries
-in partial custom specifications.}
+\item{variance.threshold}{Minimum depth variance for a segment to be classified as part of the
+deployment period; less variable segments are treated as spurious (default \code{6}). Ignored where both
+custom boundaries are supplied.}
 
-\item{max.changepoints}{An integer specifying the maximum number of changepoints to detect (default is 6).
-This parameter is passed to the \code{\link[changepoint]{cpt.meanvar}} function. This parameter is ignored
-for fully specified custom deployment times but used when estimating missing boundaries in partial custom specifications.}
+\item{max.changepoints}{Maximum number of change points considered during automatic detection
+(default \code{6}). Passed to \code{\link[changepoint:cpt.meanvar]{changepoint::cpt.meanvar()}}. Ignored where both custom boundaries are
+supplied.}
 
-\item{temp.col}{A string giving the temperature column used to corroborate the depth-based detection
-(default "temp"). If the column is absent, temperature corroboration is silently skipped.}
+\item{temp.col}{Temperature column used to corroborate automatic detection (default \code{"temp"}).
+Corroboration is skipped without error where the column is absent.}
 
-\item{use.temperature}{Logical. If \code{TRUE} (default), temperature is used as a \strong{secondary, strictly
-additive} signal in the fully-automated path: it can rescue a deployment that stayed too shallow for
-the depth criterion to catch (e.g. prolonged surface feeding) and extend the window across shallow
-in-water edges, but it can never shrink the depth-based result. It is gated on a clear, sustained
-difference between the out-of-water (boat/air) and in-water temperature regimes, so a flat or
-uninformative temperature trace leaves the depth result unchanged. Depth remains the primary signal;
-the accelerometer/gyroscope/magnetometer are intentionally \strong{not} used, as the pre-attachment vessel
-and diver phases generate high motion that would confound a motion-based detector. Ignored for custom
-deployment times.}
+\item{use.temperature}{Whether temperature may be used as a secondary signal during fully automatic
+detection (default \code{TRUE}). Temperature can extend or rescue a depth-based window but never shorten
+one. Ignored where custom boundaries are supplied.}
 
-\item{min.deployment.hours}{Numeric. Minimum duration (hours) for an automatically detected
-deployment window; shorter windows (e.g. a transient depth spike or a brief diver test-dive) are
-discarded (default 0.25). A window rejected this way is reported as \verb{deployment too short}, naming
-the window it found and the floor it failed, so it is distinguishable from a record in which nothing
-was detected at all - the two mean different things and call for different responses. It also still
-gets a diagnostic panel, badged \code{DISCARDED} with the rejected window drawn in red, because a
-duration on its own cannot separate a real short dive from a sensor spike and that judgement is the
-reason the record is worth seeing. The record is drawn for review only: it is never trimmed, saved
-or returned. Genuinely short deployments do occur: raise or lower this to suit the cohort, or pass
-the known window in \code{custom.deployment.times}, to which the floor does not apply.}
+\item{min.deployment.hours}{Minimum duration, in hours, for an automatically detected deployment to
+be retained (default \code{0.25}, i.e. 15 minutes). Shorter windows are excluded. The criterion applies
+only to fully automatic detection; see Details.}
 
-\item{plot}{A logical value indicating whether the diagnostic plots should be drawn to the
-active graphics device. These plots generate diagnostic visuals showing depth and additional
-metrics, assisting users in reviewing the extracted deployment periods.
-Note: If set to \code{TRUE}, the code can take longer to run due to the delay in plotting extensive data series to the screen.
-Default is \code{FALSE}.}
+\item{plot}{Whether to draw diagnostic plots to the active graphics device (default \code{FALSE}).
+Plotting long, high-resolution series to screen is slow; for a batch, prefer \code{plot.file}.}
 
-\item{plot.file}{Character. Path to a single multi-page PDF in which to write the diagnostic
-panels (one page per individual). The parent directory must already exist (a missing directory is
-an error, not silently created). Must end in \code{.pdf}. If \code{NULL} (default), no file is written.
-Independent of \code{plot}: set \code{plot.file} to save without displaying, or set both to do both.}
+\item{plot.file}{Path to a multi-page PDF in which diagnostic plots are saved, one page per
+individual, or \code{NULL} (default). The parent directory must already exist, and the path must end in
+\code{.pdf}. Independent of \code{plot}: set either, or both.}
 
-\item{exclusions.file}{Optional path to an \code{.rds} file recording every deployment that left without
-data: its identifier, the rule that set it aside, and - for one detected and then rejected as too
-short - the window that was detected. The table is always built and is always attached to the
-result as \code{attr(x, "nautilus.exclusions")}; this argument only decides whether it is also written.
-Write it when the next step reads \code{.rds} files from \code{output.dir} rather than the returned objects,
-because an attribute does not survive that hand-off, and pass the file to \code{\link[=summarizeTagData]{summarizeTagData()}} so
-an excluded deployment reports its window instead of an empty row. Do not place it inside
-\code{output.dir}, which the next step globs for tag data. Default \code{NULL}.}
+\item{exclusions.file}{Path to an \code{.rds} file in which excluded deployments are recorded, or \code{NULL}
+(default). The exclusions table is always attached to the result as the \code{"nautilus.exclusions"}
+attribute; this argument only decides whether it is also written to disk. Write it when the next
+step reads \code{.rds} files from \code{output.dir} rather than the returned objects, since an attribute does
+not survive that hand-off, and pass the file to \code{\link[=summarizeTagData]{summarizeTagData()}} so that an excluded deployment
+reports its window rather than an empty row. Do not place it inside \code{output.dir}.}
 
-\item{plot.metrics}{An optional character vector of column names indicating additional metrics
-(e.g., acceleration or temperature) to include in the plot. These metrics are plotted
-alongside the depth data to aid in visually reviewing the deployment period assignments.
-Required only if \code{plot} is \code{TRUE} or \code{plot.file} is set. If NULL (default) and plots are requested,
-defaults to \code{c("temp", "ax")}. Must be length 2 if provided. These are cosmetic, not required for
-detection: a metric absent from a dataset (e.g. \code{temp} when only an electronics temperature sensor
-was available) is simply omitted from that individual's panel rather than causing an error.}
+\item{plot.metrics}{Optional character vector of length two naming additional columns to display
+alongside depth in the diagnostic plots. Defaults to \code{c("temp", "ax")} where plots are requested.
+These are used for visualisation only and are not required for detection; a column absent from a
+given dataset is omitted from that panel rather than raising an error.}
 
-\item{plot.metrics.labels}{An optional character vector of axis labels for the two \code{plot.metrics}.
-If NULL (default), labels are generated automatically as "Name (unit)" for recognised nautilus
-channels (for example a temperature channel labelled in degrees Celsius, or \code{"Acc X (g)"} and
-\code{"Depth (m)"}), falling back to the raw column
-name for any unrecognised or user-derived column. Provide this only to override the automatic
-labels (e.g. for bespoke columns); must be length 2 if given. Ignored unless plots are generated.}
+\item{plot.metrics.labels}{Optional character vector of length two giving axis labels for
+\code{plot.metrics}. If \code{NULL} (default), labels are generated automatically for recognised
+\pkg{nautilus} sensor channels, falling back to the column name. Ignored unless plots are drawn.}
 
-\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{return.data}{Whether to return the filtered datasets in memory (default \code{TRUE}). When \code{FALSE},
+the function returns the paths of the \code{.rds} files written to \code{output.dir}, which feed directly
+into the next step's \code{data} argument; this requires \code{output.dir} to be specified.}
 
-\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
-a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+\item{output.dir}{An existing directory in which to save one filtered \verb{<id>.rds} file per deployment.
+Supplying a directory is what triggers saving; \code{NULL} (default) writes nothing.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{output.suffix}{Optional string appended to each saved file name, before \code{.rds}, to label a
+processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is specified.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
-(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+\item{compress}{Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
+\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is specified. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet" (warnings and errors only), \code{TRUE}/\code{1}/"normal"
-(header, one line per individual, final summary), or \code{2}/"detailed" (the default; adds low-level
-per-step diagnostics). Defaults to \code{"detailed"}.}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header, one line per
+individual and a final summary), or \code{2}/\code{"detailed"} (default), which adds per-deployment
+diagnostics.}
 }
 \value{
-When \code{return.data = TRUE}, a named list of filtered \code{data.table}s (one per successfully filtered
-individual, keyed by ID). When \code{return.data = FALSE}, the written \code{.rds} file paths as a character vector,
-returned \strong{invisibly} (so a top-level call does not print them) and ready to chain into the next step's
-\code{data} argument. Diagnostic plots are emitted as a side effect
-(drawn to the active device when \code{plot = TRUE} and/or written to the multi-page PDF \code{plot.file}), not
-returned. Data is written to disk whenever \code{output.dir} is set, regardless of the return value.
+When \code{return.data = TRUE}, a named list of filtered \code{data.table} objects, one per
+successfully processed deployment and keyed by identifier. When \code{return.data = FALSE}, a character
+vector of the paths to the filtered \code{.rds} files, returned invisibly and ready to pass to the next
+step's \code{data} argument.
+
+Either way, excluded deployments are recorded in the \code{"nautilus.exclusions"} attribute of the
+result. Files are written whenever \code{output.dir} is specified, regardless of the value of
+\code{return.data}. Diagnostic plots are produced as a side effect and are not part of the return value.
 }
 \description{
-A tag records from the moment it is switched on. That usually means hours on a boat deck before
-deployment and, after release, a period drifting at the surface or sitting in a recovery bag before
-the data are downloaded. Those stretches look like data but describe no animal, and left in place they
-distort everything computed from the record: surface time, activity budgets, temperature ranges, and
-the baseline any dive detector calibrates against.
+Identifies the period during which an archival tag was deployed on an animal and trims each record
+to that interval. Deployment periods can be identified automatically from changes in the depth
+record, or specified manually through \code{custom.deployment.times}.
 
-\code{filterDeploymentData()} trims each record to the period the tag was actually on the animal. It can
-find that period from the depth trace, which changes character sharply when a tag enters the water and
-again when it leaves, or you can supply the times yourself where they are known from the field notes.
+Automatic detection uses change-point analysis of depth measurements to identify transitions between
+the pre-deployment, on-animal and post-deployment periods. Temperature can optionally be used as a
+secondary signal where depth alone is insufficient. Records that do not meet the minimum deployment
+duration are excluded.
 
-Run it early - before the record is placed on a regular time grid - so that no later step spends
-effort on data that will be discarded.
+The function is intended to be applied early in the \pkg{nautilus} workflow, before temporal
+regularisation and subsequent analyses, so that measurements recorded outside the deployment are
+removed before downstream processing. Left in place, they bias any quantity computed from the
+record, including surface time, activity budgets, temperature ranges and the baseline against which
+dives are detected.
 }
 \details{
-\subsection{Finding the deployment period from depth}{
+\subsection{Automatic deployment detection}{
 
-The on-animal period differs from the periods either side of it in both its mean depth and its
-variability: a tag on deck reads a near-constant value, while a tag on a diving animal does not.
-Detection uses binary segmentation to locate change points in mean and variance together, and takes
-the interval between the pre- and post-deployment phases. The depth and variance thresholds that
-decide what counts as a change are yours to set, since they depend on how the animal behaves and on
-how noisy the sensor is at the surface.
+The deployment period is identified from changes in the statistical properties of the depth record.
+Depth measured before deployment and after recovery is typically near-constant, whereas depth
+measured while the tag is on a diving animal varies considerably. Detection therefore looks for
+changes in mean and variance together, using binary segmentation via \code{\link[changepoint:cpt.meanvar]{changepoint::cpt.meanvar()}},
+and retains the interval between the pre- and post-deployment phases.
 
-Records sampled faster than 1 Hz are averaged to one value per second for detection only. Change
-points in a deployment-scale signal are not resolved any better at 20 Hz, and the reduction keeps the
-search tractable on multi-day records. The returned data keep their original resolution.
+Candidate segments are evaluated against \code{depth.threshold} and \code{variance.threshold}. Appropriate
+values depend on the animal's behaviour and on how noisy the depth sensor is at the surface, and are
+left to the user to set.
+
+For records sampled above 1 Hz, depth is averaged to 1 Hz for change-point detection only: a
+deployment-scale transition is not resolved any better at higher rates, and the reduction keeps the
+search tractable on multi-day records. The returned data retain their original resolution and are
+trimmed using the detected boundaries.
 }
 
-\subsection{When to supply the times instead}{
+\subsection{Temperature corroboration}{
 
-Automatic detection assumes the depth trace changes character at both ends. It will struggle where a
-tag was attached to an animal already at depth, where the animal remained at the surface throughout,
-or where the tag was recovered at sea and continued recording in water. Supply
-\code{custom.deployment.times} for those deployments; you can mix the two, giving explicit times for the
-awkward records and letting the rest be detected.
+Where \code{use.temperature = TRUE} and a suitable temperature column is available, temperature acts as a
+secondary signal in the fully automatic procedure. It can extend or rescue a depth-based window where
+a sufficiently clear and sustained difference exists between the out-of-water and in-water
+temperature regimes, which can recover a deployment that remained too shallow for the depth criterion
+to detect. Temperature never overrides or shortens a window identified from depth, and a flat or
+uninformative temperature record leaves the depth result unchanged.
+
+Accelerometer, gyroscope and magnetometer measurements are deliberately not used for detection.
+Handling, attachment and recovery generate substantial motion that would confound a motion-based
+detector.
 }
 
-\subsection{Reviewing the result}{
+\subsection{Custom deployment times}{
 
-The diagnostic plots show each record with its detected boundaries marked, which is the practical way
-to confirm a boundary before committing to it. Additional metrics can be overlaid to help judge
-whether a boundary falls where the animal's behaviour actually begins.
+Known boundaries can be supplied through \code{custom.deployment.times}, matched to individuals using
+\code{id.col}. This is recommended where the depth record contains no clear transition at one or both
+ends: where the tag was attached to an animal already submerged, where the animal remained near the
+surface throughout, or where the tag was recovered in the water and kept recording.
+
+Both boundaries may be specified, or either one individually. Where only one is supplied, the other
+is estimated using the same depth-based procedure as automatic detection, and \code{depth.threshold},
+\code{variance.threshold} and \code{max.changepoints} apply to that estimate. Where both are supplied,
+detection is not performed and those parameters are ignored. The two approaches can be mixed within a
+single call, giving explicit times for awkward records and letting the remainder be detected.
+}
+
+\subsection{Minimum deployment duration}{
+
+Detected deployment periods shorter than \code{min.deployment.hours} are excluded, which removes transient
+depth excursions, sensor spikes and brief test dives that would otherwise be identified as
+deployments.
+
+\strong{The criterion applies only to fully automatic detection.} It is not applied where either boundary
+was supplied through \code{custom.deployment.times}, including the partially specified case in which one
+boundary was estimated from the depth record. A supplied boundary is taken as given.
+
+Deployments rejected as too short are recorded separately from records in which no deployment period
+could be identified at all: the two mean different things and call for different responses. A
+rejected record is still drawn for diagnostic review, with the rejected window marked, because
+duration alone cannot distinguish a genuinely short deployment from a sensor artefact. It is never
+trimmed, returned or saved.
+}
+
+\subsection{Diagnostic plots}{
+
+Diagnostic plots support visual assessment of the detected boundaries, which is the practical way to
+confirm a boundary before committing to it. Each panel shows the depth record together with up to two
+further variables selected through \code{plot.metrics}, and marks the detected or custom boundaries
+alongside the relevant deployment metadata.
+}
+
+\subsection{Excluded deployments}{
+
+Every deployment that leaves without data is recorded in an exclusions table giving its identifier,
+the rule that set it aside and, where one was found and then rejected as too short, the window that
+was detected. The table is attached to the result as the \code{"nautilus.exclusions"} attribute, and is
+additionally written to disk where \code{exclusions.file} is supplied.
+}
+
+\subsection{Processing history}{
+
+For each successfully filtered deployment, the returned data are restricted to the interval between
+the selected start and end times. Those boundaries are recorded in the deployment metadata and
+appended to the processing history, together with whether they were detected or supplied.
 }
 }
 \examples{
 \dontrun{
 imported <- importTagData(folders, metadata = meta)
-# Trim each record to the on-animal window detected from the depth trace:
+
+# Identify and extract deployment periods automatically, reviewing the result.
 deployed <- filterDeploymentData(imported,
-                                 depth.threshold      = 3.5,
                                  min.deployment.hours = 0.25,
-                                 plot                 = TRUE,
-                                 plot.metrics         = c("temp", "az"))
+                                 plot.file = "./qc/deployment_windows.pdf")
+
+# Supply known boundaries for individuals whose depth record has no clear transition.
+deployment_times <- data.frame(
+  ID    = c("TAG_01", "TAG_02"),
+  start = as.POSIXct(c("2023-06-01 10:00:00", "2023-06-02 09:30:00"), tz = "UTC"),
+  end   = as.POSIXct(c("2023-06-02 14:00:00", "2023-06-03 16:00:00"), tz = "UTC"))
+
+deployed <- filterDeploymentData(imported, custom.deployment.times = deployment_times)
+
+# A batch too large for memory: read paths, write filtered files, keep the exclusions table.
+filterDeploymentData(list.files("./imported", full.names = TRUE),
+                     exclusions.file = "./qc/exclusions.rds",
+                     return.data = FALSE, output.dir = "./deployed")
 }
 }
 \seealso{
-\link{importTagData}, \link{processTagData}, \code{\link[changepoint]{cpt.meanvar}}.
+\code{\link[=importTagData]{importTagData()}} for importing and standardising archival tag data;
+\code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}} for placing the trimmed record on a regular time grid;
+\code{\link[=processTagData]{processTagData()}} for the movement and orientation processing that follows;
+\code{\link[=summarizeTagData]{summarizeTagData()}} for a per-deployment overview that can read \code{exclusions.file};
+\code{\link[changepoint:cpt.meanvar]{changepoint::cpt.meanvar()}} for the underlying change-point analysis.
 }
