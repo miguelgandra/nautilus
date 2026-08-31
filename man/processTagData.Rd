@@ -70,8 +70,8 @@ correction and tag-mounting corrections, allowing each correction to be checked 
 in \code{.pdf}.}
 
 \item{return.data}{Logical; whether to return the processed datasets in memory (default \code{TRUE}). If
-\code{FALSE}, the function returns the paths of the \code{.rds} files written to \code{output.dir}; pair it with
-\code{output.dir}, since without one there are no paths to return and the function returns \code{NULL}.}
+\code{FALSE}, the function returns the paths of the \code{.rds} files written to \code{output.dir}, which feed
+directly into the next step's \code{data} argument; this requires \code{output.dir} to be specified.}
 
 \item{output.dir}{An existing directory in which processed deployments are saved as individual
 \code{.rds} files, named \verb{<id>.rds}. Supplying a directory is what triggers saving; \code{NULL} (default)

@@ -57,8 +57,8 @@
 #'   correction and tag-mounting corrections, allowing each correction to be checked visually. Must end
 #'   in `.pdf`.
 #' @param return.data Logical; whether to return the processed datasets in memory (default `TRUE`). If
-#'   `FALSE`, the function returns the paths of the `.rds` files written to `output.dir`; pair it with
-#'   `output.dir`, since without one there are no paths to return and the function returns `NULL`.
+#'   `FALSE`, the function returns the paths of the `.rds` files written to `output.dir`, which feed
+#'   directly into the next step's `data` argument; this requires `output.dir` to be specified.
 #' @param output.dir An existing directory in which processed deployments are saved as individual
 #'   `.rds` files, named `<id>.rds`. Supplying a directory is what triggers saving; `NULL` (default)
 #'   writes nothing.
