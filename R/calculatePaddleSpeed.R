@@ -278,26 +278,29 @@ calculatePaddleSpeed <- function(data,
                     the slope from the deployments themselves."))
 
   src <- .resolveInput(data, id.col)
-  # header config, one fact per line, shown once and never repeated per deployment. The calibration
-  # itself is a RESULT - it is resolved from the cohort further down - so it belongs in the summary.
+  # Header config, one fact per line, shown once and never repeated per deployment. It names the
+  # method that was REQUESTED; which slope each deployment ended up with is a result, and reads in the
+  # summary. Built between an open frame and its close so the requested method can carry an indented
+  # line explaining it, which `.log_header`'s own arrows cannot interleave; the spacing is otherwise
+  # exactly what `.log_header` produces for every other function.
   .log_header(lvl, "calculatePaddleSpeed", "Converting paddle rotation into swimming speed",
-              bullets = sprintf("Input: %d deployment%s", src$n, if (src$n != 1) "s" else ""),
-              arrow = c(
-                if (identical(method, "in-situ-deployment"))
-                  "Calibration: in situ, from each deployment's own diving (pooled where too little)"
-                else if (identical(method, "in-situ-pooled"))
-                  "Calibration: in situ, pooled across each tag-season's diving"
-                else sprintf("Calibration: %s (missing slopes projected from the calibrated ones)",
-                             method),
-                if (!is.null(degradation.rate))
-                  sprintf("Wear rate: %g per year", degradation.rate),
-                if (!is.null(smoothing) && smoothing > 0)
-                  sprintf("Smoothing: %g s on the rotation frequency", smoothing) else "Smoothing: none",
-                if (!is.null(max.speed)) sprintf("Speed cap: %g km/h", max.speed) else "Speed cap: none",
-                if (isTRUE(validate))
-                  sprintf("Validation: in situ, from pitch and vertical velocity (pitch >= %g deg)",
-                          min.pitch)
-                else "Validation: off (validate = FALSE)"))
+              close = FALSE)
+  if (lvl >= 1L) {
+    ml <- .paddleMethodLabel(method)
+    cli::cli_text("{cli::symbol$bullet} Input: {src$n} deployment{?s}")
+    .log_arrow(lvl, "Slope estimation: ", ml$label)
+    if (!is.null(ml$sub)) .log_subdetail(lvl, ml$sub, min_level = 1L)
+    if (!is.null(degradation.rate))
+      .log_arrow(lvl, sprintf("Wear rate: %g per year", degradation.rate))
+    .log_arrow(lvl, if (!is.null(smoothing) && smoothing > 0)
+      sprintf("Smoothing: %g s on the rotation frequency", smoothing) else "Smoothing: none")
+    .log_arrow(lvl, if (!is.null(max.speed)) sprintf("Speed cap: %g km/h", max.speed)
+               else "Speed cap: none")
+    .log_arrow(lvl, if (isTRUE(validate))
+      sprintf("Validation: from pitch and vertical velocity (pitch \u2265 %g\u00b0)", min.pitch)
+      else "Validation: off (validate = FALSE)")
+  }
+  .log_header_close(lvl)
 
   ## ---- pass 1: what each deployment carries, and its in-situ sufficient statistics ---------------
   # Accumulated rather than stored: the in-situ slope is a through-origin fit, so its sums add across
@@ -330,7 +333,7 @@ calculatePaddleSpeed <- function(data,
     res <- .paddleApplyOne(x, scan[[i]], drow, smoothing, max.speed)
     statuses <- c(statuses, res$status)
     if (!is.null(res$speed)) speeds[i] <- res$speed[["med"]]
-    .logPaddleDeployment(lvl, id, scan[[i]], res, drow)
+    .logPaddleDeployment(lvl, id, scan[[i]], res, drow, cal, method)
 
     meta <- .getMeta(res$data)
     meta <- .appendProcessing(meta, "calculatePaddleSpeed",
@@ -352,6 +355,10 @@ calculatePaddleSpeed <- function(data,
     data_list[[i]] <- x
     .log_gap(lvl)
   }
+
+  # the source tally counts deployments that actually used a slope, so each deployment carries the
+  # outcome that decided it: a tag with no paddle inherits its tag-season's source but never applies it
+  dep$status <- statuses[match(dep$id, ids)]
 
   if (lvl >= 1L) {
     .log_summary(lvl)

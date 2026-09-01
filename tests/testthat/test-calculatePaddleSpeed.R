@@ -261,10 +261,10 @@ test_that("the header carries the run settings, and not the calibration it goes 
   set.seed(11)
   out <- .pwLog(.pwCohort(), calibration = .pwCal3(), validate = TRUE, smoothing = 2, max.speed = 8)
   expect_match(out, "Input: 4 deployments")
-  expect_match(out, "Calibration: projected-shared")
+  expect_match(out, "Slope estimation: projected-shared")
   expect_match(out, "Smoothing: 2 s on the rotation frequency")
   expect_match(out, "Speed cap: 8 km/h")
-  expect_match(out, "Validation: in situ")
+  expect_match(out, "Validation: from pitch and vertical velocity")
 
   # the resolved slopes belong to the SUMMARY: nothing above the closing frame may quote one
   # The resolved slopes belong to the SUMMARY, so nothing above the first deployment block may quote
@@ -293,13 +293,13 @@ test_that("each deployment gets a block naming the slope applied, its source, an
   expect_match(out, "PIN_02 \\(1/4\\)")
   expect_match(out, "PIN_04 \\(4/4\\)")               # the counter runs over the whole cohort
   expect_match(out, "input: 2 K rows .* 20 Hz .* package 51 .* 2019")
-  expect_match(out, "calibration: 0.0736 m/s per Hz .* calibrated")
-  expect_match(out, "speed: +median [0-9.]+ m/s \\([0-9.]+ .* [0-9.]+\\)")
+  expect_match(out, "slope: 0.0736 m/s per Hz \\(calibrated\\)")
+  expect_match(out, "speed: median [0-9.]+ m/s \\([0-9.]+.[0-9.]+\\)")
   expect_match(out, "PIN_02 processed")
 
   # a tag that recorded speed itself has no slope to report, and must not borrow the cohort's
   block <- .pwBetween(out, from = "PIN_CAM_30", to = "PIN_04")
-  expect_match(block, "calibration: not needed")
+  expect_match(block, "slope: not needed")
   expect_match(block, "speed recorded by the logger")
   expect_false(grepl("m/s per Hz", block, fixed = TRUE))
 })
@@ -339,14 +339,14 @@ test_that("the SUMMARY tally is mutually exclusive and adds up to the cohort", {
   expect_match(out, "SUMMARY")
   # two of the four get a speed: one calculated from a slope, one recorded by the logger
   expect_match(out, "3 of 4 deployments given a speed")
-  expect_match(out, "Speed calculated: +2")
-  expect_match(out, "Speed as recorded: +1")
-  expect_match(out, "No paddle wheel: +1")
+  expect_match(out, "speed calculated: +2")
+  expect_match(out, "speed as recorded: +1")
+  expect_match(out, "no paddle wheel: +1")
   # The headline counts the as-recorded deployment; the tally must not count it twice. Read off the
   # line with a capture group rather than a lookbehind: a variable-length lookbehind needs a recent
   # PCRE2 and is rejected outright by older ones.
-  ln <- grep("Speed calculated", strsplit(out, "\n", fixed = TRUE)[[1]], value = TRUE)[1]
-  expect_identical(as.integer(sub(".*Speed calculated:[^0-9]*([0-9]+).*", "\\1", ln)), 2L)
+  ln <- grep("speed calculated", strsplit(out, "\n", fixed = TRUE)[[1]], value = TRUE)[1]
+  expect_identical(as.integer(sub(".*speed calculated:[^0-9]*([0-9]+).*", "\\1", ln)), 2L)
 })
 
 
@@ -354,10 +354,10 @@ test_that("the SUMMARY summarises the calibration instead of printing the whole 
   set.seed(18)
   out <- .pwLog(.pwCohort(), calibration = .pwCal3(), validate = TRUE)
   tail <- .pwBetween(out, from = "SUMMARY")
-  expect_match(tail, "Calibration")
-  expect_match(tail, "Tag-seasons:")
+  expect_match(tail, "Slope estimation")                       # not "Calibration": the method, named
+  expect_match(tail, "tag-seasons:")
   expect_match(tail, "calibrated")                             # provenance counted, not tabulated
-  expect_match(tail, "Slopes applied:")
+  expect_match(tail, "slopes applied:")
   expect_match(tail, "attr\\(x, \"calibration\"\\)")             # where the full table lives
 
   # the per-tag-season table is gone from the console: no header row, no one-row-per-stratum listing
@@ -372,7 +372,7 @@ test_that("the cohort roll-ups follow the calculateTailBeats form", {
   tail <- .pwBetween(out, from = "SUMMARY")
   expect_match(tail, "speed: +median [0-9.]+ m/s \\(IQR [0-9.]+.[0-9.]+, range")
   expect_match(tail, "agreement: +median [0-9.]+ \\(IQR")
-  expect_match(tail, "steep swimming: +median [0-9.]+% of record")
+  expect_match(tail, "steep swimming: +median [0-9.]+%")
 
   # without validation there is no in-situ fit, so those two roll-ups have nothing to report
   set.seed(20)
@@ -415,25 +415,24 @@ test_that("the output pointers are listed only when something was written", {
   pdf <- file.path(dir, "cal.pdf")
   out <- .pwLog(.pwCohort(), calibration = .pwCal3(), output.dir = dir, plot.file = pdf)
   expect_match(.pwBetween(out, from = "SUMMARY"), "Output")
-  expect_match(out, "Directory:")
-  expect_match(out, "Plots:")
+  expect_match(out, "directory:")
+  expect_match(out, "plots:")
 
   set.seed(24)
   bare <- .pwLog(.pwCohort(), calibration = .pwCal3())
-  expect_false(grepl("Directory:", bare, fixed = TRUE))
-  expect_false(grepl("Plots:", bare, fixed = TRUE))
+  expect_false(grepl("directory:", bare, fixed = TRUE))
+  expect_false(grepl("plots:", bare, fixed = TRUE))
 })
 
 
 test_that(".paddleSourceLabel gives a prose form for a line and a short form for a table column", {
   lbl <- nautilus:::.paddleSourceLabel
   expect_identical(lbl("calibrated"), "calibrated")
-  expect_identical(lbl("projected-from-tag"), "projected from this tag")
-  expect_identical(lbl("projected-from-tag", long = FALSE), "from tag")
-  expect_identical(lbl("projected-from-fleet"), "projected from other tags")
-  expect_identical(lbl("projected-from-fleet", long = FALSE), "from fleet")
+  expect_identical(lbl("projected-from-tag"), "projected from tag")
+  expect_identical(lbl("projected-from-fleet"), "projected from fleet")
   expect_identical(lbl("in-situ-deployment"), "in situ, this deployment")
-  expect_identical(lbl("in-situ-pooled", long = FALSE), "in situ (pooled)")
+  expect_identical(lbl("in-situ-deployment", long = FALSE), "in situ, deployment")
+  expect_identical(lbl("in-situ-pooled", long = FALSE), "in situ, pooled")
   expect_identical(lbl("as-recorded", long = FALSE), "as recorded")
   expect_true(is.na(lbl(NA_character_)))
   expect_identical(lbl("something-new"), "estimated")      # an unknown source still reads sensibly
@@ -636,4 +635,126 @@ test_that("the method names are the five documented ones", {
                      "in-situ-deployment", "in-situ-pooled"))
   expect_error(suppressWarnings(calculatePaddleSpeed(.pwCohort(), method = "in-situ", verbose = 0)),
                "should be one of")
+})
+
+
+# ---- verbose layout: the header names the METHOD, each block names the SOURCE ----------------------
+# Keeping those two vocabularies apart is what makes a fallback visible, so these lock the split.
+
+test_that("the header names the requested method and explains it on one indented line", {
+  set.seed(40)
+  tags <- list(A = .pwTag("D1", "82", 2019, n = 20000))
+  hdr <- function(m, ...) .pwBetween(.pwLog(tags, method = m, ...), to = "D1")
+
+  h <- hdr("in-situ-deployment")
+  expect_match(h, "Slope estimation: in situ, per deployment")
+  expect_match(h, "fallback: pooled within tag-season")
+
+  h <- hdr("in-situ-pooled")
+  expect_match(h, "Slope estimation: in situ, pooled within tag-season")
+  expect_false(grepl("fallback", h, fixed = TRUE))
+
+  h <- hdr("projected-shared", calibration = .pwCal(0.07, "82", 2019))
+  expect_match(h, "Slope estimation: projected-shared")
+  expect_match(h, "missing slopes projected from available calibrations")
+
+  # the validation line reads in symbols, not words
+  expect_match(hdr("in-situ-pooled", validate = TRUE, min.pitch = 25),
+               "Validation: from pitch and vertical velocity \\(pitch \u2265 25\u00b0\\)")
+})
+
+
+test_that("a pooled fallback is named as a fallback, a pooled choice is not", {
+  set.seed(41)
+  tags <- list(A = .pwBurst("SHORT", "83", 2019, steep_n = 400L),
+               B = .pwBurst("LONG",  "83", 2019, steep_n = 20000L))
+
+  fb <- .pwBetween(.pwLog(tags, method = "in-situ-deployment"), from = "SHORT", to = "LONG")
+  expect_match(fb, "slope: [0-9.]+ m/s per Hz \\(in situ, pooled\\)")
+  expect_match(fb, "fallback: deployment-level estimate unavailable")
+  expect_match(fb, "pooled across: 2 deployments")
+
+  # the same slope, asked for rather than fallen back to, carries no fallback line
+  ch <- .pwBetween(.pwLog(tags, method = "in-situ-pooled"), from = "SHORT", to = "LONG")
+  expect_match(ch, "slope: [0-9.]+ m/s per Hz \\(in situ, pooled\\)")
+  expect_false(grepl("fallback", ch, fixed = TRUE))
+  expect_match(ch, "pooled across: 2 deployments")
+
+  # a deployment using its own fit is neither pooled nor a fallback
+  own <- .pwBetween(.pwLog(tags, method = "in-situ-deployment"), from = "LONG", to = "SUMMARY")
+  expect_match(own, "slope: [0-9.]+ m/s per Hz \\(in situ, this deployment\\)")
+  expect_false(grepl("pooled across", own, fixed = TRUE))
+  expect_false(grepl("in-situ validation", own, fixed = TRUE))   # circular, so withheld
+})
+
+
+test_that("a skipped deployment prints one line and does not repeat its own name", {
+  set.seed(42)
+  out <- .pwLog(.pwCohort(), calibration = .pwCal3())
+  block <- .pwBetween(out, from = "PIN_04 \\(4/4\\)", to = "SUMMARY")
+  expect_match(block, "no paddle wheel")
+  expect_match(block, "skipped")
+  # the rule above already names it; the skip line must not repeat it
+  expect_false(grepl("PIN_04  no paddle wheel", block, fixed = TRUE))
+  expect_equal(length(grep("PIN_04", strsplit(block, "\n", fixed = TRUE)[[1]])), 1L)
+})
+
+
+test_that("the summary counts slope sources across deployments, not tag-seasons", {
+  set.seed(43)
+  # one tag-season, two deployments, both calibrated: 1 tag-season but 2 deployments
+  tags <- list(A = .pwTag("D1", "84", 2019, n = 8000), B = .pwTag("D2", "84", 2019, n = 8000))
+  tail <- .pwBetween(.pwLog(tags, calibration = .pwCal(0.07, "84", 2019)), from = "SUMMARY")
+  expect_match(tail, "tag-seasons: +1")
+  expect_match(tail, "slope sources across deployments")
+  expect_match(tail, "calibrated: +2")
+})
+
+
+test_that("the slope-source tally sums to the deployments that actually got a speed", {
+  set.seed(44)
+  # PIN_04 has no paddle wheel but sits in a tag-season that IS calibrated: it inherits the source
+  # without ever applying it, and must not be counted among the slopes used
+  tags <- c(.pwCohort(), list(E = .pwTag("PIN_NOPAD", "51", 2019, n = 2000,
+                                         freq = FALSE, paddle = FALSE)))
+  out  <- .pwLog(tags, calibration = .pwCal3())
+  tail <- .pwBetween(out, from = "SUMMARY")
+
+  n_speed <- as.integer(sub(".*[^0-9]([0-9]+) of [0-9]+ deployments given a speed.*", "\\1",
+                            grep("given a speed", strsplit(tail, "\n", fixed = TRUE)[[1]],
+                                 value = TRUE)[1]))
+  counts <- as.integer(sub("^ +[a-z, ]+: +([0-9]+)$", "\\1",
+                           grep("^ {6}[a-z]", strsplit(tail, "\n", fixed = TRUE)[[1]],
+                                value = TRUE)))
+  expect_identical(sum(counts), n_speed)
+})
+
+
+test_that("the summary roll-ups are compact: unit on the median only, no padding", {
+  set.seed(45)
+  out  <- .pwLog(.pwCohort(), calibration = .pwCal3(), validate = TRUE)
+  tail <- .pwBetween(out, from = "SUMMARY")
+  ln <- function(k) grep(k, strsplit(tail, "\n", fixed = TRUE)[[1]], value = TRUE)[1]
+
+  # the unit rides the median; repeating it on the range only costs width
+  expect_match(ln("speed:"), "speed: median [0-9.]+ m/s \\(IQR [0-9.]+.[0-9.]+, range [0-9.]+.[0-9.]+\\)")
+  expect_false(grepl("range [0-9.]+.[0-9.]+ m/s", ln("speed:")))
+
+  # one space after the label, not a padded column
+  expect_false(grepl("speed:  ", ln("speed:"), fixed = TRUE))
+  expect_false(grepl("agreement:  ", ln("agreement:"), fixed = TRUE))
+  expect_match(ln("steep swimming:"), "steep swimming: median [0-9.]+% of record \\(range")
+})
+
+
+test_that("the header keeps the package's own spacing, with no blank lines inside it", {
+  set.seed(46)
+  hdr <- .pwBetween(.pwLog(.pwCohort(), calibration = .pwCal3()), to = "PIN_02")
+  lines <- strsplit(hdr, "\n", fixed = TRUE)[[1]]
+  body <- lines[cumsum(grepl("Converting paddle rotation", lines)) > 0]
+  body <- body[seq_len(max(which(grepl("Validation:", body))))]
+  expect_false(any(!nzchar(trimws(body))))          # intro -> bullets -> arrows, uninterrupted
+  expect_match(body[1], "Converting paddle rotation")
+  expect_match(body[2], "Input: 4 deployments")
+  expect_match(body[3], "Slope estimation:")
 })

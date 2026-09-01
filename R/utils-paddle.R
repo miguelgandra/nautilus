@@ -160,6 +160,7 @@
                in_situ_slope = f$slope, in_situ_r = f$r,
                in_situ_lo = f$slope - 1.96 * f$se, in_situ_hi = f$slope + 1.96 * f$se,
                in_situ_n = f$n, in_situ_viable = .paddleViable(f, fs),
+               in_situ_k = sum(dep$own_n[dep$key == k] > 0L),
                slope_k = length(v),
                slope_cv = if (length(v) >= 2L) stats::sd(v) / mean(v) else NA_real_,
                slope_ratio = if (length(v) >= 2L) max(v) / min(v) else NA_real_,
@@ -314,47 +315,64 @@
 
 #' Where a slope came from, in words.
 #'
-#' Two registers for the same fact: the long form reads as prose in a per-deployment line, the short one
-#' fits a table column. Keeping them in one place stops the two from drifting apart.
+#' Two registers for the same fact: the long form names the scope in a per-deployment line, the short
+#' one fits a column in the summary tally. Keeping them in one place stops the two from drifting apart.
 #' @keywords internal
 #' @noRd
 .paddleSourceLabel <- function(src, long = TRUE) {
   if (length(src) != 1L || is.na(src)) return(NA_character_)
   tab <- if (long)
     c(calibrated             = "calibrated",
-      `projected-from-tag`   = "projected from this tag",
-      `projected-from-fleet` = "projected from other tags",
+      `projected-from-tag`   = "projected from tag",
+      `projected-from-fleet` = "projected from fleet",
       `in-situ-deployment`   = "in situ, this deployment",
-      `in-situ-pooled`       = "in situ, pooled over the tag-season",
+      `in-situ-pooled`       = "in situ, pooled",
       `as-recorded`          = "as recorded")
   else
     c(calibrated             = "calibrated",
-      `projected-from-tag`   = "from tag",
-      `projected-from-fleet` = "from fleet",
-      `in-situ-deployment`   = "in situ (deployment)",
-      `in-situ-pooled`       = "in situ (pooled)",
+      `projected-from-tag`   = "projected from tag",
+      `projected-from-fleet` = "projected from fleet",
+      `in-situ-deployment`   = "in situ, deployment",
+      `in-situ-pooled`       = "in situ, pooled",
       `as-recorded`          = "as recorded")
   if (src %in% names(tab)) unname(tab[src]) else "estimated"
 }
 
-#' One deployment's block: what came in, which slope was applied, and what speed came out.
+#' How the requested method reads in the header, and the one line that explains it.
 #'
-#' Mirrors the per-deployment layout used by calculateTailBeats(): an `input:` line, the setting that
-#' actually varies between deployments (here the slope and its provenance), then the results indented
-#' under it. A deployment that gets no speed prints the skip line only, as the tail-beat blocks do.
+#' The header names the method the user ASKED for; each deployment's block then names the source the
+#' slope actually came from. Keeping the two vocabularies distinct is what makes a fallback visible.
 #' @keywords internal
 #' @noRd
-.logPaddleDeployment <- function(lvl, id, sc, res, dep_row = NULL) {
+.paddleMethodLabel <- function(method) {
+  switch(method,
+    "in-situ-deployment" = list(label = "in situ, per deployment",
+                                sub   = "fallback: pooled within tag-season"),
+    "in-situ-pooled"     = list(label = "in situ, pooled within tag-season", sub = NULL),
+    "projected-fixed"    = list(label = method,
+                                sub   = "missing slopes projected using the supplied wear rate"),
+    list(label = method, sub = "missing slopes projected from available calibrations"))
+}
+
+#' One deployment's block: what came in, which slope it used, and what speed came out.
+#'
+#' Reads top-down as provenance then result: the input, the slope and where it came from, the evidence
+#' behind that slope indented under it, and the speed last. A deployment that gets no speed prints the
+#' skip line alone - the rule above it already names the deployment.
+#' @keywords internal
+#' @noRd
+.logPaddleDeployment <- function(lvl, id, sc, res, dep_row = NULL, cal = NULL,
+                                 method = NULL) {
   if (lvl < 1L) return(invisible(NULL))
-  # `\u00b7` separates facts WITHIN a line and the heavier bullet marks the skip line, as in
-  # calculateTailBeats(): the two glyphs are doing different jobs and are not interchangeable.
+  # `\u00b7` separates facts WITHIN a line and the heavier bullet marks the skip line: the two glyphs
+  # are doing different jobs and are not interchangeable.
   dot <- "\u00b7"
   if (!res$status %in% c("applied", "as-recorded")) {
     why <- switch(res$status,
                   "no calibration" = "no calibration for this tag and season",
                   "no paddle data" = "no paddle data",
                   "no paddle wheel" = "no paddle wheel", res$status)
-    .log_skip(lvl, id, "  ", why, " ", cli::symbol$bullet, " skipped")
+    .log_skip(lvl, why, " ", cli::symbol$bullet, " skipped")
     return(invisible(NULL))
   }
 
@@ -363,103 +381,86 @@
   hz <- if (is.finite(res$fs)) sprintf("%g Hz", res$fs) else "rate unknown"
   .log_detail(lvl, sprintf("input: %s rows %s %s%s", .formatLargeNumber(res$n_rows), dot, hz, key))
 
-  if (identical(res$status, "as-recorded"))
-    .log_detail(lvl, sprintf("calibration: not needed %s speed recorded by the logger", dot))
-  else
-    .log_detail(lvl, sprintf("calibration: %.4f m/s per Hz %s %s", res$slope, dot,
+  ## ---- the slope, then the evidence behind it ----------------------------------------------------
+  if (identical(res$status, "as-recorded")) {
+    .log_detail(lvl, sprintf("slope: not needed %s speed recorded by the logger", dot))
+  } else {
+    .log_detail(lvl, sprintf("slope: %.4f m/s per Hz (%s)", res$slope,
                              .paddleSourceLabel(res$slope_source, long = TRUE)))
 
-  if (!is.null(res$speed))
-    .log_subdetail_aligned(lvl, sprintf("speed:      median %.2f m/s (%.2f \u2013 %.2f)",
-                                        res$speed[["med"]], res$speed[["lo"]], res$speed[["hi"]]))
-  else
-    .log_subdetail_aligned(lvl, "speed:      no finite values")
+    # a pooled slope reached by fallback is not the same event as one that was asked for
+    if (identical(res$slope_source, "in-situ-pooled")) {
+      if (identical(method, "in-situ-deployment"))
+        .log_subdetail_aligned(lvl, "fallback: deployment-level estimate unavailable")
+      k <- if (!is.null(cal)) cal$in_situ_k[match(sc$key, cal$key)] else NA_integer_
+      if (isTRUE(is.finite(k)))
+        .log_subdetail_aligned(lvl, sprintf("pooled across: %d deployment%s", k,
+                                            if (k != 1L) "s" else ""))
+    }
 
-  # the in-situ lines appear only when an in-situ fit was asked for at all
-  if (!is.null(dep_row) && nrow(dep_row) == 1L && isTRUE(dep_row$own_n > 0L)) {
-    if (isTRUE(dep_row$own_viable) && is.finite(dep_row$agreement))
-      .log_subdetail_aligned(lvl, sprintf("check:      in situ %.4f m/s per Hz %s agreement %.2f",
-                                          dep_row$own_slope, dot, dep_row$agreement))
-    else if (identical(res$slope_source, "in-situ-deployment"))
-      .log_subdetail_aligned(lvl, "check:      not independent (slope came from this deployment)")
-    else if (!isTRUE(dep_row$own_viable))
-      .log_subdetail_aligned(lvl, "check:      not enough steep swimming to check")
-    if (is.finite(dep_row$own_secs))
-      .log_subdetail_aligned(lvl, sprintf("based on:   %s of steep swimming (%.1f%% of record)",
-                                          .paddleFmtSecs(dep_row$own_secs), dep_row$own_pct))
+    if (!is.null(dep_row) && nrow(dep_row) == 1L && isTRUE(dep_row$own_n > 0L)) {
+      if (is.finite(dep_row$agreement))
+        .log_subdetail_aligned(lvl, sprintf("in-situ validation: %.4f m/s per Hz %s agreement %.2f",
+                                            dep_row$own_slope, dot, dep_row$agreement))
+      else if (!isTRUE(dep_row$own_viable))
+        .log_subdetail_aligned(lvl, "in-situ validation: not enough steep swimming")
+      if (is.finite(dep_row$own_secs))
+        .log_subdetail_aligned(lvl, sprintf("steep swimming: %s %s %.1f%% of record",
+                                            .paddleFmtSecs(dep_row$own_secs), dot, dep_row$own_pct))
+    }
   }
+
+  ## ---- and the result it produced -----------------------------------------------------------------
+  if (!is.null(res$speed))
+    .log_detail(lvl, sprintf("speed: median %.2f m/s (%.2f\u2013%.2f)",
+                             res$speed[["med"]], res$speed[["lo"]], res$speed[["hi"]]))
+  else
+    .log_detail(lvl, "speed: no finite values")
   .log_ok(lvl, id, " processed")
   invisible(NULL)
 }
 
-#' A compact provenance line for the calibration block.
+#' The SUMMARY block: what came out, then what it rested on, then where it was written.
 #'
-#' The full tag-season table travels on the result as the `"calibration"` attribute; printing it grew
-#' past a console width and past the point of being readable, so the summary states how many tags rest
-#' on each kind of slope and the range actually applied, and points at the attribute for the rest.
-#' @keywords internal
-#' @noRd
-.paddleCalSummary <- function(cal, applied = NULL) {
-  src <- cal$slope_source[!is.na(cal$slope_source)]
-  parts <- if (length(src)) {
-    tb <- table(src)
-    ord <- c("calibrated", "projected-from-tag", "projected-from-fleet",
-             "in-situ-deployment", "in-situ-pooled", "as-recorded")
-    tb <- tb[order(match(names(tb), ord), names(tb))]
-    paste(sprintf("%d %s", as.integer(tb),
-                  vapply(names(tb), .paddleSourceLabel, character(1), long = FALSE,
-                         USE.NAMES = FALSE)), collapse = ", ")
-  } else NULL
-  n_without <- sum(is.na(cal$slope_source))
-  if (n_without) parts <- paste(c(parts, sprintf("%d without", n_without)), collapse = ", ")
-  # the range of slopes actually APPLIED, taken per deployment: under `in-situ-deployment` the
-  # tag-season row carries no single slope, so reading `cal` would under-report the spread
-  a <- if (is.null(applied)) cal$slope else applied
-  a <- a[is.finite(a)]
-  list(tags = sprintf("%d (%s)", nrow(cal), parts %||% "none resolved"),
-       range = if (length(a))
-         sprintf("%.4f - %.4f m/s per Hz", min(a), max(a)) else NULL)
-}
-
-#' The SUMMARY block: the outcome tally, the cohort roll-ups, and where it was written.
-#'
-#' The calibration is a RESULT - one slope per tag and season, resolved by looking at the cohort - so
-#' it reads here rather than in the header, which carries settings only.
+#' The slope estimation is a RESULT - one slope per deployment, resolved by looking at the cohort - so
+#' it reads here rather than in the header, which names only the method that was requested. The full
+#' tag-season table is not printed: it outgrew a console width, and it travels on the result instead.
 #' @keywords internal
 #' @noRd
 .reportPaddleCohort <- function(lvl, cal, dep, statuses, speeds, agreement.threshold,
                                 output.dir, plot.file) {
   if (lvl < 1L) return(invisible(NULL))
+  cli::cli_text("")
   n <- length(statuses)
   n_speed <- sum(statuses %in% c("applied", "as-recorded"))
   .log_done(lvl, sprintf("%d of %d deployment%s given a speed", n_speed, n, if (n != 1) "s" else ""))
 
-  # cohort roll-ups, in the calculateTailBeats() form: median, IQR and range across deployments
+  ## ---- cohort roll-ups, in the calculateTailBeats form: median, IQR and range ---------------------
+  # The unit rides the median only: repeating it on the range costs width without saying anything, and
+  # these lines are left unpadded so they stay readable in a narrow console.
   spread <- function(v, unit = "", d = 2) {
     v <- v[is.finite(v)]
     if (!length(v)) return(NULL)
     q <- stats::quantile(v, c(0.25, 0.5, 0.75), names = FALSE)
-    sprintf("median %.*f%s (IQR %.*f\u2013%.*f, range %.*f\u2013%.*f%s)",
-            d, q[2], unit, d, q[1], d, q[3], d, min(v), d, max(v), unit)
+    sprintf("median %.*f%s (IQR %.*f\u2013%.*f, range %.*f\u2013%.*f)",
+            d, q[2], unit, d, q[1], d, q[3], d, min(v), d, max(v))
   }
   sp <- spread(speeds, " m/s")
-  if (!is.null(sp)) .log_arrow_aligned(lvl, "speed:          ", sp)
+  if (!is.null(sp)) .log_arrow(lvl, "speed: ", sp)
   ag <- spread(dep$agreement, "")
-  if (!is.null(ag)) .log_arrow_aligned(lvl, "agreement:      ", ag, ", ",
-                                       sum(is.finite(dep$agreement)), " deployments")
+  if (!is.null(ag)) .log_arrow(lvl, "agreement: ", ag, ", ",
+                               sum(is.finite(dep$agreement)), " deployments")
   st <- dep$own_pct[dep$own_viable %in% TRUE]
   if (any(is.finite(st)))
-    .log_arrow_aligned(lvl, "steep swimming: ",
-                       sprintf("median %.1f%% of record (range %.1f\u2013%.1f%%)",
-                               stats::median(st, na.rm = TRUE), min(st, na.rm = TRUE),
-                               max(st, na.rm = TRUE)))
+    .log_arrow(lvl, "steep swimming: ",
+               sprintf("median %.1f%% of record (range %.1f\u2013%.1f%%)",
+                       stats::median(st, na.rm = TRUE), min(st, na.rm = TRUE),
+                       max(st, na.rm = TRUE)))
 
-  # A mutually exclusive tally in a fixed order, so the rows visibly sum to the cohort and the block
-  # looks the same on every run. "as-recorded" is one of the ways a deployment gets a speed, so it is
-  # listed as its own outcome rather than counted twice.
-  labs <- c(applied = "Speed calculated", `as-recorded` = "Speed as recorded",
-            `no calibration` = "No calibration", `no paddle data` = "No paddle data",
-            `no paddle wheel` = "No paddle wheel")
+  ## ---- outcomes, mutually exclusive and in a fixed order so the rows visibly sum to the cohort ----
+  labs <- c(applied = "speed calculated", `as-recorded` = "speed as recorded",
+            `no calibration` = "no calibration", `no paddle data` = "no paddle data",
+            `no paddle wheel` = "no paddle wheel")
   tally <- table(factor(statuses, levels = names(labs)))
   keep <- as.integer(tally) > 0L
   if (any(keep)) {
@@ -469,29 +470,45 @@
                                      rep(cli::symbol$bullet, max(0L, sum(keep) - 1L))))
   }
 
+  ## ---- where the slopes came from ----------------------------------------------------------------
   if (nrow(cal)) {
-    cs <- .paddleCalSummary(cal, dep$slope)
-    rows <- c(`Tag-seasons` = cs$tags,
-              if (!is.null(cs$range)) c(`Slopes applied` = cs$range),
-              `Full table` = "attr(x, \"calibration\")")
-    .log_section(lvl, "Calibration")
+    .log_section(lvl, "Slope estimation")
+    applied <- dep$slope[is.finite(dep$slope)]
+    rows <- c(`tag-seasons` = format(nrow(cal)),
+              if (length(applied)) c(`slopes applied` =
+                sprintf("%.4f\u2013%.4f m/s per Hz", min(applied), max(applied))))
     .log_rows(lvl, rows)
 
+    # Counted across DEPLOYMENTS, not tag-seasons: it is deployments that carry a slope, and under
+    # `in-situ-deployment` one tag-season can supply several different ones. Restricted to the
+    # deployments that actually got a speed - a tag with no paddle sits in a tag-season that may well
+    # be calibrated, and inherits that source without ever applying it.
+    used <- if (!is.null(dep$status)) dep$status %in% c("applied", "as-recorded") else TRUE
+    ord <- c("calibrated", "projected-from-tag", "projected-from-fleet",
+             "in-situ-deployment", "in-situ-pooled", "as-recorded")
+    cnt <- vapply(ord, function(k) sum(dep$slope_source[used] %in% k), integer(1))
+    # named for what it is: a rotation rate that found no slope, not a tag that never recorded one
+    n_without <- if (!is.null(dep$status)) sum(dep$status %in% "no calibration") else 0L
+    if (any(cnt > 0L) || n_without) {
+      nm <- vapply(ord, .paddleSourceLabel, character(1), long = FALSE, USE.NAMES = FALSE)
+      if (n_without) { nm <- c(nm, "no slope found"); cnt <- c(cnt, n_without) }
+      w <- max(nchar(nm)) + 1L
+      cli::cli_verbatim(paste0("  ", cli::symbol$bullet, " slope sources across deployments:"))
+      for (i in seq_along(nm))
+        cli::cli_verbatim(sprintf("      %-*s %s", w, paste0(nm[i], ":"), format(cnt[i])))
+    }
+
     # Between-deployment spread. Reported, never flagged: nothing in these data establishes how much
-    # spread is too much. Listed per tag-season while that stays readable, rolled up beyond it, so a
-    # large fleet does not reproduce the wall of rows this block replaced.
-    het <- cal[is.finite(cal$slope_cv), , drop = FALSE]
-    if (nrow(het) && nrow(het) <= 3L) {
-      .log_rows(lvl, stats::setNames(
-        sprintf("%.0f%% across %d deployments (max/min %.2f)",
-                100 * het$slope_cv, het$slope_k, het$slope_ratio),
-        sprintf("Spread %s/pkg %s", het$year, het$package_id)))
-    } else if (nrow(het)) {
-      .log_rows(lvl, stats::setNames(
-        sprintf("median %.0f%% (range %.0f-%.0f%%) across %d tag-seasons",
-                100 * stats::median(het$slope_cv), 100 * min(het$slope_cv),
-                100 * max(het$slope_cv), nrow(het)),
-        "Between-deployment spread"))
+    # spread is too much, and the response to a large value is to look at the tag - which is also the
+    # response to the number itself.
+    het <- cal$slope_cv[is.finite(cal$slope_cv)]
+    if (length(het)) {
+      cli::cli_text("")
+      cli::cli_verbatim(sprintf("  %s between-deployment spread: median %.0f%% (range %.0f\u2013%.0f%%)",
+                                cli::symbol$bullet, 100 * stats::median(het),
+                                100 * min(het), 100 * max(het)))
+      cli::cli_verbatim(sprintf("    across %d tag-season%s", length(het),
+                                if (length(het) != 1L) "s" else ""))
     }
 
     if (any(cal$flag %in% TRUE)) {
@@ -502,10 +519,13 @@
         length(w), if (length(w) != 1) "s differ" else " differs", 100 * agreement.threshold,
         paste(sprintf("%s/pkg %s", cal$year[w], cal$package_id[w]), collapse = ", ")))
     }
+
+    .log_section(lvl, "Full table")
+    cli::cli_verbatim(paste0("  ", cli::symbol$bullet, " attr(x, \"calibration\")"))
   }
 
-  out_rows <- c(if (!is.null(output.dir)) c(Directory = output.dir),
-                if (!is.null(plot.file)) c(Plots = plot.file))
+  out_rows <- c(if (!is.null(output.dir)) c(directory = output.dir),
+                if (!is.null(plot.file)) c(plots = plot.file))
   if (length(out_rows)) { .log_section(lvl, "Output"); .log_rows(lvl, out_rows) }
   cli::cli_text("")
   invisible(NULL)
