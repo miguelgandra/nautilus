@@ -12,7 +12,7 @@ imputePaddleCalibration(
   slope.col = "slope",
   paddle.col = "paddle_wheel",
   weights.col = NULL,
-  method = c("shared-rate", "fixed-rate", "per-tag"),
+  method = c("projected-shared", "projected-fixed", "projected-per-tag"),
   degradation.rate = NULL,
   keep.measured = TRUE,
   non.negative.rate = TRUE,
@@ -39,16 +39,16 @@ rows are kept. Default \code{"paddle_wheel"}, which is a no-op with a warning if
 calibrations count for less - an r-squared column, for instance. \code{NULL} (default) weights every
 calibration equally.}
 
-\item{method}{Where the degradation rate comes from: \code{"shared-rate"} (default) pools one rate across
-every tag calibrated more than once, \code{"fixed-rate"} uses the \code{degradation.rate} you supply, and
-\code{"per-tag"} fits a separate line to each tag with at least two calibrations and then uses the
-average of those per-tag rates for every other tag. Prefer the default unless you have long, clean
-series per tag: \code{"per-tag"} is more flexible but unstable on the few points a calibration record
-usually holds, and averaging its rates gives every tag equal weight however little data it rests
-on.}
+\item{method}{How the wear trend used to project a slope is obtained. \code{"projected-shared"} (default)
+pools one annual rate across every tag calibrated more than once; \code{"projected-fixed"} uses the rate
+you supply in \code{degradation.rate}; \code{"projected-per-tag"} fits a separate line to each tag with at
+least two calibrations and averages those rates for every other tag. Prefer the default unless you
+have long, clean series per tag: \code{"projected-per-tag"} is more flexible but unstable on the few
+points a calibration record usually holds, and averaging its rates gives every tag equal weight
+however little data it rests on.}
 
-\item{degradation.rate}{The annual increase in slope. Required for \code{method = "fixed-rate"}; for the
-other methods it is an optional fallback, used only when the data cannot support an estimate.}
+\item{degradation.rate}{The annual increase in slope. Required for \code{method = "projected-fixed"}; for
+the other methods it is an optional fallback, used only when the data cannot support an estimate.}
 
 \item{keep.measured}{Whether a measured calibration is returned exactly as measured (default \code{TRUE})
 rather than replaced by the model's fitted value. Leave it on unless you specifically want a
@@ -96,10 +96,10 @@ straight to \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}, with ea
 \subsection{How the drift is modelled}{
 
 Degradation is treated as a linear drift in the slope over calendar time. The default
-\code{method = "shared-rate"} fits one fixed-slope, per-tag-intercept model to the measured calibrations:
-a single annual degradation rate pooled across every tag calibrated more than once, plus a baseline
-level for each tag. Each tag is then projected forward from its own observed level using the shared
-rate, and a tag that was never calibrated starts from the global baseline.
+\code{method = "projected-shared"} fits one fixed-slope, per-tag-intercept model to the measured
+calibrations: a single annual degradation rate pooled across every tag calibrated more than once,
+plus a starting level for each tag. Each tag is then projected forward from its own observed level
+using the shared rate, and a tag that was never calibrated starts from the fleet-wide level.
 
 Pooling the rate while keeping the levels separate is what makes this stable. Fitting an independent
 line to each tag would respect its measurements more closely, but calibration series are short, and a
@@ -108,14 +108,21 @@ rate estimated from two or three points is mostly noise.
 
 \subsection{Knowing which numbers to trust}{
 
-The \code{slope_source} column records where each row's value came from: \code{"measured"} for a real
-calibration, \code{"tag-model"} for a tag with at least one calibration of its own, and \code{"baseline"} for a
-tag with none.
+The \code{slope_source} column records where each row's value came from:
+
+\describe{
+\item{\code{"calibrated"}}{A real calibration for that tag and year, returned as measured.}
+\item{\code{"projected-from-tag"}}{Carried forward from that tag's own calibrations in other years.}
+\item{\code{"projected-from-fleet"}}{The tag was never calibrated, so its slope starts from the level
+typical of the other tags and is projected from there.}
+}
+
+The same vocabulary is used by \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}, which consumes this table.
 
 At the sample sizes typical of calibration data, this projection cannot manufacture certainty. What
 it does is make the table consistent, reproducible, checked and labelled. Treat heavily extrapolated
-and baseline slopes as approximate, and remember that a speed error scales the whole reconstructed
-track rather than distorting its shape.
+and fleet-projected slopes as approximate, and remember that a speed error scales the whole
+reconstructed track rather than distorting its shape.
 }
 }
 \examples{

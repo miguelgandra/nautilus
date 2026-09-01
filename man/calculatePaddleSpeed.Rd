@@ -7,7 +7,8 @@
 calculatePaddleSpeed(
   data,
   calibration = NULL,
-  method = c("shared-rate", "fixed-rate", "per-tag", "in-situ"),
+  method = c("projected-shared", "projected-fixed", "projected-per-tag",
+    "in-situ-deployment", "in-situ-pooled"),
   degradation.rate = NULL,
   validate = FALSE,
   agreement.threshold = 0.35,
@@ -29,18 +30,17 @@ calculatePaddleSpeed(
 a single table with an \code{id.col}, or a character vector of \code{.rds} paths. The output of
 \code{\link[=processTagData]{processTagData()}} is expected.}
 
-\item{calibration}{A table of measured calibrations with columns \code{year}, \code{package_id} and \code{slope}.
-A row matching a deployment's own tag and season is used exactly as measured. \code{NULL} (default)
-supplies no calibration at all, in which case \code{method = "in-situ"} is the only way to get a speed.}
+\item{calibration}{A table of calibrations with columns \code{year}, \code{package_id} and \code{slope}. A row
+matching a deployment's own tag and season is used exactly as measured. \code{NULL} (default) supplies
+no calibration at all, in which case only the in-situ methods can produce a speed.}
 
-\item{method}{How to fill a gap when a deployment has no measured calibration of its own.
-\code{"shared-rate"} (default), \code{"fixed-rate"} and \code{"per-tag"} estimate the missing slope from the
-calibrations you do have, following \code{\link[=imputePaddleCalibration]{imputePaddleCalibration()}}; \code{"in-situ"} estimates it from the
-deployment itself. A measured calibration is never overridden, whichever method is chosen. See
-Details.}
+\item{method}{How to fill a gap when a deployment has no calibration of its own. The three
+\code{"projected-*"} methods carry the calibrations you do have forward in time, following
+\code{\link[=imputePaddleCalibration]{imputePaddleCalibration()}}; the two \code{"in-situ-*"} methods estimate the slope from the animal's own
+diving. A calibration is never overridden, whichever method is chosen. See Details.}
 
 \item{degradation.rate}{The annual increase in the calibration slope, describing how fast the paddle
-wheel loses efficiency. Required for \code{method = "fixed-rate"}; for the other methods it is an
+wheel loses efficiency. Required for \code{method = "projected-fixed"}; for the other methods it is an
 optional fallback, used only when there are too few repeat calibrations to estimate a rate from.
 \code{NULL} (default) supplies none.}
 
@@ -99,7 +99,13 @@ when the estimate was computed.
 \item \code{in_situ_n} and \code{in_situ_r} - the number of steep-swimming samples behind the estimate, and how
 closely depth change tracked rotation rate and pitch across them.
 \item \code{agreement} and \code{flag} - the ratio of the two slopes, and whether it falls outside
-\code{agreement.threshold}.
+\code{agreement.threshold}. Reported only where the applied slope is independent of the animal's
+diving, so it is empty for a slope that came from an in-situ fit.
+\item \code{slope_k}, \code{slope_cv}, \code{slope_ratio}, \code{slope_rel_se} - the between-deployment spread of the
+per-deployment in-situ fits within that tag and season: how many deployments contributed, their
+coefficient of variation, their largest-to-smallest ratio, and the median precision of an
+individual fit. Reported, never flagged; a spread far exceeding that precision means the slope
+is not behaving as a fixed property of the tag.
 }
 
 Each deployment also carries the slope it used, where that slope came from and how it ended up in
@@ -127,19 +133,21 @@ it applied against the animal's own diving.
 Every deployment's speed rests on one slope, and \code{slope_source} records where that slope came from:
 
 \itemize{
-\item \code{"measured"} - a calibration exists for that tag and that season, and is used exactly as
+\item \code{"calibrated"} - a calibration exists for that tag and that season, and is used exactly as
 measured. This is the one to prefer.
-\item \code{"tag-model"} - no calibration for that tag and season, but the tag was calibrated in other
-years, so its slope is projected from its own record.
-\item \code{"baseline"} - the tag was never calibrated, so its slope starts from the level typical of the
-other tags.
-\item \code{"in-situ"} - estimated from the deployment itself, with \code{method = "in-situ"}.
+\item \code{"projected-from-tag"} - no calibration for that tag and season, but the tag was calibrated
+in other years, so its slope is carried forward from its own record.
+\item \code{"projected-from-fleet"} - the tag was never calibrated, so its slope starts from the level
+typical of the other tags and is projected from there.
+\item \code{"in-situ-deployment"} - fitted to this deployment's own steep swimming.
+\item \code{"in-situ-pooled"} - fitted to the steep swimming of every deployment sharing that tag and
+season. Also what a deployment falls back to when its own record is too short.
 \item \code{"as-recorded"} - the tag wrote a speed directly and recorded no rotation rate, so its values
 are kept untouched and no slope applies.
 }
 
-A measured calibration is always used as it stands: estimation fills gaps, it does not smooth or
-revise what you observed.
+A calibration is always used as it stands: estimation fills gaps, it does not smooth or revise what
+you observed.
 }
 
 \subsection{Choosing a method}{
@@ -152,23 +160,31 @@ paddle wheels wear: efficiency declines with age, so the slope rises over time, 
 three years earlier is not the slope that applied.
 
 \itemize{
-\item \code{"shared-rate"} (default) pools one annual wear rate across every tag calibrated more than
+\item \code{"projected-shared"} (default) pools one annual wear rate across every tag calibrated more than
 once, while keeping a separate level for each tag. It is the steadiest choice on the short
 calibration series a tag record usually holds.
-\item \code{"per-tag"} fits a separate line to each tag with at least two calibrations and averages
+\item \code{"projected-per-tag"} fits a separate line to each tag with at least two calibrations and averages
 those rates for the rest. It follows an individual tag more closely, but a rate fitted to two or
 three points is mostly noise, so prefer it only with long, clean series.
-\item \code{"fixed-rate"} applies the wear rate you pass as \code{degradation.rate} rather than estimating
+\item \code{"projected-fixed"} applies the wear rate you pass as \code{degradation.rate} rather than estimating
 one. Use it when the calibration record is too thin to carry a trend of its own but a rate is
 available from elsewhere - a longer record, or other tags of the same design.
 }
 
-\code{"in-situ"} is different in kind. It ignores the other tags entirely and estimates the slope from
-the deployment's own diving, so it is the only option when there is no calibration table at all. It
-buys that independence with a stronger assumption about the animal, described next.
+The two \code{"in-situ-*"} methods are different in kind. They ignore the other tags entirely and
+estimate the slope from the animal's own diving, so they are the only option when there is no
+calibration table at all. They buy that independence with a stronger assumption about the animal,
+described next. They differ only in which data the fit rests on: \code{"in-situ-pooled"} combines every
+deployment of a tag and season into one slope, while \code{"in-situ-deployment"} gives each deployment
+its own, falling back to the pooled fit where a record holds too little steep swimming.
+
+Prefer \code{"in-situ-pooled"} where the slope is expected to be a stable property of the tag, and
+\code{"in-situ-deployment"} where it may not be - a tag refouled, remounted or damaged between
+deployments. The between-deployment spread reported for each tag and season is what tells the two
+situations apart.
 
 Put simply: the first three ask what tags like this one have done, and are limited by how much
-calibration history exists; \code{"in-situ"} asks what this animal is doing, and is limited by how much
+calibration history exists; the in-situ methods ask what this animal is doing, and are limited by how much
 steep swimming it did.
 }
 
@@ -222,7 +238,7 @@ over the seabed will not match the distance this speed implies.
 not turn at all. Very slow swimming therefore reads as zero rather than as slow, and time spent
 below that threshold is indistinguishable from rest.
 \item Wear is real and is only partly modelled. Treat a heavily projected slope, and any
-\code{baseline} slope, as approximate.
+fleet-projected slope, as approximate.
 \item The slope describes the tag as it was calibrated. Biofouling, a bent guard, or a different
 mounting position all change it, and none of them are visible in the rotation rate alone.
 \item The in-situ estimate assumes the animal travels along the direction it is pointing. A body
@@ -240,12 +256,16 @@ remembering before reading distances off it.
 tags <- calculatePaddleSpeed(processed, calibration = paddle_cal)
 
 # Gaps filled from the calibrations that do exist, and every tag checked against its own diving.
-tags <- calculatePaddleSpeed(processed, calibration = paddle_cal, method = "shared-rate",
+tags <- calculatePaddleSpeed(processed, calibration = paddle_cal, method = "projected-shared",
                              validate = TRUE)
 attr(tags, "calibration")
 
-# No calibration record at all: estimate every slope from the animals themselves.
-tags <- calculatePaddleSpeed(processed, method = "in-situ")
+# No calibration record at all: estimate every slope from the animals themselves, pooling the
+# deployments of each tag and season.
+tags <- calculatePaddleSpeed(processed, method = "in-situ-pooled")
+
+# A tag suspected of changing between deployments: give each deployment its own slope.
+tags <- calculatePaddleSpeed(processed, method = "in-situ-deployment")
 
 # Reapply a corrected calibration table, saving one annotated file per deployment.
 calculatePaddleSpeed(list.files("./processed", full.names = TRUE), calibration = paddle_cal_v2,

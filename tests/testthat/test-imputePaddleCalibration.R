@@ -18,16 +18,16 @@ test_that("shared-rate recovers a clean degradation rate, keeps measured, and fi
   expect_equal(attr(r, "degradation.rate"), 0.02, tolerance = 1e-8)
   # measured years returned exactly and flagged
   a2018 <- r[r$package_id == "A" & r$year == 2018, ]
-  expect_equal(a2018$slope, 0.10); expect_equal(a2018$slope_source, "measured")
+  expect_equal(a2018$slope, 0.10); expect_equal(a2018$slope_source, "calibrated")
   # interpolated gap year on the shared trend
   a2019 <- r[r$package_id == "A" & r$year == 2019, ]
-  expect_equal(a2019$slope, 0.12, tolerance = 1e-6); expect_equal(a2019$slope_source, "tag-model")
+  expect_equal(a2019$slope, 0.12, tolerance = 1e-6); expect_equal(a2019$slope_source, "projected-from-tag")
 })
 
-test_that("a never-calibrated tag gets a baseline slope from the global level + shared rate", {
+test_that("a never-calibrated tag is projected from the fleet level + shared rate", {
   r <- imputePaddleCalibration(.cal2(), .dep(), verbose = FALSE)
   c2019 <- r[r$package_id == "C" & r$year == 2019, ]
-  expect_equal(c2019$slope_source, "baseline")
+  expect_equal(c2019$slope_source, "projected-from-fleet")
   expect_equal(c2019$n_calibrations, 0L)
   expect_equal(c2019$slope, 0.11, tolerance = 1e-6)        # mean tag-level (-40.27) + 0.02*2019
 })
@@ -39,22 +39,22 @@ test_that("the output is directly consumable by processTagData (required columns
   expect_false(anyNA(r$slope))                                       # gap-free
 })
 
-test_that("keep.measured = FALSE replaces measured values with the model fit", {
+test_that("keep.measured = FALSE replaces calibrated values with the model fit", {
   on  <- imputePaddleCalibration(.cal2(), .dep(), keep.measured = TRUE,  verbose = FALSE)
   off <- imputePaddleCalibration(.cal2(), .dep(), keep.measured = FALSE, verbose = FALSE)
-  expect_true(any(on$slope_source == "measured"))
-  expect_false(any(off$slope_source == "measured"))                  # nothing flagged measured
+  expect_true(any(on$slope_source == "calibrated"))
+  expect_false(any(off$slope_source == "calibrated"))                  # nothing flagged measured
 })
 
 test_that("fixed-rate uses the supplied degradation rate", {
-  r <- imputePaddleCalibration(.cal2(), .dep(), method = "fixed-rate", degradation.rate = 0.05, verbose = FALSE)
+  r <- imputePaddleCalibration(.cal2(), .dep(), method = "projected-fixed", degradation.rate = 0.05, verbose = FALSE)
   expect_equal(attr(r, "degradation.rate"), 0.05)
   # A measured 2018 = 0.10; level = 0.10 - 0.05*2018; predict 2019 = level + 0.05*2019 = 0.15
   expect_equal(r[r$package_id == "A" & r$year == 2019, ]$slope, 0.12, tolerance = 1e-6)  # mean of the 2 detrended levels
 })
 
 test_that("method = 'fixed-rate' requires degradation.rate", {
-  expect_error(imputePaddleCalibration(.cal2(), .dep(), method = "fixed-rate", verbose = FALSE), "degradation.rate")
+  expect_error(imputePaddleCalibration(.cal2(), .dep(), method = "projected-fixed", verbose = FALSE), "degradation.rate")
 })
 
 test_that("a negative estimated rate is floored at 0 with a warning (non.negative.rate)", {
@@ -69,7 +69,7 @@ test_that("slope.range clamps imputed slopes (not measured) and warns", {
   expect_warning(
     r <- imputePaddleCalibration(.cal2(), .dep(), slope.range = c(0.05, 0.115), verbose = FALSE),
     "Clamped")
-  expect_true(all(r$slope[r$slope_source != "measured"] <= 0.115))
+  expect_true(all(r$slope[r$slope_source != "calibrated"] <= 0.115))
   expect_equal(r[r$package_id == "A" & r$year == 2018, ]$slope, 0.10)   # measured 0.10 kept (in range anyway)
 })
 
@@ -105,8 +105,8 @@ test_that("a single calibrated tag works (1-level factor edge case)", {
                     stringsAsFactors = FALSE)
   r <- imputePaddleCalibration(cal, dep, verbose = FALSE)
   expect_equal(attr(r, "degradation.rate"), 0.007, tolerance = 1e-6)   # (0.088-0.074)/2
-  expect_equal(r[r$package_id == "51", ]$slope_source, "tag-model")    # 2022 projected from the one tag
-  expect_equal(r[r$package_id == "999", ]$slope_source, "baseline")    # uncalibrated -> baseline
+  expect_equal(r[r$package_id == "51", ]$slope_source, "projected-from-tag")    # 2022 projected from the one tag
+  expect_equal(r[r$package_id == "999", ]$slope_source, "projected-from-fleet")    # uncalibrated -> baseline
   expect_false(anyNA(r$slope))
 })
 
@@ -115,6 +115,6 @@ test_that("the verbose block is a standardized cli block", {
     imputePaddleCalibration(.cal2(), .dep(), verbose = 2))), collapse = "\n")
   expect_match(out, "imputePaddleCalibration")          # framed header
   expect_match(out, "degradation rate:")              # detailed diagnostic
-  expect_match(out, "filled: measured")               # provenance counts
+  expect_match(out, "filled: calibrated")               # provenance counts
   expect_match(out, "SUMMARY")
 })

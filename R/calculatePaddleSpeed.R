@@ -23,16 +23,15 @@
 #' @param data Processed deployments, in any of the forms used across the pipeline: a list of datasets,
 #'   a single table with an `id.col`, or a character vector of `.rds` paths. The output of
 #'   [processTagData()] is expected.
-#' @param calibration A table of measured calibrations with columns `year`, `package_id` and `slope`.
-#'   A row matching a deployment's own tag and season is used exactly as measured. `NULL` (default)
-#'   supplies no calibration at all, in which case `method = "in-situ"` is the only way to get a speed.
-#' @param method How to fill a gap when a deployment has no measured calibration of its own.
-#'   `"shared-rate"` (default), `"fixed-rate"` and `"per-tag"` estimate the missing slope from the
-#'   calibrations you do have, following [imputePaddleCalibration()]; `"in-situ"` estimates it from the
-#'   deployment itself. A measured calibration is never overridden, whichever method is chosen. See
-#'   Details.
+#' @param calibration A table of calibrations with columns `year`, `package_id` and `slope`. A row
+#'   matching a deployment's own tag and season is used exactly as measured. `NULL` (default) supplies
+#'   no calibration at all, in which case only the in-situ methods can produce a speed.
+#' @param method How to fill a gap when a deployment has no calibration of its own. The three
+#'   `"projected-*"` methods carry the calibrations you do have forward in time, following
+#'   [imputePaddleCalibration()]; the two `"in-situ-*"` methods estimate the slope from the animal's own
+#'   diving. A calibration is never overridden, whichever method is chosen. See Details.
 #' @param degradation.rate The annual increase in the calibration slope, describing how fast the paddle
-#'   wheel loses efficiency. Required for `method = "fixed-rate"`; for the other methods it is an
+#'   wheel loses efficiency. Required for `method = "projected-fixed"`; for the other methods it is an
 #'   optional fallback, used only when there are too few repeat calibrations to estimate a rate from.
 #'   `NULL` (default) supplies none.
 #' @param validate Whether to also check each calibration against the in-situ estimate and report how
@@ -70,19 +69,21 @@
 #' Every deployment's speed rests on one slope, and `slope_source` records where that slope came from:
 #'
 #' \itemize{
-#'   \item `"measured"` - a calibration exists for that tag and that season, and is used exactly as
+#'   \item `"calibrated"` - a calibration exists for that tag and that season, and is used exactly as
 #'     measured. This is the one to prefer.
-#'   \item `"tag-model"` - no calibration for that tag and season, but the tag was calibrated in other
-#'     years, so its slope is projected from its own record.
-#'   \item `"baseline"` - the tag was never calibrated, so its slope starts from the level typical of the
-#'     other tags.
-#'   \item `"in-situ"` - estimated from the deployment itself, with `method = "in-situ"`.
+#'   \item `"projected-from-tag"` - no calibration for that tag and season, but the tag was calibrated
+#'     in other years, so its slope is carried forward from its own record.
+#'   \item `"projected-from-fleet"` - the tag was never calibrated, so its slope starts from the level
+#'     typical of the other tags and is projected from there.
+#'   \item `"in-situ-deployment"` - fitted to this deployment's own steep swimming.
+#'   \item `"in-situ-pooled"` - fitted to the steep swimming of every deployment sharing that tag and
+#'     season. Also what a deployment falls back to when its own record is too short.
 #'   \item `"as-recorded"` - the tag wrote a speed directly and recorded no rotation rate, so its values
 #'     are kept untouched and no slope applies.
 #' }
 #'
-#' A measured calibration is always used as it stands: estimation fills gaps, it does not smooth or
-#' revise what you observed.
+#' A calibration is always used as it stands: estimation fills gaps, it does not smooth or revise what
+#' you observed.
 #'
 #' ## Choosing a method
 #'
@@ -94,23 +95,31 @@
 #' three years earlier is not the slope that applied.
 #'
 #' \itemize{
-#'   \item `"shared-rate"` (default) pools one annual wear rate across every tag calibrated more than
+#'   \item `"projected-shared"` (default) pools one annual wear rate across every tag calibrated more than
 #'     once, while keeping a separate level for each tag. It is the steadiest choice on the short
 #'     calibration series a tag record usually holds.
-#'   \item `"per-tag"` fits a separate line to each tag with at least two calibrations and averages
+#'   \item `"projected-per-tag"` fits a separate line to each tag with at least two calibrations and averages
 #'     those rates for the rest. It follows an individual tag more closely, but a rate fitted to two or
 #'     three points is mostly noise, so prefer it only with long, clean series.
-#'   \item `"fixed-rate"` applies the wear rate you pass as `degradation.rate` rather than estimating
+#'   \item `"projected-fixed"` applies the wear rate you pass as `degradation.rate` rather than estimating
 #'     one. Use it when the calibration record is too thin to carry a trend of its own but a rate is
 #'     available from elsewhere - a longer record, or other tags of the same design.
 #' }
 #'
-#' `"in-situ"` is different in kind. It ignores the other tags entirely and estimates the slope from
-#' the deployment's own diving, so it is the only option when there is no calibration table at all. It
-#' buys that independence with a stronger assumption about the animal, described next.
+#' The two `"in-situ-*"` methods are different in kind. They ignore the other tags entirely and
+#' estimate the slope from the animal's own diving, so they are the only option when there is no
+#' calibration table at all. They buy that independence with a stronger assumption about the animal,
+#' described next. They differ only in which data the fit rests on: `"in-situ-pooled"` combines every
+#' deployment of a tag and season into one slope, while `"in-situ-deployment"` gives each deployment
+#' its own, falling back to the pooled fit where a record holds too little steep swimming.
+#'
+#' Prefer `"in-situ-pooled"` where the slope is expected to be a stable property of the tag, and
+#' `"in-situ-deployment"` where it may not be - a tag refouled, remounted or damaged between
+#' deployments. The between-deployment spread reported for each tag and season is what tells the two
+#' situations apart.
 #'
 #' Put simply: the first three ask what tags like this one have done, and are limited by how much
-#' calibration history exists; `"in-situ"` asks what this animal is doing, and is limited by how much
+#' calibration history exists; the in-situ methods ask what this animal is doing, and are limited by how much
 #' steep swimming it did.
 #'
 #' ## The in-situ estimate
@@ -160,7 +169,7 @@
 #'     not turn at all. Very slow swimming therefore reads as zero rather than as slow, and time spent
 #'     below that threshold is indistinguishable from rest.
 #'   \item Wear is real and is only partly modelled. Treat a heavily projected slope, and any
-#'     `baseline` slope, as approximate.
+#'     fleet-projected slope, as approximate.
 #'   \item The slope describes the tag as it was calibrated. Biofouling, a bent guard, or a different
 #'     mounting position all change it, and none of them are visible in the rotation rate alone.
 #'   \item The in-situ estimate assumes the animal travels along the direction it is pointing. A body
@@ -184,7 +193,13 @@
 #'   - `in_situ_n` and `in_situ_r` - the number of steep-swimming samples behind the estimate, and how
 #'     closely depth change tracked rotation rate and pitch across them.
 #'   - `agreement` and `flag` - the ratio of the two slopes, and whether it falls outside
-#'     `agreement.threshold`.
+#'     `agreement.threshold`. Reported only where the applied slope is independent of the animal's
+#'     diving, so it is empty for a slope that came from an in-situ fit.
+#'   - `slope_k`, `slope_cv`, `slope_ratio`, `slope_rel_se` - the between-deployment spread of the
+#'     per-deployment in-situ fits within that tag and season: how many deployments contributed, their
+#'     coefficient of variation, their largest-to-smallest ratio, and the median precision of an
+#'     individual fit. Reported, never flagged; a spread far exceeding that precision means the slope
+#'     is not behaving as a fixed property of the tag.
 #'
 #'   Each deployment also carries the slope it used, where that slope came from and how it ended up in
 #'   its own processing record, so the provenance survives being saved and reloaded.
@@ -199,12 +214,16 @@
 #' tags <- calculatePaddleSpeed(processed, calibration = paddle_cal)
 #'
 #' # Gaps filled from the calibrations that do exist, and every tag checked against its own diving.
-#' tags <- calculatePaddleSpeed(processed, calibration = paddle_cal, method = "shared-rate",
+#' tags <- calculatePaddleSpeed(processed, calibration = paddle_cal, method = "projected-shared",
 #'                              validate = TRUE)
 #' attr(tags, "calibration")
 #'
-#' # No calibration record at all: estimate every slope from the animals themselves.
-#' tags <- calculatePaddleSpeed(processed, method = "in-situ")
+#' # No calibration record at all: estimate every slope from the animals themselves, pooling the
+#' # deployments of each tag and season.
+#' tags <- calculatePaddleSpeed(processed, method = "in-situ-pooled")
+#'
+#' # A tag suspected of changing between deployments: give each deployment its own slope.
+#' tags <- calculatePaddleSpeed(processed, method = "in-situ-deployment")
 #'
 #' # Reapply a corrected calibration table, saving one annotated file per deployment.
 #' calculatePaddleSpeed(list.files("./processed", full.names = TRUE), calibration = paddle_cal_v2,
@@ -215,7 +234,8 @@
 
 calculatePaddleSpeed <- function(data,
                                  calibration = NULL,
-                                 method = c("shared-rate", "fixed-rate", "per-tag", "in-situ"),
+                                 method = c("projected-shared", "projected-fixed", "projected-per-tag",
+                                            "in-situ-deployment", "in-situ-pooled"),
                                  degradation.rate = NULL,
                                  validate = FALSE,
                                  agreement.threshold = 0.35,
@@ -246,15 +266,16 @@ calculatePaddleSpeed <- function(data,
   .assert_number(min.pitch, "min.pitch", min = 0)
   if (min.pitch >= 90) .abort("{.arg min.pitch} must be below 90 degrees; got {.val {min.pitch}}.")
   if (!is.null(degradation.rate)) .assert_number(degradation.rate, "degradation.rate")
-  if (identical(method, "fixed-rate") && is.null(degradation.rate))
-    .abort(c("{.code method = \"fixed-rate\"} needs {.arg degradation.rate} to be supplied.",
+  in_situ_method <- method %in% c("in-situ-deployment", "in-situ-pooled")
+  if (identical(method, "projected-fixed") && is.null(degradation.rate))
+    .abort(c("{.code method = \"projected-fixed\"} needs {.arg degradation.rate} to be supplied.",
              "i" = "It is the annual increase in the calibration slope. The other methods estimate it
                     from the calibrations you already have."))
   calibration <- .assert_calibration(calibration)
-  if (is.null(calibration) && !identical(method, "in-situ"))
+  if (is.null(calibration) && !in_situ_method)
     .abort(c("No {.arg calibration} was supplied, so there is nothing to fill the gaps from.",
-             "i" = "Pass a calibration table, or use {.code method = \"in-situ\"} to estimate the slope
-                    from the deployments themselves."))
+             "i" = "Pass a calibration table, or use {.code method = \"in-situ-pooled\"} to estimate
+                    the slope from the deployments themselves."))
 
   src <- .resolveInput(data, id.col)
   # header config, one fact per line, shown once and never repeated per deployment. The calibration
@@ -262,9 +283,12 @@ calculatePaddleSpeed <- function(data,
   .log_header(lvl, "calculatePaddleSpeed", "Converting paddle rotation into swimming speed",
               bullets = sprintf("Input: %d deployment%s", src$n, if (src$n != 1) "s" else ""),
               arrow = c(
-                if (identical(method, "in-situ"))
-                  "Calibration: in-situ (every slope estimated from the deployment's own diving)"
-                else sprintf("Calibration: %s (missing slopes estimated from the measured ones)", method),
+                if (identical(method, "in-situ-deployment"))
+                  "Calibration: in situ, from each deployment's own diving (pooled where too little)"
+                else if (identical(method, "in-situ-pooled"))
+                  "Calibration: in situ, pooled across each tag-season's diving"
+                else sprintf("Calibration: %s (missing slopes projected from the calibrated ones)",
+                             method),
                 if (!is.null(degradation.rate))
                   sprintf("Wear rate: %g per year", degradation.rate),
                 if (!is.null(smoothing) && smoothing > 0)
@@ -283,25 +307,30 @@ calculatePaddleSpeed <- function(data,
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
     scan[[i]] <- .paddleScanOne(data.table::as.data.table(src$get(i)), src$ids[i], min.pitch,
-                                need.insitu = validate || identical(method, "in-situ"))
+                                need.insitu = validate || in_situ_method)
   }
   .log_progress_done(pb)
 
   ## ---- resolve one slope per tag and season -----------------------------------------------------
-  cal <- .paddleResolve(scan, calibration, method, degradation.rate, agreement.threshold, lvl)
+  res_cal <- .paddleResolve(scan, calibration, method, degradation.rate, agreement.threshold, lvl)
+  cal <- res_cal$cal; dep <- res_cal$dep
 
   ## ---- pass 2: apply -----------------------------------------------------------------------------
   data_list <- vector("list", src$n); saved <- vector("list", src$n)
   ids <- rep(NA_character_, src$n); statuses <- character(0)
+  speeds <- rep(NA_real_, src$n)          # per-deployment median speed, for the cohort roll-up
 
   for (i in seq_len(src$n)) {
     x <- data.table::as.data.table(src$get(i))
     id <- as.character(.getMeta(x)$id %||% src$ids[i]); ids[i] <- id
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, src$n))
-    row <- cal[match(scan[[i]]$key, cal$key), , drop = FALSE]
-    res <- .paddleApplyOne(x, scan[[i]], row, smoothing, max.speed)
+    # the slope a deployment uses is its own row: under `in-situ-deployment` it can differ from the
+    # tag-season value, which is why the resolver returns a per-deployment table as well
+    drow <- dep[match(scan[[i]]$id, dep$id), , drop = FALSE]
+    res <- .paddleApplyOne(x, scan[[i]], drow, smoothing, max.speed)
     statuses <- c(statuses, res$status)
-    .logPaddleDeployment(lvl, id, scan[[i]], res)
+    if (!is.null(res$speed)) speeds[i] <- res$speed[["med"]]
+    .logPaddleDeployment(lvl, id, scan[[i]], res, drow)
 
     meta <- .getMeta(res$data)
     meta <- .appendProcessing(meta, "calculatePaddleSpeed",
@@ -309,9 +338,12 @@ calculatePaddleSpeed <- function(data,
                               method = method, degradation_rate = degradation.rate %||% NA_real_,
                               smoothing_s = smoothing %||% NA_real_,
                               max_speed_kmh = max.speed %||% NA_real_,
-                              in_situ_slope = if (nrow(row)) row$in_situ_slope else NA_real_,
-                              in_situ_n = if (nrow(row)) row$in_situ_n else NA_integer_,
-                              agreement = if (nrow(row)) row$agreement else NA_real_,
+                              # this deployment's own in-situ fit, not the tag-season's: a
+                              # per-deployment record should describe the deployment
+                              in_situ_slope = if (nrow(drow)) drow$own_slope else NA_real_,
+                              in_situ_n = if (nrow(drow)) drow$own_n else NA_integer_,
+                              in_situ_seconds = if (nrow(drow)) drow$own_secs else NA_real_,
+                              agreement = if (nrow(drow)) drow$agreement else NA_real_,
                               status = res$status)
     x <- .restoreMeta(res$data, meta)
 
@@ -323,7 +355,7 @@ calculatePaddleSpeed <- function(data,
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .reportPaddleCohort(lvl, cal, statuses, agreement.threshold, output.dir, plot.file)
+    .reportPaddleCohort(lvl, cal, dep, statuses, speeds, agreement.threshold, output.dir, plot.file)
     .log_runtime(lvl, start.time)
   }
   if (isTRUE(plot) || !is.null(plot.file)) .renderPaddleDiagnostic(cal, plot = plot, plot.file = plot.file)
@@ -332,7 +364,8 @@ calculatePaddleSpeed <- function(data,
   # `return.data = FALSE` with no `output.dir` leaves nothing to return, and NULL takes no attributes -
   # which is exactly the run where the calibration table is the only thing the caller wanted.
   if (is.null(out)) out <- character(0)
-  attr(out, "calibration") <- cal[, setdiff(names(cal), c("key", "has_paddle", "needs_slope",
-                                                          "as_recorded")), drop = FALSE]
+  attr(out, "calibration") <- cal[, setdiff(names(cal),
+                                          c("key", "has_paddle", "needs_slope", "as_recorded",
+                                            "in_situ_viable")), drop = FALSE]
   out
 }

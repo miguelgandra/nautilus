@@ -650,8 +650,9 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 
 # calculatePaddleSpeed() turns the rotation rate recorded in STEP 11 into a swimming speed, using one
 # calibration slope per tag and season. Tags that were never calibrated get a slope estimated from the
-# ones that were ("shared-rate"); `method = "in-situ"` estimates it from the deployment itself instead,
-# from how fast the animal changed depth while swimming at a steep angle.
+# ones that were ("projected-shared"); the "in-situ-*" methods estimate it from the animal itself
+# instead, from how fast it changed depth while swimming at a steep angle - either pooled across each
+# tag-season ("in-situ-pooled") or separately for each deployment ("in-situ-deployment").
 #
 # validate = TRUE additionally checks every tag against that same in-situ estimate, whether or not it
 # needed one. The agreement is their ratio: 1 means the two agree, and anything more than
@@ -662,7 +663,7 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 paddle <- calculatePaddleSpeed(
   data        = list.files("./data interim/05_processed", full.names = TRUE),
   calibration = calibration_regression,
-  method      = "shared-rate",   # fill missing slopes from the calibrations that do exist
+  method      = "projected-shared",  # fill missing slopes from the calibrations that do exist
   validate    = TRUE,            # off by default; check every tag against the animal's own diving
   plot.file   = "./plots/paddle_calibration.pdf",
   return.data = FALSE,

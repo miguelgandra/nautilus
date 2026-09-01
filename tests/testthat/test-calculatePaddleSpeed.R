@@ -27,7 +27,7 @@ test_that("a measured calibration is applied as slope x frequency and recovers t
   out <- .pwRun(list(A = .pwTag("A", "71")), calibration = .pwCal())
   expect_equal(median(out$A$paddle_speed, na.rm = TRUE), 1.2, tolerance = 0.02)
   cal <- attr(out, "calibration")
-  expect_identical(cal$slope_source, "measured")
+  expect_identical(cal$slope_source, "calibrated")
   expect_equal(cal$slope, 0.07)
   # Exactly linear in the retained frequency, which is what makes a recalibration exact and cheap.
   # Checked with smoothing off: the default smooths the frequency first, so the pointwise ratio then
@@ -79,14 +79,14 @@ test_that("validation is off by default: the job is to calculate speed, not to a
   expect_true(asked$flag)
 })
 
-test_that("method = 'in-situ' fills a gap but never overrides a measured value", {
+test_that("method = 'in-situ-pooled' fills a gap but never overrides a calibratedd value", {
   set.seed(4)
   tags <- list(A = .pwTag("A", "71"), C = .pwTag("C", "99", slope = 0.11, speed = 1.4))
-  out <- .pwRun(tags, calibration = .pwCal(), method = "in-situ")
+  out <- .pwRun(tags, calibration = .pwCal(), method = "in-situ-pooled")
   cal <- attr(out, "calibration")
-  expect_identical(cal$slope_source[cal$package_id == "71"], "measured")
+  expect_identical(cal$slope_source[cal$package_id == "71"], "calibrated")
   expect_equal(cal$slope[cal$package_id == "71"], 0.07)      # untouched
-  expect_identical(cal$slope_source[cal$package_id == "99"], "in-situ")
+  expect_identical(cal$slope_source[cal$package_id == "99"], "in-situ-pooled")
   expect_equal(cal$slope[cal$package_id == "99"], 0.11, tolerance = 0.03)
   expect_equal(median(out$C$paddle_speed, na.rm = TRUE), 1.4, tolerance = 0.05)
 })
@@ -116,7 +116,7 @@ test_that("the provenance travels with each deployment, so it survives a save an
                nautilus:::.getMeta(readRDS(f))$processing)
   p <- pr[[length(pr)]]
   expect_equal(p$slope, 0.07)
-  expect_identical(p$slope_source, "measured")
+  expect_identical(p$slope_source, "calibrated")
   expect_equal(p$in_situ_slope, 0.07, tolerance = 0.02)
 })
 
@@ -146,7 +146,7 @@ test_that("inputs are validated, and a missing calibration is refused rather tha
                "below 90")
   expect_error(calculatePaddleSpeed(tags, calibration = .pwCal(), max.speed = -1, verbose = FALSE))
   # with no calibration at all, in-situ is a complete route
-  out <- .pwRun(tags, method = "in-situ")
+  out <- .pwRun(tags, method = "in-situ-pooled")
   expect_equal(attr(out, "calibration")$slope, 0.07, tolerance = 0.03)
 })
 
@@ -214,7 +214,7 @@ test_that("a measured calibration is kept even where no deployment needs it", {
   r <- cal[cal$package_id == "71", ]
   # a real drop-test result is an observation, not a guess, so it is reported rather than blanked
   expect_equal(r$slope, 0.0649)
-  expect_identical(r$slope_source, "measured")
+  expect_identical(r$slope_source, "calibrated")
 })
 
 
@@ -261,7 +261,7 @@ test_that("the header carries the run settings, and not the calibration it goes 
   set.seed(11)
   out <- .pwLog(.pwCohort(), calibration = .pwCal3(), validate = TRUE, smoothing = 2, max.speed = 8)
   expect_match(out, "Input: 4 deployments")
-  expect_match(out, "Calibration: shared-rate")
+  expect_match(out, "Calibration: projected-shared")
   expect_match(out, "Smoothing: 2 s on the rotation frequency")
   expect_match(out, "Speed cap: 8 km/h")
   expect_match(out, "Validation: in situ")
@@ -269,7 +269,7 @@ test_that("the header carries the run settings, and not the calibration it goes 
   # the resolved slopes belong to the SUMMARY: nothing above the closing frame may quote one
   # The resolved slopes belong to the SUMMARY, so nothing above the first deployment block may quote
   # one. Tested on marks only a RESULT can produce: the settings line legitimately contains the word
-  # "measured" while describing where gap-filling gets its slopes from.
+  # "calibrated" while describing where gap-filling gets its slopes from.
   hdr <- .pwBetween(out, to = "PIN_02")
   expect_false(grepl("0.0736", hdr, fixed = TRUE))    # a resolved slope
   expect_false(grepl("pkg ", hdr, fixed = TRUE))      # the table's Tag column
@@ -293,7 +293,7 @@ test_that("each deployment gets a block naming the slope applied, its source, an
   expect_match(out, "PIN_02 \\(1/4\\)")
   expect_match(out, "PIN_04 \\(4/4\\)")               # the counter runs over the whole cohort
   expect_match(out, "input: 2 K rows .* 20 Hz .* package 51 .* 2019")
-  expect_match(out, "calibration: 0.0736 m/s per Hz .* measured")
+  expect_match(out, "calibration: 0.0736 m/s per Hz .* calibrated")
   expect_match(out, "speed: +median [0-9.]+ m/s \\([0-9.]+ .* [0-9.]+\\)")
   expect_match(out, "PIN_02 processed")
 
@@ -350,33 +350,44 @@ test_that("the SUMMARY tally is mutually exclusive and adds up to the cohort", {
 })
 
 
-test_that("the SUMMARY carries the calibration table, one row per tag and season", {
+test_that("the SUMMARY summarises the calibration instead of printing the whole table", {
   set.seed(18)
   out <- .pwLog(.pwCohort(), calibration = .pwCal3(), validate = TRUE)
   tail <- .pwBetween(out, from = "SUMMARY")
   expect_match(tail, "Calibration")
-  expect_match(tail, "Tag .*Slope .*Source .*In situ .*Agreement .*Deployments")
-  expect_match(tail, "2019 / pkg 51 +0.0736 +measured")
-  expect_match(tail, "2020 / pkg 52")
+  expect_match(tail, "Tag-seasons:")
+  expect_match(tail, "calibrated")                             # provenance counted, not tabulated
+  expect_match(tail, "Slopes applied:")
+  expect_match(tail, "attr\\(x, \"calibration\"\\)")             # where the full table lives
+
+  # the per-tag-season table is gone from the console: no header row, no one-row-per-stratum listing
+  expect_false(grepl("Tag  ", tail, fixed = TRUE))
+  expect_false(grepl("2019 / pkg 51", tail, fixed = TRUE))
 })
 
 
-test_that("the in-situ columns appear only when there is an in-situ estimate to show", {
+test_that("the cohort roll-ups follow the calculateTailBeats form", {
   set.seed(19)
-  out <- .pwLog(.pwCohort(), calibration = .pwCal3())          # validate = FALSE
+  out <- .pwLog(.pwCohort(), calibration = .pwCal3(), validate = TRUE)
   tail <- .pwBetween(out, from = "SUMMARY")
-  expect_match(tail, "Tag .*Slope .*Source .*Deployments")
-  expect_false(grepl("In situ", tail, fixed = TRUE))           # no column of dashes
-  expect_false(grepl("Agreement", tail, fixed = TRUE))
+  expect_match(tail, "speed: +median [0-9.]+ m/s \\(IQR [0-9.]+.[0-9.]+, range")
+  expect_match(tail, "agreement: +median [0-9.]+ \\(IQR")
+  expect_match(tail, "steep swimming: +median [0-9.]+% of record")
+
+  # without validation there is no in-situ fit, so those two roll-ups have nothing to report
+  set.seed(20)
+  bare <- .pwBetween(.pwLog(.pwCohort(), calibration = .pwCal3()), from = "SUMMARY")
+  expect_match(bare, "speed: +median")
+  expect_false(grepl("agreement:", bare, fixed = TRUE))
+  expect_false(grepl("steep swimming:", bare, fixed = TRUE))
 })
 
 
-test_that("a flagged calibration is marked in its own row and named once in the attention line", {
-  set.seed(20)
+test_that("a flagged calibration is named once in the attention line", {
+  set.seed(21)
   tags <- list(A = .pwTag("PIN_02", "51", 2019, n = 4000))
   out <- .pwLog(tags, calibration = .pwCal(0.07 * 1.8, "51", 2019), validate = TRUE)
   tail <- .pwBetween(out, from = "SUMMARY")
-  expect_match(tail, "2019 / pkg 51.*!")                       # the marker rides the agreement column
   expect_match(tail, "1 calibration differs by more than 35% from the in-situ estimate")
   expect_match(tail, "2019/pkg 51")
 
@@ -416,12 +427,13 @@ test_that("the output pointers are listed only when something was written", {
 
 test_that(".paddleSourceLabel gives a prose form for a line and a short form for a table column", {
   lbl <- nautilus:::.paddleSourceLabel
-  expect_identical(lbl("measured"), "measured")
-  expect_identical(lbl("tag-model"), "estimated (tag model)")
-  expect_identical(lbl("tag-model", long = FALSE), "tag model")
-  expect_identical(lbl("baseline"), "estimated (baseline)")
-  expect_identical(lbl("baseline", long = FALSE), "baseline")
-  expect_identical(lbl("in-situ", long = FALSE), "in situ")
+  expect_identical(lbl("calibrated"), "calibrated")
+  expect_identical(lbl("projected-from-tag"), "projected from this tag")
+  expect_identical(lbl("projected-from-tag", long = FALSE), "from tag")
+  expect_identical(lbl("projected-from-fleet"), "projected from other tags")
+  expect_identical(lbl("projected-from-fleet", long = FALSE), "from fleet")
+  expect_identical(lbl("in-situ-deployment"), "in situ, this deployment")
+  expect_identical(lbl("in-situ-pooled", long = FALSE), "in situ (pooled)")
   expect_identical(lbl("as-recorded", long = FALSE), "as recorded")
   expect_true(is.na(lbl(NA_character_)))
   expect_identical(lbl("something-new"), "estimated")      # an unknown source still reads sensibly
@@ -436,18 +448,18 @@ test_that("nothing is printed at all when verbose is off", {
 
 
 # ---- the wear rate -----------------------------------------------------------------------------
-# A missing slope is projected forward at an annual wear rate. "fixed-rate" takes that rate from the
+# A missing slope is projected forward at an annual wear rate. "projected-fixed" takes that rate from the
 # caller instead of estimating it, so it cannot run without one; the other methods fall back to it only
 # when the calibrations are too sparse to estimate a rate of their own.
 
 test_that("'fixed-rate' projects a missing slope at exactly the rate supplied", {
   set.seed(40)
   out <- .pwRun(list(A = .pwTag("A", "51", 2022, n = 2000)),
-                calibration = .pwCal(0.074, "51", 2019), method = "fixed-rate",
+                calibration = .pwCal(0.074, "51", 2019), method = "projected-fixed",
                 degradation.rate = 0.01)
   cal <- attr(out, "calibration")
   expect_equal(cal$slope, 0.074 + 3 * 0.01)        # three years of wear at the stated rate
-  expect_identical(cal$slope_source, "tag-model")
+  expect_identical(cal$slope_source, "projected-from-tag")
 })
 
 
@@ -455,7 +467,7 @@ test_that("'fixed-rate' aborts when no rate is supplied, naming the argument tha
   set.seed(41)
   expect_error(
     calculatePaddleSpeed(list(A = .pwTag("A", "51", 2022, n = 2000)),
-                         calibration = .pwCal(0.074, "51", 2019), method = "fixed-rate", verbose = 0),
+                         calibration = .pwCal(0.074, "51", 2019), method = "projected-fixed", verbose = 0),
     "degradation.rate")
 })
 
@@ -483,7 +495,7 @@ test_that("the wear rate is reported on its own header line, and only when suppl
   set.seed(44)
   tags <- list(A = .pwTag("A", "51", 2022, n = 2000))
   cal <- .pwCal(0.074, "51", 2019)
-  expect_match(.pwLog(tags, calibration = cal, method = "fixed-rate", degradation.rate = 0.01),
+  expect_match(.pwLog(tags, calibration = cal, method = "projected-fixed", degradation.rate = 0.01),
                "Wear rate: 0.01 per year")
   expect_false(grepl("Wear rate", .pwLog(tags, calibration = cal), fixed = TRUE))
 })
@@ -492,9 +504,136 @@ test_that("the wear rate is reported on its own header line, and only when suppl
 test_that("the wear rate travels in each deployment's processing record", {
   set.seed(45)
   out <- .pwRun(list(A = .pwTag("A", "51", 2022, n = 2000)),
-                calibration = .pwCal(0.074, "51", 2019), method = "fixed-rate",
+                calibration = .pwCal(0.074, "51", 2019), method = "projected-fixed",
                 degradation.rate = 0.01)
   pr <- nautilus:::.getMeta(out$A)$processing
   expect_equal(pr[[length(pr)]]$degradation_rate, 0.01)
-  expect_identical(pr[[length(pr)]]$method, "fixed-rate")
+  expect_identical(pr[[length(pr)]]$method, "projected-fixed")
+})
+
+
+# ---- estimation scope: in-situ-deployment vs in-situ-pooled ----------------------------------------
+# The two methods run one estimator over different data. Pooling weights each deployment by its own
+# Sxx, so these tests check WHICH data the slope came from, not the arithmetic of the fit.
+
+# a deployment whose steep swimming is confined to one burst, so its usable duration is controllable
+.pwBurst <- function(id, pkg, year = 2019, slope = 0.07, speed = 1.2, n = 40000, hz = 20,
+                     steep_n = 20000L) {
+  t0 <- as.POSIXct(paste0(year, "-06-01"), tz = "UTC")
+  pit <- c(rep(-40, steep_n), rep(-2, n - steep_n))       # 2 deg is below any sane min.pitch
+  sp  <- speed + stats::rnorm(n, 0, 0.02)
+  d <- data.table::data.table(ID = id, datetime = t0 + seq_len(n) / hz, depth = 20, pitch = pit,
+                              vertical_velocity = sp * sin(-pit * pi / 180),
+                              paddle_freq = sp / slope)
+  m <- nautilus:::.newNautilusMeta(); m$id <- id
+  m$tag$package_id <- pkg; m$tag$paddle_wheel <- TRUE; m$deployment$datetime <- t0
+  nautilus:::new_nautilus_tag(d, m)
+}
+
+
+test_that("in-situ-pooled gives one slope per tag-season, in-situ-deployment one per deployment", {
+  set.seed(30)
+  tags <- list(A = .pwTag("D1", "77", 2019, slope = 0.06, n = 20000),
+               B = .pwTag("D2", "77", 2019, slope = 0.09, n = 20000))
+
+  pooled <- .pwRun(tags, method = "in-situ-pooled", smoothing = NULL)
+  s1 <- unique(round(pooled$D1$paddle_speed / data.table::as.data.table(pooled$D1)$paddle_freq, 8))
+  s2 <- unique(round(pooled$D2$paddle_speed / data.table::as.data.table(pooled$D2)$paddle_freq, 8))
+  expect_equal(s1[is.finite(s1)], s2[is.finite(s2)])       # same slope applied to both
+
+  perdep <- .pwRun(tags, method = "in-situ-deployment", smoothing = NULL)
+  p1 <- unique(round(perdep$D1$paddle_speed / data.table::as.data.table(perdep$D1)$paddle_freq, 8))
+  p2 <- unique(round(perdep$D2$paddle_speed / data.table::as.data.table(perdep$D2)$paddle_freq, 8))
+  expect_false(isTRUE(all.equal(p1[is.finite(p1)], p2[is.finite(p2)])))
+
+  # each recovers its OWN truth, which pooling necessarily cannot
+  expect_equal(p1[is.finite(p1)], 0.06, tolerance = 0.05)
+  expect_equal(p2[is.finite(p2)], 0.09, tolerance = 0.05)
+})
+
+
+test_that("neither in-situ method displaces a calibration that exists", {
+  set.seed(31)
+  tags <- list(A = .pwTag("D1", "77", 2019, n = 20000))
+  for (m in c("in-situ-deployment", "in-situ-pooled")) {
+    cal <- attr(.pwRun(tags, calibration = .pwCal(0.0123, "77", 2019), method = m), "calibration")
+    expect_identical(cal$slope_source, "calibrated")
+    expect_equal(cal$slope, 0.0123)
+  }
+})
+
+
+test_that("a deployment with too little steep swimming falls back to the pooled fit, and says so", {
+  set.seed(32)
+  # 400 samples at 20 Hz = 20 s, below the 60 s floor; its stratum-mate has plenty
+  tags <- list(A = .pwBurst("SHORT", "78", 2019, steep_n = 400L),
+               B = .pwBurst("LONG",  "78", 2019, steep_n = 20000L))
+  out <- .pwRun(tags, method = "in-situ-deployment")
+  rec <- function(x) { p <- nautilus:::.getMeta(x)$processing; p[[length(p)]] }
+  expect_identical(rec(out$SHORT)$slope_source, "in-situ-pooled")     # fell back
+  expect_identical(rec(out$LONG)$slope_source, "in-situ-deployment")  # used its own
+
+  # the floor is what did it: the short deployment's own fit exists, it is just not viable
+  expect_true(is.finite(rec(out$SHORT)$in_situ_slope))
+  expect_lt(rec(out$SHORT)$in_situ_seconds, 60)
+  expect_gt(rec(out$LONG)$in_situ_seconds, 60)
+})
+
+
+test_that("agreement is withheld wherever the comparison would be circular", {
+  set.seed(33)
+  tags <- list(A = .pwTag("D1", "79", 2019, n = 20000), B = .pwTag("D2", "79", 2019, n = 20000))
+  rec <- function(x) { p <- nautilus:::.getMeta(x)$processing; p[[length(p)]] }
+
+  # applied from this deployment's own fit -> circular
+  d <- .pwRun(tags, method = "in-situ-deployment")
+  expect_true(is.na(rec(d$D1)$agreement))
+
+  # applied from the tag-season pool, with another deployment in it -> a real heterogeneity check
+  p <- .pwRun(tags, method = "in-situ-pooled")
+  expect_true(is.finite(rec(p$D1)$agreement))
+
+  # a pooled fit with a single contributor is that contributor's own fit -> circular again
+  solo <- .pwRun(list(A = .pwTag("D1", "80", 2019, n = 20000)), method = "in-situ-pooled")
+  expect_true(is.na(rec(solo$D1)$agreement))
+
+  # a calibrated slope is always independent of the animal's diving
+  cal <- .pwRun(tags, calibration = .pwCal(0.07, "79", 2019), validate = TRUE)
+  expect_true(is.finite(rec(cal$D1)$agreement))
+})
+
+
+test_that("the calibration table carries the between-deployment spread, unflagged", {
+  set.seed(34)
+  tags <- list(A = .pwTag("D1", "81", 2019, slope = 0.06, n = 20000),
+               B = .pwTag("D2", "81", 2019, slope = 0.09, n = 20000))
+  cal <- attr(.pwRun(tags, calibration = .pwCal(0.07, "81", 2019), validate = TRUE), "calibration")
+  expect_identical(cal$slope_k, 2L)
+  expect_gt(cal$slope_cv, 0.1)                      # 0.06 vs 0.09 is a wide spread
+  expect_gt(cal$slope_ratio, 1.3)
+  expect_true(is.finite(cal$slope_rel_se))
+  # the spread carries no flag of its own: `flag` is the agreement check, nothing else
+  expect_true(all(c("slope_cv", "slope_ratio", "slope_k", "slope_rel_se") %in% names(cal)))
+  # the spread carries no flag of its own: `flag` is the agreement check and nothing else
+  expect_identical(cal$flag, is.finite(cal$agreement) &
+                     (cal$agreement > 1.35 | cal$agreement < 1 / 1.35))
+})
+
+
+test_that(".paddleViable admits a fit on its duration, not its precision", {
+  fit <- function(n) nautilus:::.paddleFit(Sxy = n * 1, Sxx = n * 1, Syy = n * 1.0001, n = n)
+  expect_false(nautilus:::.paddleViable(fit(600L), fs = 20))   # 30 s at 20 Hz
+  expect_true(nautilus:::.paddleViable(fit(1200L), fs = 20))   # 60 s exactly
+  expect_true(nautilus:::.paddleViable(fit(60L), fs = 1))      # 60 s at 1 Hz
+  expect_false(nautilus:::.paddleViable(fit(2L), fs = 1))      # too few for a standard error
+  expect_false(nautilus:::.paddleViable(nautilus:::.paddleFit(1, 0, 1, 100), fs = 20))  # undefined
+})
+
+
+test_that("the method names are the five documented ones", {
+  expect_identical(eval(formals(calculatePaddleSpeed)$method),
+                   c("projected-shared", "projected-fixed", "projected-per-tag",
+                     "in-situ-deployment", "in-situ-pooled"))
+  expect_error(suppressWarnings(calculatePaddleSpeed(.pwCohort(), method = "in-situ", verbose = 0)),
+               "should be one of")
 })

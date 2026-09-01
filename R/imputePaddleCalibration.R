@@ -30,15 +30,15 @@
 #' @param weights.col An optional column in `calibration` used to weight the fit, so that poorer
 #'   calibrations count for less - an r-squared column, for instance. `NULL` (default) weights every
 #'   calibration equally.
-#' @param method Where the degradation rate comes from: `"shared-rate"` (default) pools one rate across
-#'   every tag calibrated more than once, `"fixed-rate"` uses the `degradation.rate` you supply, and
-#'   `"per-tag"` fits a separate line to each tag with at least two calibrations and then uses the
-#'   average of those per-tag rates for every other tag. Prefer the default unless you have long, clean
-#'   series per tag: `"per-tag"` is more flexible but unstable on the few points a calibration record
-#'   usually holds, and averaging its rates gives every tag equal weight however little data it rests
-#'   on.
-#' @param degradation.rate The annual increase in slope. Required for `method = "fixed-rate"`; for the
-#'   other methods it is an optional fallback, used only when the data cannot support an estimate.
+#' @param method How the wear trend used to project a slope is obtained. `"projected-shared"` (default)
+#'   pools one annual rate across every tag calibrated more than once; `"projected-fixed"` uses the rate
+#'   you supply in `degradation.rate`; `"projected-per-tag"` fits a separate line to each tag with at
+#'   least two calibrations and averages those rates for every other tag. Prefer the default unless you
+#'   have long, clean series per tag: `"projected-per-tag"` is more flexible but unstable on the few
+#'   points a calibration record usually holds, and averaging its rates gives every tag equal weight
+#'   however little data it rests on.
+#' @param degradation.rate The annual increase in slope. Required for `method = "projected-fixed"`; for
+#'   the other methods it is an optional fallback, used only when the data cannot support an estimate.
 #' @param keep.measured Whether a measured calibration is returned exactly as measured (default `TRUE`)
 #'   rather than replaced by the model's fitted value. Leave it on unless you specifically want a
 #'   smoothed series.
@@ -60,10 +60,10 @@
 #' ## How the drift is modelled
 #'
 #' Degradation is treated as a linear drift in the slope over calendar time. The default
-#' `method = "shared-rate"` fits one fixed-slope, per-tag-intercept model to the measured calibrations:
-#' a single annual degradation rate pooled across every tag calibrated more than once, plus a baseline
-#' level for each tag. Each tag is then projected forward from its own observed level using the shared
-#' rate, and a tag that was never calibrated starts from the global baseline.
+#' `method = "projected-shared"` fits one fixed-slope, per-tag-intercept model to the measured
+#' calibrations: a single annual degradation rate pooled across every tag calibrated more than once,
+#' plus a starting level for each tag. Each tag is then projected forward from its own observed level
+#' using the shared rate, and a tag that was never calibrated starts from the fleet-wide level.
 #'
 #' Pooling the rate while keeping the levels separate is what makes this stable. Fitting an independent
 #' line to each tag would respect its measurements more closely, but calibration series are short, and a
@@ -71,14 +71,21 @@
 #'
 #' ## Knowing which numbers to trust
 #'
-#' The `slope_source` column records where each row's value came from: `"measured"` for a real
-#' calibration, `"tag-model"` for a tag with at least one calibration of its own, and `"baseline"` for a
-#' tag with none.
+#' The `slope_source` column records where each row's value came from:
+#'
+#' \describe{
+#'   \item{`"calibrated"`}{A real calibration for that tag and year, returned as measured.}
+#'   \item{`"projected-from-tag"`}{Carried forward from that tag's own calibrations in other years.}
+#'   \item{`"projected-from-fleet"`}{The tag was never calibrated, so its slope starts from the level
+#'     typical of the other tags and is projected from there.}
+#' }
+#'
+#' The same vocabulary is used by [calculatePaddleSpeed()], which consumes this table.
 #'
 #' At the sample sizes typical of calibration data, this projection cannot manufacture certainty. What
 #' it does is make the table consistent, reproducible, checked and labelled. Treat heavily extrapolated
-#' and baseline slopes as approximate, and remember that a speed error scales the whole reconstructed
-#' track rather than distorting its shape.
+#' and fleet-projected slopes as approximate, and remember that a speed error scales the whole
+#' reconstructed track rather than distorting its shape.
 #'
 #' @return A data frame with one row per deployed tag-year and columns `year`, `package_id` and `slope`,
 #'   usable directly as `calculatePaddleSpeed(calibration = )`, plus `slope_source` and
@@ -107,7 +114,8 @@ imputePaddleCalibration <- function(calibration,
                                   slope.col = "slope",
                                   paddle.col = "paddle_wheel",
                                   weights.col = NULL,
-                                  method = c("shared-rate", "fixed-rate", "per-tag"),
+                                  method = c("projected-shared", "projected-fixed",
+                                             "projected-per-tag"),
                                   degradation.rate = NULL,
                                   keep.measured = TRUE,
                                   non.negative.rate = TRUE,
@@ -133,7 +141,7 @@ imputePaddleCalibration <- function(calibration,
       (!is.numeric(slope.range) || length(slope.range) != 2L || anyNA(slope.range) || slope.range[1] >= slope.range[2])) {
     .abort("{.arg slope.range} must be a numeric vector {.code c(min, max)} with min < max.")
   }
-  if (method == "fixed-rate" && is.null(degradation.rate)) {
+  if (method == "projected-fixed" && is.null(degradation.rate)) {
     .abort("{.arg method = \"fixed-rate\"} requires {.arg degradation.rate} to be supplied.")
   }
 
@@ -214,10 +222,10 @@ imputePaddleCalibration <- function(calibration,
   ##############################################################################
 
   rate <- NA_real_; rate_se <- NA_real_
-  if (method == "fixed-rate") {
+  if (method == "projected-fixed") {
     rate <- degradation.rate
 
-  } else if (method == "shared-rate") {
+  } else if (method == "projected-shared") {
     # the year coefficient is only estimable when at least one tag spans >= 2 distinct years
     fit_ok <- length(multi) >= 1L &&
       any(vapply(multi, function(t) length(unique(cal$year[cal$package_id == t])) >= 2L, logical(1)))
@@ -266,24 +274,25 @@ imputePaddleCalibration <- function(calibration,
   fill_one <- function(pid, yr) {
     k <- paste(pid, yr)
     if (keep.measured && k %in% names(meas)) return(c(meas[[k]], NA))    # source code 0 = measured
-    if (method == "per-tag" && pid %in% multi) {
+    if (method == "projected-per-tag" && pid %in% multi) {
       d <- cal[cal$package_id == pid, , drop = FALSE]
       sl <- as.numeric(stats::predict(stats::lm(slope ~ year, data = d, weights = d$w), newdata = data.frame(year = yr)))
-      return(c(sl, 1))                                                   # 1 = tag-model
+      return(c(sl, 1))                                              # 1 = projected-from-tag
     }
     if (pid %in% names(tag_level)) return(c(tag_level[[pid]] + rate * yr, 1))
-    c(global_level + rate * yr, 2)                                       # 2 = baseline
+    c(global_level + rate * yr, 2)                                  # 2 = projected-from-fleet
   }
 
   out <- dep[order(dep$package_id, dep$year), , drop = FALSE]
   filled <- mapply(fill_one, out$package_id, out$year)
   out$slope <- as.numeric(filled[1, ])
   src_code <- filled[2, ]
-  out$slope_source <- ifelse(is.na(src_code), "measured", ifelse(src_code == 1, "tag-model", "baseline"))
+  out$slope_source <- ifelse(is.na(src_code), "calibrated",
+                             ifelse(src_code == 1, "projected-from-tag", "projected-from-fleet"))
   out$n_calibrations <- as.integer(n_per_tag[out$package_id]); out$n_calibrations[is.na(out$n_calibrations)] <- 0L
 
   # clamp imputed slopes to the plausible band (measured values are flagged, never silently clamped)
-  imputed <- out$slope_source != "measured"
+  imputed <- out$slope_source != "calibrated"
   if (!is.null(slope.range)) {
     hit <- imputed & (out$slope < slope.range[1] | out$slope > slope.range[2])
     if (any(hit)) {
@@ -314,9 +323,11 @@ imputePaddleCalibration <- function(calibration,
   if (lvl >= 2L) {
     rate_txt <- if (is.finite(rate_se)) sprintf("%.4f/year (SE %.4f)", rate, rate_se) else sprintf("%.4f/year", rate)
     .log_detail(lvl, "degradation rate: ", rate_txt)
-    .log_detail(lvl, sprintf("baseline slope: %.4f at %d (for never-calibrated tags)", global_level + rate * ref_year, as.integer(ref_year)))
-    n_meas <- sum(out$slope_source == "measured"); n_tm <- sum(out$slope_source == "tag-model"); n_bl <- sum(out$slope_source == "baseline")
-    .log_detail(lvl, sprintf("filled: measured %d \u00b7 tag-model %d \u00b7 baseline %d", n_meas, n_tm, n_bl))
+    .log_detail(lvl, sprintf("fleet slope: %.4f at %d (for never-calibrated tags)", global_level + rate * ref_year, as.integer(ref_year)))
+    n_meas <- sum(out$slope_source == "calibrated")
+    n_tm   <- sum(out$slope_source == "projected-from-tag")
+    n_bl   <- sum(out$slope_source == "projected-from-fleet")
+    .log_detail(lvl, sprintf("filled: calibrated %d \u00b7 from tag %d \u00b7 from fleet %d", n_meas, n_tm, n_bl))
   }
   if (lvl >= 1L) {
     .log_summary(lvl)
