@@ -29,7 +29,9 @@
 #' The look is set by a shared [plotTheme()] object.
 #'
 #' @param data Processed data: `.rds` paths, a single `nautilus_tag` / data.frame, or a list of them.
-#' @param variable Character. `"depth"` (default), `"temp"`, or `c("depth","temp")` for both.
+#' @param variable Character. `"depth"` (default), `"temp"`, or `c("depth","temp")` for both. A depth
+#'   axis is drawn downwards, shallowest at the top; every other variable keeps the conventional
+#'   orientation, so a temperature panel runs coldest at the bottom.
 #' @param group.by Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
 #'   at import via [metadataColumns()]), a named `id -> group` vector, or a two-column
 #'   `data.frame(id, group)`. `NULL` (default) pools all individuals into one profile.
@@ -517,6 +519,16 @@ plotTimeAtDepth <- function(data,
 #' @noRd
 .tadUnit <- function(v) switch(v, depth = " m", temp = " \u00b0C", "")
 
+#' Whether a variable's axis runs downwards.
+#'
+#' Depth alone: a depth axis reads down the page because that is the direction the animal travels, and
+#' a profile drawn the other way up is hard to read against a dive trace. Every other variable keeps the
+#' conventional orientation - on a temperature panel, inverting the axis would put the coldest water at
+#' the top for no reason. An unrecognised variable is treated conventionally.
+#' @keywords internal
+#' @noRd
+.tadFlipY <- function(v) identical(v, "depth")
+
 #' One bin's range as prose, e.g. "0-2 m" / "22-24 degrees C" (en dash), for the console summary.
 #' The top bin is open-ended in the plot's own labels, so match that here rather than implying a
 #' ceiling the data may exceed.
@@ -666,6 +678,7 @@ plotTimeAtDepth <- function(data,
     # theme$night MEANS night once diel is on; a pooled bar is not night, so it takes the palette instead
     fill <- if (grouped) gcols[[p$g]] else .themePalette(theme$palette, 1L)[1]
     .tadProfilePanel(br, agg, diel, theme, fill, .tadLabel(v), .tadXlab(v), ttl_p, ttl_col, sub_p, y.axis, x.axis,
+                     flip.y = .tadFlipY(v),
                      xmax = if (is.null(xmax_by_var)) NULL else xmax_by_var[[v]])
   }
 }
@@ -689,7 +702,7 @@ plotTimeAtDepth <- function(data,
 #' @keywords internal
 #' @noRd
 .tadProfilePanel <- function(breaks, agg, diel, theme, fill, ylab, xlab, title, title.col, subtitle, y.axis, x.axis,
-                             xmax = NULL) {
+                             flip.y, xmax = NULL) {
   nb <- length(breaks) - 1L; cex <- theme$cex
   if (diel) { L <- agg[["night"]]; R <- agg[["day"]] } else { L <- NULL; R <- agg[["all"]] }
   if (is.null(xmax)) xmax <- max(c(R$mean + R$se, if (!is.null(L)) L$mean + L$se), 0.001, na.rm = TRUE) * 1.04
@@ -701,7 +714,10 @@ plotTimeAtDepth <- function(data,
   # strip (see .tadFigSize), so on a single-variable figure the only way to widen the data region is
   # to take it back from the chrome. The left margin still clears the widest bin label.
   graphics::par(mar = c(3.5, 4.6, 1.9, 0.9), mgp = c(3, 0.55, 0), tcl = -0.22)      # mgp[1] unused: titles are mtext-placed
-  graphics::plot(NA, xlim = xlim, ylim = c(nb + 0.5, 0.5), axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i")
+  # bin 1 holds the lowest values, so a flipped axis puts it at the top (shallowest depth first) and a
+  # conventional one at the bottom (coldest temperature first); the labels ride the bins either way
+  ylim <- if (isTRUE(flip.y)) c(nb + 0.5, 0.5) else c(0.5, nb + 0.5)
+  graphics::plot(NA, xlim = xlim, ylim = ylim, axes = FALSE, xlab = "", ylab = "", xaxs = "i", yaxs = "i")
   gx <- pretty(c(0, xmax), 4); gx <- gx[gx <= xmax]                                  # pretty() overshoots xlim
   at <- if (diel) sort(unique(c(-gx, gx))) else gx                                   # sorted, no duplicated 0
   graphics::rect(xlim[1], 0.5, xlim[2], nb + 0.5, col = theme$panel, border = NA)
@@ -781,7 +797,8 @@ plotTimeAtDepth <- function(data,
   for (vi in seq_len(n_var)) {
     v <- variable[vi]; br <- breaks_by_var[[v]]; nb <- length(br) - 1L; M <- mats[[vi]]
     graphics::par(mar = c(6.2, 5.0, 2.6, 0.7), mgp = c(3, 0.6, 0))   # left margin on every panel: each has its own axis
-    graphics::plot(NA, xlim = c(0.5, ncol(M) + 0.5), ylim = c(nb + 0.5, 0.5), axes = FALSE, xaxs = "i", yaxs = "i", xlab = "", ylab = "")
+    ylim <- if (.tadFlipY(v)) c(nb + 0.5, 0.5) else c(0.5, nb + 0.5)   # depth reads down, others up
+    graphics::plot(NA, xlim = c(0.5, ncol(M) + 0.5), ylim = ylim, axes = FALSE, xaxs = "i", yaxs = "i", xlab = "", ylab = "")
     for (j in seq_len(ncol(M))) for (b in seq_len(nb)) {
       idx <- max(1L, min(100L, round(.rescale(M[b, j], from = c(0, zmax), to = c(1, 100)))))
       graphics::rect(j - 0.5, b - 0.5, j + 0.5, b + 0.5, col = pal[idx], border = NA)

@@ -28,7 +28,9 @@ plotTimeAtDepth(
 \arguments{
 \item{data}{Processed data: \code{.rds} paths, a single \code{nautilus_tag} / data.frame, or a list of them.}
 
-\item{variable}{Character. \code{"depth"} (default), \code{"temp"}, or \code{c("depth","temp")} for both.}
+\item{variable}{Character. \code{"depth"} (default), \code{"temp"}, or \code{c("depth","temp")} for both. A depth
+axis is drawn downwards, shallowest at the top; every other variable keeps the conventional
+orientation, so a temperature panel runs coldest at the bottom.}
 
 \item{group.by}{Grouping factor for faceting: a column name (in the data or the tag metadata, e.g. mapped
 at import via \code{\link[=metadataColumns]{metadataColumns()}}), a named \code{id -> group} vector, or a two-column

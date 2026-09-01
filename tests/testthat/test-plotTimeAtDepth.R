@@ -354,3 +354,51 @@ test_that("repeated timestamps are not each credited a full sampling interval", 
   expect_equal(sum(s$hours), 1, tolerance = 0.01)
   expect_equal(sum(s$pct), 100, tolerance = 1e-6)
 })
+
+
+# ---- axis orientation ------------------------------------------------------------------------------
+# A depth axis reads down the page; every other variable keeps the conventional orientation. The two
+# panels of a `variable = c("depth", "temp")` figure therefore run in OPPOSITE directions.
+
+test_that(".tadFlipY inverts depth and nothing else", {
+  expect_true(nautilus:::.tadFlipY("depth"))
+  expect_false(nautilus:::.tadFlipY("temp"))
+  expect_false(nautilus:::.tadFlipY("altitude"))     # an unrecognised variable reads conventionally
+})
+
+
+test_that("the profile panel honours flip.y in the direction of its y axis", {
+  br  <- c(0, 10, 20, 30)
+  agg <- list(all = data.frame(mean = c(10, 20, 30), se = c(1, 1, 1)))
+  usr_for <- function(flip) {
+    pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+    grDevices::pdf(pf); on.exit(grDevices::dev.off(), add = TRUE, after = FALSE)
+    nautilus:::.tadProfilePanel(br, agg, diel = FALSE, theme = plotTheme(), fill = "grey50",
+                                ylab = "y", xlab = "x", title = "t", title.col = "black",
+                                subtitle = NULL, y.axis = TRUE, x.axis = TRUE, flip.y = flip)
+    graphics::par("usr")[3:4]
+  }
+  down <- usr_for(TRUE); up <- usr_for(FALSE)
+  expect_gt(down[1], down[2])          # flipped: bin 1 at the top
+  expect_lt(up[1], up[2])              # conventional: bin 1 at the bottom
+})
+
+
+test_that("a depth-and-temperature figure draws its two panels in opposite directions", {
+  # capture each panel's y range as it is drawn, in order
+  seen <- list()
+  tb <- nautilus:::.tadProfilePanel
+  testthat::local_mocked_bindings(
+    .tadProfilePanel = function(...) {
+      out <- tb(...)
+      seen[[length(seen) + 1L]] <<- graphics::par("usr")[3:4]
+      out
+    }, .package = "nautilus")
+
+  pf <- tempfile(fileext = ".pdf"); on.exit(unlink(pf), add = TRUE)
+  suppressMessages(plotTimeAtDepth(.tad_cohort(), variable = c("depth", "temp"),
+                                   plot = FALSE, plot.file = pf, verbose = FALSE))
+  expect_length(seen, 2L)
+  expect_gt(seen[[1]][1], seen[[1]][2])   # depth panel runs downwards
+  expect_lt(seen[[2]][1], seen[[2]][2])   # temperature panel runs upwards
+})
