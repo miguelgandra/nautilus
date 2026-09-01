@@ -531,35 +531,211 @@
   invisible(NULL)
 }
 
-#' One panel per tag: the slope applied against the in-situ estimate, with its interval.
+#' Which deployments the diagnostic can say anything about, grouped by tag and season.
+#'
+#' A deployment earns a row when it was given a slope or contributed an in-situ fit. One that carried no
+#' paddle wheel has neither, and a row of empty space for it would only dilute the ones that matter.
 #' @keywords internal
 #' @noRd
-.renderPaddleDiagnostic <- function(cal, plot = FALSE, plot.file = NULL) {
-  keep <- cal[is.finite(cal$in_situ_slope) | is.finite(cal$slope), , drop = FALSE]
-  if (!nrow(keep)) return(invisible(NULL))
+.paddleDiagRows <- function(cal, dep) {
+  keep <- (dep$status %in% "applied") | (dep$own_n > 0L)
+  d <- dep[keep %in% TRUE, , drop = FALSE]
+  if (!nrow(d)) return(NULL)
+  # tag-seasons in the table's own order; deployments within one ordered by the data behind their fit,
+  # so the best-supported estimate reads first and the eye can discount the ones below it
+  d$.grp <- match(d$key, cal$key)
+  d[order(d$.grp, -replace(d$own_secs, is.na(d$own_secs), -1)), , drop = FALSE]
+}
+
+#' The calibration diagnostic: one row per deployment, grouped by tag and season.
+#'
+#' Answers the question the summary can only assert: does the slope being applied agree with what the
+#' animal's own diving says, and do the deployments of one tag agree with each other? A row carries that
+#' deployment's in-situ estimate with its interval, sized by the steep swimming behind it, and the slope
+#' actually applied; a line spanning the group carries the tag-season reference it should sit near.
+#'
+#' Above `max.rows` deployments the per-deployment layout stops being readable, so the plot falls back
+#' to one row per tag-season, keeping the group-level marks and reporting the spread instead.
+#' @keywords internal
+#' @noRd
+.renderPaddleDiagnostic <- function(cal, dep, plot = FALSE, plot.file = NULL, max.rows = 60L) {
+  d <- .paddleDiagRows(cal, dep)
+  if (is.null(d)) return(invisible(NULL))
+  per_dep <- nrow(d) <= max.rows
+  keys <- unique(d$key)
+  n_rows <- if (per_dep) nrow(d) + length(keys) else length(keys)
+
   draw <- function(to.file = FALSE, unicode = TRUE) {
     theme <- plotTheme()
-    op <- graphics::par(family = theme$font.family, mar = c(4.4, 8.5, 3.2, 1.2), no.readonly = TRUE)
+    op <- graphics::par(family = theme$font.family, mar = c(4.6, 10.2, 3.6, 6.2),
+                        mgp = c(2.4, 0.6, 0), no.readonly = TRUE)
     on.exit(graphics::par(op), add = TRUE)
-    y <- seq_len(nrow(keep))
-    xr <- range(c(keep$slope, keep$in_situ_slope, keep$in_situ_lo, keep$in_situ_hi), na.rm = TRUE)
-    if (!all(is.finite(xr))) xr <- c(0, 1)
-    graphics::plot(NA, xlim = xr * c(0.9, 1.1), ylim = c(0.5, nrow(keep) + 0.5), yaxt = "n",
-                   xlab = "calibration slope (m/s per Hz)", ylab = "", las = 1)
-    graphics::segments(keep$in_situ_lo, y, keep$in_situ_hi, y, col = "grey60")
-    graphics::points(keep$in_situ_slope, y, pch = 1, col = "grey30")
-    graphics::points(keep$slope, y, pch = 19,
-                     col = ifelse(!is.na(keep$slope_source) & keep$slope_source == "measured",
-                                  "#1F6FB4", "#C8892A"))
-    graphics::axis(2, y, sprintf("%s / pkg %s", keep$year, keep$package_id), las = 1, cex.axis = 0.8,
-                   tick = FALSE)
-    if (any(keep$flag, na.rm = TRUE))
-      graphics::points(keep$slope[which(keep$flag)], y[which(keep$flag)], pch = 1, cex = 2.4, col = "#B22222")
-    graphics::legend("topright", c("measured", "estimated", "in situ"), pch = c(19, 19, 1),
-                     col = c("#1F6FB4", "#C8892A", "grey30"), bty = "n", cex = 0.8)
-    graphics::mtext("Paddle-wheel calibration", side = 3, line = 1.4, adj = 0, font = 2)
+    if (per_dep) .paddleDrawPerDeployment(cal, d, keys, n_rows, theme)
+    else         .paddleDrawPerTagSeason(cal, d, keys, theme)
   }
   .renderToDevices(draw, plot = plot, plot.file = plot.file, cairo = TRUE,
-                   width = 8, height = max(3.2, 1.6 + 0.32 * nrow(keep)))
+                   width = 8.5, height = max(3.6, 2.1 + 0.24 * n_rows))
+  invisible(NULL)
+}
+
+#' Colours for the slope sources, drawn from the theme palette.
+#' @keywords internal
+#' @noRd
+.paddleSourceColours <- function() c(
+  calibrated             = "#3E86C0",
+  `projected-from-tag`   = "#E7913B",
+  `projected-from-fleet` = "#8B6BB1",
+  `in-situ-deployment`   = "#2FA4A0",
+  `in-situ-pooled`       = "#7FA65E")
+
+#' The panel chrome every mode shares: the theme's fill, interior gridlines, axis and frame.
+#' @keywords internal
+#' @noRd
+.paddleDiagPanel <- function(xr, gx, theme, n_rows) {
+  graphics::plot(NA, xlim = xr, ylim = c(n_rows + 0.6, 0.4), axes = FALSE, xlab = "", ylab = "",
+                 yaxs = "i")
+  usr <- graphics::par("usr")
+  graphics::rect(usr[1], usr[3], usr[2], usr[4], col = theme$panel, border = NA)
+  if (length(gx)) graphics::abline(v = gx, col = theme$grid, lwd = 0.5)
+  invisible(usr)
+}
+
+#' The x range every mark has to fit inside, and its interior ticks.
+#' @keywords internal
+#' @noRd
+.paddleDiagXRange <- function(...) {
+  v <- unlist(list(...)); v <- v[is.finite(v)]
+  if (!length(v)) v <- c(0, 1)
+  xr <- range(v); if (diff(xr) <= 0) xr <- xr + c(-1, 1) * max(1e-4, abs(xr[1]) * 0.1)
+  xr <- xr + c(-1, 1) * diff(xr) * 0.06
+  gx <- pretty(xr, 6); list(xr = xr, gx = gx[gx > xr[1] & gx < xr[2]])
+}
+
+#' The legend, in the top margin where it cannot land on a marker.
+#' @keywords internal
+#' @noRd
+.paddleDiagLegend <- function(sources, theme) {
+  SRC <- .paddleSourceColours()
+  sources <- sources[!is.na(sources) & sources %in% names(SRC)]
+  if (!length(sources)) return(invisible(NULL))
+  ord <- names(SRC)[names(SRC) %in% sources]
+  # the y axis runs top-down, so `par("cxy")` is negative here: take its magnitude, or the legend
+  # steps DOWN into the panel and lands on the first row of data
+  usr <- graphics::par("usr"); cxy <- abs(graphics::par("cxy")[2])
+  graphics::legend(x = usr[1], y = usr[4] - 1.15 * cxy, xpd = NA, horiz = TRUE, bty = "n",
+                   legend = vapply(ord, .paddleSourceLabel, character(1), long = FALSE,
+                                   USE.NAMES = FALSE),
+                   pch = 18, col = unlist(SRC[ord]), pt.cex = 1.1, cex = 0.66,
+                   text.col = theme$axis, x.intersp = 0.6, seg.len = 0.8)
+  invisible(NULL)
+}
+
+#' Per-deployment layout: a row for each deployment, headed by its tag and season.
+#' @keywords internal
+#' @noRd
+.paddleDrawPerDeployment <- function(cal, d, keys, n_rows, theme) {
+  SRC <- .paddleSourceColours()
+  # row 1 of a group is its heading; its deployments follow
+  y_grp <- stats::setNames(numeric(length(keys)), keys); y_dep <- numeric(nrow(d))
+  y <- 0
+  for (k in keys) {
+    y <- y + 1; y_grp[k] <- y
+    for (i in which(d$key == k)) { y <- y + 1; y_dep[i] <- y }
+  }
+  rng <- .paddleDiagXRange(d$own_slope - 1.96 * d$own_se, d$own_slope + 1.96 * d$own_se,
+                           d$slope, cal$slope, cal$in_situ_slope)
+  .paddleDiagPanel(rng$xr, rng$gx, theme, n_rows)
+
+  for (k in keys) {
+    cr <- cal[match(k, cal$key), , drop = FALSE]
+    ys <- y_dep[d$key == k]
+    # the tag-season reference the deployments should sit near: a real calibration where one exists,
+    # otherwise the pooled in-situ estimate, drawn dashed so the two are never confused
+    ref <- if (is.finite(cr$slope)) cr$slope else cr$in_situ_slope
+    if (is.finite(ref) && length(ys))
+      graphics::segments(ref, min(ys) - 0.45, ref, max(ys) + 0.45,
+                         col = if (is.finite(cr$slope)) SRC[["calibrated"]] else "grey55",
+                         lwd = 1.6, lty = if (is.finite(cr$slope)) 1L else 2L)
+    graphics::mtext(sprintf("%s / pkg %s", cr$year, cr$package_id), side = 2, at = y_grp[[k]],
+                    las = 1, adj = 0, line = 9.6, cex = 0.72, font = 2, col = theme$ink)
+    if (is.finite(cr$slope_cv))
+      graphics::mtext(sprintf("CV %.0f%%", 100 * cr$slope_cv), side = 4, at = y_grp[[k]], las = 1,
+                      adj = 0, line = 0.4, cex = 0.62, col = theme$subtitle)
+  }
+
+  for (i in seq_len(nrow(d))) {
+    if (is.finite(d$own_slope[i])) {
+      graphics::segments(d$own_slope[i] - 1.96 * d$own_se[i], y_dep[i],
+                         d$own_slope[i] + 1.96 * d$own_se[i], y_dep[i], col = "grey45", lwd = 1)
+      # area with the steep swimming behind the fit, capped so one long record cannot dominate
+      cx <- 0.5 + 0.9 * sqrt(min(1, (d$own_secs[i] %||% 0) / 3600))
+      graphics::points(d$own_slope[i], y_dep[i], pch = 21, bg = "white", col = "grey35",
+                       cex = cx, lwd = 1)
+    }
+    if (is.finite(d$slope[i]))
+      graphics::points(d$slope[i], y_dep[i], pch = 18, cex = 1.15,
+                       col = SRC[[d$slope_source[i]]] %||% "grey50")
+    graphics::mtext(d$id[i], side = 2, at = y_dep[i], las = 1, adj = 0, line = 9.0, cex = 0.6,
+                    col = theme$axis)
+    if (is.finite(d$own_secs[i]))
+      graphics::mtext(.paddleFmtSecs(d$own_secs[i]), side = 4, at = y_dep[i], las = 1, adj = 0,
+                      line = 0.4, cex = 0.58, col = theme$axis)
+  }
+  .paddleDiagFinish(rng$gx, theme, d$slope_source,
+                    "open circle = deployment in-situ estimate (95% CI, area ~ steep swimming)  |  diamond = slope applied")
+}
+
+#' Per-tag-season layout: the fallback for a fleet too large to give every deployment a row.
+#' @keywords internal
+#' @noRd
+.paddleDrawPerTagSeason <- function(cal, d, keys, theme) {
+  SRC <- .paddleSourceColours()
+  cr <- cal[match(keys, cal$key), , drop = FALSE]
+  y <- seq_along(keys)
+  # where a tag-season has no single slope (per-deployment estimates), show the span its deployments
+  # actually used, so the fallback still carries the heterogeneity the detailed layout would show
+  lo <- vapply(keys, function(k) suppressWarnings(min(d$slope[d$key == k], na.rm = TRUE)), numeric(1))
+  hi <- vapply(keys, function(k) suppressWarnings(max(d$slope[d$key == k], na.rm = TRUE)), numeric(1))
+  lo[!is.finite(lo)] <- NA_real_; hi[!is.finite(hi)] <- NA_real_
+  rng <- .paddleDiagXRange(cr$in_situ_lo, cr$in_situ_hi, cr$slope, cr$in_situ_slope, lo, hi)
+  .paddleDiagPanel(rng$xr, rng$gx, theme, length(keys))
+
+  graphics::segments(cr$in_situ_lo, y, cr$in_situ_hi, y, col = "grey45", lwd = 1)
+  graphics::points(cr$in_situ_slope, y, pch = 21, bg = "white", col = "grey35", cex = 1.1, lwd = 1)
+  spanned <- is.na(cr$slope) & is.finite(lo) & is.finite(hi) & hi > lo
+  if (any(spanned))
+    graphics::segments(lo[spanned], y[spanned], hi[spanned], y[spanned],
+                       col = SRC[["in-situ-deployment"]], lwd = 3, lend = 1)
+  src <- vapply(seq_along(keys), function(i) {
+    v <- unique(d$slope_source[d$key == keys[i]]); v <- v[!is.na(v)]
+    if (length(v)) v[1] else NA_character_ }, character(1))
+  # a tag-season with per-deployment slopes carries none of its own; mark the middle of what its
+  # deployments used, so a stratum of one - which has no span to draw either - is not left blank
+  mid <- vapply(seq_along(keys), function(i)
+    if (is.finite(cr$slope[i])) cr$slope[i]
+    else stats::median(d$slope[d$key == keys[i]], na.rm = TRUE), numeric(1))
+  ok <- is.finite(mid)
+  if (any(ok))
+    graphics::points(mid[ok], y[ok], pch = 18, cex = 1.15,
+                     col = vapply(src[ok], function(k) SRC[[k]] %||% "grey50", character(1)))
+  graphics::mtext(sprintf("%s / pkg %s", cr$year, cr$package_id), side = 2, at = y, las = 1, adj = 0,
+                  line = 9.0, cex = 0.66, col = theme$ink)
+  lab <- ifelse(is.finite(cr$slope_cv), sprintf("CV %.0f%% (n %d)", 100 * cr$slope_cv, cr$slope_k),
+                sprintf("n %d", cr$n_deployments))
+  graphics::mtext(lab, side = 4, at = y, las = 1, adj = 0, line = 0.4, cex = 0.58, col = theme$axis)
+  .paddleDiagFinish(rng$gx, theme, src,
+                    "open circle = pooled in-situ estimate (95% CI)  |  diamond = slope applied  |  bar = per-deployment span")
+}
+
+#' Axis, labels, frame and legend, shared by both layouts.
+#' @keywords internal
+#' @noRd
+.paddleDiagFinish <- function(gx, theme, sources, subtitle) {
+  graphics::axis(1, at = gx, col = theme$axis, col.axis = theme$axis, cex.axis = 0.8, tcl = -0.3)
+  graphics::mtext("slope (m/s per Hz)", side = 1, line = 2.4, cex = 0.85, col = theme$ink)
+  graphics::box(col = theme$axis)
+  graphics::mtext("Paddle-wheel calibration", side = 3, line = 2.2, adj = 0, font = 2, cex = 1.0)
+  graphics::mtext(subtitle, side = 3, line = 1.35, adj = 0, cex = 0.62, col = theme$subtitle)
+  .paddleDiagLegend(sources, theme)
   invisible(NULL)
 }

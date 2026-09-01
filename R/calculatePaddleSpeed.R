@@ -52,8 +52,9 @@
 #'   about how fast it is going.
 #' @param id.col Which column identifies the animal (default `"ID"`).
 #' @param plot Whether to draw the diagnostics to the active graphics device. Default `FALSE`.
-#' @param plot.file Path to a PDF holding one panel per tag, comparing the applied calibration with the
-#'   in-situ estimate. Default `NULL`.
+#' @param plot.file Path to a PDF holding the calibration diagnostic: one row per deployment, grouped
+#'   by tag and season, showing each deployment's in-situ estimate against the slope actually applied.
+#'   Default `NULL`. See Details.
 #' @param return.data Whether to return the annotated data (default `TRUE`) or the written file paths.
 #' @param output.dir Directory in which to write one annotated `.rds` file per deployment. Providing a
 #'   directory is what triggers saving; `NULL` (default) writes nothing.
@@ -145,6 +146,29 @@
 #' two is wrong. A sharp disagreement is worth checking against a fouled or damaged rotor, a calibration
 #' matched to the wrong season, and whether the animal did enough steep swimming for the comparison to
 #' carry any weight. Small differences are expected and are not worth acting on.
+#'
+#' ## The calibration diagnostic
+#'
+#' `plot` and `plot.file` draw one figure summarising where every slope came from and whether it agrees
+#' with the animal's own diving. Deployments are grouped by tag and season, one row each:
+#'
+#' \itemize{
+#'   \item an open circle with a horizontal interval - that deployment's own in-situ estimate and its
+#'     95% confidence interval, drawn with an area proportional to the steep swimming behind it, so a
+#'     well-supported estimate is visibly larger than a marginal one;
+#'   \item a filled diamond - the slope actually applied, coloured by where it came from;
+#'   \item a line spanning the group - the tag-season reference the deployments should sit near: solid
+#'     where a calibration exists, dashed where it is the pooled in-situ estimate;
+#'   \item the steep swimming behind each estimate, and each tag-season's between-deployment spread,
+#'     in the right margin.
+#' }
+#'
+#' The layout makes two things visible that a table can only assert. Circles sitting consistently to one
+#' side of a calibration line are a systematic offset rather than scatter, and circles spread widely
+#' within one group mean the slope is not behaving as a fixed property of that tag.
+#'
+#' On a fleet too large for a row per deployment, the figure falls back to one row per tag and season,
+#' keeping the pooled estimate and showing the span of slopes its deployments used.
 #'
 #' ## When a deployment gets no speed
 #'
@@ -365,7 +389,8 @@ calculatePaddleSpeed <- function(data,
     .reportPaddleCohort(lvl, cal, dep, statuses, speeds, agreement.threshold, output.dir, plot.file)
     .log_runtime(lvl, start.time)
   }
-  if (isTRUE(plot) || !is.null(plot.file)) .renderPaddleDiagnostic(cal, plot = plot, plot.file = plot.file)
+  if (isTRUE(plot) || !is.null(plot.file))
+    .renderPaddleDiagnostic(cal, dep, plot = plot, plot.file = plot.file)
 
   out <- .collectOutput(data_list, saved, return.data, ids)
   # `return.data = FALSE` with no `output.dir` leaves nothing to return, and NULL takes no attributes -

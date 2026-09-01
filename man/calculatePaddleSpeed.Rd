@@ -69,8 +69,9 @@ about how fast it is going.}
 
 \item{plot}{Whether to draw the diagnostics to the active graphics device. Default \code{FALSE}.}
 
-\item{plot.file}{Path to a PDF holding one panel per tag, comparing the applied calibration with the
-in-situ estimate. Default \code{NULL}.}
+\item{plot.file}{Path to a PDF holding the calibration diagnostic: one row per deployment, grouped
+by tag and season, showing each deployment's in-situ estimate against the slope actually applied.
+Default \code{NULL}. See Details.}
 
 \item{return.data}{Whether to return the annotated data (default \code{TRUE}) or the written file paths.}
 
@@ -212,6 +213,30 @@ Read a disagreement as a reason to look, not as a verdict, and note that it does
 two is wrong. A sharp disagreement is worth checking against a fouled or damaged rotor, a calibration
 matched to the wrong season, and whether the animal did enough steep swimming for the comparison to
 carry any weight. Small differences are expected and are not worth acting on.
+}
+
+\subsection{The calibration diagnostic}{
+
+\code{plot} and \code{plot.file} draw one figure summarising where every slope came from and whether it agrees
+with the animal's own diving. Deployments are grouped by tag and season, one row each:
+
+\itemize{
+\item an open circle with a horizontal interval - that deployment's own in-situ estimate and its
+95\% confidence interval, drawn with an area proportional to the steep swimming behind it, so a
+well-supported estimate is visibly larger than a marginal one;
+\item a filled diamond - the slope actually applied, coloured by where it came from;
+\item a line spanning the group - the tag-season reference the deployments should sit near: solid
+where a calibration exists, dashed where it is the pooled in-situ estimate;
+\item the steep swimming behind each estimate, and each tag-season's between-deployment spread,
+in the right margin.
+}
+
+The layout makes two things visible that a table can only assert. Circles sitting consistently to one
+side of a calibration line are a systematic offset rather than scatter, and circles spread widely
+within one group mean the slope is not behaving as a fixed property of that tag.
+
+On a fleet too large for a row per deployment, the figure falls back to one row per tag and season,
+keeping the pooled estimate and showing the span of slopes its deployments used.
 }
 
 \subsection{When a deployment gets no speed}{

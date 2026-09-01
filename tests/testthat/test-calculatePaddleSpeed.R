@@ -758,3 +758,68 @@ test_that("the header keeps the package's own spacing, with no blank lines insid
   expect_match(body[2], "Input: 4 deployments")
   expect_match(body[3], "Slope estimation:")
 })
+
+
+# ---- the calibration diagnostic --------------------------------------------------------------------
+# The plot is the only place the between-deployment spread can be SEEN rather than asserted, so these
+# check what it chooses to draw rather than how it looks.
+
+test_that("the diagnostic gives a row to every deployment that has something to show", {
+  set.seed(50)
+  tags <- list(A = .pwTag("D1", "90", 2019, n = 20000),
+               B = .pwTag("D2", "90", 2019, n = 20000, slope = 0.09),
+               C = .pwTag("NOPAD", "91", 2019, n = 2000, freq = FALSE, paddle = FALSE))
+  out <- .pwRun(tags, calibration = .pwCal(0.07, "90", 2019), validate = TRUE)
+  cal <- attr(out, "calibration")
+
+  # rebuild the per-deployment table the renderer reads
+  sc <- lapply(names(tags), function(k)
+    nautilus:::.paddleScanOne(data.table::as.data.table(tags[[k]]), k, 10, TRUE))
+  r <- nautilus:::.paddleResolve(sc, .pwCal(0.07, "90", 2019), "projected-shared", NULL, 0.35, 0)
+  r$dep$status <- ifelse(r$dep$own_n > 0L, "applied", "no paddle wheel")
+  rows <- nautilus:::.paddleDiagRows(r$cal, r$dep)
+
+  expect_setequal(rows$id, c("D1", "D2"))          # the no-paddle deployment earns no row
+  expect_false("NOPAD" %in% rows$id)
+  # deployments are ordered by the data behind their fit, best-supported first
+  expect_identical(rows$key, rep("2019/90", 2L))
+})
+
+
+test_that("the diagnostic writes a file, and falls back to tag-season rows on a large fleet", {
+  set.seed(51)
+  dir <- withr::local_tempdir()
+  tags <- list(A = .pwTag("D1", "92", 2019, n = 8000), B = .pwTag("D2", "92", 2019, n = 8000))
+  sc <- lapply(names(tags), function(k)
+    nautilus:::.paddleScanOne(data.table::as.data.table(tags[[k]]), k, 10, TRUE))
+  r <- nautilus:::.paddleResolve(sc, .pwCal(0.07, "92", 2019), "projected-shared", NULL, 0.35, 0)
+  r$dep$status <- "applied"
+
+  f1 <- file.path(dir, "per-deployment.pdf")
+  nautilus:::.renderPaddleDiagnostic(r$cal, r$dep, plot.file = f1)
+  expect_true(file.exists(f1)); expect_gt(file.size(f1), 1000)
+
+  # max.rows forces the tag-season layout; it must still produce a page
+  f2 <- file.path(dir, "fallback.pdf")
+  nautilus:::.renderPaddleDiagnostic(r$cal, r$dep, plot.file = f2, max.rows = 1L)
+  expect_true(file.exists(f2)); expect_gt(file.size(f2), 1000)
+
+  # nothing to draw is not an error
+  empty <- r$dep; empty$status <- "no paddle wheel"; empty$own_n <- 0L
+  f3 <- file.path(dir, "empty.pdf")
+  expect_silent(nautilus:::.renderPaddleDiagnostic(r$cal, empty, plot.file = f3))
+  expect_false(file.exists(f3))
+})
+
+
+test_that("every slope source the resolver can emit has a colour in the diagnostic", {
+  # the previous plot tested for "measured", a value the rename retired, so every applied slope
+  # silently drew in one colour; this ties the palette to the vocabulary
+  srcs <- c("calibrated", "projected-from-tag", "projected-from-fleet",
+            "in-situ-deployment", "in-situ-pooled")
+  cols <- nautilus:::.paddleSourceColours()
+  expect_true(all(srcs %in% names(cols)))
+  expect_true(all(vapply(cols, nautilus:::.isColour, logical(1))))
+  # and each has a short label for the legend
+  expect_false(any(is.na(vapply(srcs, .paddleSourceLabel, character(1), long = FALSE))))
+})
