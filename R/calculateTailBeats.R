@@ -1,268 +1,225 @@
 #######################################################################################################
-# Function to estimate tail beat frequencies ##########################################################
+# Estimate tail-beat frequency and oscillation amplitude ##############################################
 #######################################################################################################
 
-#' Estimate tail-beat frequency and amplitude from motion data
+#' Estimate tail-beat frequency and oscillation amplitude from tag motion data
 #'
 #' @description
-#' How fast an animal beats its tail is one of the few directly measurable correlates of swimming
-#' effort, and it falls out of a tag's accelerometer as a regular oscillation. The difficulty is that not
-#' every oscillation in the record is a tail beat. A towed tag swings on its tether, swell moves the
-#' animal bodily, and a gliding animal still oscillates at roughly the same frequency it swims at.
+#' Estimates the dominant periodic motion within a user-defined frequency band from archival tag data.
+#' The resulting frequency may represent tail beats, wing beats or another periodic locomotor movement,
+#' depending on the study species, tag placement and selected motion channel.
 #'
-#' This function estimates the dominant oscillation of a motion channel within a frequency band you
-#' choose. Two backends run by default and are cross-checked against each other: peak detection, which
-#' locates individual beats in the time domain and so yields per-beat timing, interval and amplitude, and
-#' a Morlet continuous wavelet transform, which tracks the strongest oscillation in the band at every
-#' sample. They fail on different signals, so their per-sample agreement is reported alongside the
-#' estimate.
+#' The frequency can be estimated by peak detection, by a continuous wavelet transform, or by both. When
+#' both are requested their estimates are kept separately and their agreement is reported as an
+#' additional quality-control metric.
 #'
-#' Whether a given oscillation reflects active swimming rather than a glide is treated as a separate
-#' question, and answered only if you supply an amplitude reference. Left alone, the function measures
-#' the oscillation and declines to interpret it.
+#' The function expects processed data and should normally follow [processTagData()]. It can analyse one
+#' or more candidate motion channels and, where several are supplied, selects the most suitable channel
+#' separately for each deployment.
 #'
-#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
-#'   `.rds` paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-#'   processed without ever holding it all. The output of [processTagData()] is strongly recommended,
-#'   since it supplies the motion channels in the form this step expects.
-#' @param method Which estimation backends to run. Naming both (the default) runs both and cross-checks
-#'   them: each fills its own `tbf_hz_<backend>` column and their per-row agreement becomes `tbf_agree`.
-#'   Name one to skip the cross-check and halve the runtime.
-#'
-#'   - `"peaks"` locates individual beats as peak-and-trough pairs in the band-passed signal, so it alone
-#'     yields per-beat timing, interval and amplitude. Fast and directly interpretable.
-#'   - `"wavelet"` computes a Morlet continuous wavelet transform and tracks the strongest in-band
-#'     oscillation at each sample. It carries no per-beat detail but degrades more gracefully on a noisy
-#'     record.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param motion.col One or more candidate motion channels to look for the beat in (default `"sway"`).
-#'   Which axis carries the beat depends on the species, where the tag sits and how the animal is
-#'   swimming, so nothing is prescribed here. Name several and the axis is chosen per deployment by
-#'   cross-axis consensus, described below; the function reports which it chose and why.
-#' @param ridge.prominence How far the winning wavelet scale must stand above its own local spectral
-#'   background before the estimate is reported (default `2`); below it the sample is `NA`. Wavelet
-#'   backend only. A per-sample maximum always returns something, so without this floor a record
-#'   containing no oscillation at all yields a confident-looking frequency. Set `0` to report a frequency
-#'   wherever one can be computed.
-#' @param min.periodicity How strongly the band-passed signal must repeat, measured as its
-#'   autocorrelation at the dominant lag, before a frequency is reported (default `0.15`); below it the
-#'   sample is `NA`. Peak backend only. This is the time-domain counterpart of `ridge.prominence`: it
-#'   asks whether the waveform repeats at all, not how large it is. Keep it low - a high floor discards
-#'   stretches that demonstrably contain an oscillation. Set `0` to report a frequency everywhere a
-#'   period can be fitted.
-#' @param min.amplitude An absolute amplitude-envelope threshold, in the units of `motion.col`, above
-#'   which a sample counts as active swimming. Supplying it turns on the swimming-or-gliding call in
-#'   `tbf_swimming`; with `NULL` (default) that call is withheld as `NA`, for the reasons given below.
-#'   Calibrate it for a species and tag combination, ideally against footage, rather than guessing.
-#' @param min.freq.Hz,max.freq.Hz The frequency band of interest, in Hz. Defaults `0.1` and `3`. Set
-#'   them from what your animal plausibly does: too wide a band admits swell and posture drift, too
-#'   narrow a one clips the beat at its edges and biases the estimate toward the middle.
-#' @param bandpass.filter Whether to band-pass the motion channel before detection (default `TRUE`).
-#'   Recommended, since it removes the posture drift and high-frequency noise either backend would
-#'   otherwise have to work around.
-#' @param filter.low.freq,filter.high.freq Explicit band-pass cutoffs in Hz. `NULL` (default) widens
-#'   `min.freq.Hz` and `max.freq.Hz` by a tenth, leaving a margin so that a beat sitting near the edge of
-#'   the band of interest is not attenuated by the filter that isolates it.
-#' @param filter.order The order of the Butterworth band-pass (default `4`). A higher order cuts off
-#'   more sharply but rings more around abrupt changes.
-#' @param smooth.window The window, in seconds, of the centred moving average applied to the per-row
-#'   frequency series (default `10`). It suppresses sample-to-sample jitter while preserving sustained
-#'   behaviour; set `0` to disable it and see the raw per-sample estimate.
-#' @param max.interp.gap The longest gap, in seconds, to fill by linear interpolation between frequency
-#'   estimates (default `10`). `NULL` disables filling. Keep it well short of the timescale on which the
-#'   animal changes gait, since an interpolated value is an assumption, not a measurement.
-#' @param plot Whether to draw the diagnostic plots to the active graphics device. Default `FALSE`.
-#' @param plot.file Path to a single multi-page PDF for the diagnostic plots, one page per deployment
-#'   per enabled panel. The parent directory must exist and the name must end in `.pdf`. `NULL` (default)
-#'   writes no file. Independent of `plot`. The wavelet spectrogram is down-sampled to a page-friendly
-#'   width so the file stays compact.
-#' @param plot.wavelet Whether to include the wavelet power-spectrum panel when plotting. Default
-#'   `TRUE`.
-#' @param plot.diagnostic Whether to include the diagnostic panel - the band-passed signal with
-#'   frequency and amplitude through time - when plotting. Default `TRUE`.
+#' @param data A `nautilus_tag` object, a list of tag datasets, a data frame containing multiple
+#'   individuals identified by `id.col`, or a character vector of `.rds` file paths. File paths are
+#'   processed sequentially, allowing large collections to be analysed without loading them all into
+#'   memory. The output of [processTagData()] is recommended.
+#' @param method One or both estimation methods, `"peaks"` and `"wavelet"` (default both). Where both
+#'   are given, the first is the primary method and the second a cross-check.
+#' @param id.col Column identifying individuals (default `"ID"`).
+#' @param datetime.col Column containing timestamps (default `"datetime"`).
+#' @param motion.col One or more candidate motion channels from which the periodic movement is estimated
+#'   (default `"sway"`). Where several are supplied, the most suitable is selected separately for each
+#'   deployment. See Details.
+#' @param min.freq.Hz,max.freq.Hz Lower and upper limits of the frequency range analysed, in Hz
+#'   (defaults `0.1` and `3`). Choose them from the locomotor frequencies expected of the study species.
+#' @param bandpass.filter Whether the motion signal is band-pass filtered before analysis (default
+#'   `TRUE`).
+#' @param filter.low.freq,filter.high.freq Optional cut-off frequencies for the band-pass filter, in Hz.
+#'   `NULL` (default) derives them from `min.freq.Hz` and `max.freq.Hz`, set slightly wider so that the
+#'   filter does not attenuate the edges of the band being estimated.
+#' @param filter.order Order of the Butterworth band-pass filter (default `4`).
+#' @param min.amplitude Optional amplitude threshold, in the units of the selected motion channel, above
+#'   which a sample is classified as active swimming. `NULL` (default) performs no classification. See
+#'   Details.
+#' @param smooth.window Width, in seconds, of the centred moving average applied to the frequency and
+#'   amplitude estimates (default `10`). `0` disables smoothing.
+#' @param max.interp.gap Longest gap, in seconds, between valid frequency estimates that may be filled
+#'   by linear interpolation (default `10`). `NULL` disables interpolation.
+#' @param ridge.prominence Minimum prominence of the dominant wavelet ridge relative to the surrounding
+#'   spectral background (default `2`). Estimates with less support are returned as `NA`. Used only by
+#'   `"wavelet"`.
+#' @param min.periodicity Minimum autocorrelation-based periodicity required before an estimate is
+#'   reported (default `0.15`). Estimates below it are returned as `NA`. Used only by `"peaks"`.
+#' @param plot Whether to draw diagnostic plots to the active graphics device (default `FALSE`).
+#' @param plot.file Path to a multi-page PDF holding the diagnostic plots, or `NULL` (default).
+#' @param plot.wavelet Whether the wavelet power spectrum is included in the diagnostic plots (default
+#'   `TRUE`).
+#' @param plot.diagnostic Whether the time-series diagnostic panels are included (default `TRUE`).
+#' @param return.data Whether to return the processed datasets in memory (default `TRUE`). When `FALSE`,
+#'   the function returns the paths of the `.rds` files written to `output.dir`, which feed directly into
+#'   the next step's `data` argument; this requires `output.dir` to be specified.
+#' @param output.dir An existing directory in which to save one `.rds` file per deployment. Supplying a
+#'   directory is what triggers saving; `NULL` (default) writes nothing.
+#' @param output.suffix Optional string appended to each saved file name, before `.rds`, to label a
+#'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is specified.
+#' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
+#'   `"gzip"`, `"bzip2"` or `"xz"`. See [base::saveRDS()].
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default), which adds the per-step diagnostics behind each deployment's estimate.
-#' @param return.data Whether to return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument - so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Directory in which to write one `<id>.rds` file per deployment. Providing a
-#'   directory is what triggers saving; `NULL` (default) writes nothing. The directory must already
-#'   exist.
-#' @param output.suffix Optional suffix appended to each saved file name, before `.rds`, to tag a
-#'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is set.
-#' @param compress Compression for the saved `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
-#'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is set. See [base::saveRDS()].
+#'   (default), which adds per-deployment diagnostics.
 #'
 #' @details
-#' ## Choosing the axis
+#' ## Estimation methods
 #'
-#' Where several `motion.col` candidates are given, the axis is chosen by cross-axis frequency
-#' consensus rather than by raw in-band power. Coordinated propulsion drives several axes at one
-#' frequency - a ray's wingbeat appears on surge *and* heave together - whereas a non-locomotor artefact
-#' is usually confined to one axis. The classic case is the pendulum swing of a towed tag: a strong,
-#' sharp peak on the lateral axis, a little below the true beat, which raw in-band power will happily
-#' select over the real thing.
+#' \describe{
+#'   \item{`"peaks"`}{Locates successive oscillatory cycles in the band-passed signal, each contributing
+#'     a frequency from its peak-to-peak interval and an amplitude from its peak-to-trough excursion.
+#'     Estimates rest on individual cycles.}
+#'   \item{`"wavelet"`}{Follows the dominant frequency through time with a Morlet continuous wavelet
+#'     transform (Torrence and Compo 1998). The estimate is continuous rather than cycle-by-cycle, and
+#'     is often steadier on noisy or non-stationary signals.}
+#' }
 #'
-#' So the axis whose dominant frequency is corroborated by another axis wins, with ties broken on
-#' in-band power. Where no two candidates agree, the choice falls back to power and a warning says the
-#' estimate may reflect an artefact. Flat or stuck candidate channels are excluded first, so they cannot
-#' form a spurious consensus.
+#' Both can be requested at once. Their frequencies are stored in separate columns, and `tbf_agree`
+#' records whether the two fall within 10% of each other at a given sample.
 #'
-#' ## The harmonic ambiguity, which is surfaced rather than resolved
+#' Read agreement as a certificate rather than an error flag. Where the two methods concur they are
+#' rarely both wrong; where they differ, nothing identifies which to distrust, so `FALSE` means
+#' unresolved rather than bad. The certificate has one known blind spot: both methods establish a
+#' dominant periodicity before anything else, so neither can vouch for the other against a harmonic
+#' error, and both may settle on the same harmonic of the true locomotor frequency.
 #'
-#' A fish swimming with lateral undulation beats on a single axis, sway, while surge and heave carry its
-#' *second harmonic*. A corroborated surge-and-heave pair can therefore sit at twice the true tail-beat
+#' ## Selecting the motion channel
+#'
+#' Where `motion.col` names several candidates, the channel is chosen by agreement in dominant frequency
+#' across them, with in-band signal power breaking ties. Coordinated propulsion drives several axes at
+#' one frequency, whereas a non-locomotor artefact is usually confined to one; choosing on raw in-band
+#' power alone would favour the artefact whenever it is the stronger signal. The classic case is the
+#' pendulum swing of a towed tag, which produces a sharp lateral-axis peak a little below the true beat.
+#'
+#' Where no two candidates agree, the channel with the strongest in-band signal is used and the estimate
+#' is flagged as possibly reflecting an artefact. Flat or stuck channels are excluded before selection,
+#' so they cannot form a spurious consensus. Where the deployment metadata marks a tag as towed, a
+#' further warning notes that tow-pendulum motion may contaminate the lateral axis whichever channel is
+#' finally used.
+#'
+#' ## Harmonic ambiguity
+#'
+#' A fish swimming by lateral undulation beats on a single axis, sway, while surge and heave carry its
+#' second harmonic. A corroborated surge-and-heave pair can therefore sit at twice the true tail-beat
 #' rate.
 #'
 #' That spectrum is identical to a genuine wingbeat consensus contaminated by an artefact near half the
-#' beat, so it cannot be resolved from the signal alone. Rather than guess, and risk silently halving a
-#' correct estimate, the function keeps the axis it chose and warns whenever another axis carries a
-#' comparable peak at about half the chosen frequency, naming it as the likely fundamental for a
-#' single-axis swimmer. The decision is yours, and footage usually settles it.
+#' beat, so **the ambiguity cannot be resolved from the signal alone**. Rather than guess, and risk
+#' silently halving a correct estimate, the function keeps the channel it selected and warns whenever
+#' another channel carries a comparable peak at about half the chosen frequency, naming it as the likely
+#' fundamental for a single-axis swimmer. Resolving it needs independent information: video, or
+#' species-specific knowledge of locomotor mechanics.
 #'
-#' Where the deployment metadata marks a tag as towed, a further warning notes that a tow-pendulum
-#' oscillation may contaminate the lateral axis whichever axis is finally used.
+#' ## Frequency band and filtering
 #'
-#' All of these warnings are grouped: each is raised once per run, with the diagnosis and recommendation
-#' stated once and one line naming each affected deployment, so a large batch neither buries the console
-#' nor loses warnings past the limit R keeps.
+#' `min.freq.Hz` and `max.freq.Hz` bound the frequencies searched. The sampling rate must exceed twice
+#' `max.freq.Hz` to satisfy the Nyquist criterion, and a deployment that fails this is reported; in
+#' practice a substantially higher rate is needed before an estimate is reliable.
 #'
-#' ## Peak detection
+#' The band-pass limits default to slightly outside the estimation band, so that the filter does not
+#' attenuate the frequencies being estimated. Wavelet amplitudes are corrected for the filter's
+#' attenuation, so `tbf_amplitude_peaks` and `tbf_amplitude_wavelet` measure the same quantity and are
+#' directly comparable.
 #'
-#' Individual beats are located as successive peak-and-trough pairs in the band-passed signal. Each beat
-#' contributes a frequency, from the peak-to-peak interval, and an amplitude, from the peak-to-trough
-#' excursion; every beat whose interval falls inside the band is kept and the values are mapped onto a
-#' per-row series.
+#' ## When an estimate is withheld
 #'
-#' Candidate maxima are found with a permissive, data-driven threshold and then thinned by a *refractory
-#' period*: within 0.6 of the locally measured beat period, only the tallest maximum survives. This is
-#' what separates a real beat from the harmonic shoulder or flank ripple beside it, on the simple
-#' argument that an animal cannot beat its tail twice in one period, so two maxima that close together
-#' are one beat.
+#' `min.periodicity` withholds a peak-detection estimate where the record shows too little periodic
+#' structure to support one; `ridge.prominence` withholds a wavelet estimate where the dominant ridge is
+#' not distinct enough from the spectral background.
 #'
-#' The period is measured independently of the peak picking, from a rolling autocorrelation of the
-#' band-passed signal, because peak picking cannot establish its own rate: iterating a refractory period
-#' from the raw peak intervals converges on double the true rate when seeded from below, and half of it
-#' when seeded from above. The rate has to come from outside that loop.
+#' Both govern *whether* an estimate is reported, never *which* frequency is reported. Peak detection is
+#' otherwise data-driven and not user-tunable, so the frequency returned does not depend on any
+#' behavioural threshold.
 #'
-#' An amplitude threshold cannot do this job, and raising one is not an alternative. The false maxima are
-#' those too close together, not those too small, so the invariant is timing rather than size; a
-#' threshold high enough to clean up a low-amplitude record will halve the frequency reported on a clean
-#' high-amplitude one. Detection is therefore data-driven and not user-tunable, so that the frequency
-#' does not depend on any behavioural threshold. The one exposed control, `min.periodicity`, governs when
-#' to *withhold* an estimate, never which frequency to report.
+#' ## Oscillation amplitude
 #'
-#' ## Wavelet transform
+#' Amplitude is the peak-to-trough excursion of the periodic motion, in the units of the selected motion
+#' channel, and serves as a proxy for the magnitude of the oscillation.
 #'
-#' A Morlet continuous wavelet transform (Torrence and Compo 1998) is computed across the band, and the
-#' strongest scale at each sample gives the dominant frequency, refined below the scale grid by a
-#' parabolic fit, together with its amplitude. Estimates whose wavelet support reaches the end of a
-#' record are masked, since they are shaped partly by the edge rather than by the animal. Long records
-#' are transformed in blocks with guard bands, so the result does not depend on how the record happened
-#' to be divided.
+#' It should not be read as a direct measure of swimming effort without validation for the species, tag
+#' placement and sensor configuration.
 #'
-#' ## How independent are the two backends?
+#' ## Swimming classification
 #'
-#' Less than fully, and the limit is worth stating precisely. Both begin by establishing a dominant
-#' periodicity - peak detection from a rolling autocorrelation, the wavelet from a scale-space ridge - so
-#' a signal that misleads both about the fundamental, a dominant second harmonic say, misleads them
-#' together. Their agreement cannot certify against that.
+#' Detecting a periodic oscillation does not by itself establish that an animal is actively swimming, so
+#' no swimming-or-gliding classification is performed by default and `tbf_swimming` is returned as `NA`.
 #'
-#' Downstream of that step they are genuinely different. The autocorrelation responds to amplitude
-#' modulation and broadband noise in ways the wavelet ridge does not, while the ridge can be captured by
-#' a strong out-of-band component that the time-domain method shrugs off. Agreement is therefore evidence
-#' about contamination within the band, rather than a guarantee against harmonic error - for which the
-#' harmonic flag and the band-edge check are the relevant instruments.
+#' Supplying `min.amplitude` enables classification against that threshold. It should be calibrated for
+#' the species and tag configuration, ideally against independently validated behavioural observations.
 #'
-#' The two part company in one recognisable situation: a record carrying a slow, high-amplitude component
-#' alongside a faster beat. Autocorrelation asks which waveform repeats and finds the slow one; a spectral
-#' peak asks where the power is concentrated and finds the faster one. Where the two questions have the
-#' same answer, both backends are unbiased. A low `tbf_agree` over part of a deployment is therefore
-#' worth reading as a question about what the animal was doing, not only as instrument noise. Raising
-#' `min.periodicity` withholds exactly those ambiguous stretches, at the cost of coverage.
+#' ## Smoothing and interpolation
 #'
-#' ## Swimming or gliding, and why it is not inferred by default
+#' `smooth.window` applies a centred moving average to the frequency and amplitude series;
+#' `max.interp.gap` optionally fills short gaps between valid estimates by linear interpolation.
 #'
-#' The function estimates the dominant in-band oscillation wherever it can. Deciding whether that
-#' oscillation is the animal propelling itself, rather than the tag moving during a glide, needs
-#' information a single motion axis does not carry.
+#' Interpolated values represent assumed continuity between estimates rather than measurements, so the
+#' gap allowed should stay short relative to the timescale on which locomotor behaviour changes.
 #'
-#' Every self-referential rule tried against video-validated footage failed: a fraction of the beat
-#' amplitude, an out-of-band noise floor, an Otsu split of the envelope, a spectral-flatness test. The
-#' reason is physical rather than fixable - a tag oscillates in the tail-beat band whether or not the
-#' animal is propelling, so annotated stationary feeding could not be separated from active swimming, and
-#' swell, tag strum or a passing vessel were all reported as continuous swimming. This held in clean,
-#' fully submerged water, so it is not a surface artefact that better filtering would remove.
+#' ## Diagnostics and quality control
 #'
-#' Accordingly, with `min.amplitude = NULL` the `tbf_swimming` column is `NA`, which is the honest
-#' answer. Supplying `min.amplitude` turns the classification on: samples whose envelope exceeds it are
-#' swimming, with hysteresis and a minimum-bout filter, and the frequency and amplitude columns are then
-#' set to `NA` on gliding rows. Where the call is withheld they are always reported, because a frequency
-#' is measurable even where a behavioural interpretation is not.
+#' The diagnostic plots show the band-passed signal with the estimated frequency and amplitude, and
+#' optionally the wavelet power spectrum with the fitted ridge overlaid, which is the practical way to
+#' judge whether the analysis band, the signal quality and the chosen channel are right.
 #'
-#' ## Smoothing
+#' Quality-control findings cover estimates pressed against the edges of the analysis band, disagreement
+#' between methods, uncertain channel selection and possible harmonic ambiguity. Each is raised once per
+#' run, with the affected deployments named inline, rather than once per deployment, so a large batch
+#' neither buries the console nor loses warnings past the limit R keeps.
 #'
-#' A centred moving average of `smooth.window` seconds is applied to the per-row frequency and
-#' amplitude of both backends, to suppress jitter while preserving sustained behaviour. They share one
-#' NA-aware smoother: gaps are averaged over rather than propagated across the window, and the leading
-#' and trailing half-window of each record is left `NA` rather than padded with the end value.
+#' @return When `return.data = TRUE`, the input data with the tail-beat columns added. Which columns
+#'   appear depends on the methods requested:
 #'
-#' ## Sampling rate
+#'   \describe{
+#'     \item{`tbf_hz_peaks`, `tbf_hz_wavelet`}{Estimated frequency in Hz, one column per method that
+#'       ran and named after it.}
+#'     \item{`tbf_amplitude_peaks`, `tbf_amplitude_wavelet`}{Oscillation amplitude as a peak-to-trough
+#'       excursion, in the units of the selected motion channel.}
+#'     \item{`tbf_swimming`}{Whether the animal was actively swimming, where `min.amplitude` was
+#'       supplied, and `NA` otherwise. Unsuffixed: it derives from the band-passed signal both methods
+#'       share.}
+#'     \item{`tbf_agree`}{Whether the two methods agree within 10%, where both ran. Also unsuffixed,
+#'       being a property of the pair rather than of either one.}
+#'   }
 #'
-#' The sampling rate must exceed twice `max.freq.Hz`, and at least four times is advisable for a reliable
-#' estimate. For `max.freq.Hz = 3`, sample at 12 Hz or more.
+#'   There is deliberately no method-agnostic `tbf_hz`, so a value's provenance always travels with it;
+#'   use [tailBeatColumn()] to resolve which column to read without hard-coding a method.
 #'
-#' @return If `return.data = TRUE`, the input data with these columns added:
+#'   The channel selected, the methods used, median frequency and amplitude, and the percentage of time
+#'   classified as swimming are recorded in the deployment's processing history. When
+#'   `return.data = FALSE`, a character vector of the written `.rds` file paths.
 #'
-#' - `tbf_hz_peaks` and `tbf_hz_wavelet` - the estimated frequency in Hz, one column per backend that
-#'   ran and named after it. There is deliberately no method-agnostic `tbf_hz`, so a value's provenance
-#'   always travels with it; use [tailBeatColumn()] to resolve which to read in backend-agnostic code.
-#' - `tbf_amplitude_peaks` and `tbf_amplitude_wavelet` - an effort proxy in the units of `motion.col`,
-#'   reported as the **peak-to-trough excursion** by both backends and corrected for the band-pass
-#'   attenuation, so the two are directly comparable.
-#' - `tbf_swimming` - the swimming-or-gliding flag where `min.amplitude` was supplied, and `NA`
-#'   otherwise. It carries no backend suffix because it derives from the band-passed signal both backends
-#'   share.
-#' - `tbf_agree` - where both backends ran, whether they agree within 10 per cent. Also unsuffixed, being
-#'   a property of the pair rather than of either one.
-#'
-#' Read `tbf_agree` as a certificate rather than an error flag. Where the two backends agree they are
-#' rarely both wrong; where they disagree, nothing identifies which to distrust, so `FALSE` means
-#' unresolved rather than bad. The certificate has one known blind spot, described above: both backends
-#' fix a dominant periodicity first, so neither can vouch for the other against a harmonic error.
-#'
-#' Run-level quality control - the backend used, the axis chosen, median frequency and amplitude, and the
-#' percentage of time classified as swimming - is recorded in the metadata audit trail. If
-#' `return.data = FALSE`, a character vector of the written `.rds` file paths.
-#'
-#' @note Both backends require the \pkg{signal} package for band-pass filtering.
+#' @note Band-pass filtering requires the \pkg{signal} package; set `bandpass.filter = FALSE` to analyse
+#'   the unfiltered signal instead.
 #'
 #' @references
 #' Torrence C, Compo GP (1998) A practical guide to wavelet analysis. *Bulletin of the American
 #' Meteorological Society* 79:61-78.
 #' \doi{10.1175/1520-0477(1998)079<0061:APGTWA>2.0.CO;2}
 #'
-#' @seealso [processTagData()] for the step that must come first; [tailBeatColumn()] for reading the
-#'   result without hard-coding a backend; [plotDives()] and [extractFeatures()] for what typically
-#'   follows.
+#' @seealso [processTagData()] for deriving the motion channels used as input; [tailBeatColumn()] for
+#'   reading the result without hard-coding a method; [checkTagMapping()] for confirming the axis frame
+#'   the channels are expressed in; [plotDives()] and [extractFeatures()] for what typically follows.
 #'
 #' @examples
 #' \dontrun{
-#' # Processed tag data -> per-beat frequency, amplitude and a swimming/gliding flag
-#' tag <- processTagData(oriented)
-#' tag <- calculateTailBeats(tag, method = "peaks", motion.col = "sway",
+#' # Estimate tail-beat frequency by peak detection on a single channel.
+#' tag <- calculateTailBeats(processed, method = "peaks", motion.col = "sway",
 #'                           min.freq.Hz = 0.1, max.freq.Hz = 2.5)
 #'
-#' # Let the axis be chosen by consensus across three candidates, with a diagnostic PDF
+#' # Let the channel be chosen by consensus across three candidates, and cross-check both methods.
+#' tag <- calculateTailBeats(processed, method = c("peaks", "wavelet"),
+#'                           motion.col = c("sway", "surge", "heave"))
+#'
+#' # A batch too large to hold in memory: write a diagnostic PDF and pass the paths on.
 #' calculateTailBeats(list.files("./processed", full.names = TRUE),
 #'                    motion.col = c("sway", "surge", "heave"),
-#'                    plot.file = "./plots/tail_beats.pdf",
+#'                    plot.file = "./qc/tail_beats.pdf",
 #'                    return.data = FALSE, output.dir = "./tailbeats")
 #' }
 #' @export
-
 calculateTailBeats <- function(data,
                                method = c("peaks", "wavelet"),
                                id.col = "ID",
