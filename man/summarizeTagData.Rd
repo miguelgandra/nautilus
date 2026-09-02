@@ -18,190 +18,166 @@ summarizeTagData(
 }
 \arguments{
 \item{data}{Processed deployments, in any of the forms used across the pipeline: a list of datasets
-(one per individual), a single aggregated data.table/data.frame with an \code{ID} column, or a character
-vector of \code{.rds} file paths (loaded lazily, one per deployment). The output of \code{\link[=processTagData]{processTagData()}}
-(optionally after \code{\link[=calculateTailBeats]{calculateTailBeats()}}) is expected.}
+(one per individual), a single aggregated table with an \code{ID} column, or a character vector of
+\code{.rds} file paths, read one deployment at a time. The output of \code{\link[=processTagData]{processTagData()}}, optionally
+after \code{\link[=calculateTailBeats]{calculateTailBeats()}}, is expected.}
 
-\item{extra.metadata}{Optional data frame of external per-animal covariates to attach (e.g. \code{sex},
-\code{size}). Must contain an \code{ID} column. Multiple rows per ID are collapsed (distinct values joined
-by "/"). Fields already captured in the tag metadata (tag model/type, attachment site, sampling
-rate) are filled automatically and need not be provided here. This is also the route for any
-external per-deployment metric, e.g. total video duration from \code{\link[=getVideoMetadata]{getVideoMetadata()}}:
-Default \code{NULL}. For total video duration use \code{video.metadata} instead, which totals the per-file
-table for you.}
+\item{extra.metadata}{Optional data frame of external per-animal covariates, such as \code{sex} or
+\code{size}, carrying an \code{ID} column. Several rows for one ID are collapsed by joining the distinct
+values with \code{"/"}; for a numeric covariate that means conflicting values become \code{NA}, with a
+warning, so supply one value per ID. Fields already held in the tag metadata are filled
+automatically and need not be repeated here. For total video duration use \code{video.metadata}, which
+totals the per-file table for you. Default \code{NULL}.}
 
 \item{deployments}{Optional \code{nautilus_deployments} object from \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}. When
-supplied, the summary is completed into the full study roster: every deployment in \code{deployments}
-gets a row, and a \code{status} column marks each as \code{"included"} (processed data present, full metrics)
-or \code{"excluded"} (in the roster but absent from \code{data} - NA metrics, identity filled from the
-roster). The reason for exclusion is not inferred here; see \code{\link[=issues]{issues()}}. Default \code{NULL}. Supply it
-when reporting a study, so the table accounts for every animal tagged rather than only those whose
-data survived.}
+supplied, the summary is completed into the full study roster: every deployment gets a row, and
+\code{status} marks each \code{"included"} (processed data present) or \code{"excluded"} (in the roster but absent
+from \code{data}). Supply it when reporting a study, so the table accounts for every animal tagged
+rather than only those whose data survived. Default \code{NULL}.}
 
-\item{metadata}{Which deployment metadata to include, as a single keyword or a vector of names:
+\item{metadata}{Which deployment metadata to include, as a keyword or a vector of names.
 \code{"standard"} (default) adds every biometric trait the cohort carries plus the tagging date and
 coordinates; \code{"none"} reproduces the bare table; \code{"all"} adds the pop-up date and coordinates, the
 deployment type, and the package, logger and axis-configuration identifiers. Alternatively name the
 fields and traits you want - \code{c("sex", "deploy_lon", "deploy_lat")} - and they are emitted in the
 package's canonical order, so two calls requesting the same set still bind together. A named trait
-is given a column even where no deployment carries it (with a warning), which is how a cohort that
+is given a column even where no deployment carries it, with a warning, which is how a cohort that
 recorded different traits can still be combined. Fields not carried onto the tag object by
 \code{\link[=importTagData]{importTagData()}}, such as \code{recovery_datetime}, are deliberately not offered. A field requested
-here can be used to group the rendered table, via
+here can also group the rendered table, via
 \code{\link[=format.nautilus_summary]{format}(x, group.by = )}.}
 
-\item{video.metadata}{Optional table from \code{\link[=getVideoMetadata]{getVideoMetadata()}} - one row per video file, with \code{ID}
-and \code{duration} (seconds). Adds \code{video_duration_h}, the total footage per deployment. The totalling
-happens here because that table has several rows per deployment, which the generic covariate join
-would collapse to a string. A deployment with no entry gets \code{NA}, never \code{0}: \code{\link[=getVideoMetadata]{getVideoMetadata()}}
-drops folders holding no video, so absence means "no footage found", which is a different claim
-from "the camera ran for zero hours". This is TOTAL footage and routinely exceeds the retained
-record - a camera started on deck records either side of the deployment. Default \code{NULL}.}
+\item{video.metadata}{Optional table from \code{\link[=getVideoMetadata]{getVideoMetadata()}}, one row per video file with \code{ID} and
+\code{duration} in seconds. Adds \code{video_duration_h}, the total footage per deployment. A deployment with
+no entry gets \code{NA}, never \code{0}: \code{\link[=getVideoMetadata]{getVideoMetadata()}} omits folders holding no video, so absence
+means no footage was found, which is a different claim from a camera that ran for zero hours. This
+is total footage and routinely exceeds the retained record, since a camera started on deck films
+either side of the deployment. Default \code{NULL}.}
 
-\item{exclusions}{Optional deployment-exclusion log - the path to the shared \code{exclusions.csv}, or
-the table itself. Written by every stage that can drop a deployment (\code{\link[=importTagData]{importTagData()}},
+\item{exclusions}{Optional deployment-exclusion log: the path to the shared \code{exclusions.csv}, or the
+table itself. Written by every stage that can drop a deployment (\code{\link[=importTagData]{importTagData()}},
 \code{\link[=filterDeploymentData]{filterDeploymentData()}}, \code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}}, \code{\link[=applyAxisMapping]{applyAxisMapping()}} and \code{\link[=processTagData]{processTagData()}}),
-it supplies the \code{status_reason} of each deployment that is missing from \code{data}, and fills the
-record window of one that was detected and then rejected as too short. Where a deployment appears
-under several stages, the earliest in pipeline order wins - that is where it left. Default \code{NULL}.}
+it supplies the \code{status_reason} of each deployment missing from \code{data}, and fills the record window
+of one that was detected and then rejected as too short. Where a deployment appears under several
+stages, the earliest in pipeline order wins - that is where it left. Default \code{NULL}.}
 
 \item{error.stat}{Which error statistic the display-only population row shows: \code{"sd"} (standard
-deviation, the default) describes the spread across deployments, while \code{"se"} (standard error)
-describes how well their mean is pinned down. They answer different questions, and the first is
-usually what a reader of a cohort table wants.}
+deviation, the default) describes the spread across deployments, \code{"se"} (standard error) how well
+their mean is pinned down. They answer different questions, and the first is usually what a reader
+of a cohort table wants.}
 
-\item{tbf.method}{Which tail-beat backend to summarise, e.g. \code{"wavelet"}. \code{NULL} (default) resolves it
-per deployment from the data -- whichever \verb{tbf_hz_*} columns carry values, with the package's
-documented order (\code{peaks}, then \code{wavelet}) breaking a tie. The backend actually used is reported as
-\code{tbf_method}, so a cohort pooled from deployments that ran different backends stays visible rather
-than silently blended. See \code{\link[=tailBeatColumn]{tailBeatColumn()}}.}
+\item{tbf.method}{Which tail-beat method to summarise, \code{"peaks"} or \code{"wavelet"}. \code{NULL} (default)
+resolves it per deployment from whichever \verb{tbf_hz_*} columns carry values, with the package's
+documented order breaking a tie. The method actually used is reported in \code{tbf_method}, so a cohort
+pooled from deployments that ran different methods stays visible rather than silently blended. See
+\code{\link[=tailBeatColumn]{tailBeatColumn()}}.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
-\code{2}/"detailed" (default): additionally reports per-metric coverage across the processed deployments
-and shows a live progress bar while the tags are read (cli auto-hides it for fast runs).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header and summary), or
+\code{2}/\code{"detailed"} (default), which adds per-metric coverage across the processed deployments and a
+progress bar while the tags are read.}
 }
 \value{
-A \code{nautilus_summary} data frame, one row per deployment, with (where available) the columns:
+A \code{nautilus_summary} data frame, one row per deployment. Columns are grouped so the table
+reads as a narrative - which deployment, on which animal, with which tag, put out where and when,
+what record came back and whether it was kept, how much data there is, what the animal experienced,
+and what it did:
+
 \itemize{
-\item \strong{id}, \strong{animal_id}: the deployment, and the animal that carried it - one individual can
-be tagged more than once, so the two are not the same identifier. \code{animal_id} appears when it was
-mapped with \code{metadataColumns(animal_id = )}, and is completed from the roster for a deployment
-whose tag predates that mapping.
-\item \strong{tag_model}, \strong{tag_type}, \strong{attachment_site}, \strong{paddle_wheel}: the tag. \code{paddle_wheel}
-sits here rather than with the metrics because it is what says whether the speed columns mean
-anything.
-\item \strong{record_start}, \strong{record_end}, \strong{record_duration_h}, \strong{n_samples}: the
-recorded data span - the true on-animal window once the data have been deployment-filtered.
-\item \strong{sampling_hz}: original sampling rate (Hz).
-\item \strong{depth_mean}, \strong{depth_max} (m); \strong{temp_mean}, \strong{temp_min}, \strong{temp_max} (degrees Celsius).
-\item \strong{vedba_mean}, \strong{odba_mean} (g): mean activity (dynamic body acceleration).
-\item \strong{tbf_method}: which tail-beat backend \code{tbf_mean} came from (\code{"peaks"}/\code{"wavelet"}).
-\item \strong{tbf_mean} (Hz): mean tail-beat frequency over beating samples; \strong{pct_swimming}
-(\%): share of time actively swimming - both present only after \code{\link[=calculateTailBeats]{calculateTailBeats()}}.
-\item \strong{paddle_wheel} (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).
-\item \strong{speed_mean}, \strong{speed_max} (m/s): paddle-wheel speed, when available.
-\item \strong{descent_rate_max}, \strong{ascent_rate_max} (m/s): fastest vertical speeds (descent positive).
-\item \strong{n_positions}: total number of position fixes within the record span, when available.
-\item \strong{status}: \code{"included"}/\code{"excluded"} - only when \code{deployments} is supplied (see that
-argument); \strong{status_reason}, the rule that set a deployment aside, when \code{exclusions} is supplied.
-\item the \strong{metadata block} selected by \code{metadata}: biometric traits under the names they were
-declared with at import, then \code{deploy_datetime}, \code{deploy_lon}, \code{deploy_lat} and, with
-\code{metadata = "all"}, the pop-up and identifier fields. These are filled from each tag's own
-metadata, and from the roster for a deployment whose data never arrived - so a tag that was
-never recovered still reports who was tagged, when and where.
-\item \strong{video_duration_h}: total video recorded (h), when \code{video.metadata} is supplied.
-\item \strong{n_dives}; \strong{dive_duration_median_min}, \strong{dive_duration_max_min} (min);
-\strong{dive_depth_median_m}, \strong{dive_depth_max_m} (m, per-dive maximum depths);
-\strong{dives_incomplete}, \strong{dives_truncated}, \strong{dives_gapped}: the dive block -
-present only for deployments annotated by \code{\link[=detectDives]{detectDives()}}, and computed with the same reducer
-\code{\link[=diveMetrics]{diveMetrics()}} uses (see Details).
-}
-}
-\description{
-Every study built on archival tags needs the same table: one row per deployment, giving how long the
-tag recorded, at what rate, and the headline figures for depth, temperature, activity and swimming.
-Assembling it by hand across a fleet is tedious and easy to get subtly wrong, particularly where
-deployments differ in which processing steps they have been through.
-
-This function builds that table. The descriptive fields come from each tag's own metadata, so they
-need not be supplied again, and an optional \code{extra.metadata} table attaches per-animal covariates
-such as sex or size that the tag never recorded.
-
-The returned object is a \strong{typed} data frame (numeric columns stay numeric, datetimes stay
-POSIXct), meant for downstream analysis. Its \code{print} method renders a formatted table and, for more
-than one deployment, appends a population \verb{mean +/- error} row for display only. To export that same
-formatted table (for a report or paper), call \code{format()} on the result and write it out, e.g.
-\code{write.csv(format(summary), "summary.csv", row.names = FALSE)}.
-}
-\details{
-\subsection{The dive block}{
-
-Where the data carry a \code{dive_id} column, the summary gains a per-deployment dive block. Its numbers
-are not recomputed here: the deployment is reduced by the same engine that sits behind
-\code{\link[=diveMetrics]{diveMetrics()}}, so a dive count or median duration quoted from the summary is by construction the
-one the per-dive table gives. It reads the canonical \code{datetime} and \code{depth} columns, which is what
-the pipeline produces and what this block requires.
-
-One figure is not quite what it appears: the printed cohort line reports a median of per-deployment
-medians, not a pooled median over every dive. The per-deployment columns are exact, and a pooled
-figure is one \code{\link[=diveMetrics]{diveMetrics()}} call away.
-
-\code{dives_incomplete} counts the dives whose extent was set by the record rather than by the animal,
-split into \code{dives_truncated}, where the tag started or stopped mid-dive, and \code{dives_gapped}, where
-an interruption in time or a depth channel that went dark bounds the dive. A dive can be both.
-Deployments that have not been through \code{\link[=detectDives]{detectDives()}} simply have no dive columns, and in a mixed
-cohort they come back \code{NA}, as for any absent metric.
+\item \strong{identity} - \code{id}, and \code{animal_id} where the roster carries it. One individual can be
+tagged more than once, so the two are not the same identifier.
+\item \strong{animal} - the biometric traits the cohort carries, followed by any \code{extra.metadata}
+covariates. Both describe the animal, so they sit together.
+\item \strong{tag} - \code{tag_model}, \code{tag_type}, \code{attachment_site}, \code{paddle_wheel}.
+\item \strong{deployment} - the metadata fields \code{metadata} asked for, in the package's canonical
+order.
+\item \strong{record} - \code{record_start}, \code{record_end}, \code{record_duration_h}, then \code{status} and
+\code{status_reason}, which close the block because the reason usually explains a short or absent
+record.
+\item \strong{coverage} - \code{n_samples}, \code{sampling_hz}, \code{n_positions}, \code{video_duration_h}.
+\item \strong{habitat} - \code{depth_mean}, \code{depth_max}, \code{temp_mean}, \code{temp_min}, \code{temp_max}.
+\item \strong{movement} - \code{vedba_mean}, \code{odba_mean}, \code{tbf_mean}, \code{tbf_method}, \code{pct_swimming},
+\code{speed_mean}, \code{speed_max}, \code{descent_rate_max}, \code{ascent_rate_max}.
+\item \strong{dives} - \code{n_dives}, \code{dive_duration_median_min}, \code{dive_duration_max_min},
+\code{dive_depth_median_m}, \code{dive_depth_max_m}, \code{dives_incomplete}, \code{dives_truncated},
+\code{dives_gapped}.
 }
 
-\subsection{What a deployment that produced no data still reports}{
-
-A tag that was never recovered, or one set aside during filtering, is not a deployment nothing is
-known about. Its row is completed from the roster through the same field declaration the processed
-rows are read through, so it carries the same identity, trait and tagging columns rather than a bare
-identifier. Supply \code{exclusions} as well and a deployment rejected for being too short also reports
-the window that was detected before it was rejected, which is the measurement the decision rested on.
-}
-
-\subsection{The column order}{
-
-Columns are grouped so the table reads as a narrative: which deployment, on which animal, with which
-tag, put out where and when, what record came back and whether it was kept, how much data there is,
-what the animal experienced, and what it did. \code{status} and \code{status_reason} close the record block
-together, because the reason usually explains a short or absent record. Traits and any
-\code{extra.metadata} covariates sit together, since both describe the animal. Anything the package does
-not recognise trails the block it follows rather than disappearing.
+A column the package does not recognise trails the block it follows rather than disappearing, so a
+column added later still appears. Only the columns the data and arguments support are present.
 
 \code{deploy_datetime} and \code{record_start} are both reported and are not the same quantity: the first is
-what the metadata says, the second is what the data says, whether detected by
-\code{\link[=filterDeploymentData]{filterDeploymentData()}} or supplied through its \code{custom.deployment.times}. Across a 52-deployment
-cohort only 9 agreed to the minute and 5 differed by more than an hour, and the sign of the
-difference is informative - a record starting BEFORE the recorded tagging time means the tag was
-already logging. For a deployment that was never recovered, \code{deploy_datetime} is the only date there
-is.
+what the metadata says, the second what the data says, whether detected by \code{\link[=filterDeploymentData]{filterDeploymentData()}}
+or supplied through its \code{custom.deployment.times}. The sign of the difference is informative - a
+record starting before the recorded tagging time means the tag was already logging. For a
+deployment that was never recovered, \code{deploy_datetime} is the only date there is.
+}
+\description{
+Builds a deployment-level summary table from processed archival tag data, with one row per
+deployment: how long the tag recorded and at what rate, and the headline figures for depth,
+temperature, activity, swimming and diving.
+
+Descriptive fields are taken from each tag's own metadata and need not be supplied again. External
+per-animal covariates the tag never recorded, such as sex or size, are attached through
+\code{extra.metadata}; video coverage, dive annotations and the deployment-exclusion log are folded in
+from their own arguments where available.
+
+The result is a typed data frame meant for analysis - numeric columns stay numeric and datetimes stay
+\code{POSIXct}. Use \code{\link[=format.nautilus_summary]{format.nautilus_summary()}} for a display-ready version to inspect or export.
+}
+\details{
+\subsection{The study roster and excluded deployments}{
+
+With \code{deployments}, the summary describes the whole study rather than only the deployments that
+produced data. An excluded deployment keeps whatever identity and deployment metadata the roster
+holds, and every metric derived from the processed data is \code{NA}. Supplying \code{exclusions} as well fills
+\code{status_reason}, and where a deployment was detected and then rejected as too short, its record
+window too - so a row that would otherwise be empty still says what was found and why it was set
+aside.
 }
 
-\subsection{Exporting the table}{
+\subsection{Dive metrics}{
 
-\code{format()} renders the publication version, and its output is ASCII by default: the table is written
-to a CSV far more often than it is read in a terminal, and a spreadsheet opening a UTF-8 file with no
-byte-order mark will guess the encoding and can turn a degree sign into mojibake. Pass
-\code{symbols = "unicode"} for the typographic forms where the consumer handles UTF-8 - \code{knitr::kable()},
-\code{flextable}, a paste into a manuscript.
+A deployment carrying dive annotations from \code{\link[=detectDives]{detectDives()}} gains a deployment-level dive summary,
+reduced by the same routine \code{\link[=diveMetrics]{diveMetrics()}} uses, so the per-dive and per-deployment views cannot
+disagree. In a mixed cohort, deployments without annotations take \code{NA} for the dive columns.
+
+\code{dives_incomplete} counts dives whose extent was limited by the record rather than by the animal.
+They are further split into \code{dives_truncated}, where the record began or ended mid-dive, and
+\code{dives_gapped}, where missing samples interrupted one. A dive can be both, so the two do not sum to
+\code{dives_incomplete}.
+}
+
+\subsection{Formatting and export}{
+
+The returned values are analysis-ready. The \code{print} method and \code{\link[=format.nautilus_summary]{format.nautilus_summary()}} render
+the display version, which adds a cohort \verb{mean +/- error} row where more than one deployment is
+present, and can group the rows by any categorical column.
+
+\code{format()} writes ASCII by default: the table reaches a CSV far more often than a terminal, and a
+spreadsheet opening a UTF-8 file with no byte-order mark will guess the encoding and can turn a
+degree sign into mojibake. Pass \code{symbols = "unicode"} where the consumer handles UTF-8 -
+\code{knitr::kable()}, \code{flextable}, a paste into a manuscript.
 }
 }
 \examples{
 \dontrun{
-# One row per deployment from processed (and tail-beat-annotated) tags.
+# One row per deployment, from processed and tail-beat-annotated tags.
 tag <- calculateTailBeats(processTagData(oriented))
-summarizeTagData(tag)
+summary <- summarizeTagData(tag)
 
-# Complete the study roster and attach external per-animal covariates.
-summarizeTagData(list.files("./tailbeats", full.names = TRUE),
-                 deployments = deployments,
-                 extra.metadata = animal_metadata[, c("ID", "sex", "size")])
+# Complete the study roster, attach external covariates, and explain every exclusion.
+summary <- summarizeTagData(list.files("./tailbeats", full.names = TRUE),
+                            deployments = deployments,
+                            extra.metadata = animal_metadata[, c("ID", "sex", "size")],
+                            exclusions = "./data interim/exclusions.csv")
+
+# A formatted table for a report, grouped by sex.
+format(summary, style = "report", group.by = "sex")
 }
 }
 \seealso{
-\code{\link[=processTagData]{processTagData()}}, \code{\link[=filterDeploymentData]{filterDeploymentData()}}, \code{\link[=detectDives]{detectDives()}}, \code{\link[=diveMetrics]{diveMetrics()}},
-\code{\link[=getVideoMetadata]{getVideoMetadata()}}, \code{\link[=metadataColumns]{metadataColumns()}}.
+\code{\link[=processTagData]{processTagData()}} and \code{\link[=calculateTailBeats]{calculateTailBeats()}} for the steps that produce the input;
+\code{\link[=detectDives]{detectDives()}} and \code{\link[=diveMetrics]{diveMetrics()}} for the dive annotations; \code{\link[=getVideoMetadata]{getVideoMetadata()}} for the video
+table; \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} for the study roster; \code{\link[=metadataColumns]{metadataColumns()}} for the metadata
+vocabulary; \code{\link[=format.nautilus_summary]{format.nautilus_summary()}} for the display-ready table.
 }

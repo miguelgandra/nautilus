@@ -1,185 +1,160 @@
 #######################################################################################################
-# Summarize Tag Data ##################################################################################
+# Summarise processed tag deployments #################################################################
 #######################################################################################################
 
 #' Summarise processed tag deployments
 #'
 #' @description
-#' Every study built on archival tags needs the same table: one row per deployment, giving how long the
-#' tag recorded, at what rate, and the headline figures for depth, temperature, activity and swimming.
-#' Assembling it by hand across a fleet is tedious and easy to get subtly wrong, particularly where
-#' deployments differ in which processing steps they have been through.
+#' Builds a deployment-level summary table from processed archival tag data, with one row per
+#' deployment: how long the tag recorded and at what rate, and the headline figures for depth,
+#' temperature, activity, swimming and diving.
 #'
-#' This function builds that table. The descriptive fields come from each tag's own metadata, so they
-#' need not be supplied again, and an optional `extra.metadata` table attaches per-animal covariates
-#' such as sex or size that the tag never recorded.
+#' Descriptive fields are taken from each tag's own metadata and need not be supplied again. External
+#' per-animal covariates the tag never recorded, such as sex or size, are attached through
+#' `extra.metadata`; video coverage, dive annotations and the deployment-exclusion log are folded in
+#' from their own arguments where available.
 #'
-#' The returned object is a **typed** data frame (numeric columns stay numeric, datetimes stay
-#' POSIXct), meant for downstream analysis. Its `print` method renders a formatted table and, for more
-#' than one deployment, appends a population `mean +/- error` row for display only. To export that same
-#' formatted table (for a report or paper), call `format()` on the result and write it out, e.g.
-#' `write.csv(format(summary), "summary.csv", row.names = FALSE)`.
+#' The result is a typed data frame meant for analysis - numeric columns stay numeric and datetimes stay
+#' `POSIXct`. Use [format.nautilus_summary()] for a display-ready version to inspect or export.
 #'
 #' @param data Processed deployments, in any of the forms used across the pipeline: a list of datasets
-#'   (one per individual), a single aggregated data.table/data.frame with an `ID` column, or a character
-#'   vector of `.rds` file paths (loaded lazily, one per deployment). The output of [processTagData()]
-#'   (optionally after [calculateTailBeats()]) is expected.
-#' @param extra.metadata Optional data frame of external per-animal covariates to attach (e.g. `sex`,
-#'   `size`). Must contain an `ID` column. Multiple rows per ID are collapsed (distinct values joined
-#'   by "/"). Fields already captured in the tag metadata (tag model/type, attachment site, sampling
-#'   rate) are filled automatically and need not be provided here. This is also the route for any
-#'   external per-deployment metric, e.g. total video duration from [getVideoMetadata()]:
-#'   Default `NULL`. For total video duration use `video.metadata` instead, which totals the per-file
-#'   table for you.
+#'   (one per individual), a single aggregated table with an `ID` column, or a character vector of
+#'   `.rds` file paths, read one deployment at a time. The output of [processTagData()], optionally
+#'   after [calculateTailBeats()], is expected.
+#' @param extra.metadata Optional data frame of external per-animal covariates, such as `sex` or
+#'   `size`, carrying an `ID` column. Several rows for one ID are collapsed by joining the distinct
+#'   values with `"/"`; for a numeric covariate that means conflicting values become `NA`, with a
+#'   warning, so supply one value per ID. Fields already held in the tag metadata are filled
+#'   automatically and need not be repeated here. For total video duration use `video.metadata`, which
+#'   totals the per-file table for you. Default `NULL`.
 #' @param deployments Optional `nautilus_deployments` object from [checkDeploymentMetadata()]. When
-#'   supplied, the summary is completed into the full study roster: every deployment in `deployments`
-#'   gets a row, and a `status` column marks each as `"included"` (processed data present, full metrics)
-#'   or `"excluded"` (in the roster but absent from `data` - NA metrics, identity filled from the
-#'   roster). The reason for exclusion is not inferred here; see [issues()]. Default `NULL`. Supply it
-#'   when reporting a study, so the table accounts for every animal tagged rather than only those whose
-#'   data survived.
-#' @param metadata Which deployment metadata to include, as a single keyword or a vector of names:
+#'   supplied, the summary is completed into the full study roster: every deployment gets a row, and
+#'   `status` marks each `"included"` (processed data present) or `"excluded"` (in the roster but absent
+#'   from `data`). Supply it when reporting a study, so the table accounts for every animal tagged
+#'   rather than only those whose data survived. Default `NULL`.
+#' @param metadata Which deployment metadata to include, as a keyword or a vector of names.
 #'   `"standard"` (default) adds every biometric trait the cohort carries plus the tagging date and
 #'   coordinates; `"none"` reproduces the bare table; `"all"` adds the pop-up date and coordinates, the
 #'   deployment type, and the package, logger and axis-configuration identifiers. Alternatively name the
 #'   fields and traits you want - `c("sex", "deploy_lon", "deploy_lat")` - and they are emitted in the
 #'   package's canonical order, so two calls requesting the same set still bind together. A named trait
-#'   is given a column even where no deployment carries it (with a warning), which is how a cohort that
+#'   is given a column even where no deployment carries it, with a warning, which is how a cohort that
 #'   recorded different traits can still be combined. Fields not carried onto the tag object by
 #'   [importTagData()], such as `recovery_datetime`, are deliberately not offered. A field requested
-#'   here can be used to group the rendered table, via
+#'   here can also group the rendered table, via
 #'   \code{\link[=format.nautilus_summary]{format}(x, group.by = )}.
-#' @param video.metadata Optional table from [getVideoMetadata()] - one row per video file, with `ID`
-#'   and `duration` (seconds). Adds `video_duration_h`, the total footage per deployment. The totalling
-#'   happens here because that table has several rows per deployment, which the generic covariate join
-#'   would collapse to a string. A deployment with no entry gets `NA`, never `0`: [getVideoMetadata()]
-#'   drops folders holding no video, so absence means "no footage found", which is a different claim
-#'   from "the camera ran for zero hours". This is TOTAL footage and routinely exceeds the retained
-#'   record - a camera started on deck records either side of the deployment. Default `NULL`.
-#' @param exclusions Optional deployment-exclusion log - the path to the shared `exclusions.csv`, or
-#'   the table itself. Written by every stage that can drop a deployment ([importTagData()],
+#' @param video.metadata Optional table from [getVideoMetadata()], one row per video file with `ID` and
+#'   `duration` in seconds. Adds `video_duration_h`, the total footage per deployment. A deployment with
+#'   no entry gets `NA`, never `0`: [getVideoMetadata()] omits folders holding no video, so absence
+#'   means no footage was found, which is a different claim from a camera that ran for zero hours. This
+#'   is total footage and routinely exceeds the retained record, since a camera started on deck films
+#'   either side of the deployment. Default `NULL`.
+#' @param exclusions Optional deployment-exclusion log: the path to the shared `exclusions.csv`, or the
+#'   table itself. Written by every stage that can drop a deployment ([importTagData()],
 #'   [filterDeploymentData()], [regularizeTimeSeries()], [applyAxisMapping()] and [processTagData()]),
-#'   it supplies the `status_reason` of each deployment that is missing from `data`, and fills the
-#'   record window of one that was detected and then rejected as too short. Where a deployment appears
-#'   under several stages, the earliest in pipeline order wins - that is where it left. Default `NULL`.
-
-#' @param tbf.method Which tail-beat backend to summarise, e.g. `"wavelet"`. `NULL` (default) resolves it
-#'   per deployment from the data -- whichever `tbf_hz_*` columns carry values, with the package's
-#'   documented order (`peaks`, then `wavelet`) breaking a tie. The backend actually used is reported as
-#'   `tbf_method`, so a cohort pooled from deployments that ran different backends stays visible rather
-#'   than silently blended. See [tailBeatColumn()].
+#'   it supplies the `status_reason` of each deployment missing from `data`, and fills the record window
+#'   of one that was detected and then rejected as too short. Where a deployment appears under several
+#'   stages, the earliest in pipeline order wins - that is where it left. Default `NULL`.
 #' @param error.stat Which error statistic the display-only population row shows: `"sd"` (standard
-#'   deviation, the default) describes the spread across deployments, while `"se"` (standard error)
-#'   describes how well their mean is pinned down. They answer different questions, and the first is
-#'   usually what a reader of a cohort table wants.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
-#'   `2`/"detailed" (default): additionally reports per-metric coverage across the processed deployments
-#'   and shows a live progress bar while the tags are read (cli auto-hides it for fast runs).
+#'   deviation, the default) describes the spread across deployments, `"se"` (standard error) how well
+#'   their mean is pinned down. They answer different questions, and the first is usually what a reader
+#'   of a cohort table wants.
+#' @param tbf.method Which tail-beat method to summarise, `"peaks"` or `"wavelet"`. `NULL` (default)
+#'   resolves it per deployment from whichever `tbf_hz_*` columns carry values, with the package's
+#'   documented order breaking a tie. The method actually used is reported in `tbf_method`, so a cohort
+#'   pooled from deployments that ran different methods stays visible rather than silently blended. See
+#'   [tailBeatColumn()].
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (header and summary), or
+#'   `2`/`"detailed"` (default), which adds per-metric coverage across the processed deployments and a
+#'   progress bar while the tags are read.
 #'
-#' @return A `nautilus_summary` data frame, one row per deployment, with (where available) the columns:
-#' \itemize{
-#'   \item **id**, **animal_id**: the deployment, and the animal that carried it - one individual can
-#'     be tagged more than once, so the two are not the same identifier. `animal_id` appears when it was
-#'     mapped with `metadataColumns(animal_id = )`, and is completed from the roster for a deployment
-#'     whose tag predates that mapping.
-#'   \item **tag_model**, **tag_type**, **attachment_site**, **paddle_wheel**: the tag. `paddle_wheel`
-#'     sits here rather than with the metrics because it is what says whether the speed columns mean
-#'     anything.
-#'   \item **record_start**, **record_end**, **record_duration_h**, **n_samples**: the
-#'     recorded data span - the true on-animal window once the data have been deployment-filtered.
-#'   \item **sampling_hz**: original sampling rate (Hz).
-#'   \item **depth_mean**, **depth_max** (m); **temp_mean**, **temp_min**, **temp_max** (degrees Celsius).
-#'   \item **vedba_mean**, **odba_mean** (g): mean activity (dynamic body acceleration).
-#'   \item **tbf_method**: which tail-beat backend `tbf_mean` came from (`"peaks"`/`"wavelet"`).
-#'   \item **tbf_mean** (Hz): mean tail-beat frequency over beating samples; **pct_swimming**
-#'     (%): share of time actively swimming - both present only after [calculateTailBeats()].
-#'   \item **paddle_wheel** (logical): whether the tag carried a paddle wheel (disambiguates the speed columns).
-#'   \item **speed_mean**, **speed_max** (m/s): paddle-wheel speed, when available.
-#'   \item **descent_rate_max**, **ascent_rate_max** (m/s): fastest vertical speeds (descent positive).
-#'   \item **n_positions**: total number of position fixes within the record span, when available.
-#'   \item **status**: `"included"`/`"excluded"` - only when `deployments` is supplied (see that
-#'     argument); **status_reason**, the rule that set a deployment aside, when `exclusions` is supplied.
-#'   \item the **metadata block** selected by `metadata`: biometric traits under the names they were
-#'     declared with at import, then `deploy_datetime`, `deploy_lon`, `deploy_lat` and, with
-#'     `metadata = "all"`, the pop-up and identifier fields. These are filled from each tag's own
-#'     metadata, and from the roster for a deployment whose data never arrived - so a tag that was
-#'     never recovered still reports who was tagged, when and where.
-#'   \item **video_duration_h**: total video recorded (h), when `video.metadata` is supplied.
-#'   \item **n_dives**; **dive_duration_median_min**, **dive_duration_max_min** (min);
-#'     **dive_depth_median_m**, **dive_depth_max_m** (m, per-dive maximum depths);
-#'     **dives_incomplete**, **dives_truncated**, **dives_gapped**: the dive block -
-#'     present only for deployments annotated by [detectDives()], and computed with the same reducer
-#'     [diveMetrics()] uses (see Details).
-#' }
+#' @return A `nautilus_summary` data frame, one row per deployment. Columns are grouped so the table
+#'   reads as a narrative - which deployment, on which animal, with which tag, put out where and when,
+#'   what record came back and whether it was kept, how much data there is, what the animal experienced,
+#'   and what it did:
 #'
-#' @details
-#' ## The dive block
+#'   \itemize{
+#'     \item **identity** - `id`, and `animal_id` where the roster carries it. One individual can be
+#'       tagged more than once, so the two are not the same identifier.
+#'     \item **animal** - the biometric traits the cohort carries, followed by any `extra.metadata`
+#'       covariates. Both describe the animal, so they sit together.
+#'     \item **tag** - `tag_model`, `tag_type`, `attachment_site`, `paddle_wheel`.
+#'     \item **deployment** - the metadata fields `metadata` asked for, in the package's canonical
+#'       order.
+#'     \item **record** - `record_start`, `record_end`, `record_duration_h`, then `status` and
+#'       `status_reason`, which close the block because the reason usually explains a short or absent
+#'       record.
+#'     \item **coverage** - `n_samples`, `sampling_hz`, `n_positions`, `video_duration_h`.
+#'     \item **habitat** - `depth_mean`, `depth_max`, `temp_mean`, `temp_min`, `temp_max`.
+#'     \item **movement** - `vedba_mean`, `odba_mean`, `tbf_mean`, `tbf_method`, `pct_swimming`,
+#'       `speed_mean`, `speed_max`, `descent_rate_max`, `ascent_rate_max`.
+#'     \item **dives** - `n_dives`, `dive_duration_median_min`, `dive_duration_max_min`,
+#'       `dive_depth_median_m`, `dive_depth_max_m`, `dives_incomplete`, `dives_truncated`,
+#'       `dives_gapped`.
+#'   }
 #'
-#' Where the data carry a `dive_id` column, the summary gains a per-deployment dive block. Its numbers
-#' are not recomputed here: the deployment is reduced by the same engine that sits behind
-#' [diveMetrics()], so a dive count or median duration quoted from the summary is by construction the
-#' one the per-dive table gives. It reads the canonical `datetime` and `depth` columns, which is what
-#' the pipeline produces and what this block requires.
+#'   A column the package does not recognise trails the block it follows rather than disappearing, so a
+#'   column added later still appears. Only the columns the data and arguments support are present.
 #'
-#' One figure is not quite what it appears: the printed cohort line reports a median of per-deployment
-#' medians, not a pooled median over every dive. The per-deployment columns are exact, and a pooled
-#' figure is one [diveMetrics()] call away.
-#'
-#' `dives_incomplete` counts the dives whose extent was set by the record rather than by the animal,
-#' split into `dives_truncated`, where the tag started or stopped mid-dive, and `dives_gapped`, where
-#' an interruption in time or a depth channel that went dark bounds the dive. A dive can be both.
-#' Deployments that have not been through [detectDives()] simply have no dive columns, and in a mixed
-#' cohort they come back `NA`, as for any absent metric.
+#'   `deploy_datetime` and `record_start` are both reported and are not the same quantity: the first is
+#'   what the metadata says, the second what the data says, whether detected by [filterDeploymentData()]
+#'   or supplied through its `custom.deployment.times`. The sign of the difference is informative - a
+#'   record starting before the recorded tagging time means the tag was already logging. For a
+#'   deployment that was never recovered, `deploy_datetime` is the only date there is.
 #'
 #' @details
-#' ## What a deployment that produced no data still reports
+#' ## The study roster and excluded deployments
 #'
-#' A tag that was never recovered, or one set aside during filtering, is not a deployment nothing is
-#' known about. Its row is completed from the roster through the same field declaration the processed
-#' rows are read through, so it carries the same identity, trait and tagging columns rather than a bare
-#' identifier. Supply `exclusions` as well and a deployment rejected for being too short also reports
-#' the window that was detected before it was rejected, which is the measurement the decision rested on.
+#' With `deployments`, the summary describes the whole study rather than only the deployments that
+#' produced data. An excluded deployment keeps whatever identity and deployment metadata the roster
+#' holds, and every metric derived from the processed data is `NA`. Supplying `exclusions` as well fills
+#' `status_reason`, and where a deployment was detected and then rejected as too short, its record
+#' window too - so a row that would otherwise be empty still says what was found and why it was set
+#' aside.
 #'
-#' ## The column order
+#' ## Dive metrics
 #'
-#' Columns are grouped so the table reads as a narrative: which deployment, on which animal, with which
-#' tag, put out where and when, what record came back and whether it was kept, how much data there is,
-#' what the animal experienced, and what it did. `status` and `status_reason` close the record block
-#' together, because the reason usually explains a short or absent record. Traits and any
-#' `extra.metadata` covariates sit together, since both describe the animal. Anything the package does
-#' not recognise trails the block it follows rather than disappearing.
+#' A deployment carrying dive annotations from [detectDives()] gains a deployment-level dive summary,
+#' reduced by the same routine [diveMetrics()] uses, so the per-dive and per-deployment views cannot
+#' disagree. In a mixed cohort, deployments without annotations take `NA` for the dive columns.
 #'
-#' `deploy_datetime` and `record_start` are both reported and are not the same quantity: the first is
-#' what the metadata says, the second is what the data says, whether detected by
-#' [filterDeploymentData()] or supplied through its `custom.deployment.times`. Across a 52-deployment
-#' cohort only 9 agreed to the minute and 5 differed by more than an hour, and the sign of the
-#' difference is informative - a record starting BEFORE the recorded tagging time means the tag was
-#' already logging. For a deployment that was never recovered, `deploy_datetime` is the only date there
-#' is.
+#' `dives_incomplete` counts dives whose extent was limited by the record rather than by the animal.
+#' They are further split into `dives_truncated`, where the record began or ended mid-dive, and
+#' `dives_gapped`, where missing samples interrupted one. A dive can be both, so the two do not sum to
+#' `dives_incomplete`.
 #'
-#' ## Exporting the table
+#' ## Formatting and export
 #'
-#' `format()` renders the publication version, and its output is ASCII by default: the table is written
-#' to a CSV far more often than it is read in a terminal, and a spreadsheet opening a UTF-8 file with no
-#' byte-order mark will guess the encoding and can turn a degree sign into mojibake. Pass
-#' `symbols = "unicode"` for the typographic forms where the consumer handles UTF-8 - `knitr::kable()`,
-#' `flextable`, a paste into a manuscript.
+#' The returned values are analysis-ready. The `print` method and [format.nautilus_summary()] render
+#' the display version, which adds a cohort `mean +/- error` row where more than one deployment is
+#' present, and can group the rows by any categorical column.
 #'
-#' @seealso [processTagData()], [filterDeploymentData()], [detectDives()], [diveMetrics()],
-#'   [getVideoMetadata()], [metadataColumns()].
+#' `format()` writes ASCII by default: the table reaches a CSV far more often than a terminal, and a
+#' spreadsheet opening a UTF-8 file with no byte-order mark will guess the encoding and can turn a
+#' degree sign into mojibake. Pass `symbols = "unicode"` where the consumer handles UTF-8 -
+#' `knitr::kable()`, `flextable`, a paste into a manuscript.
+#'
+#' @seealso [processTagData()] and [calculateTailBeats()] for the steps that produce the input;
+#'   [detectDives()] and [diveMetrics()] for the dive annotations; [getVideoMetadata()] for the video
+#'   table; [checkDeploymentMetadata()] for the study roster; [metadataColumns()] for the metadata
+#'   vocabulary; [format.nautilus_summary()] for the display-ready table.
+#'
 #' @examples
 #' \dontrun{
-#' # One row per deployment from processed (and tail-beat-annotated) tags.
+#' # One row per deployment, from processed and tail-beat-annotated tags.
 #' tag <- calculateTailBeats(processTagData(oriented))
-#' summarizeTagData(tag)
+#' summary <- summarizeTagData(tag)
 #'
-#' # Complete the study roster and attach external per-animal covariates.
-#' summarizeTagData(list.files("./tailbeats", full.names = TRUE),
-#'                  deployments = deployments,
-#'                  extra.metadata = animal_metadata[, c("ID", "sex", "size")])
+#' # Complete the study roster, attach external covariates, and explain every exclusion.
+#' summary <- summarizeTagData(list.files("./tailbeats", full.names = TRUE),
+#'                             deployments = deployments,
+#'                             extra.metadata = animal_metadata[, c("ID", "sex", "size")],
+#'                             exclusions = "./data interim/exclusions.csv")
+#'
+#' # A formatted table for a report, grouped by sex.
+#' format(summary, style = "report", group.by = "sex")
 #' }
 #' @export
-
 summarizeTagData <- function(data,
                              extra.metadata = NULL,
                              deployments = NULL,
