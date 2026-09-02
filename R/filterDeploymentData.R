@@ -1018,14 +1018,15 @@ filterDeploymentData <- function(data,
   # hand-off the pipeline is built on, which is what `exclusions.file` is for.
   if (return.data) {
     out <- processed_data[!vapply(processed_data, is.null, logical(1))]
-    attr(out, "nautilus.exclusions") <- excl
+    if (nrow(excl)) attr(out, "nautilus.exclusions") <- excl
     return(out)
   }
   # `unlist()` of an all-NULL list is NULL, and NULL takes no attributes - which is exactly the run
   # where the exclusions table matters most, because nothing survived to be written.
   paths <- unlist(saved, use.names = FALSE)
   if (is.null(paths)) paths <- character(0)
-  invisible(structure(paths, nautilus.exclusions = excl))
+  if (nrow(excl)) paths <- structure(paths, nautilus.exclusions = excl)
+  invisible(paths)
 
 }
 

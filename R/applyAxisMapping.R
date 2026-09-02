@@ -449,7 +449,7 @@ applyAxisMapping <- function(data,
   excl <- .exclusionsBind(lapply(excluded_out, function(i)
     .exclusionsRow(i, "applyAxisMapping", "excluded by tag-mapping review")))
   .exclusionsWrite(excl, exclusions.file, "applyAxisMapping")
-  attr(out, "nautilus.exclusions") <- excl
+  if (nrow(excl)) attr(out, "nautilus.exclusions") <- excl
   # assigning to `out` and returning it bare would strip the invisibility .collectOutput set on the paths
   # branch, re-printing the wall of paths; re-apply it (the data branch stays visible, as requested).
   if (isTRUE(return.data)) out else invisible(out)

@@ -101,3 +101,43 @@ test_that("processTagData records why it skipped a deployment", {
   expect_identical(ex$stage, "processTagData")
   expect_match(ex$reason, "not present")            # names the columns that were missing
 })
+
+
+# ---- the returned value must stay invisible ---------------------------------------------------------
+# .collectOutput() returns the written paths INVISIBLY, so a top-level call does not print a wall of
+# file paths. Assigning an attribute to that value and returning it bare strips the invisibility, which
+# is how regularizeTimeSeries() and processTagData() came to print all 46 paths after a run.
+
+test_that("a paths-returning run prints nothing, and carries no empty exclusions attribute", {
+  d <- withr::local_tempdir(); outd <- file.path(d, "out"); dir.create(outd)
+  t0 <- as.POSIXct("2020-01-01", tz = "UTC")
+  for (id in c("A", "B")) {
+    x <- data.table::data.table(ID = id, datetime = t0 + c(0, 0.9, 2.1, 3, 4.2, 7, 8.1, 9),
+                                depth = c(1, 1.2, 1.5, 1.8, 2, 3.1, 3.4, 3.6))
+    data.table::setattr(x, "nautilus.version", "test")
+    saveRDS(x, file.path(d, paste0(id, ".rds")))
+  }
+  files <- list.files(d, pattern = "\\.rds$", full.names = TRUE)
+
+  printed <- utils::capture.output(
+    regularizeTimeSeries(data = files, gap.threshold = 2, plot = FALSE,
+                         return.data = FALSE, output.dir = outd, verbose = 0))
+  expect_length(printed, 0L)
+
+  r <- regularizeTimeSeries(data = files, gap.threshold = 2, plot = FALSE,
+                            return.data = FALSE, output.dir = outd, verbose = 0)
+  expect_length(r, 2L)                                    # the value is still there to chain
+  expect_null(attr(r, "nautilus.exclusions"))             # nothing excluded: no empty table to print
+})
+
+
+test_that("every producer returns its paths invisibly", {
+  # the invariant, stated once against all five: whatever a producer attaches, a paths-branch run is
+  # silent at the top level
+  for (fn in c("importTagData", "filterDeploymentData", "regularizeTimeSeries",
+               "applyAxisMapping", "processTagData")) {
+    body_txt <- paste(deparse(body(get(fn, envir = asNamespace("nautilus")))), collapse = " ")
+    expect_true(grepl("invisible", body_txt, fixed = TRUE),
+                info = paste(fn, "must return its paths invisibly"))
+  }
+})

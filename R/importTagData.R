@@ -1167,12 +1167,14 @@ importTagData <- function(data.folders,
     na_indices <- which(sapply(data_list, function(x) identical(x, NA)))
     if (length(na_indices) > 0) data_list[na_indices] <- NULL
     # return the list containing processed sensor data for all folders
-    attr(data_list, "nautilus.exclusions") <- excl
+    if (nrow(excl)) attr(data_list, "nautilus.exclusions") <- excl
     return(data_list)
   }
   # return.data = FALSE: the written .rds paths, invisibly - a top-level import must not auto-print a wall
   # of paths, but the value stays available to chain into the next step or capture (see .collectOutput).
-  invisible(structure(unlist(saved, use.names = FALSE), nautilus.exclusions = excl))
+  paths <- unlist(saved, use.names = FALSE)
+  if (nrow(excl)) paths <- structure(paths, nautilus.exclusions = excl)
+  invisible(paths)
 }
 
 

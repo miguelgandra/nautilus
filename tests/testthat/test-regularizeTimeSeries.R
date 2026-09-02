@@ -178,7 +178,7 @@ test_that("file-path input skips a deployment missing a required column, without
   d
 }
 
-test_that("deployments are classified and reported worst-first in the triage table", {
+test_that("flagged deployments are named worst-first, and healthy ones only counted", {
   set.seed(1)
   dat <- list(A_clean = .mk_reg("A_clean"),
               B_gap   = .mk_reg("B_gap", gap_extra = 120),   # ~11% of grid is NA -> critical
@@ -186,12 +186,16 @@ test_that("deployments are classified and reported worst-first in the triage tab
   out <- paste(cli::cli_fmt(suppressWarnings(
     regularizeTimeSeries(dat, gap.threshold = 5, return.data = TRUE, plot = FALSE, verbose = 1))),
     collapse = "\n")
-  expect_match(out, "REGULARIZATION SUMMARY")
+  expect_match(out, "Needs review")
   expect_match(out, "B_gap")
   expect_match(out, "critical")
-  # within the triage table (after the header), the critical gappy deployment precedes the clean one
-  tbl <- sub(".*REGULARIZATION SUMMARY", "", out)
-  expect_lt(regexpr("B_gap", tbl), regexpr("A_clean", tbl))
+  # the clean deployment is counted in the status tally, never named IN THE SUMMARY (it still gets
+  # its own per-deployment line above, which is where a caller looks for one deployment)
+  tail <- sub(".*SUMMARY", "", gsub("\n", " ", out))
+  expect_false(grepl("A_clean", tail, fixed = TRUE))
+  # and where several are flagged, the worst leads
+  listed <- sub(".*Needs review", "", out)
+  if (grepl("C_jit", listed)) expect_lt(regexpr("B_gap", listed), regexpr("C_jit", listed))
 })
 
 test_that("only flagged deployments receive a detailed PDF page", {
@@ -300,4 +304,80 @@ test_that("genuine dropouts in a grid-rate channel are still interpolated (no re
   invisible(capture.output(suppressWarnings(
     out <- regularizeTimeSeries(list(A01 = dt), gap.threshold = 2, verbose = FALSE)[[1]])))
   expect_false(anyNA(out$depth))                             # the true gap is filled, as before
+})
+
+
+# ---- the summary block -----------------------------------------------------------------------------
+# A table of one row per deployment gets truncated and cannot be read at 46 deployments, so the summary
+# is roll-ups plus only the deployments it is asking someone to look at.
+
+.regCohort <- function(dir, n_clean = 4L) {
+  t0 <- as.POSIXct("2020-01-01", tz = "UTC")
+  mk <- function(id, tt) {
+    x <- data.table::data.table(ID = id, datetime = tt, depth = seq_along(tt) %% 30)
+    data.table::setattr(x, "nautilus.version", "test")
+    saveRDS(x, file.path(dir, paste0(id, ".rds")))
+  }
+  for (i in seq_len(n_clean)) mk(sprintf("CLEAN_%02d", i), t0 + seq(0, 600, by = 1))
+  mk("GAPPY", t0 + c(seq(0, 200, by = 1), seq(1400, 1600, by = 1)))    # a 20-minute hole
+  list.files(dir, pattern = "\\.rds$", full.names = TRUE)
+}
+.regRun <- function(files, outd, ...) paste(cli::cli_fmt(suppressWarnings(
+  regularizeTimeSeries(data = files, gap.threshold = 2, plot = FALSE, return.data = FALSE,
+                       output.dir = outd, verbose = "detailed", ...))), collapse = "\n")
+
+
+test_that("the summary rolls the cohort up instead of tabulating every deployment", {
+  d <- withr::local_tempdir(); outd <- file.path(d, "out"); dir.create(outd)
+  out <- .regRun(.regCohort(d), outd)
+  tail <- sub(".*SUMMARY", "", gsub("\n", " ", out))
+
+  expect_match(tail, "5 of 5 deployments processed")     # "processed", not "regularized"
+  expect_match(tail, "rows added: median")
+  expect_match(tail, "interpolated: median [0-9.]+% of grid points")
+  expect_match(tail, "gaps: 4 deployments gap-free")
+  expect_match(tail, "largest 20.0 min \\(GAPPY\\)")      # the worst gap, and who owns it
+
+  # the healthy deployments are counted, never listed
+  expect_match(tail, "ok:")
+  for (i in 1:4) expect_false(grepl(sprintf("CLEAN_%02d", i), tail))
+  expect_match(tail, "Needs review")
+  expect_match(tail, "GAPPY")
+})
+
+
+test_that("a clean run has nothing to review, and says so by omission", {
+  d <- withr::local_tempdir(); outd <- file.path(d, "out"); dir.create(outd)
+  t0 <- as.POSIXct("2020-01-01", tz = "UTC")
+  for (i in 1:3) {
+    x <- data.table::data.table(ID = sprintf("C%d", i), datetime = t0 + seq(0, 600, by = 1),
+                                depth = 1)
+    data.table::setattr(x, "nautilus.version", "test"); saveRDS(x, file.path(d, sprintf("C%d.rds", i)))
+  }
+  out <- .regRun(list.files(d, pattern = "\\.rds$", full.names = TRUE), outd)
+  expect_match(out, "3 of 3 deployments processed")
+  expect_false(grepl("Needs review", out, fixed = TRUE))
+})
+
+
+test_that("the output pointers sit inside the summary and the runtime is last", {
+  d <- withr::local_tempdir(); outd <- file.path(d, "out"); dir.create(outd)
+  f <- file.path(d, "exclusions.csv")
+  out <- .regRun(.regCohort(d), outd, exclusions.file = f, plot.file = file.path(d, "p.pdf"))
+  lines <- strsplit(out, "\n", fixed = TRUE)[[1]]
+  lines <- lines[nzchar(trimws(lines))]
+  expect_match(lines[length(lines)], "runtime")          # nothing after the runtime
+  expect_true(any(grepl("directory:", lines)))
+  expect_true(any(grepl("exclusions:", lines)))
+  expect_lt(max(grep("directory:", lines)), grep("runtime", lines)[1])
+})
+
+
+test_that("a long list of flagged deployments is capped", {
+  metrics <- lapply(sprintf("BAD_%02d", 1:15), function(i)
+    list(id = i, status = "critical", rows_added_pct = 50, pct_interp = 1, pct_gap = 30,
+         largest_gap_s = 3600, n_gaps = 1L))
+  out <- paste(cli::cli_fmt(nautilus:::.printRegularizationTriage(2L, metrics)), collapse = "\n")
+  expect_match(out, "and 5 more")
+  expect_match(out, "BAD_01")
 })

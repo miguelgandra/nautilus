@@ -709,20 +709,24 @@ regularizeTimeSeries <- function(data,
 
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " regularized")
-    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
-    if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
-    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
+    # "processed", not "regularized": a record left unchanged, or set aside, was processed too, and
+    # the stronger word would imply every deployment came through cleanly
+    .log_done(lvl, n_done, " of ", n_animals, " deployment", if (n_animals != 1) "s", " processed")
+    # roll-ups, the outcome tally, the deployments worth looking at, and where it all went. The output
+    # pointers moved inside so the runtime stays the last line, as it is in every other function.
+    .printRegularizationTriage(lvl, run_metrics, output.dir, plot.file, exclusions.file)
+    cli::cli_text("")
     .log_runtime(lvl, start.time)
-    .printRegularizationTriage(lvl, run_metrics)
   }
 
   # unified output contract: a named list (one element per individual, consistent with
   # importTagData() and filterDeploymentData()) when return.data, else the written paths
   ids <- if (is_filepaths) tools::file_path_sans_ext(basename(data)) else names(data)
   out <- .collectOutput(results, saved, return.data, ids)
-  if (!is.null(out)) attr(out, "nautilus.exclusions") <- excl
-  out
+  if (!is.null(out) && nrow(excl)) attr(out, "nautilus.exclusions") <- excl
+  # Returning `out` bare would strip the invisibility .collectOutput() set on the paths branch, so a
+  # top-level call printed the whole wall of file paths. Re-apply it; the data branch stays visible.
+  if (isTRUE(return.data)) out else invisible(out)
 }
 
 
@@ -945,28 +949,80 @@ regularizeTimeSeries <- function(data,
 # fixed-width columns survive. The status token is colourised; alignment is computed on plain text.
 #' @keywords internal
 #' @noRd
-.printRegularizationTriage <- function(lvl, metrics) {
-  if (lvl < 1L || length(metrics) < 2L) return(invisible(NULL))
-  metrics <- metrics[order(-.regularizationSeverity(metrics))]
-  cli::cli_text("")
-  .log_h2(lvl, "REGULARIZATION SUMMARY", min_level = 1L)
-  pc <- function(x) if (is.na(x)) "-" else sprintf("%.1f%%", x)
-  scol <- list(ok = cli::col_green, review = cli::col_yellow, critical = cli::col_red,
-               unchanged = cli::col_grey, empty = cli::col_grey, skipped = cli::col_grey)
-  cli::cli_verbatim(sprintf("%-14s %-9s %8s %8s %8s %9s %6s",
-                            "tag", "status", "+rows", "interp", "gap", "max gap", "gaps"))
-  for (m in metrics) {
-    paint <- scol[[m$status]]; if (is.null(paint)) paint <- function(x) x
-    cli::cli_verbatim(paste0(
-      sprintf("%-14s ", substr(m$id, 1, 14)),
-      paint(sprintf("%-9s", substr(m$status, 1, 9))),
-      sprintf(" %8s %8s %8s %9s %6s",
-              pc(m$rows_added_pct), pc(m$pct_interp), pc(m$pct_gap),
-              .formatDurationShort(m$largest_gap_s),
-              if (is.na(m$n_gaps)) "-" else as.character(m$n_gaps))))
+.printRegularizationTriage <- function(lvl, metrics, output.dir = NULL, plot.file = NULL,
+                                       exclusions.file = NULL, max.listed = 10L) {
+  if (lvl < 1L || !length(metrics)) return(invisible(NULL))
+  num <- function(f) vapply(metrics, function(m) {
+    v <- m[[f]]; if (is.null(v) || !length(v)) NA_real_ else as.numeric(v) }, numeric(1))
+  status <- vapply(metrics, function(m) m$status %||% "ok", character(1))
+
+  ## ---- cohort roll-ups, in the calculateTailBeats form ------------------------------------------
+  # the qualifier rides the median, not the parenthesis: "median 0.6% of grid points (IQR ...)"
+  spread <- function(v, unit = "", d = 1, of = "") {
+    v <- v[is.finite(v)]
+    if (!length(v)) return(NULL)
+    q <- stats::quantile(v, c(0.25, 0.5, 0.75), names = FALSE)
+    sprintf("median %.*f%s%s (IQR %.*f\u2013%.*f, range %.*f\u2013%.*f)",
+            d, q[2], unit, of, d, q[1], d, q[3], d, min(v), d, max(v))
   }
+  ra <- spread(num("rows_added_pct"), "%")
+  if (!is.null(ra)) .log_arrow(lvl, "rows added: ", ra)
+  it <- spread(num("pct_interp"), "%", of = " of grid points")
+  if (!is.null(it)) .log_arrow(lvl, "interpolated: ", it)
+
+  # Gaps get their own line because they are what most warrants catching: how many records came
+  # through gap-free, and the single worst gap with the deployment that owns it.
+  gp <- num("pct_gap"); lg <- num("largest_gap_s")
+  if (any(is.finite(gp)) || any(is.finite(lg))) {
+    free <- sum(is.finite(gp) & gp == 0)
+    parts <- sprintf("%d deployment%s gap-free", free, if (free != 1L) "s" else "")
+    if (any(is.finite(lg)) && max(lg, na.rm = TRUE) > 0) {
+      w <- which.max(replace(lg, !is.finite(lg), -Inf))
+      parts <- paste0(parts, " \u00b7 largest ", .fmtSecondsSpelled(lg[w]),
+                      " (", metrics[[w]]$id, ")")
+    }
+    .log_arrow(lvl, "gaps: ", parts)
+  }
+
+  ## ---- the outcome tally, in a fixed order so the rows visibly sum to the cohort ----------------
+  ord <- c("ok", "unchanged", "review", "critical", "empty", "skipped")
+  tally <- table(factor(status, levels = ord))
+  keep <- as.integer(tally) > 0L
+  if (any(keep)) {
+    sym <- c(ok = cli::col_green(cli::symbol$tick), unchanged = cli::symbol$bullet,
+             review = cli::symbol$bullet, critical = cli::col_red("!"),
+             empty = cli::symbol$bullet, skipped = cli::symbol$bullet)
+    .log_section(lvl, "Status")
+    .log_rows(lvl, stats::setNames(as.integer(tally)[keep], ord[keep]),
+              symbols = unname(sym[ord[keep]]))
+  }
+
+  ## ---- only the deployments the run is asking someone to look at -------------------------------
+  flag <- which(status %in% c("review", "critical"))
+  if (length(flag)) {
+    flag <- flag[order(-.regularizationSeverity(metrics[flag]))]
+    shown <- utils::head(flag, max.listed)
+    .log_section(lvl, "Needs review")
+    for (i in shown) {
+      m <- metrics[[i]]
+      mark <- if (identical(m$status, "critical")) cli::col_red("!") else cli::symbol$bullet
+      pc <- function(x) if (is.na(x)) "-" else sprintf("%.1f%%", x)
+      cli::cli_verbatim(sprintf("  %s %-12s %-9s \u00b7 +%s rows \u00b7 %s gaps \u00b7 largest %s",
+                                mark, substr(m$id, 1, 12), m$status,
+                                pc(m$rows_added_pct), pc(m$pct_gap),
+                                .fmtSecondsSpelled(m$largest_gap_s)))
+    }
+    if (length(flag) > length(shown))
+      cli::cli_verbatim(sprintf("    and %d more", length(flag) - length(shown)))
+  }
+
+  out_rows <- c(if (!is.null(output.dir)) c(directory = output.dir),
+                if (!is.null(plot.file)) c(plots = plot.file),
+                if (!is.null(exclusions.file)) c(exclusions = exclusions.file))
+  if (length(out_rows)) { .log_section(lvl, "Output"); .log_rows(lvl, out_rows) }
   invisible(NULL)
 }
+
 
 # PDF page 1: deployment-level overview (run totals + a worst-first table whose rows carry an inline
 # observed/interpolated/gap composition bar). Auto-paginates for large runs.

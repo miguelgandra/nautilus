@@ -1826,8 +1826,10 @@ processTagData <- function(data,
   keep <- !is.na(ids)
   out <- .collectOutput(data_list[keep], saved[keep], return.data, ids[keep])
   # the same rows the log carries, for a caller working in memory rather than through files
-  if (!is.null(out)) attr(out, "nautilus.exclusions") <- excl
-  out
+  if (!is.null(out) && nrow(excl)) attr(out, "nautilus.exclusions") <- excl
+  # Returning `out` bare would strip the invisibility .collectOutput() set on the paths branch, so a
+  # top-level call printed the whole wall of file paths. Re-apply it; the data branch stays visible.
+  if (isTRUE(return.data)) out else invisible(out)
 
 }
 

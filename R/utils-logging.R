@@ -352,6 +352,21 @@
   invisible(NULL)
 }
 
+#' A duration in words, spelling out the unit.
+#'
+#' The compact forms abbreviate minutes to "m", which reads as metres beside a speed in m/s or a gap
+#' beside a depth. Console lines that sit next to such quantities spell the unit out instead; the
+#' space-constrained plot labels keep the compact form.
+#' @param secs Seconds.
+#' @keywords internal
+#' @noRd
+.fmtSecondsSpelled <- function(secs) {
+  if (!is.finite(secs)) return("unknown")
+  if (secs < 90) return(sprintf("%.0f s", secs))
+  if (secs < 5400) return(sprintf("%.1f min", secs / 60))
+  sprintf("%.1f h", secs / 3600)
+}
+
 #' Format an elapsed difftime compactly (e.g. "3m 12s", "0.4s").
 #' @keywords internal
 #' @noRd

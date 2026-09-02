@@ -79,19 +79,6 @@
   list(slope = slope, se = se, r = r, n = as.integer(n))
 }
 
-#' A duration in words, spelling out the unit.
-#'
-#' `.fmt_duration()` abbreviates minutes to "m", which reads as metres on a line that also carries a
-#' speed in m/s, so this block spells the unit out.
-#' @keywords internal
-#' @noRd
-.paddleFmtSecs <- function(secs) {
-  if (!is.finite(secs)) return("unknown")
-  if (secs < 90) return(sprintf("%.0f s", secs))
-  if (secs < 5400) return(sprintf("%.1f min", secs / 60))
-  sprintf("%.1f h", secs / 3600)
-}
-
 #' The least steep swimming an in-situ fit may rest on, in seconds.
 #' @keywords internal
 #' @noRd
@@ -406,7 +393,7 @@
         .log_subdetail_aligned(lvl, "in-situ validation: not enough steep swimming")
       if (is.finite(dep_row$own_secs))
         .log_subdetail_aligned(lvl, sprintf("steep swimming: %s %s %.1f%% of record",
-                                            .paddleFmtSecs(dep_row$own_secs), dot, dep_row$own_pct))
+                                            .fmtSecondsSpelled(dep_row$own_secs), dot, dep_row$own_pct))
     }
   }
 
@@ -678,7 +665,7 @@
     graphics::mtext(d$id[i], side = 2, at = y_dep[i], las = 1, adj = 0, line = 9.0, cex = 0.6,
                     col = theme$axis)
     if (is.finite(d$own_secs[i]))
-      graphics::mtext(.paddleFmtSecs(d$own_secs[i]), side = 4, at = y_dep[i], las = 1, adj = 0,
+      graphics::mtext(.fmtSecondsSpelled(d$own_secs[i]), side = 4, at = y_dep[i], las = 1, adj = 0,
                       line = 0.4, cex = 0.58, col = theme$axis)
   }
   .paddleDiagFinish(rng$gx, theme, d$slope_source,
