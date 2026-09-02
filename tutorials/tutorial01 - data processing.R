@@ -237,6 +237,7 @@ importTagData(data.folders         = data_folders,
               import.calibration   = TRUE,
               timezone             = "UTC",
               alignment            = alignmentControl(method = "depth-xcorr"),
+              exclusions.file      = "./data interim/exclusions.csv",  # shared log: who left, and why
               return.data          = FALSE,
               output.dir           = "./data interim/01_imported",
               compress             = TRUE,
@@ -288,7 +289,7 @@ filterDeploymentData(data                    = list.files("./data interim/01_imp
                      plot                    = FALSE,   # one diagnostic panel per deployment...
                      plot.file               = "./plots/filtered_deployments.pdf",  # ...into a single PDF to review
                      plot.metrics            = c("temp", "az"),  # extra traces to overlay on the panel
-                     exclusions.file         = "./data interim/exclusions.csv",  # who left, and why
+                     exclusions.file         = "./data interim/exclusions.csv",  # the same shared log
                      return.data             = FALSE,
                      output.dir              = "./data interim/02_filtered",
                      verbose                 = "detailed")
@@ -310,6 +311,7 @@ regularizeTimeSeries(data                 = list.files("./data interim/02_filter
                      interpolation.method = "linear", # or "spline" / "locf"
                      plot                 = FALSE,    
                      plot.file            = "./plots/regularization.pdf",
+                     exclusions.file      = "./data interim/exclusions.csv",  # the same shared log
                      return.data          = FALSE,
                      output.dir           = "./data interim/03_checked",
                      verbose              = "detailed")
@@ -547,6 +549,7 @@ review$decision[review$id == "PIN_CAM_26"] <- "Proposed"
 applyAxisMapping(data             = list.files("./data interim/03_checked", full.names = TRUE),
                  mapping          = review,                  # or mapping_consensus if you skipped 8.4
                  check.handedness = TRUE,                     # verify the accel/gyro frames agree
+                 exclusions.file  = "./data interim/exclusions.csv",   # the same shared log
                  return.data      = FALSE,
                  output.dir       = "./data interim/04_oriented",
                  verbose          = "detailed")
@@ -632,6 +635,7 @@ processTagData(
   burst.quantiles    = c(0.95, 0.99),       # acceleration thresholds that mark high-effort "burst" events
   plot               = FALSE,
   plot.file          = "./plots/processed_data.pdf",
+  exclusions.file    = "./data interim/exclusions.csv",   # the same shared log
   return.data        = FALSE,
   output.dir         = "./data interim/05_processed",
   output.suffix      = "-20Hz",
@@ -726,7 +730,8 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
 # `video.metadata` adds total footage per deployment (getVideoMetadata() returns one row per file; the
 # totalling is done for you). `exclusions` is the shared exclusion log: every stage that can drop a
 # deployment writes to it, so the summary can say why each one is missing whichever stage set it aside.
-# It is a plain CSV you can open without R - see the `exclusions.file` written back in STEP 4.
+# It is a plain CSV you can open without R, written by STEPS 3, 4, 5, 8 and 11 - every stage above
+# that passes the same `exclusions.file`.
 
 summary <- summarizeTagData(data           = list.files("./data interim/06_tailbeats", full.names = TRUE),
                             deployments    = deployments,
