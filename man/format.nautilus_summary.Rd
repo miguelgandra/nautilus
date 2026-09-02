@@ -11,6 +11,7 @@
   include.summary.row = TRUE,
   symbols = c("ascii", "unicode"),
   decimals = NULL,
+  group.by = FALSE,
   ...
 )
 }
@@ -51,6 +52,16 @@ style - \code{video_duration_h} reads "Video recorded (h)" under \code{report} a
 \code{concise} - so an override keyed on one would quietly stop applying when the style changed. Pass a
 header by mistake and the error names the column to use instead. Default \code{NULL}.}
 
+\item{group.by}{Optional column name to group the rendering by - \code{"status"} to compare analysed
+against excluded deployments, or any categorical column in the table, such as a trait requested
+through \code{summarizeTagData(metadata = )}. Rows are ordered by group and each group is given its own
+\verb{mean +/- error} row. Default \code{FALSE}, which renders the table ungrouped.
+
+Grouping changes only the presentation: the \code{nautilus_summary} itself is one row per deployment
+either way. Named by the INTERNAL column name, as \code{decimals} is, so an override keeps working when
+the style changes. The returned table stays rectangular - the blank line between groups belongs to
+the console rendering, not to the exported object.}
+
 \item{...}{Unused.}
 }
 \value{
@@ -61,4 +72,11 @@ Returns the same formatted table the print method renders - fixed per-metric pre
 \verb{dd/Mon/YYYY HH:MM}, missing values as "-", and (optionally) the display-only population
 \verb{mean +/- error} row - but as a STRUCTURED character data frame, so the formatted summary can be
 exported directly for reporting, e.g. \code{write.csv(format(summary), "summary.csv", row.names = FALSE)}.
+}
+\details{
+With \code{group.by}, rows are ordered by a categorical column and each group gains its own
+\verb{mean +/- error} row, which is the quickest way to compare analysed against excluded deployments, or
+one class of animal against another. The result stays a rectangle of one row per deployment plus one
+footer per group: the blank line that separates groups on the console is inserted when printing, so
+an exported file never carries an empty record.
 }

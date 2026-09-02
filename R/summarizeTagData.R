@@ -46,7 +46,9 @@
 #'   package's canonical order, so two calls requesting the same set still bind together. A named trait
 #'   is given a column even where no deployment carries it (with a warning), which is how a cohort that
 #'   recorded different traits can still be combined. Fields not carried onto the tag object by
-#'   [importTagData()], such as `recovery_datetime`, are deliberately not offered.
+#'   [importTagData()], such as `recovery_datetime`, are deliberately not offered. A field requested
+#'   here can be used to group the rendered table, via
+#'   \code{\link[=format.nautilus_summary]{format}(x, group.by = )}.
 #' @param video.metadata Optional table from [getVideoMetadata()] - one row per video file, with `ID`
 #'   and `duration` (seconds). Adds `video_duration_h`, the total footage per deployment. The totalling
 #'   happens here because that table has several rows per deployment, which the generic covariate join
@@ -692,12 +694,55 @@ summarizeTagData <- function(data,
 }
 
 
+#' The grouping column as an ordered factor, with the missing rows kept as their own trailing group.
+#'
+#' A deployment whose grouping value is unknown is a fact about the cohort, not a row to drop, so it
+#' becomes an explicit "(missing)" group placed last. A factor keeps the level order it was given -
+#' that is usually why it is a factor - and anything else sorts naturally; unused levels are dropped so
+#' an empty group never renders.
+#' @keywords internal
+#' @noRd
+.summaryGroupFactor <- function(v, missing.label = "(missing)") {
+  na <- is.na(v)
+  lv <- if (is.factor(v)) levels(droplevels(v[!na])) else sort(unique(as.character(v[!na])))
+  ch <- as.character(v); ch[na] <- missing.label
+  factor(ch, levels = c(lv, if (any(na)) missing.label))
+}
+
+#' One `mean +/- error` footer row over a set of deployments.
+#'
+#' Shared by the ungrouped footer and the per-group ones, so the two cannot drift apart. Where the error
+#' is not finite - a group of one, or a column with a single non-missing value - the cell carries the
+#' mean alone rather than a mean beside an empty interval.
+#' @keywords internal
+#' @noRd
+.summaryFooterRow <- function(sub, agg_cols, prec_of, errfun, pm, err_stat, cols) {
+  foot <- stats::setNames(rep(NA_character_, length(cols)), cols)
+  for (nm in agg_cols) {
+    m <- mean(sub[[nm]], na.rm = TRUE)
+    if (is.finite(m)) {
+      e <- errfun(sub[[nm]])
+      foot[nm] <- if (is.finite(e))
+        sprintf(paste0("%.", prec_of(nm), "f ", pm, " %.", prec_of(nm), "f"), m, e)
+      else sprintf(paste0("%.", prec_of(nm), "f"), m)
+    }
+  }
+  foot[["id"]] <- paste0("mean ", pm, " ", err_stat)
+  as.data.frame(as.list(foot), stringsAsFactors = FALSE, check.names = FALSE)
+}
+
 #' Format a nautilus_summary as a display-ready character data frame
 #'
 #' Returns the same formatted table the print method renders - fixed per-metric precision, datetimes as
 #' `dd/Mon/YYYY HH:MM`, missing values as "-", and (optionally) the display-only population
 #' `mean +/- error` row - but as a STRUCTURED character data frame, so the formatted summary can be
 #' exported directly for reporting, e.g. `write.csv(format(summary), "summary.csv", row.names = FALSE)`.
+#'
+#' With `group.by`, rows are ordered by a categorical column and each group gains its own
+#' `mean +/- error` row, which is the quickest way to compare analysed against excluded deployments, or
+#' one class of animal against another. The result stays a rectangle of one row per deployment plus one
+#' footer per group: the blank line that separates groups on the console is inserted when printing, so
+#' an exported file never carries an empty record.
 #' @param x A `nautilus_summary` object.
 #' @param style Column-name style: `"internal"` (default) keeps the programmatic snake_case names used
 #'   throughout the API; `"report"` relabels the columns with human-readable, publication-ready headers
@@ -723,6 +768,15 @@ summarizeTagData <- function(data,
 #'   style - `video_duration_h` reads "Video recorded (h)" under `report` and "Video (h)" under
 #'   `concise` - so an override keyed on one would quietly stop applying when the style changed. Pass a
 #'   header by mistake and the error names the column to use instead. Default `NULL`.
+#' @param group.by Optional column name to group the rendering by - `"status"` to compare analysed
+#'   against excluded deployments, or any categorical column in the table, such as a trait requested
+#'   through `summarizeTagData(metadata = )`. Rows are ordered by group and each group is given its own
+#'   `mean +/- error` row. Default `FALSE`, which renders the table ungrouped.
+#'
+#'   Grouping changes only the presentation: the `nautilus_summary` itself is one row per deployment
+#'   either way. Named by the INTERNAL column name, as `decimals` is, so an override keeps working when
+#'   the style changes. The returned table stays rectangular - the blank line between groups belongs to
+#'   the console rendering, not to the exported object.
 #' @param symbols Whether the rendered table may use typographic symbols: `"ascii"` (default) writes
 #'   `+/-`, `deg C` and `m/s`; `"unicode"` writes the plus-minus, degree and superscript forms. ASCII is
 #'   the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
@@ -734,12 +788,27 @@ summarizeTagData <- function(data,
 
 format.nautilus_summary <- function(x, style = c("internal", "report", "concise"),
                                     datetime.format = "%d/%b/%Y %H:%M", include.summary.row = TRUE,
-                                    symbols = c("ascii", "unicode"), decimals = NULL, ...) {
+                                    symbols = c("ascii", "unicode"), decimals = NULL,
+                                    group.by = FALSE, ...) {
   style <- match.arg(style)
   symbols <- match.arg(symbols)
   .assert_string(datetime.format, "datetime.format")
   df <- as.data.frame(x)
   if (nrow(df) == 0 || ncol(df) == 0) return(data.frame())
+
+  ## ---- grouping: order the rows, and remember which group each one belongs to --------------------
+  # Ordering happens here, before the display table is built, so the character rows and the numeric
+  # rows the footers are computed from stay in step.
+  grp <- NULL
+  if (!isFALSE(group.by)) {
+    .assert_string(group.by, "group.by")
+    if (!group.by %in% names(df))
+      .abort(c("{.arg group.by} does not name a column of the summary: {.val {group.by}}.",
+               "i" = "Available columns: {.val {names(df)}}."))
+    grp <- .summaryGroupFactor(df[[group.by]])
+    ord <- order(as.integer(grp), seq_along(grp))     # stable: incoming order kept within a group
+    df <- df[ord, , drop = FALSE]; grp <- grp[ord]
+  }
 
   dec <- .assert_decimals(decimals, df, style)
   err_stat <- attr(x, "error.stat") %||% "sd"
@@ -781,23 +850,38 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   }), stringsAsFactors = FALSE)
   names(disp) <- names(df)
 
-  # display-only population mean +/- error footer (only meaningful with more than one deployment)
-  if (isTRUE(include.summary.row) && nrow(df) > 1) {
-    foot <- stats::setNames(rep(NA_character_, ncol(df)), names(df))
-    for (nm in agg_cols) {
-      m <- mean(df[[nm]], na.rm = TRUE)
-      if (is.finite(m)) {
-        e <- errfun(df[[nm]])
-        foot[nm] <- if (is.finite(e)) sprintf(paste0("%.", prec_of(nm), "f ", pm, " %.", prec_of(nm), "f"), m, e)
-                    else sprintf(paste0("%.", prec_of(nm), "f"), m)
+  # Display-only mean +/- error footers. Ungrouped, one over the whole cohort, and only where there is
+  # more than one deployment to average. Grouped, one per group - including a group of one, which shows
+  # its mean alone: dropping it would make the groups look inconsistent rather than sparse.
+  row_grp <- if (is.null(grp)) NULL else as.character(grp)
+  if (isTRUE(include.summary.row)) {
+    if (is.null(grp)) {
+      if (nrow(df) > 1)
+        disp <- rbind(disp, .summaryFooterRow(df, agg_cols, prec_of, errfun, pm, err_stat, names(df)))
+    } else {
+      out <- disp[0, , drop = FALSE]; tag <- character(0)
+      for (lv in levels(grp)) {
+        idx <- which(grp == lv)
+        if (!length(idx)) next
+        f <- .summaryFooterRow(df[idx, , drop = FALSE], agg_cols, prec_of, errfun, pm, err_stat,
+                               names(df))
+        # the footer carries its own group value, so an exported table stays self-describing: footers
+        # are identifiable by the id cell and attributable by the grouping column, with no parsing
+        if (!identical(group.by, "id")) f[[group.by]] <- lv
+        out <- rbind(out, disp[idx, , drop = FALSE], f)
+        tag <- c(tag, rep(lv, length(idx) + 1L))
       }
+      disp <- out; row_grp <- tag
     }
-    foot[["id"]] <- paste0("mean ", pm, " ", err_stat)
-    disp <- rbind(disp, as.data.frame(as.list(foot), stringsAsFactors = FALSE, check.names = FALSE))
   }
+  rownames(disp) <- NULL
   disp[is.na(disp)] <- "-"
   if (style != "internal") names(disp) <- .summaryHeaders(names(disp), style)
   if (identical(symbols, "ascii")) names(disp) <- .foldSymbols(names(disp))
+  # Which group each OUTPUT row belongs to, for print() to break on. An attribute rather than a blank
+  # separator row: `format()` is the documented export route, and an empty record reads as a malformed
+  # row in a spreadsheet or on re-import. Attributes do not reach write.csv() at all.
+  if (!is.null(row_grp)) attr(disp, "summary.groups") <- row_grp
   disp
 }
 
@@ -992,9 +1076,27 @@ print.nautilus_summary <- function(x, ...) {
   uni <- cli::is_utf8_output()
   pm <- if (uni) "\u00b1" else "+/-"
   err_stat <- attr(x, "error.stat") %||% "sd"
+  fmt <- format(x, symbols = if (uni) "unicode" else "ascii", ...)
+  rg  <- attr(fmt, "summary.groups")
+  gb  <- list(...)$group.by
+
+  banner <- if (!is.null(rg) && !is.null(gb))
+    sprintf(" (grouped by %s; one mean %s %s row per group)", gb, pm, err_stat)
+  else if (nrow(df) > 1) sprintf(" (final row: mean %s %s)", pm, err_stat) else ""
   cat(sprintf("<nautilus_summary> %d deployment%s%s\n", nrow(df), if (nrow(df) != 1) "s" else "",
-              if (nrow(df) > 1) sprintf(" (final row: mean %s %s)", pm, err_stat) else ""))
-  print(format(x, symbols = if (uni) "unicode" else "ascii", ...), row.names = FALSE)
+              banner))
+
+  # The blank line between groups is inserted HERE, at render time, rather than returned by format():
+  # a reader wants the break, an exported file does not want an empty record.
+  if (!is.null(rg) && length(rg) == nrow(fmt) && length(unique(rg)) > 1L) {
+    txt <- utils::capture.output(print(fmt, row.names = FALSE))
+    hdr <- length(txt) - nrow(fmt)                       # header lines precede the body
+    brk <- which(rg[-length(rg)] != rg[-1])              # last row of each group but the final one
+    for (i in rev(brk)) txt <- append(txt, "", after = hdr + i)
+    writeLines(txt)                                      # terminates each line, and adds none
+  } else {
+    print(fmt, row.names = FALSE)
+  }
   invisible(x)
 }
 

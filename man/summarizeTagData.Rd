@@ -46,7 +46,9 @@ fields and traits you want - \code{c("sex", "deploy_lon", "deploy_lat")} - and t
 package's canonical order, so two calls requesting the same set still bind together. A named trait
 is given a column even where no deployment carries it (with a warning), which is how a cohort that
 recorded different traits can still be combined. Fields not carried onto the tag object by
-\code{\link[=importTagData]{importTagData()}}, such as \code{recovery_datetime}, are deliberately not offered.}
+\code{\link[=importTagData]{importTagData()}}, such as \code{recovery_datetime}, are deliberately not offered. A field requested
+here can be used to group the rendered table, via
+\code{\link[=format.nautilus_summary]{format}(x, group.by = )}.}
 
 \item{video.metadata}{Optional table from \code{\link[=getVideoMetadata]{getVideoMetadata()}} - one row per video file, with \code{ID}
 and \code{duration} (seconds). Adds \code{video_duration_h}, the total footage per deployment. The totalling

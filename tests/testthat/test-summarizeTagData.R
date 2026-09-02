@@ -819,3 +819,109 @@ test_that("print() forwards to format(), so the display can be tuned in place", 
   expect_s3_class(withVisible(print(s))$value, "nautilus_summary")     # still returns x invisibly
   expect_false(withVisible(print(s))$visible)
 })
+
+
+# ---- format(group.by =) ----------------------------------------------------------------------------
+# Grouping is a presentation concern: summarizeTagData() is untouched, the returned object keeps its
+# class and row count, and only the rendering changes.
+
+.grpSummary <- function(sex = c("F", "M", "F", NA, "M")) {
+  df <- data.frame(id = paste0("A0", seq_along(sex)), sex = sex,
+                   record_duration_h = c(30, 22, 41, 18, 12)[seq_along(sex)],
+                   depth_max = c(120, 80, 140, 95, 60)[seq_along(sex)],
+                   stringsAsFactors = FALSE)
+  nautilus:::.newSummary(df, "sd")
+}
+
+
+test_that("group.by = FALSE reproduces the ungrouped output exactly", {
+  s <- .grpSummary()
+  expect_identical(format(s, group.by = FALSE), format(s))
+  expect_null(attr(format(s), "summary.groups"))
+})
+
+
+test_that("grouping orders rows and gives each group its own footer", {
+  f <- format(.grpSummary(), group.by = "sex")
+  # 5 deployments + one footer per group (F, M, missing)
+  expect_identical(nrow(f), 8L)
+  foot <- which(f$id == "mean +/- sd")
+  expect_length(foot, 3L)
+  # rows are grouped, and each footer carries its own group value
+  expect_identical(f$sex, c("F", "F", "F", "M", "M", "M", "-", "(missing)"))
+  expect_identical(f$sex[foot], c("F", "M", "(missing)"))
+  # the footer averages only its own group: F is (30 + 41) / 2
+  expect_match(f$record_duration_h[foot[1]], "^35\\.5 ")
+})
+
+
+test_that("a group of one shows its mean without an error term", {
+  f <- format(.grpSummary(sex = c("F", "M")), group.by = "sex")
+  foot <- f[f$id == "mean +/- sd", ]
+  expect_identical(nrow(foot), 2L)
+  expect_false(any(grepl("+/-", foot$record_duration_h, fixed = TRUE)))   # sd of one value
+  expect_identical(foot$record_duration_h, c("30.0", "22.0"))
+})
+
+
+test_that("missing values form their own trailing group and are never dropped", {
+  f <- format(.grpSummary(), group.by = "sex")
+  expect_true("(missing)" %in% f$sex)
+  expect_identical(f$sex[nrow(f)], "(missing)")          # last
+  expect_true("A04" %in% f$id)                            # the NA deployment still appears
+})
+
+
+test_that("factor levels set the group order, and unused levels are dropped", {
+  s <- .grpSummary()
+  s$sex <- factor(s$sex, levels = c("M", "F", "juvenile"))   # reversed, plus an unused level
+  f <- format(s, group.by = "sex")
+  expect_identical(unique(f$sex), c("M", "F", "-", "(missing)"))
+  expect_false("juvenile" %in% f$sex)
+})
+
+
+test_that("include.summary.row = FALSE groups without footers", {
+  f <- format(.grpSummary(), group.by = "sex", include.summary.row = FALSE)
+  expect_identical(nrow(f), 5L)
+  expect_false(any(f$id == "mean +/- sd"))
+  expect_identical(f$sex, c("F", "F", "M", "M", "-"))       # still ordered
+})
+
+
+test_that("format() emits no blank rows, so the export path stays machine-readable", {
+  f <- format(.grpSummary(), group.by = "sex")
+  blank <- apply(f, 1, function(r) all(trimws(r) == ""))
+  expect_false(any(blank))
+  # and the grouping travels as an attribute, which write.csv() never sees
+  expect_length(attr(f, "summary.groups"), nrow(f))
+  csv <- tempfile(fileext = ".csv"); on.exit(unlink(csv), add = TRUE)
+  utils::write.csv(f, csv, row.names = FALSE)
+  back <- utils::read.csv(csv, check.names = FALSE)
+  expect_identical(nrow(back), nrow(f))                    # no empty record on re-import
+})
+
+
+test_that("print() inserts the blank line between groups that format() withholds", {
+  s <- .grpSummary()
+  plain   <- utils::capture.output(print(s))
+  grouped <- utils::capture.output(print(s, group.by = "sex"))
+  expect_false(any(!nzchar(trimws(plain))))                # ungrouped: no blank lines
+  expect_identical(sum(!nzchar(trimws(grouped))), 2L)      # three groups -> two breaks
+  expect_match(grouped[1], "grouped by sex")
+})
+
+
+test_that("group.by validates against the summary's own columns", {
+  s <- .grpSummary()
+  expect_error(format(s, group.by = "nope"), "does not name a column")
+  expect_error(format(s, group.by = "nope"), "Available columns")
+  expect_error(format(s, group.by = c("sex", "id")), "group.by")
+})
+
+
+test_that("grouping keys on the internal column name, whatever the style renames it to", {
+  f <- format(.grpSummary(), group.by = "sex", style = "report")
+  expect_identical(nrow(f), 8L)                             # grouped despite the renamed header
+  expect_false("sex" %in% names(f))                         # header was relabelled
+})
