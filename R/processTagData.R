@@ -62,6 +62,11 @@
 #' @param output.dir An existing directory in which processed deployments are saved as individual
 #'   `.rds` files, named `<id>.rds`. Supplying a directory is what triggers saving; `NULL` (default)
 #'   writes nothing.
+#' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
+#'   deployment this stage set aside and why. The log holds current state, not history: each stage
+#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
+#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
+#'   deployment is missing. Default `NULL`, which writes nothing.
 #' @param output.suffix Optional string appended to the deployment identifier in saved file names,
 #'   before `.rds`, to label a processing run or avoid overwriting an earlier one. Only used when
 #'   `output.dir` is specified.
@@ -295,6 +300,7 @@ processTagData <- function(data,
                            plot.file = NULL,
                            return.data = TRUE,
                            output.dir = NULL,
+                           exclusions.file = NULL,
                            output.suffix = NULL,
                            compress = TRUE,
                            data.table.threads = NULL,
@@ -348,6 +354,7 @@ processTagData <- function(data,
     .abort("{.arg burst.quantiles} must be a numeric vector with values in (0, 1].")
   }
   .assert_dir(output.dir, "output.dir")                         # fail-fast: must exist
+  .assert_writable_file(exclusions.file, "exclusions.file", ext = "csv", null_ok = TRUE)
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
   .assert_compress(compress)
   .assert_output(return.data, output.dir)
@@ -446,6 +453,13 @@ processTagData <- function(data,
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+  # every skip also records WHY, for the shared exclusions log: the reason is already computed for the
+  # console line, and discarding it is what left a dropped deployment unexplained in the summary
+  skipped_rows <- list()
+  note_skip <- function(id, reason) {
+    skipped_ids <<- c(skipped_ids, id)
+    skipped_rows[[length(skipped_rows) + 1L]] <<- .exclusionsRow(id, "processTagData", reason)
+  }
   nodecl_ids  <- character(0)   # heading kept as MAGNETIC (no position -> no declination available)
   # Orientation findings are ACCUMULATED and warned once per finding type at the end, never once per
   # deployment. Warning inside the loop scaled with the cohort: 10 rolled mounts meant 10 warnings, and
@@ -483,7 +497,7 @@ processTagData <- function(data,
         # attributable to a tag at a glance, not inferred from its position between neighbouring blocks
         .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
         .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
-        skipped_ids <- c(skipped_ids, lab)
+        note_skip(lab, skip_reason)
         .log_gap(lvl)
         next
       }
@@ -513,7 +527,7 @@ processTagData <- function(data,
           lab <- .deploymentLabel(individual_data, names(data)[i], i)
           .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
           .log_skip(lvl, skip_reason, " ", cli::symbol$bullet, " skipped")
-          skipped_ids <- c(skipped_ids, lab)
+          note_skip(lab, skip_reason)
           .log_gap(lvl)
           next
         }
@@ -527,7 +541,7 @@ processTagData <- function(data,
       lab <- .deploymentLabel(individual_data, if (is_filepaths) file_path else names(data)[i], i)
       .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
       .log_skip(lvl, "no data ", cli::symbol$bullet, " skipped")
-      skipped_ids <- c(skipped_ids, lab)
+      note_skip(lab, "no data")
       .log_gap(lvl)
       next
     }
@@ -570,7 +584,7 @@ processTagData <- function(data,
     if (!is.finite(sampling_freq) || sampling_freq < 1) {
       .log_skip(lvl, sprintf("sampling rate below 1 Hz (%s Hz) %s skipped",
                              format(sampling_freq), cli::symbol$bullet))
-      skipped_ids <- c(skipped_ids, as.character(id))
+      note_skip(as.character(id), sprintf("sampling rate below 1 Hz (%s Hz)", format(sampling_freq)))
       ids[i] <- NA_character_
       .log_gap(lvl)
       next
@@ -1788,6 +1802,11 @@ processTagData <- function(data,
   .warn_grouped("{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
                 items = skipped_ids, style = "inline")
 
+  # This stage's rows in the shared log, replacing whatever it wrote before: a deployment that stops
+  # being skipped loses its row, which is why the write happens even when nothing was skipped.
+  excl <- .exclusionsBind(skipped_rows)
+  .exclusionsWrite(excl, exclusions.file, "processTagData")
+
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")
@@ -1798,13 +1817,17 @@ processTagData <- function(data,
       .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_out),
                  " (from ", .formatLargeNumber(tot_in), " input) \u00b7 duration: ", .fmt_duration(tot_secs))
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
     .log_runtime(lvl, start.time)
   }
 
   # return the processed data (named by ID) or, when return.data = FALSE, the written .rds paths.
   # `keep` drops skipped slots (their id stays NA), keeping data_list / saved / ids index-aligned.
   keep <- !is.na(ids)
-  .collectOutput(data_list[keep], saved[keep], return.data, ids[keep])
+  out <- .collectOutput(data_list[keep], saved[keep], return.data, ids[keep])
+  # the same rows the log carries, for a caller working in memory rather than through files
+  if (!is.null(out)) attr(out, "nautilus.exclusions") <- excl
+  out
 
 }
 

@@ -76,12 +76,15 @@ Plotting long, high-resolution series to screen is slow; for a batch, prefer \co
 individual, or \code{NULL} (default). The parent directory must already exist, and the path must end in
 \code{.pdf}. Independent of \code{plot}: set either, or both.}
 
-\item{exclusions.file}{Path to an \code{.rds} file in which excluded deployments are recorded, or \code{NULL}
-(default). The exclusions table is always attached to the result as the \code{"nautilus.exclusions"}
-attribute; this argument only decides whether it is also written to disk. Write it when the next
-step reads \code{.rds} files from \code{output.dir} rather than the returned objects, since an attribute does
-not survive that hand-off, and pass the file to \code{\link[=summarizeTagData]{summarizeTagData()}} so that an excluded deployment
-reports its window rather than an empty row. Do not place it inside \code{output.dir}.}
+\item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
+deployment this stage set aside and why: its identifier, the rule that set it aside and, for one
+detected and then rejected as too short, the window that was detected. The log holds current
+state, not history: each stage replaces its own rows on every run, so a deployment that stops
+being excluded loses its row. Pass the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}},
+which uses it to report why each deployment is missing and to fill the window of one that was
+detected and then rejected. The table is also attached to the result as
+\code{attr(x, "nautilus.exclusions")}; this argument only decides whether it is also written. Do not
+place it inside \code{output.dir}. Default \code{NULL}.}
 
 \item{plot.metrics}{Optional character vector of length two naming additional columns to display
 alongside depth in the diagnostic plots. Defaults to \code{c("temp", "ax")} where plots are requested.

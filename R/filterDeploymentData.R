@@ -54,12 +54,16 @@
 #' @param plot.file Path to a multi-page PDF in which diagnostic plots are saved, one page per
 #'   individual, or `NULL` (default). The parent directory must already exist, and the path must end in
 #'   `.pdf`. Independent of `plot`: set either, or both.
-#' @param exclusions.file Path to an `.rds` file in which excluded deployments are recorded, or `NULL`
-#'   (default). The exclusions table is always attached to the result as the `"nautilus.exclusions"`
-#'   attribute; this argument only decides whether it is also written to disk. Write it when the next
-#'   step reads `.rds` files from `output.dir` rather than the returned objects, since an attribute does
-#'   not survive that hand-off, and pass the file to [summarizeTagData()] so that an excluded deployment
-#'   reports its window rather than an empty row. Do not place it inside `output.dir`.
+#' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
+#'   deployment this stage set aside and why: its identifier, the rule that set it aside and, for one
+#'   detected and then rejected as too short, the window that was detected. The log holds current
+#'   state, not history: each stage replaces its own rows on every run, so a deployment that stops
+#'   being excluded loses its row. Pass the same path to every stage, and to [summarizeTagData()],
+#'   which uses it to report why each deployment is missing and to fill the window of one that was
+#'   detected and then rejected. The table is also attached to the result as
+#'   `attr(x, "nautilus.exclusions")`; this argument only decides whether it is also written. Do not
+#'   place it inside `output.dir`. Default `NULL`.
+
 #' @param plot.metrics Optional character vector of length two naming additional columns to display
 #'   alongside depth in the diagnostic plots. Defaults to `c("temp", "ax")` where plots are requested.
 #'   These are used for visualisation only and are not required for detection; a column absent from a
@@ -263,7 +267,7 @@ filterDeploymentData <- function(data,
   .assert_flag(use.temperature, "use.temperature")
   .assert_number(min.deployment.hours, "min.deployment.hours", min = 0)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")
-  .assert_writable_file(exclusions.file, "exclusions.file", ext = "rds")   # fail-fast: parent dir must exist
+  .assert_writable_file(exclusions.file, "exclusions.file", ext = "csv")   # fail-fast: parent dir must exist
   .assert_dir(output.dir, "output.dir")                        # fail-fast: must exist
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
   .assert_compress(compress)
@@ -399,11 +403,8 @@ filterDeploymentData <- function(data,
   # when a rejected deployment started, and reported it as a bare "excluded" with no times at all.
   exclusions <- list()
   note_exclusion <- function(id, reason, from = NULL, to = NULL, hours = NA_real_) {
-    exclusions[[length(exclusions) + 1L]] <<- data.frame(
-      id = as.character(id), reason = as.character(reason),
-      detected_start = if (inherits(from, "POSIXt")) from else .POSIXct(NA_real_, tz = "UTC"),
-      detected_end   = if (inherits(to,   "POSIXt")) to   else .POSIXct(NA_real_, tz = "UTC"),
-      detected_duration_h = as.numeric(hours), stringsAsFactors = FALSE)
+    exclusions[[length(exclusions) + 1L]] <<-
+      .exclusionsRow(id, "filterDeploymentData", reason, from, to, hours)
   }
 
   # iterate over each element in 'data'
@@ -987,8 +988,8 @@ filterDeploymentData <- function(data,
     hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
               "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
 
-  excl <- .filterExclusionsTable(exclusions)
-  if (!is.null(exclusions.file)) saveRDS(excl, exclusions.file)
+  excl <- .exclusionsBind(exclusions)
+  .exclusionsWrite(excl, exclusions.file, "filterDeploymentData")
 
   if (lvl >= 1L) {
     .log_summary(lvl)
@@ -1315,13 +1316,4 @@ filterDeploymentData <- function(data,
 #' to report, and inventing one would make the two indistinguishable.
 #' @keywords internal
 #' @noRd
-.filterExclusionsTable <- function(exclusions) {
-  empty <- data.frame(id = character(0), reason = character(0),
-                      detected_start = .POSIXct(numeric(0), tz = "UTC"),
-                      detected_end = .POSIXct(numeric(0), tz = "UTC"),
-                      detected_duration_h = numeric(0), stringsAsFactors = FALSE)
-  if (!length(exclusions)) return(empty)
-  out <- do.call(rbind, exclusions)
-  rownames(out) <- NULL
-  out
-}
+

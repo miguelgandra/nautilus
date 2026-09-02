@@ -14,6 +14,7 @@ applyAxisMapping(
   check.handedness = TRUE,
   return.data = TRUE,
   output.dir = NULL,
+  exclusions.file = NULL,
   output.suffix = NULL,
   compress = TRUE,
   verbose = "detailed"
@@ -68,6 +69,12 @@ step's \code{data} argument -- so a large fleet can be processed without ever ho
 
 \item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
 a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+
+\item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
+deployment this stage set aside and why. The log holds current state, not history: each stage
+replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
+the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each
+deployment is missing. Default \code{NULL}, which writes nothing.}
 
 \item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
 to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}

@@ -58,13 +58,12 @@ drops folders holding no video, so absence means "no footage found", which is a 
 from "the camera ran for zero hours". This is TOTAL footage and routinely exceeds the retained
 record - a camera started on deck records either side of the deployment. Default \code{NULL}.}
 
-\item{exclusions}{Optional exclusions table from \code{\link[=filterDeploymentData]{filterDeploymentData()}} - either the data frame it
-attaches to its result as \code{attr(x, "nautilus.exclusions")}, or the path to the file its
-\code{exclusions.file} argument wrote. Adds \code{status_reason}, and fills \code{record_start}, \code{record_end} and
-\code{record_duration_h} for a deployment that was detected and then rejected for being too short. That
-window is the evidence for the decision, so reporting the row as a bare \code{"excluded"} with no times
-discards the one number that justifies it. Never overwrites a deployment that has its own record.
-Default \code{NULL}.}
+\item{exclusions}{Optional deployment-exclusion log - the path to the shared \code{exclusions.csv}, or
+the table itself. Written by every stage that can drop a deployment (\code{\link[=importTagData]{importTagData()}},
+\code{\link[=filterDeploymentData]{filterDeploymentData()}}, \code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}}, \code{\link[=applyAxisMapping]{applyAxisMapping()}} and \code{\link[=processTagData]{processTagData()}}),
+it supplies the \code{status_reason} of each deployment that is missing from \code{data}, and fills the
+record window of one that was detected and then rejected as too short. Where a deployment appears
+under several stages, the earliest in pipeline order wins - that is where it left. Default \code{NULL}.}
 
 \item{error.stat}{Which error statistic the display-only population row shows: \code{"sd"} (standard
 deviation, the default) describes the spread across deployments, while \code{"se"} (standard error)

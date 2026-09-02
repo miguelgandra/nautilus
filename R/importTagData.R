@@ -48,6 +48,11 @@
 #'   into the next step's `data` argument; this requires `output.dir` to be specified.
 #' @param output.dir An existing directory in which to write one `.rds` file per successfully imported
 #'   deployment. Supplying a directory is what triggers saving; `NULL` (default) writes nothing.
+#' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
+#'   deployment this stage set aside and why. The log holds current state, not history: each stage
+#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
+#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
+#'   deployment is missing. Default `NULL`, which writes nothing.
 #' @param output.suffix Optional string appended to each output file name, before `.rds`, to
 #'   distinguish one import run from another. Only used when `output.dir` is specified.
 #' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
@@ -255,6 +260,7 @@ importTagData <- function(data.folders,
                           columns = metadataColumns(),
                           return.data = TRUE,
                           output.dir = NULL,
+                          exclusions.file = NULL,
                           output.suffix = NULL,
                           compress = TRUE,
                           data.table.threads = NULL,
@@ -322,6 +328,11 @@ importTagData <- function(data.folders,
   # Collectors are initialised up front so the on.exit builder is robust even if the run errors early.
   preflight_issues <- character(0)                                  # pre-flight (folder / metadata QC)
   failed_ids <- character(0); tz_issue_ids <- character(0)
+  # the reason travels with the id, for the shared exclusions log
+  failed_rows <- list()
+  note_fail <- function(id, reason) {
+    failed_rows[[length(failed_rows) + 1L]] <<- .exclusionsRow(id, "importTagData", reason)
+  }
   temp_discard_ids <- character(0); temp_override_ids <- character(0)
   align_skip_ids <- character(0); align_skip_reasons <- character(0)   # clock alignment abstentions
   unread_ids <- character(0); unread_desc <- character(0)              # channels a reader declined to read
@@ -372,6 +383,7 @@ importTagData <- function(data.folders,
   .checkFormat(format, "format", allow = "auto")
   .assert_string(wc.subdirectory, "wc.subdirectory", null_ok = TRUE)
   .assert_dir(output.dir, "output.dir", null_ok = TRUE)
+  .assert_writable_file(exclusions.file, "exclusions.file", ext = "csv", null_ok = TRUE)
 
   # the sole illegal output request: keep nothing and write nowhere
   .assert_flag(return.data, "return.data")
@@ -799,6 +811,7 @@ importTagData <- function(data.folders,
                                        "set {.arg format} or the {.field tag_format} metadata column. Data not imported."))
         }
         failed_ids <- c(failed_ids, id)
+        note_fail(id, "could not identify the tag format")
       }
       data_list[[i]] <- NA
       .log_gap(lvl)
@@ -836,6 +849,7 @@ importTagData <- function(data.folders,
         if (lvl >= 1L) cli::cli_alert_danger("{id}: {res$reason}. Data not imported.")
         failed_ids <- c(failed_ids, id)
       }
+      note_fail(id, res$reason)
       data_list[[i]] <- NA
       .log_gap(lvl)
       next
@@ -1113,6 +1127,11 @@ importTagData <- function(data.folders,
   # Return imported data #######################################################
   ##############################################################################
 
+  # this stage's rows in the shared log, replacing whatever it wrote before, and before the summary
+  # announces the file so that a reported path always exists
+  excl <- .exclusionsBind(failed_rows)
+  .exclusionsWrite(excl, exclusions.file, "importTagData")
+
   # ---- final run summary -----------------------------------------------------------------------
   # Its own block (its own rule + blank-line separation), because the overall run statistics are
   # conceptually distinct from the continuous per-individual processing above.
@@ -1124,6 +1143,7 @@ importTagData <- function(data.folders,
       .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_rows),
                  " \u00b7 duration: ", .fmt_duration(tot_secs))
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
     .log_runtime(lvl, start.time)
 
     # master Issues tally - echoes EVERY category (pre-flight + per-deployment) so the final verdict
@@ -1147,11 +1167,12 @@ importTagData <- function(data.folders,
     na_indices <- which(sapply(data_list, function(x) identical(x, NA)))
     if (length(na_indices) > 0) data_list[na_indices] <- NULL
     # return the list containing processed sensor data for all folders
+    attr(data_list, "nautilus.exclusions") <- excl
     return(data_list)
   }
   # return.data = FALSE: the written .rds paths, invisibly - a top-level import must not auto-print a wall
   # of paths, but the value stays available to chain into the next step or capture (see .collectOutput).
-  invisible(unlist(saved, use.names = FALSE))
+  invisible(structure(unlist(saved, use.names = FALSE), nautilus.exclusions = excl))
 }
 
 

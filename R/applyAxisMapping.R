@@ -92,6 +92,11 @@
 #'   `return.data = FALSE` therefore requires an `output.dir`.
 #' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
 #'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
+#' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
+#'   deployment this stage set aside and why. The log holds current state, not history: each stage
+#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
+#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
+#'   deployment is missing. Default `NULL`, which writes nothing.
 #' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
 #'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
 #' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
@@ -132,6 +137,7 @@ applyAxisMapping <- function(data,
                              check.handedness = TRUE,
                              return.data = TRUE,
                              output.dir = NULL,
+                             exclusions.file = NULL,
                              output.suffix = NULL,
                              compress = TRUE,
                              verbose = "detailed") {
@@ -148,6 +154,7 @@ applyAxisMapping <- function(data,
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
   .assert_dir(output.dir, "output.dir")                         # fail-fast: must exist
+  .assert_writable_file(exclusions.file, "exclusions.file", ext = "csv", null_ok = TRUE)
   .assert_compress(compress)
   .assert_output(return.data, output.dir)
 
@@ -429,6 +436,7 @@ applyAxisMapping <- function(data,
     if (n_coreg_fail > 0L) cli::cli_alert_danger("{n_coreg_fail} dataset{?s} failed accel/gyro co-registration (gyro mapping likely wrong)")
     if (n_reflect > 0L && lvl >= 2L) cli::cli_alert_info("{n_reflect} dataset{?s} {?uses/use} a reflection (left-handed) axis convention - gyro co-registered automatically")
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
     .log_runtime(lvl, start.time)
   }
 
@@ -436,6 +444,12 @@ applyAxisMapping <- function(data,
   keep <- if (return.data) !vapply(results, is.null, logical(1)) else !vapply(saved, is.null, logical(1))
   out <- .collectOutput(results[keep], saved[keep], return.data, r$ids[keep])
   if (length(excluded_out)) attr(out, "excluded") <- excluded_out
+  # this stage's rows in the shared log, replacing whatever it wrote before. A review decision is the
+  # only way a deployment leaves here, so the reason is the same for every one of them.
+  excl <- .exclusionsBind(lapply(excluded_out, function(i)
+    .exclusionsRow(i, "applyAxisMapping", "excluded by tag-mapping review")))
+  .exclusionsWrite(excl, exclusions.file, "applyAxisMapping")
+  attr(out, "nautilus.exclusions") <- excl
   # assigning to `out` and returning it bare would strip the invisibility .collectOutput set on the paths
   # branch, re-printing the wall of paths; re-apply it (the data branch stays visible, as requested).
   if (isTRUE(return.data)) out else invisible(out)

@@ -16,6 +16,7 @@ importTagData(
   columns = metadataColumns(),
   return.data = TRUE,
   output.dir = NULL,
+  exclusions.file = NULL,
   output.suffix = NULL,
   compress = TRUE,
   data.table.threads = NULL,
@@ -60,6 +61,12 @@ into the next step's \code{data} argument; this requires \code{output.dir} to be
 
 \item{output.dir}{An existing directory in which to write one \code{.rds} file per successfully imported
 deployment. Supplying a directory is what triggers saving; \code{NULL} (default) writes nothing.}
+
+\item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
+deployment this stage set aside and why. The log holds current state, not history: each stage
+replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
+the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each
+deployment is missing. Default \code{NULL}, which writes nothing.}
 
 \item{output.suffix}{Optional string appended to each output file name, before \code{.rds}, to
 distinguish one import run from another. Only used when \code{output.dir} is specified.}

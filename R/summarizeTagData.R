@@ -56,13 +56,13 @@
 #'   drops folders holding no video, so absence means "no footage found", which is a different claim
 #'   from "the camera ran for zero hours". This is TOTAL footage and routinely exceeds the retained
 #'   record - a camera started on deck records either side of the deployment. Default `NULL`.
-#' @param exclusions Optional exclusions table from [filterDeploymentData()] - either the data frame it
-#'   attaches to its result as `attr(x, "nautilus.exclusions")`, or the path to the file its
-#'   `exclusions.file` argument wrote. Adds `status_reason`, and fills `record_start`, `record_end` and
-#'   `record_duration_h` for a deployment that was detected and then rejected for being too short. That
-#'   window is the evidence for the decision, so reporting the row as a bare `"excluded"` with no times
-#'   discards the one number that justifies it. Never overwrites a deployment that has its own record.
-#'   Default `NULL`.
+#' @param exclusions Optional deployment-exclusion log - the path to the shared `exclusions.csv`, or
+#'   the table itself. Written by every stage that can drop a deployment ([importTagData()],
+#'   [filterDeploymentData()], [regularizeTimeSeries()], [applyAxisMapping()] and [processTagData()]),
+#'   it supplies the `status_reason` of each deployment that is missing from `data`, and fills the
+#'   record window of one that was detected and then rejected as too short. Where a deployment appears
+#'   under several stages, the earliest in pipeline order wins - that is where it left. Default `NULL`.
+
 #' @param tbf.method Which tail-beat backend to summarise, e.g. `"wavelet"`. `NULL` (default) resolves it
 #'   per deployment from the data -- whichever `tbf_hz_*` columns carry values, with the package's
 #'   documented order (`peaks`, then `wavelet`) breaking a tie. The backend actually used is reported as
@@ -1247,18 +1247,22 @@ print.nautilus_summary <- function(x, ...) {
 #' @noRd
 .attachExclusions <- function(tbl, exclusions) {
   if (is.null(exclusions) || !nrow(tbl)) return(tbl)
-  ex <- if (is.character(exclusions)) {
-    if (length(exclusions) != 1L || !file.exists(exclusions))
-      .abort("{.arg exclusions} must be a data frame or the path to one saved {.file .rds} file.")
-    readRDS(exclusions)
-  } else exclusions
-  if (!is.data.frame(ex))
-    .abort("{.arg exclusions} must be a data frame as attached by {.fn filterDeploymentData}.")
-  miss <- setdiff(c("id", "reason"), names(ex))
-  if (length(miss))
-    .abort(c("{.arg exclusions} is missing the column{?s} {.field {miss}}.",
-             "i" = "Pass the table {.fn filterDeploymentData} attaches, or the file it wrote."))
-  if (!nrow(ex)) return(tbl)
+  # One row per deployment: where it left the pipeline. A deployment carrying rows from several stages
+  # left at the earliest of them - the later ones are decisions taken in an older run, before an
+  # upstream stage started excluding it.
+  ex <- .exclusionsResolve(.exclusionsRead(exclusions))
+  if (is.null(ex) || !nrow(ex)) return(tbl)
+
+  # The log describes the data products on disk, and running a stage refreshes both together - so a row
+  # left by a stage that has not re-run still describes the data that stage last wrote. The one genuine
+  # conflict is a deployment that is excluded AND present in the data handed in, which means the two
+  # came from different runs.
+  present <- intersect(tbl$id[!is.na(tbl$record_start)], ex$id)
+  if (length(present))
+    warning(sprintf(paste0("summarizeTagData: %d deployment%s excluded in the log but present in the ",
+                           "data (%s). The log and the data are from different runs."),
+                    length(present), if (length(present) != 1L) "s are" else " is",
+                    paste(utils::head(present, 5), collapse = ", ")), call. = FALSE)
 
   m <- match(tbl$id, as.character(ex$id))
   hit <- !is.na(m)
@@ -1272,11 +1276,10 @@ print.nautilus_summary <- function(x, ...) {
 
   # never overwrite a deployment that has its own record: only a row with no window gets one
   fill <- hit & is.na(tbl$record_start)
-  if (any(fill) && all(c("detected_start", "detected_end") %in% names(ex))) {
-    tbl$record_start[fill] <- ex$detected_start[m[fill]]
-    tbl$record_end[fill]   <- ex$detected_end[m[fill]]
-    if ("detected_duration_h" %in% names(ex))
-      tbl$record_duration_h[fill] <- as.numeric(ex$detected_duration_h)[m[fill]]
+  if (any(fill) && all(c("window_start", "window_end") %in% names(ex))) {
+    tbl$record_start[fill] <- ex$window_start[m[fill]]
+    tbl$record_end[fill]   <- ex$window_end[m[fill]]
+    tbl$record_duration_h[fill] <- ex$window_hours[m[fill]]
   }
   tbl
 }

@@ -50,6 +50,11 @@
 #'   directly into the next step's `data` argument; this requires `output.dir` to be specified.
 #' @param output.dir An existing directory in which to save one regularised `<id>.rds` file per
 #'   deployment. Supplying a directory is what triggers saving; `NULL` (default) writes nothing.
+#' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
+#'   deployment this stage set aside and why. The log holds current state, not history: each stage
+#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
+#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
+#'   deployment is missing. Default `NULL`, which writes nothing.
 #' @param output.suffix Optional string appended to each saved file name, before `.rds`, to label a
 #'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is specified.
 #' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
@@ -187,6 +192,7 @@ regularizeTimeSeries <- function(data,
                                  force.plots = FALSE,
                                  return.data = TRUE,
                                  output.dir = NULL,
+                                 exclusions.file = NULL,
                                  output.suffix = NULL,
                                  compress = TRUE,
                                  verbose = "detailed") {
@@ -212,6 +218,7 @@ regularizeTimeSeries <- function(data,
   .assert_flag(force.plots, "force.plots")
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")     # fail-fast: parent dir must exist
   .assert_dir(output.dir, "output.dir")                         # fail-fast: must exist
+  .assert_writable_file(exclusions.file, "exclusions.file", ext = "csv", null_ok = TRUE)
   .assert_string(output.suffix, "output.suffix", null_ok = TRUE)
   .assert_compress(compress)
   make_plots <- plot || !is.null(plot.file)
@@ -278,6 +285,12 @@ regularizeTimeSeries <- function(data,
 
   # iterate over each animal
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+  # the reason travels with the id, for the shared exclusions log
+  skipped_rows <- list()
+  note_skip <- function(id, reason) {
+    skipped_ids <<- c(skipped_ids, id)
+    skipped_rows[[length(skipped_rows) + 1L]] <<- .exclusionsRow(id, "regularizeTimeSeries", reason)
+  }
 
   for (i in seq_along(data)) {
 
@@ -302,7 +315,7 @@ regularizeTimeSeries <- function(data,
       if (!is.null(skip_reason)) {
         .log_skip(lvl, tools::file_path_sans_ext(basename(file_path)), "  ", skip_reason,
                   " ", cli::symbol$bullet, " skipped")
-        skipped_ids <- c(skipped_ids, tools::file_path_sans_ext(basename(file_path)))
+        note_skip(tools::file_path_sans_ext(basename(file_path)), skip_reason)
         .log_gap(lvl)
         next
       }
@@ -326,6 +339,7 @@ regularizeTimeSeries <- function(data,
     # skip NULL or empty elements in the list
     if (is.null(individual_data) || nrow(individual_data) == 0) {
       .log_skip(lvl, id, "  empty dataset ", cli::symbol$bullet, " skipped")
+      note_skip(id, "empty dataset")
       run_metrics[[length(run_metrics) + 1L]] <- .regularizationStub(id, "empty")
       .log_gap(lvl)
       next
@@ -688,11 +702,17 @@ regularizeTimeSeries <- function(data,
     hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
               "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
 
+  # this stage's rows in the shared log, replacing whatever it wrote before, and before the summary
+  # announces the file so that a reported path always exists
+  excl <- .exclusionsBind(skipped_rows)
+  .exclusionsWrite(excl, exclusions.file, "regularizeTimeSeries")
+
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " regularized")
     if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
+    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
     .log_runtime(lvl, start.time)
     .printRegularizationTriage(lvl, run_metrics)
   }
@@ -700,7 +720,9 @@ regularizeTimeSeries <- function(data,
   # unified output contract: a named list (one element per individual, consistent with
   # importTagData() and filterDeploymentData()) when return.data, else the written paths
   ids <- if (is_filepaths) tools::file_path_sans_ext(basename(data)) else names(data)
-  .collectOutput(results, saved, return.data, ids)
+  out <- .collectOutput(results, saved, return.data, ids)
+  if (!is.null(out)) attr(out, "nautilus.exclusions") <- excl
+  out
 }
 
 

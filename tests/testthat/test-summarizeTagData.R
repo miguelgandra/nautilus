@@ -643,9 +643,9 @@ test_that("a deployment whose data never arrived still reports who, when and whe
 
 test_that("a rejected window reaches the summary through the exclusions table", {
   ex <- data.frame(id = "SHORT", reason = "deployment too short",
-                   detected_start = as.POSIXct("2020-06-01 08:01", tz = "UTC"),
-                   detected_end   = as.POSIXct("2020-06-01 08:08", tz = "UTC"),
-                   detected_duration_h = 0.1164, stringsAsFactors = FALSE)
+                   window_start = as.POSIXct("2020-06-01 08:01", tz = "UTC"),
+                   window_end   = as.POSIXct("2020-06-01 08:08", tz = "UTC"),
+                   window_hours = 0.1164, stringsAsFactors = FALSE)
   s <- .run(list(A = .mkMeta("A")), deployments = .mkRoster(c("A", "SHORT")), exclusions = ex)
   sh <- s[s$id == "SHORT", ]
   expect_identical(sh$status, "excluded")
@@ -658,7 +658,7 @@ test_that("a rejected window reaches the summary through the exclusions table", 
                as.numeric(as.POSIXct("2020-01-01 00:00:01", tz = "UTC")))
 
   expect_error(.run(list(A = .mkMeta("A")), exclusions = data.frame(id = "x")), "missing the column")
-  expect_error(.run(list(A = .mkMeta("A")), exclusions = "no-such-file.rds"), "data frame or the path")
+  expect_error(.run(list(A = .mkMeta("A")), exclusions = "no-such-file.csv"), "does not exist")
 })
 
 test_that("video.metadata totals the per-file table, and absence is NA rather than zero", {
@@ -687,9 +687,9 @@ test_that("columns are seated in declared blocks, whatever order they were produ
   ros <- .mkRoster(c("A", "GHOST")); ros$animal_id <- c("WS_1", "WS_9")
   attr(ros, "nautilus.columns") <- list(traits = c("sex", "size_m"))
   ex <- data.frame(id = "GHOST", reason = "deployment too short",
-                   detected_start = as.POSIXct("2020-02-01 10:00", tz = "UTC"),
-                   detected_end = as.POSIXct("2020-02-01 10:06", tz = "UTC"),
-                   detected_duration_h = 0.1, stringsAsFactors = FALSE)
+                   window_start = as.POSIXct("2020-02-01 10:00", tz = "UTC"),
+                   window_end = as.POSIXct("2020-02-01 10:06", tz = "UTC"),
+                   window_hours = 0.1, stringsAsFactors = FALSE)
   s <- .run(list(A = .mkMeta("A")), deployments = ros, exclusions = ex,
             video.metadata = data.frame(ID = "A", duration = 3600),
             extra.metadata = data.frame(ID = "A", maturity = "adult", stringsAsFactors = FALSE))
@@ -924,4 +924,16 @@ test_that("grouping keys on the internal column name, whatever the style renames
   f <- format(.grpSummary(), group.by = "sex", style = "report")
   expect_identical(nrow(f), 8L)                             # grouped despite the renamed header
   expect_false("sex" %in% names(f))                         # header was relabelled
+})
+
+
+test_that("summarizeTagData reports the reason whichever stage supplied it", {
+  f <- file.path(withr::local_tempdir(), "exclusions.csv")
+  nautilus:::.exclusionsWrite(nautilus:::.exclusionsBind(list(nautilus:::.exclusionsRow("GONE", "processTagData", "missing required columns: mx, my, mz"))),
+    f, "processTagData")
+  s <- .run(list(A = .mkMeta("A")), deployments = .mkRoster(c("A", "GONE")),
+            exclusions = f)
+  expect_true("GONE" %in% s$id)
+  expect_identical(s$status[s$id == "GONE"], "excluded")
+  expect_match(s$status_reason[s$id == "GONE"], "mx, my, mz")
 })

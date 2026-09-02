@@ -288,7 +288,7 @@ filterDeploymentData(data                    = list.files("./data interim/01_imp
                      plot                    = FALSE,   # one diagnostic panel per deployment...
                      plot.file               = "./plots/filtered_deployments.pdf",  # ...into a single PDF to review
                      plot.metrics            = c("temp", "az"),  # extra traces to overlay on the panel
-                     exclusions.file         = "./data interim/excluded_deployments.rds",  # who left, and why
+                     exclusions.file         = "./data interim/exclusions.csv",  # who left, and why
                      return.data             = FALSE,
                      output.dir              = "./data interim/02_filtered",
                      verbose                 = "detailed")
@@ -724,14 +724,15 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
 # when and where instead of an empty row.
 #
 # `video.metadata` adds total footage per deployment (getVideoMetadata() returns one row per file; the
-# totalling is done for you). `exclusions` fills in the window of a deployment that filterDeploymentData
-# detected and then rejected as too short - see the `exclusions.file` written back in STEP 4.
+# totalling is done for you). `exclusions` is the shared exclusion log: every stage that can drop a
+# deployment writes to it, so the summary can say why each one is missing whichever stage set it aside.
+# It is a plain CSV you can open without R - see the `exclusions.file` written back in STEP 4.
 
 summary <- summarizeTagData(data           = list.files("./data interim/06_tailbeats", full.names = TRUE),
                             deployments    = deployments,
                             metadata       = "standard",
                             video.metadata = video_metadata,
-                            exclusions     = "./data interim/excluded_deployments.rds",
+                            exclusions     = "./data interim/exclusions.csv",
                             tbf.method     = "wavelet", 
                             error.stat     = "sd",
                             verbose        = "detailed")

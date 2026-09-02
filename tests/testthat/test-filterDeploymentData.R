@@ -491,7 +491,7 @@ test_that("the floor measures the retained record, not the window that was asked
   expect_length(res, 0)
   ex <- attr(res, "nautilus.exclusions")
   expect_identical(ex$reason, "custom window too short")
-  expect_lt(ex$detected_duration_h, 0.25)                          # the retained extent, not 4 h
+  expect_lt(ex$window_hours, 0.25)                          # the retained extent, not 4 h
 })
 
 
