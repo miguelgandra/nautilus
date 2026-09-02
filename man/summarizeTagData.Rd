@@ -151,7 +151,9 @@ They are further split into \code{dives_truncated}, where the record began or en
 
 The returned values are analysis-ready. The \code{print} method and \code{\link[=format.nautilus_summary]{format.nautilus_summary()}} render
 the display version, which adds a cohort \verb{mean +/- error} row where more than one deployment is
-present, and can group the rows by any categorical column.
+present, and can order the rows by any column and group them by any categorical one. Both are
+formatting arguments, so a table can be re-ordered or re-grouped without summarising the tags again:
+\code{format(x, order.by = "-depth_max", group.by = "status")}.
 
 \code{format()} writes ASCII by default: the table reaches a CSV far more often than a terminal, and a
 spreadsheet opening a UTF-8 file with no byte-order mark will guess the encoding and can turn a

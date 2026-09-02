@@ -927,6 +927,196 @@ test_that("grouping keys on the internal column name, whatever the style renames
 })
 
 
+# ---- format(order.by =) ----------------------------------------------------------------------------
+# Ordering is a presentation concern too: the object is untouched, and the mean +/- error rows are
+# computed after the rows reach their final order, so no ordering can move one off the foot of its block.
+
+.ordSummary <- function() {
+  df <- data.frame(id = c("A03", "A01", "A05", "A02", "A04"),
+                   sex = c("F", "M", "F", NA, "M"),
+                   status = c("included", "excluded", "included", "excluded", "included"),
+                   record_start = as.POSIXct(c("2020-03-01", "2020-01-05", "2020-02-01",
+                                               "2020-05-01", "2020-04-01"), tz = "UTC"),
+                   depth_max = c(120, NA, 140, NA, 60),
+                   record_duration_h = c(30, 22, 41, 18, 12), stringsAsFactors = FALSE)
+  nautilus:::.newSummary(df, "sd")
+}
+
+
+test_that("order.by = NULL leaves the order the summary was built in", {
+  s <- .ordSummary()
+  expect_identical(format(s, order.by = NULL), format(s))
+  expect_identical(format(s)$id, c(s$id, "mean +/- sd"))
+})
+
+
+test_that("order.by sorts on a column, ascending by default and descending with a leading dash", {
+  s <- .ordSummary()
+  expect_identical(format(s, order.by = "id")$id,
+                   c("A01", "A02", "A03", "A04", "A05", "mean +/- sd"))
+  expect_identical(format(s, order.by = "-record_duration_h")$id,
+                   c("A05", "A03", "A01", "A02", "A04", "mean +/- sd"))
+})
+
+
+test_that("order.by works on every column type the summary carries", {
+  s <- .ordSummary()
+  expect_identical(format(s, order.by = "record_start")$id,           # POSIXct
+                   c("A01", "A05", "A03", "A04", "A02", "mean +/- sd"))
+  expect_identical(format(s, order.by = "sex")$id[1:2], c("A03", "A05"))          # character
+  s$sex <- factor(s$sex, levels = c("M", "F"))
+  expect_identical(format(s, order.by = "sex")$id[1:2], c("A01", "A04"))          # factor, by level
+})
+
+
+test_that("deployments missing the ordering value sort last in BOTH directions", {
+  s <- .ordSummary()
+  # A01 and A02 have no depth_max; they belong under the deployments that do, either way round
+  expect_identical(utils::tail(format(s, order.by = "depth_max")$id, 3L),
+                   c("A01", "A02", "mean +/- sd"))
+  expect_identical(utils::tail(format(s, order.by = "-depth_max")$id, 3L),
+                   c("A01", "A02", "mean +/- sd"))
+})
+
+
+test_that("several keys sort nested, and ties keep the incoming order", {
+  s <- .ordSummary()
+  f <- format(s, order.by = c("sex", "-record_duration_h"))
+  expect_identical(f$id, c("A05", "A03", "A01", "A04", "A02", "mean +/- sd"))
+  # a key that separates nothing must not reshuffle: the rendering has to be reproducible
+  s$flat <- rep(1, nrow(s))
+  expect_identical(format(s, order.by = "flat")$id, format(s)$id)
+  expect_identical(format(s, order.by = "-flat")$id, format(s)$id)
+})
+
+
+test_that("a column whose own name starts with a dash sorts on itself, not descending", {
+  df <- data.frame(id = c("A", "B", "C"), depth_max = c(1, 2, 3), check.names = FALSE)
+  df[["-depth_max"]] <- c(2, 3, 1)             # unrelated values, so the two readings disagree
+  s <- nautilus:::.newSummary(df, "sd")
+  expect_identical(format(s, order.by = "-depth_max")$id, c("C", "A", "B", "mean +/- sd"))
+})
+
+
+test_that("the summary row stays at the foot of the table under any ordering", {
+  s <- .ordSummary()
+  # "mean +/- sd" sorts before every id alphabetically, so a footer built before the sort would move
+  for (k in list("id", "-id", "record_start", "-depth_max", c("sex", "id")))
+    expect_identical(utils::tail(format(s, order.by = k)$id, 1L), "mean +/- sd")
+})
+
+
+test_that("ordering applies within groups, and every footer stays at the foot of its own group", {
+  s <- .ordSummary()
+  f <- format(s, group.by = "sex", order.by = "-record_duration_h")
+  expect_identical(f$id, c("A05", "A03", "mean +/- sd",       # F
+                          "A01", "A04", "mean +/- sd",        # M
+                          "A02", "mean +/- sd"))              # (missing)
+  # each footer is the last row of its own block, and the blocks are contiguous
+  g <- attr(f, "summary.groups")
+  expect_identical(g[f$id == "mean +/- sd"], c("F", "M", "(missing)"))
+  expect_identical(rle(g)$lengths, c(3L, 3L, 2L))
+})
+
+
+test_that("ordering never splits a group, even without summary rows to rebuild the blocks", {
+  s <- .ordSummary()
+  f <- format(s, group.by = "sex", order.by = "-depth_max", include.summary.row = FALSE)
+  g <- attr(f, "summary.groups")
+  expect_identical(g, c("F", "F", "M", "M", "(missing)"))
+  expect_identical(length(rle(g)$lengths), 3L)               # contiguous: one run per group
+})
+
+
+test_that("order.by validates against the summary's own columns", {
+  s <- .ordSummary()
+  expect_error(format(s, order.by = "nope"), "not in this summary")
+  expect_error(format(s, order.by = "Max depth (m)"), "display header")
+  expect_error(format(s, order.by = "Max depth (m)"), "depth_max")
+  expect_error(format(s, order.by = c("id", "-id")), "more than once")
+  expect_error(format(s, order.by = 1), "character vector")
+  expect_error(format(s, order.by = NA_character_), "character vector")
+})
+
+
+test_that("a formatting argument is validated even when no deployment survived", {
+  # every metric NA and no rows to render is exactly when a silent no-op would go unnoticed
+  s <- nautilus:::.newSummary(nautilus:::.summaryTemplate(), "sd")
+  expect_error(format(s, order.by = "nope"), "not in this summary")
+  expect_error(format(s, decimals = c(nope = 1)), "not in this summary")
+  expect_error(format(s, group.by = "nope"), "does not name a column")
+  expect_identical(format(s), data.frame())                  # still renders as empty
+  expect_identical(format(nautilus:::.newSummary(data.frame(), "sd")), data.frame())
+})
+
+
+test_that("ordering the object itself survives, and format() renders it as it stands", {
+  s <- .ordSummary()
+  r <- s[order(s$record_duration_h), ]
+  expect_s3_class(r, "nautilus_summary")
+  expect_identical(attr(r, "error.stat"), "sd")              # the statistic travels with the rows
+  expect_identical(format(r)$id, c(r$id, "mean +/- sd"))
+})
+
+
+# ---- format(group.order =) -------------------------------------------------------------------------
+
+test_that("group.order sets the order the groups are rendered in", {
+  s <- .ordSummary()
+  expect_identical(attr(format(s, group.by = "sex", group.order = c("M", "F")), "summary.groups"),
+                   c("M", "M", "M", "F", "F", "F", "(missing)", "(missing)"))
+})
+
+
+test_that("group.order may name only the groups that matter; the rest keep their usual order", {
+  s <- .ordSummary()
+  g <- attr(format(s, group.by = "sex", group.order = "M"), "summary.groups")
+  expect_identical(unique(g), c("M", "F", "(missing)"))
+})
+
+
+test_that("group.order overrides a factor's own levels", {
+  s <- .grpSummary()
+  s$sex <- factor(s$sex, levels = c("M", "F"))
+  expect_identical(unique(attr(format(s, group.by = "sex"), "summary.groups")),
+                   c("M", "F", "(missing)"))               # the levels, as given
+  expect_identical(unique(attr(format(s, group.by = "sex", group.order = "F"), "summary.groups")),
+                   c("F", "M", "(missing)"))               # group.order wins
+})
+
+
+test_that("group.order refuses a value that names no group", {
+  s <- .ordSummary()
+  expect_error(format(s, group.by = "sex", group.order = "Z"), "not in this summary")
+  expect_error(format(s, group.by = "sex", group.order = "Z"), "Available group")
+  expect_error(format(s, group.by = "sex", group.order = c("F", "F")), "more than once")
+  expect_error(format(s, group.by = "sex", group.order = 1), "character vector")
+  expect_error(format(s, group.by = "sex", group.order = "(missing)"), "cannot place")
+  expect_error(format(s, group.order = "F"), "without .*group.by")
+})
+
+
+test_that("grouping by status leads with the analysed deployments, not the alphabet", {
+  s <- .ordSummary()
+  expect_identical(unique(attr(format(s, group.by = "status"), "summary.groups")),
+                   c("included", "excluded"))
+  # still a caller's decision to make: both an explicit order and a factor override the convention
+  expect_identical(unique(attr(format(s, group.by = "status", group.order = "excluded"),
+                               "summary.groups")), c("excluded", "included"))
+  s$status <- factor(s$status, levels = c("excluded", "included"))
+  expect_identical(unique(attr(format(s, group.by = "status"), "summary.groups")),
+                   c("excluded", "included"))
+})
+
+
+test_that("group.by = NULL is the ungrouped default, and FALSE still means the same", {
+  s <- .ordSummary()
+  expect_identical(format(s, group.by = NULL), format(s))
+  expect_identical(format(s, group.by = FALSE), format(s))
+  expect_null(attr(format(s, group.by = NULL), "summary.groups"))
+})
+
+
 test_that("summarizeTagData reports the reason whichever stage supplied it", {
   f <- file.path(withr::local_tempdir(), "exclusions.csv")
   nautilus:::.exclusionsWrite(nautilus:::.exclusionsBind(list(nautilus:::.exclusionsRow("GONE", "processTagData", "missing required columns: mx, my, mz"))),

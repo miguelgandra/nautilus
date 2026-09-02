@@ -127,7 +127,9 @@
 #'
 #' The returned values are analysis-ready. The `print` method and [format.nautilus_summary()] render
 #' the display version, which adds a cohort `mean +/- error` row where more than one deployment is
-#' present, and can group the rows by any categorical column.
+#' present, and can order the rows by any column and group them by any categorical one. Both are
+#' formatting arguments, so a table can be re-ordered or re-grouped without summarising the tags again:
+#' `format(x, order.by = "-depth_max", group.by = "status")`.
 #'
 #' `format()` writes ASCII by default: the table reaches a CSV far more often than a terminal, and a
 #' spreadsheet opening a UTF-8 file with no byte-order mark will guess the encoding and can turn a
@@ -669,19 +671,104 @@ summarizeTagData <- function(data,
 }
 
 
+#' The rendering order of `status`, which is a controlled vocabulary rather than an arbitrary label.
+#'
+#' Sorted alphabetically it reads "excluded" first, which inverts the emphasis of every grouped table:
+#' the analysed cohort is the subject and the exclusions are the caveat. Declared here, next to the
+#' function that applies it, so the convention is a named rule rather than a string buried in `format()`.
+#' @keywords internal
+#' @noRd
+.summaryStatusOrder <- function() c("included", "excluded")
+
 #' The grouping column as an ordered factor, with the missing rows kept as their own trailing group.
 #'
 #' A deployment whose grouping value is unknown is a fact about the cohort, not a row to drop, so it
-#' becomes an explicit "(missing)" group placed last. A factor keeps the level order it was given -
-#' that is usually why it is a factor - and anything else sorts naturally; unused levels are dropped so
-#' an empty group never renders.
+#' becomes an explicit "(missing)" group placed last. Order of the rest: an explicit `group.order`
+#' first, then a factor's own levels - that is usually why it is a factor - and otherwise a natural
+#' sort. Unused levels are dropped so an empty group never renders.
+#'
+#' `group.order` may name only some of the groups. Naming the one that matters and leaving the rest to
+#' sort is the common case ("included first"), and the alternative - requiring every level - turns a
+#' cohort gaining one new value into a broken call.
 #' @keywords internal
 #' @noRd
-.summaryGroupFactor <- function(v, missing.label = "(missing)") {
+.summaryGroupFactor <- function(v, group.order = NULL, missing.label = "(missing)") {
   na <- is.na(v)
   lv <- if (is.factor(v)) levels(droplevels(v[!na])) else sort(unique(as.character(v[!na])))
+  if (length(group.order)) lv <- c(intersect(group.order, lv), setdiff(lv, group.order))
   ch <- as.character(v); ch[na] <- missing.label
   factor(ch, levels = c(lv, if (any(na)) missing.label))
+}
+
+#' Validate `group.order =` against the groups the column actually holds.
+#'
+#' An unrecognised value is an error rather than a silently ignored entry: `group.order` exists to fix
+#' an order the caller can see is wrong, so a typo that leaves the order untouched is the one failure
+#' they would not think to check for. The missing group is not orderable - it always trails - so naming
+#' it is refused explicitly rather than accepted and ignored.
+#' @param v The grouping column, before it becomes a factor.
+#' @keywords internal
+#' @noRd
+.assert_group_order <- function(group.order, v, missing.label = "(missing)") {
+  if (is.null(group.order)) return(NULL)
+  if (!is.character(group.order) || !length(group.order) || anyNA(group.order))
+    .abort(c("{.arg group.order} must be a character vector of group values.",
+             "i" = "e.g. {.code group.order = c(\"included\", \"excluded\")}."))
+  if (anyDuplicated(group.order))
+    .abort("{.arg group.order} names {.val {unique(group.order[duplicated(group.order)])}} more than once.")
+  have <- sort(unique(as.character(v[!is.na(v)])))
+  if (missing.label %in% group.order)
+    .abort(c("{.arg group.order} cannot place {.val {missing.label}}.",
+             "i" = "Deployments with no grouping value always form the last group."))
+  unknown <- setdiff(group.order, have)
+  if (length(unknown))
+    .abort(c("{.arg group.order} names {cli::qty(length(unknown))}group{?s} not in this summary: {.val {unknown}}.",
+             "i" = "Available group{?s}: {.val {have}}."))
+  group.order
+}
+
+#' Validate `order.by =` and return it as a list of numeric sort keys.
+#'
+#' A leading `-` marks a descending key, the spelling `data.table::setorder()` uses. It is read as a
+#' marker only where the full string does not name a column, so a covariate genuinely called `-x` still
+#' sorts on itself.
+#'
+#' Every key is reduced to `xtfrm()` ranks, negated where descending: one uniform numeric key whatever
+#' the column's type - character, factor, POSIXct or numeric - so the same argument orders a cohort by
+#' name, by tagging date or by depth without special cases. Missing values become `Inf` rather than
+#' staying `NA`, which puts them last in BOTH directions: a deployment with no depth belongs under the
+#' ones that have it, not above them because the sort was reversed. Excluded deployments carry `NA` for
+#' every metric, so this is the common case rather than an edge one.
+#' @param df The table being ordered, so a name is checked against the columns that actually exist.
+#' @return A list of numeric sort keys in the order given; empty when nothing was asked for.
+#' @keywords internal
+#' @noRd
+.summarySortKeys <- function(order.by, df) {
+  if (is.null(order.by)) return(list())
+  if (!is.character(order.by) || !length(order.by) || anyNA(order.by) || any(!nzchar(order.by)))
+    .abort(c("{.arg order.by} must be a character vector of column names.",
+             "i" = "Prefix a name with {.code -} to sort it descending, e.g. {.code c(\"sex\", \"-depth_max\")}."))
+  # the marker is only a marker when the whole string is not itself a column
+  desc <- !order.by %in% names(df) & startsWith(order.by, "-")
+  cols <- ifelse(desc, substring(order.by, 2L), order.by)
+
+  if (anyDuplicated(cols))
+    .abort(c("{.arg order.by} names the column{?s} {.field {unique(cols[duplicated(cols)])}} more than once.",
+             "i" = "A second key on the same column cannot break a tie the first did not."))
+  unknown <- setdiff(cols, names(df))
+  if (length(unknown))
+    .summaryAbortUnknownColumn("order.by", unknown, df)
+  bad <- cols[!vapply(df[cols], function(v) is.atomic(v) || is.factor(v), logical(1))]
+  if (length(bad))
+    .abort(c("{.arg order.by} cannot sort on the column{?s} {.field {bad}}.",
+             "i" = "Ordering keys must be single values per deployment."))
+
+  Map(function(cc, dd) {
+    k <- as.numeric(xtfrm(df[[cc]]))
+    if (dd) k <- -k
+    k[is.na(k)] <- Inf                      # missing sinks to the bottom whichever direction was asked
+    k
+  }, cols, desc)
 }
 
 #' One `mean +/- error` footer row over a set of deployments.
@@ -706,7 +793,7 @@ summarizeTagData <- function(data,
   as.data.frame(as.list(foot), stringsAsFactors = FALSE, check.names = FALSE)
 }
 
-#' Format a `nautilus_summary` for display or export
+#' Format a nautilus_summary for display or export
 #'
 #' @description
 #' Renders a `nautilus_summary` as a character data frame ready for display, reporting or export:
@@ -742,11 +829,22 @@ summarizeTagData <- function(data,
 #'   headers: a header belongs to a style, so an override keyed on one would quietly stop applying when
 #'   the style changed. Pass a header by mistake and the error names the column to use instead.
 #'   Default `NULL`.
+#' @param order.by Optional row ordering, as a character vector of column names. A name prefixed with
+#'   `-` sorts that column descending - `"-depth_max"` for deepest first - and several names sort
+#'   nested, the first key breaking first: `c("sex", "-depth_max")`. Any column can be a key, of any
+#'   type, so a cohort can be read chronologically (`"record_start"`), alphabetically (`"id"`) or by any
+#'   metric. Named by the internal column name, as `decimals` is. Default `NULL`, which keeps the order
+#'   the summary was built in - the study roster where one was supplied, otherwise the order the
+#'   deployments arrived in.
 #' @param group.by Optional column to group the rendering by - `"status"` to compare analysed against
 #'   excluded deployments, or any categorical column in the table, such as a trait requested through
 #'   `summarizeTagData(metadata = )`. Rows are ordered by group and each group gets its own
-#'   `mean +/- error` row. Named by the internal column name, as `decimals` is. Default `FALSE`, which
+#'   `mean +/- error` row. Named by the internal column name, as `decimals` is. Default `NULL`, which
 #'   renders the table ungrouped.
+#' @param group.order Optional order for the groups themselves, as a character vector of values of the
+#'   `group.by` column - `c("included", "excluded")`. Values it does not name keep their usual order
+#'   behind the ones it does, so naming only the group that should lead is enough. A value that matches
+#'   no group is an error rather than a silent no-op. Requires `group.by`. Default `NULL`.
 #' @param ... Unused.
 #'
 #' @details
@@ -768,16 +866,37 @@ summarizeTagData <- function(data,
 #' A group of one deployment shows its mean without an error term, rather than a mean beside an empty
 #' interval.
 #'
+#' ## Ordering the rows
+#'
+#' `order.by` sorts the deployments without rebuilding the summary, so a table can be re-read by depth,
+#' by date or by animal at no cost. Deployments missing a value for a key sort last whichever direction
+#' was asked for - an excluded deployment has no depth to be either the deepest or the shallowest - and
+#' deployments a key cannot separate keep the order they came in, so the same call always renders the
+#' same table.
+#'
+#' With `group.by`, ordering applies WITHIN each group: the group is always the first key, so no
+#' ordering can split a group across the table. Use `group.order` to order the groups themselves.
+#'
+#' The `mean +/- error` rows are not ordered with the deployments. They are computed once the rows are
+#' in their final order and appended to the group they describe, so each stays at the foot of its own
+#' block under any `order.by`.
+#'
 #' ## Grouped tables
 #'
 #' With `group.by`, rows are ordered by group and each group gains its own summary row carrying that
 #' group's value, so an exported grouped table stays self-describing: the rows are identifiable by the
-#' `id` cell and attributable by the grouping column, with no string parsing. Factors keep their level
-#' order; anything else sorts naturally. Deployments with no value for the grouping column form their
-#' own trailing group rather than being dropped.
+#' `id` cell and attributable by the grouping column, with no string parsing. Deployments with no value
+#' for the grouping column form their own trailing group rather than being dropped, and always trail:
+#' "no value" is not a value `group.order` can place.
+#'
+#' The groups run in the first order that applies: `group.order`, then a factor column's own levels,
+#' then - for `status` alone - analysed deployments ahead of excluded ones, since that is the emphasis
+#' a cohort table is read with rather than an alphabetical accident. Anything else sorts naturally.
 #'
 #' Grouping changes only the rendering. The `nautilus_summary` itself is one row per deployment either
-#' way, and `summarizeTagData()` takes no grouping argument.
+#' way, and `summarizeTagData()` takes neither a grouping nor an ordering argument: to make an order
+#' permanent, reorder the object itself - `summary[order(summary$depth_max), ]` keeps its class and its
+#' error statistic, and `format()` then renders it as it stands.
 #'
 #' ## Exporting
 #'
@@ -808,8 +927,17 @@ summarizeTagData <- function(data,
 #' format(summary, style = "report", symbols = "unicode",
 #'        decimals = c(depth_max = 0, video_duration_h = 1))
 #'
+#' # Deepest deployment first; the mean +/- sd row stays at the foot of the table.
+#' format(summary, order.by = "-depth_max")
+#'
+#' # Chronological, then alphabetical where two tags went out the same day.
+#' format(summary, order.by = c("record_start", "id"))
+#'
 #' # Analysed against excluded deployments, each with its own mean +/- sd row.
 #' format(summary, style = "report", group.by = "status")
+#'
+#' # Females first, and the longest record at the top of each group.
+#' format(summary, group.by = "sex", group.order = "F", order.by = "-record_duration_h")
 #'
 #' # Per-deployment rows only, with no summary row.
 #' format(summary, include.summary.row = FALSE)
@@ -819,28 +947,49 @@ summarizeTagData <- function(data,
 format.nautilus_summary <- function(x, style = c("internal", "report", "concise"),
                                     datetime.format = "%d/%b/%Y %H:%M", include.summary.row = TRUE,
                                     symbols = c("ascii", "unicode"), decimals = NULL,
-                                    group.by = FALSE, ...) {
+                                    order.by = NULL, group.by = NULL, group.order = NULL, ...) {
   style <- match.arg(style)
   symbols <- match.arg(symbols)
   .assert_string(datetime.format, "datetime.format")
   df <- as.data.frame(x)
-  if (nrow(df) == 0 || ncol(df) == 0) return(data.frame())
+  # A summary with no columns at all carries nothing to validate an argument against, so every name
+  # would be "unknown" - the one case where silence beats a misleading error.
+  if (ncol(df) == 0) return(data.frame())
 
-  ## ---- grouping: order the rows, and remember which group each one belongs to --------------------
-  # Ordering happens here, before the display table is built, so the character rows and the numeric
-  # rows the footers are computed from stay in step.
-  grp <- NULL
-  if (!isFALSE(group.by)) {
+  ## ---- ordering and grouping ---------------------------------------------------------------------
+  # Both resolved here, before the display table is built, so the character rows and the numeric rows
+  # the footers are computed from stay in step - and validated BEFORE the empty-table exit below, so a
+  # mistyped column is reported on a cohort where every deployment was excluded rather than ignored.
+  grouped <- !is.null(group.by) && !isFALSE(group.by)
+  if (grouped) {
     .assert_string(group.by, "group.by")
     if (!group.by %in% names(df))
       .abort(c("{.arg group.by} does not name a column of the summary: {.val {group.by}}.",
                "i" = "Available columns: {.val {names(df)}}."))
-    grp <- .summaryGroupFactor(df[[group.by]])
-    ord <- order(as.integer(grp), seq_along(grp))     # stable: incoming order kept within a group
-    df <- df[ord, , drop = FALSE]; grp <- grp[ord]
+    group.order <- .assert_group_order(group.order, df[[group.by]])
+    # `status` is a two-value vocabulary this package writes, not an arbitrary label, so it has a
+    # reading order. An explicit group.order still wins, and so does a factor: making the column a
+    # factor is itself a statement about the order, and overriding it here would ignore the caller.
+    if (is.null(group.order) && identical(group.by, "status") && !is.factor(df[[group.by]]))
+      group.order <- .summaryStatusOrder()
+  } else if (!is.null(group.order)) {
+    .abort(c("{.arg group.order} was supplied without {.arg group.by}.",
+             "i" = "There are no groups to order until {.arg group.by} names a column."))
+  }
+  keys <- .summarySortKeys(order.by, df)
+  dec  <- .assert_decimals(decimals, df)
+  if (nrow(df) == 0) return(data.frame())
+
+  grp <- if (grouped) .summaryGroupFactor(df[[group.by]], group.order) else NULL
+  if (grouped || length(keys)) {
+    # The group is always the FIRST key, so `order.by` sorts deployments WITHIN their group and can
+    # never split one in two. The trailing sequence pins ties to the incoming order, which keeps a
+    # rendering reproducible even where the keys cannot separate two deployments.
+    ord <- do.call(order, c(if (grouped) list(as.integer(grp)), keys, list(seq_len(nrow(df)))))
+    df <- df[ord, , drop = FALSE]
+    if (grouped) grp <- grp[ord]
   }
 
-  dec <- .assert_decimals(decimals, df, style)
   err_stat <- attr(x, "error.stat") %||% "sd"
   # ASCII by default, and NOT gated on cli::is_utf8_output(). That gate asks whether the TERMINAL can
   # render a glyph, which is the right question for print() and the wrong one for a value headed to a
@@ -1315,6 +1464,36 @@ print.nautilus_summary <- function(x, ...) {
 }
 
 
+#' Abort for an argument that named a column this summary does not have.
+#'
+#' Shared by every argument keyed on internal column names, so a caller who read a name off the
+#' RENDERED table is pointed back at the column it came from rather than handed thirty valid names to
+#' search. Headers are a property of the style - `video_duration_h` reads "Video recorded (h)" under
+#' `report` and "Video (h)" under `concise` - so both dictionaries are consulted.
+#'
+#' This RAISES the error rather than returning a bullet for the caller to raise, because a cli message
+#' is interpolated in the frame that throws it: a hint carrying `{hits}` composed here and thrown from
+#' `format()` would find nothing of that name to substitute.
+#' @param arg The argument name to blame.
+#' @param unknown The names that matched no column.
+#' @param df The table being formatted.
+#' @keywords internal
+#' @noRd
+.summaryAbortUnknownColumn <- function(arg, unknown, df) {
+  hits <- unlist(lapply(c("report", "concise"), function(st) {
+    h <- .foldSymbols(.summaryHeaders(names(df), st))
+    stats::setNames(names(df), h)[intersect(unknown, h)]
+  }))
+  # the two styles share many headers verbatim ("Max depth (m)"), so the same suggestion arrives twice
+  hits <- hits[!duplicated(names(hits))]
+  hint <- if (length(hits))
+    c("i" = "{.val {names(hits)}} {?is/are} a display header; use {.field {unname(hits)}}.")
+  else
+    c("i" = "Column names are the ones {.code format(x, style = \"internal\")} shows.")
+  .abort(c("{.arg {arg}} names {cli::qty(length(unknown))}column{?s} not in this summary: {.val {unknown}}.",
+           hint))
+}
+
 #' Validate `decimals =` and return it as a named integer vector (empty when nothing was asked for).
 #'
 #' Keyed on the INTERNAL column names, never the rendered headers, because a header is a property of
@@ -1325,13 +1504,12 @@ print.nautilus_summary <- function(x, ...) {
 #'
 #' That costs the caller some ergonomics, since the header is what they are looking at when they decide
 #' a column needs another decimal place. So an unrecognised name is resolved BACK through the header
-#' dictionaries: ask for `"Video (h)"` and the error names `video_duration_h` rather than listing thirty
-#' valid columns.
+#' dictionaries by `.summaryAbortUnknownColumn()`: ask for `"Video (h)"` and the error names `video_duration_h`
+#' rather than listing thirty valid columns.
 #' @param df The table being formatted, so a name is checked against the columns that actually exist.
-#' @param style The style being rendered, for the header-to-column suggestion.
 #' @keywords internal
 #' @noRd
-.assert_decimals <- function(decimals, df, style) {
+.assert_decimals <- function(decimals, df) {
   if (is.null(decimals)) return(stats::setNames(integer(0), character(0)))
   if (!is.numeric(decimals) || !length(decimals))
     .abort(c("{.arg decimals} must be a named numeric vector, e.g. {.code c(video_duration_h = 1)}.",
@@ -1346,21 +1524,8 @@ print.nautilus_summary <- function(x, ...) {
     .abort("{.arg decimals} names the column{?s} {.field {unique(nms[duplicated(nms)])}} more than once.")
 
   unknown <- setdiff(nms, names(df))
-  if (length(unknown)) {
-    # a header the caller read off the formatted table, mapped back to the column it came from
-    hits <- unlist(lapply(c("report", "concise"), function(st) {
-      h <- .foldSymbols(.summaryHeaders(names(df), st))
-      stats::setNames(names(df), h)[intersect(unknown, h)]
-    }))
-    # the two styles share many headers verbatim ("Max depth (m)"), so the same suggestion arrives twice
-    hits <- hits[!duplicated(names(hits))]
-    hint <- if (length(hits))
-      c("i" = "{.val {names(hits)}} {?is/are} a display header; use {.field {unname(hits)}}.")
-    else
-      c("i" = "Column names are the ones {.code format(x, style = \"internal\")} shows.")
-    .abort(c("{.arg decimals} names {cli::qty(length(unknown))}column{?s} not in this summary: {.val {unknown}}.",
-             hint))
-  }
+  if (length(unknown))
+    .summaryAbortUnknownColumn("decimals", unknown, df)
   bad <- nms[!vapply(df[nms], is.numeric, logical(1))]
   if (length(bad))
     .abort(c("{.arg decimals} sets a decimal place on the non-numeric column{?s} {.field {bad}}.",

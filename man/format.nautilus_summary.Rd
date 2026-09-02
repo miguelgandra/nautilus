@@ -2,7 +2,7 @@
 % Please edit documentation in R/summarizeTagData.R
 \name{format.nautilus_summary}
 \alias{format.nautilus_summary}
-\title{Format a \code{nautilus_summary} for display or export}
+\title{Format a nautilus_summary for display or export}
 \usage{
 \method{format}{nautilus_summary}(
   x,
@@ -11,7 +11,9 @@
   include.summary.row = TRUE,
   symbols = c("ascii", "unicode"),
   decimals = NULL,
-  group.by = FALSE,
+  order.by = NULL,
+  group.by = NULL,
+  group.order = NULL,
   ...
 )
 }
@@ -45,11 +47,24 @@ headers: a header belongs to a style, so an override keyed on one would quietly 
 the style changed. Pass a header by mistake and the error names the column to use instead.
 Default \code{NULL}.}
 
+\item{order.by}{Optional row ordering, as a character vector of column names. A name prefixed with
+\code{-} sorts that column descending - \code{"-depth_max"} for deepest first - and several names sort
+nested, the first key breaking first: \code{c("sex", "-depth_max")}. Any column can be a key, of any
+type, so a cohort can be read chronologically (\code{"record_start"}), alphabetically (\code{"id"}) or by any
+metric. Named by the internal column name, as \code{decimals} is. Default \code{NULL}, which keeps the order
+the summary was built in - the study roster where one was supplied, otherwise the order the
+deployments arrived in.}
+
 \item{group.by}{Optional column to group the rendering by - \code{"status"} to compare analysed against
 excluded deployments, or any categorical column in the table, such as a trait requested through
 \code{summarizeTagData(metadata = )}. Rows are ordered by group and each group gets its own
-\verb{mean +/- error} row. Named by the internal column name, as \code{decimals} is. Default \code{FALSE}, which
+\verb{mean +/- error} row. Named by the internal column name, as \code{decimals} is. Default \code{NULL}, which
 renders the table ungrouped.}
+
+\item{group.order}{Optional order for the groups themselves, as a character vector of values of the
+\code{group.by} column - \code{c("included", "excluded")}. Values it does not name keep their usual order
+behind the ones it does, so naming only the group that should lead is enough. A value that matches
+no group is an error rather than a silent no-op. Requires \code{group.by}. Default \code{NULL}.}
 
 \item{...}{Unused.}
 }
@@ -90,16 +105,38 @@ A group of one deployment shows its mean without an error term, rather than a me
 interval.
 }
 
+\subsection{Ordering the rows}{
+
+\code{order.by} sorts the deployments without rebuilding the summary, so a table can be re-read by depth,
+by date or by animal at no cost. Deployments missing a value for a key sort last whichever direction
+was asked for - an excluded deployment has no depth to be either the deepest or the shallowest - and
+deployments a key cannot separate keep the order they came in, so the same call always renders the
+same table.
+
+With \code{group.by}, ordering applies WITHIN each group: the group is always the first key, so no
+ordering can split a group across the table. Use \code{group.order} to order the groups themselves.
+
+The \verb{mean +/- error} rows are not ordered with the deployments. They are computed once the rows are
+in their final order and appended to the group they describe, so each stays at the foot of its own
+block under any \code{order.by}.
+}
+
 \subsection{Grouped tables}{
 
 With \code{group.by}, rows are ordered by group and each group gains its own summary row carrying that
 group's value, so an exported grouped table stays self-describing: the rows are identifiable by the
-\code{id} cell and attributable by the grouping column, with no string parsing. Factors keep their level
-order; anything else sorts naturally. Deployments with no value for the grouping column form their
-own trailing group rather than being dropped.
+\code{id} cell and attributable by the grouping column, with no string parsing. Deployments with no value
+for the grouping column form their own trailing group rather than being dropped, and always trail:
+"no value" is not a value \code{group.order} can place.
+
+The groups run in the first order that applies: \code{group.order}, then a factor column's own levels,
+then - for \code{status} alone - analysed deployments ahead of excluded ones, since that is the emphasis
+a cohort table is read with rather than an alphabetical accident. Anything else sorts naturally.
 
 Grouping changes only the rendering. The \code{nautilus_summary} itself is one row per deployment either
-way, and \code{summarizeTagData()} takes no grouping argument.
+way, and \code{summarizeTagData()} takes neither a grouping nor an ordering argument: to make an order
+permanent, reorder the object itself - \code{summary[order(summary$depth_max), ]} keeps its class and its
+error statistic, and \code{format()} then renders it as it stands.
 }
 
 \subsection{Exporting}{
@@ -123,8 +160,17 @@ format(summary)
 format(summary, style = "report", symbols = "unicode",
        decimals = c(depth_max = 0, video_duration_h = 1))
 
+# Deepest deployment first; the mean +/- sd row stays at the foot of the table.
+format(summary, order.by = "-depth_max")
+
+# Chronological, then alphabetical where two tags went out the same day.
+format(summary, order.by = c("record_start", "id"))
+
 # Analysed against excluded deployments, each with its own mean +/- sd row.
 format(summary, style = "report", group.by = "status")
+
+# Females first, and the longest record at the top of each group.
+format(summary, group.by = "sex", group.order = "F", order.by = "-record_duration_h")
 
 # Per-deployment rows only, with no summary row.
 format(summary, include.summary.row = FALSE)
