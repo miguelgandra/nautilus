@@ -706,59 +706,114 @@ summarizeTagData <- function(data,
   as.data.frame(as.list(foot), stringsAsFactors = FALSE, check.names = FALSE)
 }
 
-#' Format a nautilus_summary as a display-ready character data frame
+#' Format a `nautilus_summary` for display or export
 #'
-#' Returns the same formatted table the print method renders - fixed per-metric precision, datetimes as
-#' `dd/Mon/YYYY HH:MM`, missing values as "-", and (optionally) the display-only population
-#' `mean +/- error` row - but as a STRUCTURED character data frame, so the formatted summary can be
-#' exported directly for reporting, e.g. `write.csv(format(summary), "summary.csv", row.names = FALSE)`.
+#' @description
+#' Renders a `nautilus_summary` as a character data frame ready for display, reporting or export:
+#' numeric values rounded to a per-metric precision, datetimes written as text, and missing values
+#' shown as `"-"`.
 #'
-#' With `group.by`, rows are ordered by a categorical column and each group gains its own
-#' `mean +/- error` row, which is the quickest way to compare analysed against excluded deployments, or
-#' one class of animal against another. The result stays a rectangle of one row per deployment plus one
-#' footer per group: the blank line that separates groups on the console is inserted when printing, so
-#' an exported file never carries an empty record.
-#' @param x A `nautilus_summary` object.
-#' @param style Column-name style: `"internal"` (default) keeps the programmatic snake_case names used
-#'   throughout the API; `"report"` relabels the columns with human-readable, publication-ready headers
-#'   (e.g. `depth_max` -> "Max depth (m)") for a report or paper; `"concise"` uses the same publication
-#'   headers but abbreviated for width-constrained tables (e.g. `record_start` -> "Start",
-#'   `attachment_site` -> "Attach. site", `tbf_mean` -> "Mean TBF (Hz)"). Values and layout are identical
-#'   across styles - only the column names differ. Covariate columns from `extra.metadata` keep their own
-#'   names (lightly prettified).
-#' @param datetime.format Character. The \code{\link[base]{strftime}} format for the `record_start` /
-#'   `record_end` datetime columns. Default `"%d/%b/%Y %H:%M"` (e.g. `01/Jan/2020 00:00`).
-#' @param include.summary.row Logical. Append the display-only population `mean +/- error` row (only
-#'   meaningful with more than one deployment). Default `TRUE` (matches the console). Set `FALSE` for a
-#'   pure per-deployment table.
+#' Columns can keep their internal names or take publication headers, and a display-only
+#' `mean +/- error` row can be appended for the cohort as a whole or for each group of deployments.
 #'
-#'   Numeric biometric traits and `extra.metadata` covariates are averaged in this row like any other
-#'   metric. If a column should not be treated as a continuous variable - an identifier, a code, a year -
-#'   supply it as character or factor rather than numeric, and it is left out of the row.
-#' @param decimals Optional per-column override of the display precision, as a named numeric vector of
-#'   decimal places - `c(video_duration_h = 1, depth_max = 0)`. Merged OVER the built-in precision, so
-#'   naming one column leaves every other exactly as it was, and both the value and the
-#'   `mean +/- error` row follow the override. Named by the INTERNAL column names (the ones
-#'   `style = "internal"` shows and `@return` lists), not by the rendered headers: a header belongs to a
-#'   style - `video_duration_h` reads "Video recorded (h)" under `report` and "Video (h)" under
-#'   `concise` - so an override keyed on one would quietly stop applying when the style changed. Pass a
-#'   header by mistake and the error names the column to use instead. Default `NULL`.
-#' @param group.by Optional column name to group the rendering by - `"status"` to compare analysed
-#'   against excluded deployments, or any categorical column in the table, such as a trait requested
-#'   through `summarizeTagData(metadata = )`. Rows are ordered by group and each group is given its own
-#'   `mean +/- error` row. Default `FALSE`, which renders the table ungrouped.
+#' The result is the table the `print` method renders, returned as an object, so the same figures a
+#' reader sees on the console are what reach a report or a file.
 #'
-#'   Grouping changes only the presentation: the `nautilus_summary` itself is one row per deployment
-#'   either way. Named by the INTERNAL column name, as `decimals` is, so an override keeps working when
-#'   the style changes. The returned table stays rectangular - the blank line between groups belongs to
-#'   the console rendering, not to the exported object.
+#' @param x A `nautilus_summary` object, from [summarizeTagData()].
+#' @param style Column-name style. `"internal"` (default) keeps the snake_case names used throughout
+#'   the API; `"report"` uses publication-ready headers (`depth_max` becomes "Max depth (m)");
+#'   `"concise"` abbreviates those for width-constrained tables ("Max depth (m)" becomes "Max depth").
+#'   Values and layout are identical across styles - only the names differ. Covariate columns from
+#'   `extra.metadata` keep their own names, lightly prettified.
+#' @param datetime.format Format for the `record_start` and `record_end` columns, passed to
+#'   [base::strftime()]. Default `"%d/%b/%Y %H:%M"`, e.g. `01/Jan/2020 00:00`.
+#' @param include.summary.row Whether to append the display-only `mean +/- error` row (default
+#'   `TRUE`, matching the console). Ungrouped, it appears only where there is more than one deployment
+#'   to average; with `group.by`, each group gets its own. Set `FALSE` for a pure per-deployment table.
 #' @param symbols Whether the rendered table may use typographic symbols: `"ascii"` (default) writes
-#'   `+/-`, `deg C` and `m/s`; `"unicode"` writes the plus-minus, degree and superscript forms. ASCII is
-#'   the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
-#'   with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the degree
-#'   sign as two characters. It also keeps the column names typeable and indexable from a script.
+#'   `+/-`, `deg C` and `m/s`; `"unicode"` writes the plus-minus, degree and superscript forms. ASCII
+#'   is the default because this table is usually written to a file, and a spreadsheet opening a UTF-8
+#'   CSV with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the
+#'   degree sign as two characters. It also keeps the column names typeable from a script.
+#' @param decimals Optional per-column override of the display precision, as a named numeric vector of
+#'   decimal places - `c(video_duration_h = 1, depth_max = 0)`. Merged over the built-in precision, so
+#'   naming one column leaves every other exactly as it was, and both the value and its
+#'   `mean +/- error` cell follow the override. Named by the INTERNAL column names, not the rendered
+#'   headers: a header belongs to a style, so an override keyed on one would quietly stop applying when
+#'   the style changed. Pass a header by mistake and the error names the column to use instead.
+#'   Default `NULL`.
+#' @param group.by Optional column to group the rendering by - `"status"` to compare analysed against
+#'   excluded deployments, or any categorical column in the table, such as a trait requested through
+#'   `summarizeTagData(metadata = )`. Rows are ordered by group and each group gets its own
+#'   `mean +/- error` row. Named by the internal column name, as `decimals` is. Default `FALSE`, which
+#'   renders the table ungrouped.
 #' @param ... Unused.
-#' @return A character `data.frame` - the formatted table (0-row for an empty summary).
+#'
+#' @details
+#' ## The summary row
+#'
+#' The row reports the mean and either the standard deviation or the standard error, whichever was
+#' chosen when the summary was built. The statistic is a property of the object, inherited through
+#' `error.stat` in [summarizeTagData()], not chosen again here - so the same table cannot describe its
+#' spread two different ways in two different renderings.
+#'
+#' Only numeric columns are averaged, and not all of them: the per-tag sampling rate and the tagging and
+#' pop-up coordinates are left out, because a cross-deployment mean of those gives the centroid of the
+#' study area, which is a real quantity but not the one a "mean" row in a deployment table is read as.
+#'
+#' Numeric biometric traits and `extra.metadata` covariates are averaged like any other metric. Where a
+#' column should not be treated as continuous - an identifier, a code, a year - supply it as character
+#' or factor rather than numeric, and it is left out of the row.
+#'
+#' A group of one deployment shows its mean without an error term, rather than a mean beside an empty
+#' interval.
+#'
+#' ## Grouped tables
+#'
+#' With `group.by`, rows are ordered by group and each group gains its own summary row carrying that
+#' group's value, so an exported grouped table stays self-describing: the rows are identifiable by the
+#' `id` cell and attributable by the grouping column, with no string parsing. Factors keep their level
+#' order; anything else sorts naturally. Deployments with no value for the grouping column form their
+#' own trailing group rather than being dropped.
+#'
+#' Grouping changes only the rendering. The `nautilus_summary` itself is one row per deployment either
+#' way, and `summarizeTagData()` takes no grouping argument.
+#'
+#' ## Exporting
+#'
+#' The result is a rectangle - one row per deployment plus one summary row per group - and carries no
+#' blank rows, so it can be written straight out:
+#'
+#' ```
+#' write.csv(format(summary, style = "report"), "summary.csv", row.names = FALSE)
+#' ```
+#'
+#' The blank line that separates groups on the console is inserted when printing, from an attribute the
+#' file never sees, because an empty record reads as a malformed row in a spreadsheet or on re-import.
+#'
+#' @return A character `data.frame`: one row per deployment, plus the display-only summary rows where
+#'   `include.summary.row` asked for them, and a zero-row frame for an empty summary. Where `group.by`
+#'   was used, the group each row belongs to travels as the `"summary.groups"` attribute, which the
+#'   `print` method uses to break the table visually and which `write.csv()` never writes.
+#'
+#' @seealso [summarizeTagData()] for the object being formatted; [metadataColumns()] for the metadata
+#'   vocabulary a grouping column may come from.
+#'
+#' @examples
+#' \dontrun{
+#' # The internal names, as the console shows them.
+#' format(summary)
+#'
+#' # A publication table, with typographic symbols and two precisions overridden.
+#' format(summary, style = "report", symbols = "unicode",
+#'        decimals = c(depth_max = 0, video_duration_h = 1))
+#'
+#' # Analysed against excluded deployments, each with its own mean +/- sd row.
+#' format(summary, style = "report", group.by = "status")
+#'
+#' # Per-deployment rows only, with no summary row.
+#' format(summary, include.summary.row = FALSE)
+#' }
 #' @exportS3Method format nautilus_summary
 
 format.nautilus_summary <- function(x, style = c("internal", "report", "concise"),

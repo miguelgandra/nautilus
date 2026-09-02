@@ -2,7 +2,7 @@
 % Please edit documentation in R/summarizeTagData.R
 \name{format.nautilus_summary}
 \alias{format.nautilus_summary}
-\title{Format a nautilus_summary as a display-ready character data frame}
+\title{Format a \code{nautilus_summary} for display or export}
 \usage{
 \method{format}{nautilus_summary}(
   x,
@@ -16,67 +16,121 @@
 )
 }
 \arguments{
-\item{x}{A \code{nautilus_summary} object.}
+\item{x}{A \code{nautilus_summary} object, from \code{\link[=summarizeTagData]{summarizeTagData()}}.}
 
-\item{style}{Column-name style: \code{"internal"} (default) keeps the programmatic snake_case names used
-throughout the API; \code{"report"} relabels the columns with human-readable, publication-ready headers
-(e.g. \code{depth_max} -> "Max depth (m)") for a report or paper; \code{"concise"} uses the same publication
-headers but abbreviated for width-constrained tables (e.g. \code{record_start} -> "Start",
-\code{attachment_site} -> "Attach. site", \code{tbf_mean} -> "Mean TBF (Hz)"). Values and layout are identical
-across styles - only the column names differ. Covariate columns from \code{extra.metadata} keep their own
-names (lightly prettified).}
+\item{style}{Column-name style. \code{"internal"} (default) keeps the snake_case names used throughout
+the API; \code{"report"} uses publication-ready headers (\code{depth_max} becomes "Max depth (m)");
+\code{"concise"} abbreviates those for width-constrained tables ("Max depth (m)" becomes "Max depth").
+Values and layout are identical across styles - only the names differ. Covariate columns from
+\code{extra.metadata} keep their own names, lightly prettified.}
 
-\item{datetime.format}{Character. The \code{\link[base]{strftime}} format for the \code{record_start} /
-\code{record_end} datetime columns. Default \code{"\%d/\%b/\%Y \%H:\%M"} (e.g. \verb{01/Jan/2020 00:00}).}
+\item{datetime.format}{Format for the \code{record_start} and \code{record_end} columns, passed to
+\code{\link[base:strftime]{base::strftime()}}. Default \code{"\%d/\%b/\%Y \%H:\%M"}, e.g. \verb{01/Jan/2020 00:00}.}
 
-\item{include.summary.row}{Logical. Append the display-only population \verb{mean +/- error} row (only
-meaningful with more than one deployment). Default \code{TRUE} (matches the console). Set \code{FALSE} for a
-pure per-deployment table.
-
-Numeric biometric traits and \code{extra.metadata} covariates are averaged in this row like any other
-metric. If a column should not be treated as a continuous variable - an identifier, a code, a year -
-supply it as character or factor rather than numeric, and it is left out of the row.}
+\item{include.summary.row}{Whether to append the display-only \verb{mean +/- error} row (default
+\code{TRUE}, matching the console). Ungrouped, it appears only where there is more than one deployment
+to average; with \code{group.by}, each group gets its own. Set \code{FALSE} for a pure per-deployment table.}
 
 \item{symbols}{Whether the rendered table may use typographic symbols: \code{"ascii"} (default) writes
-\verb{+/-}, \verb{deg C} and \code{m/s}; \code{"unicode"} writes the plus-minus, degree and superscript forms. ASCII is
-the default because this table is usually written to a file, and a spreadsheet opening a UTF-8 CSV
-with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the degree
-sign as two characters. It also keeps the column names typeable and indexable from a script.}
+\verb{+/-}, \verb{deg C} and \code{m/s}; \code{"unicode"} writes the plus-minus, degree and superscript forms. ASCII
+is the default because this table is usually written to a file, and a spreadsheet opening a UTF-8
+CSV with no byte-order mark guesses the encoding - on macOS it guesses MacRoman and renders the
+degree sign as two characters. It also keeps the column names typeable from a script.}
 
 \item{decimals}{Optional per-column override of the display precision, as a named numeric vector of
-decimal places - \code{c(video_duration_h = 1, depth_max = 0)}. Merged OVER the built-in precision, so
-naming one column leaves every other exactly as it was, and both the value and the
-\verb{mean +/- error} row follow the override. Named by the INTERNAL column names (the ones
-\code{style = "internal"} shows and \verb{@return} lists), not by the rendered headers: a header belongs to a
-style - \code{video_duration_h} reads "Video recorded (h)" under \code{report} and "Video (h)" under
-\code{concise} - so an override keyed on one would quietly stop applying when the style changed. Pass a
-header by mistake and the error names the column to use instead. Default \code{NULL}.}
+decimal places - \code{c(video_duration_h = 1, depth_max = 0)}. Merged over the built-in precision, so
+naming one column leaves every other exactly as it was, and both the value and its
+\verb{mean +/- error} cell follow the override. Named by the INTERNAL column names, not the rendered
+headers: a header belongs to a style, so an override keyed on one would quietly stop applying when
+the style changed. Pass a header by mistake and the error names the column to use instead.
+Default \code{NULL}.}
 
-\item{group.by}{Optional column name to group the rendering by - \code{"status"} to compare analysed
-against excluded deployments, or any categorical column in the table, such as a trait requested
-through \code{summarizeTagData(metadata = )}. Rows are ordered by group and each group is given its own
-\verb{mean +/- error} row. Default \code{FALSE}, which renders the table ungrouped.
-
-Grouping changes only the presentation: the \code{nautilus_summary} itself is one row per deployment
-either way. Named by the INTERNAL column name, as \code{decimals} is, so an override keeps working when
-the style changes. The returned table stays rectangular - the blank line between groups belongs to
-the console rendering, not to the exported object.}
+\item{group.by}{Optional column to group the rendering by - \code{"status"} to compare analysed against
+excluded deployments, or any categorical column in the table, such as a trait requested through
+\code{summarizeTagData(metadata = )}. Rows are ordered by group and each group gets its own
+\verb{mean +/- error} row. Named by the internal column name, as \code{decimals} is. Default \code{FALSE}, which
+renders the table ungrouped.}
 
 \item{...}{Unused.}
 }
 \value{
-A character \code{data.frame} - the formatted table (0-row for an empty summary).
+A character \code{data.frame}: one row per deployment, plus the display-only summary rows where
+\code{include.summary.row} asked for them, and a zero-row frame for an empty summary. Where \code{group.by}
+was used, the group each row belongs to travels as the \code{"summary.groups"} attribute, which the
+\code{print} method uses to break the table visually and which \code{write.csv()} never writes.
 }
 \description{
-Returns the same formatted table the print method renders - fixed per-metric precision, datetimes as
-\verb{dd/Mon/YYYY HH:MM}, missing values as "-", and (optionally) the display-only population
-\verb{mean +/- error} row - but as a STRUCTURED character data frame, so the formatted summary can be
-exported directly for reporting, e.g. \code{write.csv(format(summary), "summary.csv", row.names = FALSE)}.
+Renders a \code{nautilus_summary} as a character data frame ready for display, reporting or export:
+numeric values rounded to a per-metric precision, datetimes written as text, and missing values
+shown as \code{"-"}.
+
+Columns can keep their internal names or take publication headers, and a display-only
+\verb{mean +/- error} row can be appended for the cohort as a whole or for each group of deployments.
+
+The result is the table the \code{print} method renders, returned as an object, so the same figures a
+reader sees on the console are what reach a report or a file.
 }
 \details{
-With \code{group.by}, rows are ordered by a categorical column and each group gains its own
-\verb{mean +/- error} row, which is the quickest way to compare analysed against excluded deployments, or
-one class of animal against another. The result stays a rectangle of one row per deployment plus one
-footer per group: the blank line that separates groups on the console is inserted when printing, so
-an exported file never carries an empty record.
+\subsection{The summary row}{
+
+The row reports the mean and either the standard deviation or the standard error, whichever was
+chosen when the summary was built. The statistic is a property of the object, inherited through
+\code{error.stat} in \code{\link[=summarizeTagData]{summarizeTagData()}}, not chosen again here - so the same table cannot describe its
+spread two different ways in two different renderings.
+
+Only numeric columns are averaged, and not all of them: the per-tag sampling rate and the tagging and
+pop-up coordinates are left out, because a cross-deployment mean of those gives the centroid of the
+study area, which is a real quantity but not the one a "mean" row in a deployment table is read as.
+
+Numeric biometric traits and \code{extra.metadata} covariates are averaged like any other metric. Where a
+column should not be treated as continuous - an identifier, a code, a year - supply it as character
+or factor rather than numeric, and it is left out of the row.
+
+A group of one deployment shows its mean without an error term, rather than a mean beside an empty
+interval.
+}
+
+\subsection{Grouped tables}{
+
+With \code{group.by}, rows are ordered by group and each group gains its own summary row carrying that
+group's value, so an exported grouped table stays self-describing: the rows are identifiable by the
+\code{id} cell and attributable by the grouping column, with no string parsing. Factors keep their level
+order; anything else sorts naturally. Deployments with no value for the grouping column form their
+own trailing group rather than being dropped.
+
+Grouping changes only the rendering. The \code{nautilus_summary} itself is one row per deployment either
+way, and \code{summarizeTagData()} takes no grouping argument.
+}
+
+\subsection{Exporting}{
+
+The result is a rectangle - one row per deployment plus one summary row per group - and carries no
+blank rows, so it can be written straight out:
+
+\if{html}{\out{<div class="sourceCode">}}\preformatted{write.csv(format(summary, style = "report"), "summary.csv", row.names = FALSE)
+}\if{html}{\out{</div>}}
+
+The blank line that separates groups on the console is inserted when printing, from an attribute the
+file never sees, because an empty record reads as a malformed row in a spreadsheet or on re-import.
+}
+}
+\examples{
+\dontrun{
+# The internal names, as the console shows them.
+format(summary)
+
+# A publication table, with typographic symbols and two precisions overridden.
+format(summary, style = "report", symbols = "unicode",
+       decimals = c(depth_max = 0, video_duration_h = 1))
+
+# Analysed against excluded deployments, each with its own mean +/- sd row.
+format(summary, style = "report", group.by = "status")
+
+# Per-deployment rows only, with no summary row.
+format(summary, include.summary.row = FALSE)
+}
+}
+\seealso{
+\code{\link[=summarizeTagData]{summarizeTagData()}} for the object being formatted; \code{\link[=metadataColumns]{metadataColumns()}} for the metadata
+vocabulary a grouping column may come from.
 }
