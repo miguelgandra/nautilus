@@ -11,6 +11,7 @@ Rplots.pdf
 _archive/
 tutorials/legacy/
 Circling_Events_Detection.R
+DEVELOPER_GUIDE.md
 
 # R build / check artefacts
 *.tar.gz
