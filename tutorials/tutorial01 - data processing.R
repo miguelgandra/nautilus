@@ -3,9 +3,9 @@
 ## Tutorial 01: Processing Multi-Sensor Tag Data with the 'nautilus' R Package ################
 ###############################################################################################
 
-# A step-by-step walkthrough of the core 'nautilus' pipeline, from raw archival-tag CSVs to
-# analysis-ready, fully documented datasets. It follows the actual workflow of the PINTADO
-# whale-shark project, so it doubles as a real-world example. The pipeline covers:
+# A step-by-step walkthrough of the core 'nautilus' pipeline, from raw archival-tag exports to
+# standardised, quality-controlled and analysis-ready datasets. The workflow uses a
+# whale-shark project as a real-world example and covers:
 #
 #   1.  Prepare and quality-check the per-deployment metadata.
 #   2.  Import and standardize raw multi-sensor tag data (CATS / CEiiA tags).
@@ -18,19 +18,19 @@
 #   8.  Estimate tail-beat frequencies.
 #   9.  Produce per-deployment summaries and depth profiles.
 #
-# Every stage returns 'nautilus_tag' objects: data.tables that also carry a consolidated metadata
-# record - deployment info, sensors, calibration, and an append-only processing audit trail.
-# Inspect any object with print() or summary(); read its metadata with tagMetadata(x) and its
-# processing history with processingHistory(x).
+# Throughout the pipeline, data are stored as 'nautilus_tag' objects, which combine the sensor
+# time series with deployment metadata, sensor provenance and a processing history. Inspect any
+# object with print() or summary(); access its metadata with tagMetadata(x) and its processing
+# history with processingHistory(x).
 #
 # Notes:
-#  - Default parameters are tuned to whale-shark kinematics and to the CATS / CEiiA tags used here.
-#    For other species or tag systems, adjust the arguments accordingly.
-#  - All file paths below are project-specific - edit them to match your own directory layout.
-#  - The pipeline is disk-based: each stage reads the previous stage's files and writes its own
-#    (return.data = FALSE, save.files = TRUE), so large datasets never all sit in memory at once.
-#    Output folders are NOT created automatically - nautilus is fail-fast about paths, so create
-#    "./data interim/...", "./plots" and "./outputs" before running.
+#  - Default parameters are tuned to whale-shark kinematics and the CATS / CEiiA tags used in
+#    this example. For other species, tag systems or study designs, adjust the arguments accordingly.
+#  - File paths below are project-specific; edit them to match your own directory layout.
+#  - The tutorial uses a disk-based workflow: each stage reads the previous stage's .rds files and
+#    writes its own output files, keeping large datasets out of memory. Output directories are not
+#    created automatically, so create the required './data interim/', './plots/' and './outputs/'
+#    directories before running the pipeline.
 
 
 ################################################################################
@@ -72,172 +72,130 @@ library(nautilus)
 # STEP 1. Prepare the deployment metadata                                      #
 ################################################################################
 
-# Before touching a single sensor sample, we assemble a clean table describing each deployment: where
-# and when the animal was tagged, which tag it carried, and a few biological traits. This is the
-# connective tissue of the whole analysis - it tells nautilus how to correct headings for local
-# magnetic declination, which deployments share hardware, and which animal each record belongs to.
-#
-# Everything in this step is ordinary, project-specific data wrangling. The goal is simply a tidy,
-# one-row-per-deployment data.frame; STEP 2 will quality-check it.
+# Before processing the sensor data, we assemble a table containing the metadata
+# for each deployment, including tagging location and time, tag characteristics
+# and relevant biological information. This metadata is used throughout the
+# workflow to identify deployments and animals, account for differences between
+# tag configurations and support subsequent processing steps.
 
-animal_metadata <- readxl::read_excel("./metadata/PINTADO_metadata_multisensor.xlsx")
+# The aim of this step is to create a tidy data frame with one row per
+# deployment. The metadata will be validated in STEP 2.
 
-# Keep the columns we need and give them consistent, readable names.
-selected_cols <- c("id", "dateTime", "site", "longitudeD", "latitudeD",
-                   "sex", "size", "Nmax", "type", "typeCMD", "PakageID", "ID_CMD",
-                   "satPtt", "padWheel", "recoveryDate", "recoveryTime",
-                   "lonRecov", "latRecov", "popupDatetime", "latPop", "lonPop",
-                   "Observation")
+
+# Read the project metadata table, with one row representing each deployment.
+animal_metadata <- readxl::read_excel("./metadata/PINTADO_metadata_multisensor_formatted.xlsx")
+
+# Keep the fields required for the analysis and assign consistent column names.
+selected_cols <- c("deployment_id", "animal_id", "deploy_datetime", "deploy_lat", "deploy_lon",          
+                   "site", "sex", "size_m", "package_id", "logger_id", "tag_type", "tag_model",
+                    "paddle_wheel", "argos_ptt", "deployment_type", "attachment_site", "attachment_side",   
+                    "leader_length", "gtr_nominal_h", "recovery_datetime", "recovery_lat", "recovery_lon",
+                    "popup_datetime", "popup_lat",  "popup_lon")
 animal_metadata <- as.data.frame(animal_metadata)[, selected_cols]
-colnames(animal_metadata) <- c("ID", "deploy_date", "deploy_site", "deploy_lon", "deploy_lat",
-                               "sex", "size", "n_animals", "type", "tag", "package_id", "cmd_id",
-                               "satPtt", "paddle_wheel", "recover_date", "recover_time",
-                               "recover_lon", "recover_lat", "popup_date", "popup_lat", "popup_lon", "obs")
 
-# Deployment year - handy for telling apart hardware configurations that changed between field seasons.
-animal_metadata$deploy_year <- as.integer(format(animal_metadata$deploy_date, "%Y"))
+# Extract the deployment year to distinguish hardware configurations that changed
+# between field seasons.
+animal_metadata$deploy_year <- as.integer(format(animal_metadata$deploy_datetime, "%Y"))
 
-# The recovery date and time arrive in two separate columns; combine them into one POSIXct so the
-# recovery-related checks in STEP 2 can run. One deployment's recovery time is unreliable, so we blank it.
-has_recovery <- !is.na(animal_metadata$recover_date) & !is.na(animal_metadata$recover_time)
-animal_metadata$recover_datetime <- as.POSIXct(NA, tz = "UTC")
-animal_metadata$recover_datetime[has_recovery] <-
-  as.POSIXct(paste(format(animal_metadata$recover_date[has_recovery], "%Y-%m-%d"),
-                   format(animal_metadata$recover_time[has_recovery], "%H:%M:%S")),
-             format = "%Y-%m-%d %H:%M:%S", tz = "UTC")
-animal_metadata$recover_datetime[animal_metadata$ID == "PIN_CAM_27"] <- NA
+# Assign the IMU orientation configuration used for each deployment. Orientation
+# can differ among tag models and hardware configurations, so these labels link
+# each deployment to the corresponding axis mapping applied later in STEP 8.
+animal_metadata$axis_config <- paste(animal_metadata$tag_model, animal_metadata$tag_type)
+animal_metadata$axis_config[animal_metadata$logger_id == "71" & animal_metadata$deploy_year == 2019] <- "CATS 2019 Camera"
+animal_metadata$axis_config[animal_metadata$logger_id == 27] <- paste("CATS 27", animal_metadata$tag_type[animal_metadata$logger_id == 27])
+animal_metadata$axis_config[animal_metadata$tag_model == "CEIIA" & animal_metadata$deploy_year == 2022 & animal_metadata$package_id == 71]  <- "CEIIA 2022 (71)"
+animal_metadata$axis_config[animal_metadata$tag_model == "CEIIA" & animal_metadata$deploy_year == 2022 & animal_metadata$package_id == 134] <- "CEIIA 2022 (134)"
+animal_metadata$axis_config[animal_metadata$tag_model == "CEIIA" & animal_metadata$deploy_year == 2023] <- "CEIIA 2023 Camera"
+animal_metadata$axis_config[animal_metadata$deployment_id == "PIN_CAM_26"] <- "4K Camera"
 
-# Tidy a few tag / type labels so they group cleanly.
-animal_metadata$tag[animal_metadata$tag == "4k"]       <- "4K"
-animal_metadata$tag[animal_metadata$tag == "Ceiia"]    <- "CEIIA"
-animal_metadata$type[animal_metadata$type == "Camara"] <- "Camera"
+# Leave uncertain configurations unspecified so they can be resolved later using
+# the sensor data and information from comparable deployments.
+animal_metadata$axis_config[animal_metadata$deployment_id %in% c("PIN_10", "PIN_12")] <- ""
 
-# Name the IMU orientation configuration for each deployment. Different tag models (and even the same
-# model across seasons) mount their sensor chips at different angles, so each deployment gets the name
-# of the configuration it was built with. STEP 8 turns these names into actual axis rotations. The base
-# name is "<tag> <type>" (e.g. "CATS Camera"), with a handful of documented exceptions by package,
-# logger, year or individual, taken from the tag manufacturer's configuration notes.
-animal_metadata$axis_config <- paste(animal_metadata$tag, animal_metadata$type)
-animal_metadata$axis_config[animal_metadata$cmd_id == "71" & animal_metadata$deploy_year == 2019] <- "CATS 2019 Camera"
-animal_metadata$axis_config[animal_metadata$cmd_id == 27] <- paste("CATS 27", animal_metadata$type[animal_metadata$cmd_id == 27])
-animal_metadata$axis_config[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022 & animal_metadata$package_id == 71]  <- "CEIIA 2022 (71)"
-animal_metadata$axis_config[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2022 & animal_metadata$package_id == 134] <- "CEIIA 2022 (134)"
-animal_metadata$axis_config[animal_metadata$tag == "CEIIA" & animal_metadata$deploy_year == 2023] <- "CEIIA 2023 Camera"
-animal_metadata$axis_config[animal_metadata$ID == "PIN_CAM_26"] <- "4K Camera"
-# For two deployments the orientation was genuinely uncertain. Rather than hard-code a guess, we leave
-# the configuration blank and let STEP 8 work it out from the data and from sibling deployments.
-animal_metadata$axis_config[animal_metadata$ID %in% c("PIN_10", "PIN_12")] <- ""
-
-# All of these tags were towed rather than rigidly bolted on. This matters later: a towed tag wobbles
-# relative to the body, which changes how posture is scored.
-animal_metadata$deployment_type <- "towed"
-
-# Where on the animal was the tag attached? We parse it from the free-text field notes, then override
-# with the video-verified assignments wherever we had footage to check against.
-animal_metadata$attachment_site <- NA_character_
-animal_metadata$attachment_site[grepl("dorsal",  animal_metadata$obs, ignore.case = TRUE)] <- "dorsal"
-animal_metadata$attachment_site[grepl("esq",      animal_metadata$obs, ignore.case = TRUE)] <- "left_pectoral"
-animal_metadata$attachment_site[grepl("direita",  animal_metadata$obs, ignore.case = TRUE)] <- "right_pectoral"
-idx <- grepl("pectoral|peitoral", animal_metadata$obs, ignore.case = TRUE) & is.na(animal_metadata$attachment_site)
-animal_metadata$attachment_site[idx] <- "pectoral"
-animal_metadata$attachment_site[animal_metadata$ID %in% c("PIN_CAM_02", "PIN_CAM_05", "PIN_CAM_06",
-                                                          "PIN_CAM_26", "PIN_CAM_41")] <- "dorsal"
-animal_metadata$attachment_site[animal_metadata$ID %in% c("PIN_CAM_04", "PIN_CAM_22", "PIN_CAM_24",
-                                                          "PIN_CAM_31", "PIN_CAM_32", "PIN_CAM_39")] <- "right_pectoral"
-
-# done parsing the notes; drop them
-animal_metadata$obs <- NULL   
 
 
 ################################################################################
 # STEP 2. Quality-check the deployment metadata                                #
 ################################################################################
 
-# qcDeploymentMetadata() validates and cleans the metadata before any sensor data is read - catching
-# the small field-sheet slips that would otherwise quietly poison the analysis: a duplicate ID, an
-# impossible tagging coordinate, a recovery date before the deployment, two deployments overlapping on
-# the same physical tag. Fixing these here is far cheaper than discovering them after a long import.
-#
-# The trick is metadataColumns(): instead of a rename, it maps each of your columns to a nautilus
-# "role". A role tells the package what a column represents, and that in turn switches on the checks
-# and features that depend on it - deployment coordinates enable declination correction, a package_id
-# enables per-package orientation consensus and paddle-wheel calibration, biological traits ride along
-# into every object for later grouping. Roles you don't map are simply skipped.
+# Validate the deployment metadata before importing the sensor data. This step
+# identifies potential problems such as duplicate deployment IDs, invalid
+# coordinates, inconsistent deployment and recovery times, or overlapping use of
+# the same tag.
 
 deployments <- checkDeploymentMetadata(
   animal_metadata,
   columns = metadataColumns(
-    # The five required roles (shown here even where they match the defaults, so the menu is visible):
-    id              = "ID",
-    tag_model       = "tag",
-    deploy_datetime = "deploy_date",     # must already be POSIXct
+    # Required metadata
+    id              = "deployment_id",
+    tag_model       = "tag_model",
+    deploy_datetime = "deploy_datetime",    
     deploy_lon      = "deploy_lon",
     deploy_lat      = "deploy_lat",
-    # Optional roles - each one you add turns on the checks/features that need it:
-    tag_type          = "type",
-    recovery_datetime = "recover_datetime",   # enables the recovery-before-deploy + duration checks
-    popup_datetime    = "popup_date",         # pop-up location (needs all three popup_* together)
+    # Optional deployment and tag metadata
+    animal_id         = "animal_id",
+    tag_type          = "tag_type",
+    deploy_site       = "site",
+    recovery_datetime = "recovery_datetime",  
+    popup_datetime    = "popup_datetime",        
     popup_lon         = "popup_lon",
     popup_lat         = "popup_lat",
-    package_id        = "package_id",         # groups deployments that share a physical tag
-    logger_id         = "cmd_id",             # tracks a logger across board-swaps
-    axis_config       = "axis_config",        # the orientation-config name used in STEP 8
+    package_id        = "package_id",        
+    logger_id         = "logger_id",             
+    axis_config       = "axis_config",       
     paddle_wheel      = "paddle_wheel",
     attachment_site   = "attachment_site",
-    deployment_type   = "deployment_type",    # "towed" or "rigid"; selects the posture scorer
-    deploy_site       = "deploy_site",        # the tagging locality by name: the coordinates say where
-                                              # to a metre, the name is what you group and report by
-    # animal_id belongs here when one animal can carry several tags - `id` identifies the deployment,
-    # animal_id the animal, and summarizeTagData() reports both. This sheet has no separate animal
-    # identifier (one deployment is one animal), so the role is left unmapped.
-    # Passive biological traits: carried verbatim into each object's metadata (tagMetadata(x)$biometrics)
-    # so they're available later for grouping, filtering and plotting (e.g. plotTimeAtDepth(group = "sex")).
+    deployment_type   = "deployment_type",   
+    # Biological traits retained with each deployment for subsequent analyses
     # A corrected value can be re-stamped later with updateBiometrics() - no re-import needed.
-    traits            = c("sex", "size")),
+    traits            = c("sex", "size_m")),
   verbose          = "detailed")
 
-# Read the verdict, fix anything flagged at the source, and re-run until it's clean.
-issues(deployments)                      # all issues
-issues(deployments, severity = "error")  # just the blocking ones
+# Inspect the reported issues. Correct any problems in the source metadata and
+# repeat the validation before proceeding to the sensor-data workflow.
+issues(deployments)                      # all reported issues.
+issues(deployments, severity = "error")  # errors requiring correction.
 
 
 ################################################################################
 # STEP 3. Import the tag data                                                  #
 ################################################################################
 
-# importTagData() reads each animal's multi-sensor CSV, standardizes the sensor names and units
-# (acceleration to g, gyroscope to rad/s, magnetometer to uT, depth to metres, ...), folds in any
-# Wildlife Computers location files, and attaches the metadata.
-#
-# It recognizes the standard CATS and CEiiA layouts out of the box, so import.mapping stays NULL.
-# For a non-standard file, hand it a small data.frame mapping each raw column to a sensor and unit -
-# valid sensors: datetime; ax/ay/az, gx/gy/gz, mx/my/mz; depth, temp; valid units: "UTC"; "g","m/s2";
-# "rad/s","deg/s","mrad/s"; "uT"; "C"; "m". For example:
-#   import.mapping = data.frame(
-#     colname = c("UTC_Time","ACC_X","ACC_Y","ACC_Z","MAG_X","MAG_Y","MAG_Z","TEMP","PRESSURE"),
-#     sensor  = c("datetime","ax","ay","az","mx","my","mz","temp","depth"),
-#     units   = c("UTC","g","g","g","uT","uT","uT","C","m"))
-#
-# Passing the QC'd 'deployments' object as id.metadata does two things: it carries its own column
-# schema (so no columns argument is needed here), and it carries the QC verdict - if the metadata
-# failed STEP 2, the import refuses to start rather than wasting time on a long read. The data is
-# imported in its raw axis frame; rotating it into the animal's frame is a deliberate, separate step
-# (STEP 8).
+# importTagData() reads the raw multi-sensor files, standardises sensor names
+# and units, imports available ancillary location data and attaches the validated
+# deployment metadata.
 
-# Root folder with one subdirectory per tagged animal (edit to your path).
+# Standard CATS and CEiiA file layouts are recognised automatically, so no
+# explicit import mapping is required here. For non-standard data formats, an
+# import mapping can be supplied to identify the relevant sensor columns and
+# their units.
+
+# The validated deployments object provides both the deployment metadata and its
+# associated quality-control results. The sensor data are imported in their
+# original axis configuration; orientation into the animal's body frame is
+# performed later in STEP 8.
+
+# Root directory containing one subdirectory per deployment
 data_root <- "/Users/Mig/Desktop/Whale Sharks/data"
 data_folders <- list.dirs(data_root, recursive = FALSE)
-data_folders <- data_folders[1:58]   # subset the deployments to process, if needed
 
+# Optionally restrict the set of deployments processed in this run.
+data_folders <- data_folders[1:58]
+
+# Import and standardise the deployment data and attach paired Wildlife Computers
+# position and wet/dry records where available. The archival and Wildlife Computers
+# tag clocks are aligned using depth cross-correlation, and any deployments excluded
+# during import are recorded in the shared exclusions log. Standardised datasets are
+# saved as compressed .rds files.
 importTagData(data.folders         = data_folders,
               sensor.subdirectory  = "CMD",
               wc.subdirectory      = NULL,      # NULL = auto-detect the Wildlife Computers folder
-              metadata          = deployments,
+              metadata             = deployments,
               import.mapping       = NULL,      # NULL = standard CATS / CEiiA layout
               import.calibration   = TRUE,
               timezone             = "UTC",
               alignment            = alignmentControl(method = "depth-xcorr"),
-              exclusions.file      = "./data interim/exclusions.csv",  # shared log: who left, and why
+              exclusions.file      = "./data interim/exclusions.csv", 
               return.data          = FALSE,
               output.dir           = "./data interim/01_imported",
               compress             = TRUE,
@@ -248,17 +206,23 @@ importTagData(data.folders         = data_folders,
 # STEP 4. Trim to the deployment period                                        #
 ################################################################################
 
-# filterDeploymentData() removes the pre-attachment and post-detachment data, keeping only the
-# on-animal period. It works two ways:
-#   - Automatic: binary segmentation of depth (and its variance) estimates the attachment and
-#     detachment times - useful when the exact deployment window is unknown.
-#   - Manual: pass a data.frame of known ID / start / end windows to `custom.deployment.times`;
-#     these override the automatic detection (leave start or end as NA to auto-detect just that end).
-# A diagnostic panel per deployment is written to a single multi-page PDF for review.
+# filterDeploymentData() identifies the on-animal deployment period and filters
+# each dataset to that interval, removing data recorded before attachment and
+# after detachment.
+#
+# Deployment boundaries can be determined automatically from changes in depth
+# and depth variability, or supplied manually through `custom.deployment.times`.
+# Manual start/end times override automatic detection for the corresponding
+# boundary; an NA value leaves that boundary to automatic detection.
+#
+# Deployments shorter than `min.deployment.hours` are excluded. Diagnostic plots
+# can be generated for visual inspection of the detected deployment periods, and
+# exclusions are recorded in the shared exclusions log.
 
 # Known deployment windows (manual overrides; NA = let the algorithm find that boundary).
 deploy_list <- list(
   list(ID = "PIN_02",     start = as.POSIXct("2019-09-11 12:35:00", tz = "UTC"), end = as.POSIXct("2019-09-12 16:32:00", tz = "UTC")),
+  list(ID = "PIN_06D",    start = as.POSIXct("2019-09-27 15:43:32", tz = "UTC"), end = as.POSIXct("2019-09-27 16:07:39", tz = "UTC")),
   list(ID = "PIN_09",     start = as.POSIXct("2020-08-22 15:20:00", tz = "UTC"), end = as.POSIXct("2020-08-23 00:49:03", tz = "UTC")),
   list(ID = "PIN_10",     start = as.POSIXct("2020-08-23 16:20:00", tz = "UTC"), end = NA),
   list(ID = "PIN_16",     start = as.POSIXct("2022-09-18 17:48:00", tz = "UTC"), end = as.POSIXct("2022-09-19 08:34:00", tz = "UTC")),
@@ -278,18 +242,20 @@ deploy_list <- list(
 )
 deploy_periods <- do.call(rbind, lapply(deploy_list, as.data.frame))
 
-
+# Filter each deployment to its on-animal period. Here, known deployment boundaries
+# are supplied where available, while missing boundaries are detected automatically.
+# A minimum duration of 1 hour is required.
 filterDeploymentData(data                    = list.files("./data interim/01_imported", full.names = TRUE),
                      custom.deployment.times = deploy_periods,   # known windows; NA boundaries auto-detected
                      depth.threshold         = 3.5,    # depth (m) that counts as "in the water" for detection
                      variance.threshold      = 6,      # depth-variance change that marks attachment/detachment
                      max.changepoints        = 6,
-                     use.temperature         = FALSE,  # corroborate with temperature too, if it's reliable
-                     min.deployment.hours    = 1,   # discard anything shorter than this
-                     plot                    = FALSE,   # one diagnostic panel per deployment...
-                     plot.file               = "./plots/filtered_deployments.pdf",  # ...into a single PDF to review
-                     plot.metrics            = c("temp", "az"),  # extra traces to overlay on the panel
-                     exclusions.file         = "./data interim/exclusions.csv",  # the same shared log
+                     use.temperature         = FALSE,  
+                     min.deployment.hours    = 1,      # discard anything shorter than this
+                     plot                    = FALSE,   
+                     plot.file               = "./plots/filtered_deployments.pdf",  
+                     plot.metrics            = c("temp", "az"),  
+                     exclusions.file         = "./data interim/exclusions.csv",  
                      return.data             = FALSE,
                      output.dir              = "./data interim/02_filtered",
                      verbose                 = "detailed")
@@ -299,19 +265,21 @@ filterDeploymentData(data                    = list.files("./data interim/01_imp
 # STEP 5. Put the samples on a regular time grid                               #
 ################################################################################
 
-# Tags rarely sample on a perfectly even clock: timestamps drift and jitter, and now and then a sample
-# drops out entirely. Almost everything downstream - filtering, derivatives, frequency analysis -
-# assumes evenly-spaced samples, so regularizeTimeSeries() snaps the record onto a uniform grid at its
-# own median sampling interval. Short gaps are filled by interpolation; longer ones are left honest as
-# NA rather than inventing behaviour across them. Coverage statistics (how much was interpolated, gap
-# fraction, jitter) are stored in each object's metadata.
+# regularizeTimeSeries() places each deployment on an evenly spaced time grid
+# based on its median observed sampling interval. Original observations are
+# assigned to the nearest grid point, short gaps are interpolated, and longer
+# gaps are retained as missing values rather than being filled across periods
+# without measurements.
+
+# Records that are already sufficiently regular are passed through unchanged.
+
 
 regularizeTimeSeries(data                 = list.files("./data interim/02_filtered", full.names = TRUE),
                      gap.threshold        = 2,        # fill gaps up to 2 s; leave longer ones as NA (0 = never fill)
                      interpolation.method = "linear", # or "spline" / "locf"
                      plot                 = FALSE,    
                      plot.file            = "./plots/regularization.pdf",
-                     exclusions.file      = "./data interim/exclusions.csv",  # the same shared log
+                     exclusions.file      = "./data interim/exclusions.csv",  
                      return.data          = FALSE,
                      output.dir           = "./data interim/03_checked",
                      verbose              = "detailed")
@@ -345,9 +313,6 @@ integrity <- checkSensorIntegrity(data   = list.files("./data interim/03_checked
                                   output.dir  = "./data interim/03_checked",
                                   verbose     = "detailed")
 
-# the findings, one row per flagged channel
-integrity$issues                                   
-
 
 ## 6.2 Transient signal quality --------------------------------------------------------------------
 #checkSensorQuality() identifies and corrects common issues in sensor data, such as isolated spikes and 
@@ -367,8 +332,6 @@ quality <- checkSensorQuality(data    = list.files("./data interim/03_checked", 
                               output.dir    = "./data interim/03_checked",
                               verbose       = "detailed")
 
-# the findings, one row per flagged channel
-quality$issues  
 
 ## 6.3 Position fixes ------------------------------------------------------------------------------
 # The filterLocations() function performs quality control on GPS/Argos positions before track analysis. 
@@ -393,68 +356,51 @@ filterLocations(data           = list.files("./data interim/03_checked", full.na
 # STEP 7. Read the camera video (optional; camera tags only)                   #
 ################################################################################
 
-# If your tags carry cameras, this reads each clip's start time, duration and frame rate so the footage
-# can be lined up with the sensor stream. It is only needed for the video-based orientation check in
-# STEP 8 (sub-step 8.4 below); skip it entirely for tags without cameras.
-#
-# getVideoMetadata() takes the start time from the video's file name wherever it can (exact, and
-# independent of any on-screen clock), falling back to reading the burned-in timestamp with OCR only
-# when the name carries no time. With cross.check = TRUE it OCRs the overlay as well and flags any clip
-# whose file-name time and on-screen time disagree.
+# For camera-equipped tags, getVideoMetadata() extracts video start times, 
+# durations and frame rates for alignment with the sensor data. Timestamps are 
+# taken from file names where available, with OCR used when needed; cross-checking 
+# can flag disagreements between the two sources. 
 
+# This step is only needed for the video-based orientation check in STEP 8 and 
+# can be skipped for deployments without cameras.
 
+# Root directory containing the camera-tag video folders
 camera_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/CAMS", recursive = FALSE)
 #camera_folders <- list.dirs("/Volumes/T7 Shield/CAMS", recursive = TRUE)
+#camera_folders <- camera_folders[grepl("MP4", basename(camera_folders), fixed = TRUE)]
 
+# Extract video metadata and resolve clip start times for alignment with the sensor data
 video_metadata <- getVideoMetadata(video.folders    = camera_folders,
                                    video.format     = c("mp4", "mov"),
                                    timestamp.source = "auto",   # file name first, OCR only where needed
                                    cross.check      = TRUE,     # also OCR the overlay and flag disagreements
                                    use.parallel     = TRUE,
                                    verbose          = "detailed")
-#video_metadata$ID <- sub(".*/[0-9]{4}/([^/]+)/.*", "\\1", video_metadata$file)
+#video_metadata$ID <- sub(".*/([^/]+)/MP4/.*", "\\1", video_metadata$file)
 
-
-# For any clip whose start time is uncertain (OCR-sourced, missing, or flagged), save the timestamp
-# crop to a folder so you can confirm it by eye.
+# Save timestamp crops for clips with uncertain or flagged start times, for 
+# manual verification
 video_metadata <- saveUncertainTimestampFrames(video.metadata = video_metadata,
                                                output.dir     = "./outputs/timestamps review")
 
-# Fix by hand only the few clips that are genuinely wrong - typically a camera with a mis-set clock.
-# Give the correct start; the end is recomputed from the duration.
-overrides <- data.frame(
-  video = c("CameraCMD71Spot17-20201006-172957-009-00005.mp4",
-            "230831-161949_CAM0bc99448_30.mp4",
-            "230831-171758_CAM0bc99448_30.mp4"),
-  start = as.POSIXct(c("2020-09-06 17:29:57", "2023-08-31 16:19:49", "2023-08-31 17:17:59"), tz = "UTC"),
-  stringsAsFactors = FALSE)
-for (k in seq_len(nrow(overrides))) {
-  i <- match(overrides$video[k], video_metadata$video)
-  video_metadata$start[i] <- overrides$start[k]
-  video_metadata$end[i]   <- overrides$start[k] + video_metadata$duration[i]
-}
 
+# Save video metadata for use in later steps
 write.csv(video_metadata, file = "./outputs/video_metadata.csv", row.names = FALSE)
-#video_metadata <- read.csv(file = "./outputs/video_metadata.csv")
 
 
 ################################################################################
 # STEP 8. Resolve the IMU axis orientation                                     #
 ################################################################################
 
-# A tag can be attached at any angle, but "pitch", "roll" and "heading" only mean something once we've
-# rotated the sensor's raw axes into the animal's own frame - nose forward, belly down (a North-East-Down
-# convention). Get this wrong and a left turn reads as a right one, and every posture metric is quietly
-# corrupted. This is one of the most important steps in the pipeline, so nautilus gives it a small
-# workflow: propose a mapping from the documented configuration, check it against the data, reconcile
-# uncertain cases across sibling deployments, optionally confirm the tricky ones on video, and only then
-# apply it.
+# Sensor axes depend on how the tag was attached, so they must be mapped to the 
+# animal's body frame before calculating orientation and movement metrics. 
+# nautilus supports a staged workflow that combines documented configurations,
+# data-based checks, consensus across deployments and optional video review 
+# before applying the final mapping.
 
-## 8.1 Documented axis configurations --------------------------------------------------------------
-# 'configs' maps each configuration name (the values placed in axis_config back in STEP 1) to its axis
-# mapping: 'from' is a raw sensor axis, 'to' the destination body axis, optionally sign-flipped ("-ay").
-# These come from the tag manufacturer's build notes. Deployments left blank in axis_config (like PIN_10)
-# carry no documented mapping and are resolved from the data and consensus instead.
+## 8.1 Documented axis configurations -------------------------------------------------------------- 
+# Map each documented tag configuration to the corresponding body axes. These 
+# configurations are based on the manufacturer's tag build information.
 configs <- list(
   "CATS MS"           = data.frame(from = c("ax", "ay"),       to = c("-ay", "-ax")),
   "CATS Camera"       = data.frame(from = c("ax", "ay", "az"), to = c("-ax", "-ay", "-az")),
@@ -468,12 +414,9 @@ configs <- list(
 )
 
 ## 8.2 Check the mapping against the data ----------------------------------------------------------
-# checkTagMapping() lets the animal's own behaviour vote on the orientation. It reads the vertical axis
-# from gravity during calm, low-motion moments; the fore-aft (surge) axis from how pitch tracks
-# depth-rate during dives; the gyroscope from body rotation; and the magnetometer against the gravity
-# frame and the expected geomagnetic field. Where a documented config agrees, it's confirmed; where one
-# disagrees or is missing, the axes are inferred; where the data can't decide, the deployment is
-# honestly flagged rather than forced.
+# checkTagMapping() evaluates documented mappings against the sensor data and 
+# infers an alternative mapping where the data provide sufficient evidence. 
+# Deployments that remain ambiguous or inconsistent are flagged for review.
 mapping_qc <- checkTagMapping(data                     = list.files("./data interim/03_checked", full.names = TRUE),
                               configs                  = configs,
                               static.threshold         = 0.1,      # how still counts as "static" for the gravity read
@@ -481,25 +424,23 @@ mapping_qc <- checkTagMapping(data                     = list.files("./data inte
                               dba.window               = 5,
                               use.dynamics             = TRUE,     # use dive dynamics to resolve the fore-aft axis
                               locomotor.band           = c(0.2, 3),
-                              locomotor.axis           = "sway",   # tail beats show up on the lateral axis (see STEP 13's notes)
+                              locomotor.axis           = "sway",   # tail beats show up on the lateral axis (see STEP 12's notes)
                               plot                     = FALSE,
                               plot.file                = "./plots/axis_mapping.pdf",
                               verbose                  = "detailed")
 
-# A quick look at where each deployment landed (confirmed / consistent / conflict / ...).
+# Summarise the mapping status across deployments.
 vapply(mapping_qc, function(x) x$frame_state$prior$status, character(1))
 
-# This pass does real work, so cache it - the later steps can then be re-run without recomputing.
+# Cache the results so later steps can be re-run without repeating the QC.
 saveRDS(mapping_qc, "./outputs/mapping_qc.rds")
 # mapping_qc <- readRDS("./outputs/mapping_qc.rds")
 
 
-## 8.3 Rescue uncertain deployments by consensus ---------------------------------------------------
-# Deployments that share the same physical tag share a fixed sensor geometry. consensusAxisMapping()
-# uses that: within each hardware group it forms a confidence-weighted consensus and lends it to the
-# weaker members, so a dive-rich deployment can rescue a short or flat-swimming sibling. It only ever
-# fills genuine ambiguity - it never overrides a deployment that already resolved on its own, and if two
-# confident deployments in a group disagree, it flags the conflict instead of papering over it.
+## 8.3 Resolve remaining uncertainty by consensus --------------------------------------------------
+# Deployments from the same hardware share the same sensor geometry.
+# consensusAxisMapping() uses this to resolve genuine ambiguities while flagging
+# conflicts between otherwise confident deployments.
 mapping_consensus <- consensusAxisMapping(results       = mapping_qc,
                                           group.by      = c("package_id", "logger_id"),  # what counts as "same hardware"
                                           min.agreement = 0.75,   # how strongly a group must agree to lend its mapping
@@ -507,12 +448,11 @@ mapping_consensus <- consensusAxisMapping(results       = mapping_qc,
                                           verbose       = "detailed")
 
 
-## 8.4 Confirm the tricky ones on video (optional) -------------------------------------------------
-# For camera deployments, footage is the gold standard for handedness. reviewTagMapping() picks the
-# deployments most worth a human look (a QC conflict, an ambiguous inference, or disagreeing sensors),
-# finds their clearest rolls and dives, and renders short clips showing a sensor "attitude indicator"
-# next to the real footage. Nothing is modified here - candidate mappings are applied only to temporary
-# copies. It hands back a decision sheet: one row per flagged deployment, for you to fill in.
+## 8.4 Confirm uncertain deployments on video (optional) ------------------------------------------ 
+# For camera deployments, reviewTagMapping() generates short comparison clips 
+# for flagged cases, allowing the candidate mappings to be checked against the 
+# shark's observed movements. The review returns a decision sheet for manual 
+# confirmation.
 review <- reviewTagMapping(data             = list.files("./data interim/03_checked", full.names = TRUE),
                            mapping          = mapping_qc,          # the per-deployment evidence to triage on
                            base             = mapping_consensus,   # the mapping actually applied, unless you override it
@@ -520,36 +460,26 @@ review <- reviewTagMapping(data             = list.files("./data interim/03_chec
                            configs          = configs,
                            include          = c("conflict", "coreg_fail", "ambiguous", "gyro_inconsistent"),
                            output.dir = "./outputs/mapping review")
-review   # the decision sheet: flagged deployments, their candidate 'options', and a blank 'decision'
 
+# decision sheet for flagged deployments
+review   
 
-# How to read a clip: for a conflict the dashboard shows two labelled attitude indicators side by side -
-# "Documented" (the recorded config) and "Proposed" (the frame the data prefers). Find a moment where
-# the shark clearly banks to one side; the correct mapping is the indicator that leans the same way.
-#
-# Fill the 'decision' column with the winning option for each flagged deployment. Only comparison clips
-# need a decision; single-candidate flags fall through to the base mapping.
-review$decision[review$id == "PIN_CAM_26"] <- "Proposed"
-# ... one line per flagged deployment (see 'review' for the full list) ...
-# If a deployment's orientation is genuinely untrustworthy and no candidate is right, mark it "Exclude"
-# and STEP 8.5 will drop it from the output:
+# For comparison clips, choose the candidate that best matches the observed 
+# movement. Deployments without a suitable mapping can be excluded.
+review$decision[review$id == "PIN_CAM_26"] <- "Proposed" # ... one line per flagged deployment ... 
 # review$decision[review$id == "PIN_CAM_XX"] <- "Exclude"
 
 
+
 ## 8.5 Apply the mapping ---------------------------------------------------------------------------
-# applyAxisMapping() rotates the raw axes into the body frame. The transform is absolute (raw -> body)
-# and idempotent, so it's safe to re-run. Passing the reviewed sheet as 'mapping' does the sensible
-# thing: un-reviewed deployments take the consensus base, decided ones take your chosen candidate - and
-# the function refuses to proceed if a deployment that rendered a real comparison is still undecided, so
-# handedness is never applied on a guess. Skipped the video review? Pass mapping = mapping_consensus.
-#
-# The gyroscope comes along automatically: for an accelerometer-only config its mapping is derived from
-# the accelerometer's, and check.handedness verifies that the two agree. A left-handed convention is
-# harmless; a genuine accel/gyro mismatch is warned about and recorded in tagMetadata(x)$axis_mapping$coreg_corr.
+# applyAxisMapping() applies the final raw-to-body axis transformation. When 
+# using the reviewed results, resolved decisions take precedence over the 
+# consensus mapping; unresolved deployments retain the consensus mapping. 
+# Accelerometer and gyroscope frames are checked for consistency when requested.
 applyAxisMapping(data             = list.files("./data interim/03_checked", full.names = TRUE),
                  mapping          = review,                  # or mapping_consensus if you skipped 8.4
                  check.handedness = TRUE,                     # verify the accel/gyro frames agree
-                 exclusions.file  = "./data interim/exclusions.csv",   # the same shared log
+                 exclusions.file  = "./data interim/exclusions.csv",  
                  return.data      = FALSE,
                  output.dir       = "./data interim/04_oriented",
                  verbose          = "detailed")
@@ -560,20 +490,15 @@ applyAxisMapping(data             = list.files("./data interim/03_checked", full
 # STEP 9. Calibrate the magnetometer (optional; for heading)                   #
 ################################################################################
 
-# You only need this step if you care about magnetometer-derived heading. Skipping it is fine -
-# processTagData() applies a solid per-axis magnetometer calibration on its own.
-#
-# The catch is physical: a clean magnetometer calibration wants the sensor swept through every
-# orientation, tracing a full sphere. A whale shark cruising near-horizontal only ever traces a thin
-# band of that sphere, so the fit is genuinely under-determined. calibrateMagnetometer() does the best
-# it honestly can and, crucially, hands back a heading-confidence flag ("high"/"medium"/"low") so you
-# know whether to trust the result. Pooling several deployments of one physical tag (group.by =
-# "package_id") widens the coverage and can rescue a fit that would fail alone.
-#
-# It runs on the oriented files and stores its estimate in the metadata without altering mx/my/mz.
-# processTagData() then picks up that stored calibration automatically - but only when its confidence
-# is good enough; a low-confidence fit is kept for inspection and quietly ignored.
+# This step is only needed for magnetometer-derived heading. calibrateMagnetometer() 
+# estimates the calibration from the oriented sensor data and stores it in the 
+# metadata without modifying the raw magnetometer channels.
 
+# Because reliable ellipsoid calibration requires broad 3D sensor coverage, 
+# near-horizontal deployments may provide insufficient information. Deployments 
+# from the same physical tag can therefore be pooled to improve coverage. 
+# The resulting heading confidence is recorded as "high", "medium" or "low"; 
+# low-confidence calibrations are not used automatically by processTagData().
 calibrateMagnetometer(data          = list.files("./data interim/04_oriented", full.names = TRUE),
                       control       = magCalibrationControl(method = "ellipsoid"),  # hard-iron-only 2D fallback for a thin band
                       group.by      = c("package_id", "logger_id"),  # what counts as "same hardware"
@@ -582,39 +507,29 @@ calibrateMagnetometer(data          = list.files("./data interim/04_oriented", f
                       return.data   = FALSE,
                       output.dir = "./data interim/05_processed",   
                       verbose       = "detailed")
-# You can check the per-deployment heading confidence later via processingSummary()$heading_conf.
 
-
-
-################################################################################
-# STEP 10. Read the paddle-wheel calibrations (optional; paddle tags)          #
-################################################################################
-
-# Some tags carry a magnetic paddle wheel that spins as the animal swims. processTagData() recovers
-# its rotation rate from the magnetometer and stores it as `paddle_freq`; turning that into a speed
-# needs one number per tag, measured by calibrating it before deployment. That step comes after
-# processing (STEP 12), so a calibration can be revised or checked without reprocessing anything.
-
-# Measured calibration slopes (one row per calibration): year, package_id, slope (+ fit quality).
-calibration_regression <- read.csv("./paddle wheel calibration/Velocity_RotationHz_Regression.csv")
-colnames(calibration_regression) <- c("year", "package_id", "slope", "r.squared", "adj.r.squared")
+# Heading confidence can be checked later via processingSummary()$heading_conf.
 
 
 ################################################################################
-# STEP 11. Process the tag data                                                #
+# STEP 10. Process the tag data                                                #
 ################################################################################
 
-# processTagData() is the core derivation step: it takes the oriented, cleaned data and 
-# computes the full set of kinematic and motion metrics. It estimates body attitude (roll, pitch, heading),
-# splits acceleration into the static (gravity/posture) and dynamic (movement) parts, and computes the
-# full metric suite - dynamic body acceleration (VeDBA/ODBA, a proxy for movement intensity widely used
-# to estimate activity and, with species-specific calibration, energy expenditure), surge/sway/heave,
-# vertical velocity, and the paddle-wheel rotation rate where available. It must run on the
-# oriented files, since every posture metric depends on a correct body frame. Downsampling the output
-# (here to 20 Hz) keeps the files manageable for downstream analysis without losing the behaviour.
- 
-# The processing knobs are grouped into small control objects, one per concern, so the call stays
-# readable. Each is shown here with the options worth knowing about.
+# processTagData() is the main processing step in the workflow. It takes the
+# cleaned and correctly oriented data and derives the kinematic and movement
+# metrics used in subsequent analyses, including body attitude (roll, pitch and
+# heading), static and dynamic acceleration, dynamic body acceleration
+# (VeDBA/ODBA), surge, sway, heave, vertical velocity and, where available,
+# paddle-wheel speed.
+
+# This step must be applied to the oriented data because posture and
+# acceleration-derived metrics depend on a correctly defined body frame.
+# Downsampling the processed data (here to 20 Hz) can substantially reduce file
+# size while retaining the temporal resolution required for subsequent analyses.
+
+# Processing options are organised into small control objects, each governing a
+# specific aspect of the workflow. The most relevant options are illustrated
+# below.
 
 processTagData(
   data                  = list.files("./data interim/04_oriented", full.names = TRUE),
@@ -635,7 +550,7 @@ processTagData(
   burst.quantiles    = c(0.95, 0.99),       # acceleration thresholds that mark high-effort "burst" events
   plot               = FALSE,
   plot.file          = "./plots/processed_data.pdf",
-  exclusions.file    = "./data interim/exclusions.csv",   # the same shared log
+  exclusions.file    = "./data interim/exclusions.csv",  
   return.data        = FALSE,
   output.dir         = "./data interim/05_processed",
   output.suffix      = "-20Hz",
@@ -648,31 +563,42 @@ processTagData(
 processing_summary <- processingSummary(list.files("./data interim/05_processed", full.names = TRUE))
 
 
+
 ################################################################################
-# STEP 12. Paddle-wheel swimming speed (optional; paddle tags)                 #
+# STEP 11. Paddle-wheel swimming speed (optional; paddle tags)                 #
 ################################################################################
 
-# calculatePaddleSpeed() turns the rotation rate recorded in STEP 11 into a swimming speed, using one
+# Some tags carry a magnetic paddle wheel that spins as the animal swims. processTagData() recovers
+# its rotation rate from the magnetometer and stores it as `paddle_freq`; turning that into a speed
+# needs one number per tag, measured by calibrating it before deployment. 
+
+# calculatePaddleSpeed() turns the rotation rate recorded in STEP 10 into a swimming speed, using one
 # calibration slope per tag and season. Tags that were never calibrated get a slope estimated from the
 # ones that were ("projected-shared"); the "in-situ-*" methods estimate it from the animal itself
 # instead, from how fast it changed depth while swimming at a steep angle - either pooled across each
-# tag-season ("in-situ-pooled") or separately for each deployment ("in-situ-deployment").
+# tag and season ("in-situ-pooled") or separately for each deployment ("in-situ-deployment").
 #
-# validate = TRUE additionally checks every tag against that same in-situ estimate, whether or not it
-# needed one. The agreement is their ratio: 1 means the two agree, and anything more than
-# agreement.threshold away from it is flagged as worth a look. Because only one column depends on the
-# calibration, a revised slope can be applied in seconds - there is no need to process the raw sensor
-# data again.
+# With validate = TRUE every tag is also checked against that same in-situ estimate, whether or not
+# it needed one. The agreement is their ratio: 1 means the two agree, and anything far from it is
+# flagged as worth a look.
+# Because only one column depends on the calibration, a revised slope can be applied in seconds - there
+# is no need to process the raw sensor data again.
 
-paddle <- calculatePaddleSpeed(
-  data        = list.files("./data interim/05_processed", full.names = TRUE),
-  calibration = calibration_regression,
-  method      = "projected-shared",  # fill missing slopes from the calibrations that do exist
-  validate    = TRUE,            # off by default; check every tag against the animal's own diving
-  plot.file   = "./plots/paddle_calibration.pdf",
-  return.data = FALSE,
-  output.dir  = "./data interim/05_processed",
-  verbose     = "detailed")
+# Measured calibration slopes (one row per calibration): year, package_id, slope (+ fit quality).
+calibration_regression <- read.csv("./paddle wheel calibration/Velocity_RotationHz_Regression.csv")
+colnames(calibration_regression) <- c("year", "package_id", "slope", "r.squared", "adj.r.squared")
+
+
+paddle <- calculatePaddleSpeed(data        = list.files("./data interim/05_processed", full.names = TRUE),
+                               calibration = calibration_regression,
+                               method      = "projected-shared",  
+                               validate    = TRUE,            # check every tag against the animal's own diving
+                               min.pitch   = 20,
+                               plot.file   = "./plots/paddle_calibration.pdf",
+                               return.data = FALSE,
+                               output.dir  = "./data interim/05_processed",
+                               verbose     = "detailed")
+ 
 
 # One row per tag and season: the slope applied, where it came from, and how it compares in situ.
 paddle_calibration <- attr(paddle, "calibration")
@@ -680,21 +606,17 @@ write.csv(paddle_calibration, "./outputs/paddle_calibration.csv", row.names = FA
 
 
 ################################################################################
-# STEP 13. Estimate tail-beat frequencies                                      #
+# STEP 12. Estimate tail-beat frequencies                                      #
 ################################################################################
 
-# calculateTailBeats() estimates the tail-beat frequency from a motion channel. Each backend names its
-# own output, so provenance travels with the value: "peaks" returns tbf_hz_peaks and
-# tbf_amplitude_peaks, "wavelet" returns tbf_hz_wavelet and tbf_amplitude_wavelet. Both amplitudes are
-# the peak-to-trough excursion, so they are directly comparable. The swimming/gliding flag
-# (tbf_swimming) is shared by the backends and so carries no suffix. Use tailBeatColumn() if you want
-# code that works whichever backend was run. The call below runs both, which is what lets STEP 13 and
-# the distribution plot below ask for the wavelet columns by name.
-#
-# Choosing the axis: for lateral swimmers (most sharks and teleosts) tail beats are cleanest on the
-# lateral 'sway' axis; other taxa (e.g. cetaceans, rays) may need the vertical 'heave' axis. Using an
-# axis perpendicular to the propulsive stroke can report double the true frequency. Sampling must
-# exceed twice `max.freq.Hz` (Nyquist); >= 4x is recommended.
+# calculateTailBeats() estimates tail-beat frequency from a motion channel, 
+# returning per-beat frequency, amplitude and a swimming/gliding classification. 
+
+# For lateral swimmers such as sharks and teleosts, tail beats are typically 
+# clearest on the lateral "sway" axis. Other taxa may require the vertical 
+# "heave" axis. The sampling rate should exceed twice the maximum frequency 
+# being estimated (Nyquist), with at least 4x recommended.
+
 calculateTailBeats(data            = list.files("./data interim/05_processed", full.names = TRUE),
                    method          = c("peaks", "wavelet"),
                    motion.col      = c("surge"),
@@ -711,28 +633,19 @@ calculateTailBeats(data            = list.files("./data interim/05_processed", f
                   
 
 ################################################################################
-# STEP 14. Summarize each deployment                                           #
+# STEP 13. Summarize each deployment                                           #
 ################################################################################
 
-# summarizeTagData() builds a one-row-per-deployment table of headline metrics (duration, depth and
-# temperature ranges, sampling rate, positions, tail-beat and speed statistics, ...). Passing the
-# QC'd `deployments` object completes the roster (deployments with no processed data appear as
-# excluded rows), and `extra.metadata` joins any extra per-ID covariates.
-#
-# `metadata = "standard"` (the default) also brings in the biometric traits recorded at import (sex,
-# size, ...) and the tagging date, site and coordinates - the columns a deployment table is usually
-# expected to carry. `animal_id` and `deploy_site` are roles (STEP 2), so they appear automatically
-# wherever they were mapped. Use "all" for the pop-up position and the package/logger identifiers, "none" for the bare
-# metric table, or name the fields and traits you want. These are filled from the roster for
-# deployments whose data never arrived, so a tag that was never recovered still reports who was tagged,
-# when and where instead of an empty row.
-#
-# `video.metadata` adds total footage per deployment (getVideoMetadata() returns one row per file; the
-# totalling is done for you). `exclusions` is the shared exclusion log: every stage that can drop a
-# deployment writes to it, so the summary can say why each one is missing whichever stage set it aside.
-# It is a plain CSV you can open without R, written by STEPS 3, 4, 5, 8 and 11 - every stage above
-# that passes the same `exclusions.file`.
+# summarizeTagData() produces a one-row-per-deployment table of key metrics, 
+# including deployment duration, depth and temperature, sampling rate, position, 
+# video and movement statistics. The QC'd deployments object completes the deployment list,
+# so excluded deployments are retained in the summary.
 
+# Load video metadata if needed
+#video_metadata <- read.csv(file = "./outputs/video_metadata.csv")
+
+# Build the per-deployment summary, including standard metadata, video information
+# and processing exclusions
 summary <- summarizeTagData(data           = list.files("./data interim/06_tailbeats", full.names = TRUE),
                             deployments    = deployments,
                             metadata       = "standard",
@@ -742,22 +655,38 @@ summary <- summarizeTagData(data           = list.files("./data interim/06_tailb
                             error.stat     = "sd",
                             verbose        = "detailed")
 
+# Format the summary for export, selecting variables and adding a summary row.
+summary_table <- format(summary, style = "concise", 
+                        decimals = c(size_m = 1, video_duration_h = 1), 
+                        order.by = "id",
+                        group.by = "status",
+                        group.order = c("included", "excluded"),
+                        include.summary.row = TRUE)
+selected_cols <- c("ID", "Animal",	"Sex",	"Size m", "Site", "Lon (deg)",	"Lat (deg)",
+                  "Tag type", "Status", "Reason", "Rec. start", "Rec. end", "Duration (h)",	
+                  "Rate (Hz)", "Paddle wheel", "Video (h)", "Mean depth (m)",	"Max depth (m)",
+                  "Mean temp. (deg C)", "Min temp. (deg C)", "Max temp. (deg C)")
+summary_table <- summary_table[, selected_cols]
 
-# For export, format() renders the publication-style version. It is ASCII by default - a spreadsheet
-# opening a UTF-8 CSV with no byte-order mark guesses the encoding, and a degree sign then arrives as
-# mojibake. Pass symbols = "unicode" where the consumer handles UTF-8 (knitr, flextable, a manuscript).
-summary_table <- format(summary, style = "concise", include.summary.row = TRUE)
-write.csv2(summary_table, file = "./outputs/summary_table.csv", row.names = FALSE, fileEncoding = "UTF-8")
+
+# Standardise selected fields for the final export
+summary_table$`Paddle wheel`[summary_table$`Paddle wheel`==TRUE] <- 1
+summary_table$`Paddle wheel`[summary_table$`Paddle wheel`==FALSE] <- 0
+summary_table$`Tag type`[summary_table$`Tag type`=="Camera"] <- "camera"
+summary_table$`Tag type`[summary_table$`Tag type`=="MS"] <- "diary"
+summary_table$Site[summary_table$Site=="SE_PICO"] <- "PICO"
+
+# Export the final deployment summary as a CSV.
+write.csv2(summary_table, file = "./outputs/summary_table_v6.csv", row.names = FALSE, fileEncoding = "UTF-8")
 
 
 ################################################################################
-# STEP 15. Plot depth profiles                                                 #
+# STEP 14. Plot depth profiles                                                 #
 ################################################################################
 
-# A depth-versus-time profile is the most immediate portrait of a deployment: dive shape, vertical
-# range, and the temperatures the animal moved through. plotDepthProfiles() draws one panel per
-# deployment, coloured by temperature and shaded by day/night (read from each deployment's coordinates),
-# and manages the multi-page PDF itself - so you just hand it the file paths. 
+# plotDepthProfiles() plots depth over time for each deployment, with temperature 
+# shown by colour and day/night periods shaded using the deployment coordinates. 
+# The plots are written to a multi-page PDF for visual inspection.
 
 plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", full.names = TRUE),
                   color.by         = "temp",   # colour the trace by any per-sample metric
@@ -770,13 +699,14 @@ plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", f
                   nrows            = 7)
 
 ################################################################################
-# STEP 16. Compare metric distributions across the cohort                      #
+# STEP 15. Compare metric distributions across the cohort                      #
 ################################################################################
 
-# Where STEP 13 gives one number per animal, plotDistributions() shows the whole shape of a metric: a
-# stack of per-deployment violins over a pooled population strip, one panel per metric. It's the quick
-# way to spot among-individual variation and multimodal behaviour that a mean would hide - and it
-# returns the per-deployment distribution summary invisibly, for tables and stats.
+# plotDistributions() visualises the distribution of selected metrics across 
+# deployments, helping reveal among-individual variation and differences that 
+# summary statistics alone may obscure. The underlying distribution summaries 
+# are also returned invisibly for further analysis.
+
 dist_summary <- plotDistributions(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
                                   metrics   = c("tbf_hz_wavelet", "paddle_speed"),
                                   order.by  = "id",  
@@ -786,26 +716,29 @@ dist_summary <- plotDistributions(data      = list.files("./data interim/06_tail
 
 
 ################################################################################
-# STEP 17. Map how the cohort uses the water column                            #
+# STEP 16. Map how the cohort uses the water column                            #
 ################################################################################
 
-# Finally, a population view of habitat use: plotTimeAtDepth() shows how much time the animals spent at
-# each depth (and temperature), as duration-weighted profiles with fine bins near the surface. Ask for
-# both variables together to see time-at-depth beside time-at-temperature, mirror night against day, or
-# facet by a biological trait to compare groups. It returns the underlying per-bin table invisibly.
+# plotTimeAtDepth() summarises time spent across depth or temperature bins, 
+# optionally separating day and night or comparing groups. The underlying 
+# per-bin summaries are also returned invisibly.
+
 tad_summary <- plotTimeAtDepth(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
                                variable  = c("depth", "temp"),   # depth-use and thermal-use side by side
                                diel      = TRUE,                 # mirror night vs day (needs coordinates)
                                style     = "profile",            # or "heatmap" for a cohort-by-depth grid
                                plot      = FALSE,
                                plot.file = "./plots/time-at-depth.pdf")
-# Compare groups, restyled with a theme preset:
-# plotTimeAtDepth(profile_files, group = "sex", theme = plotTheme("minimal"),
+
+# Compare groups using a theme preset:
+# plotTimeAtDepth(profile_files, 
+#                 group = "sex",
+#                 theme = plotTheme("minimal"),
 #                 plot.file = "./plots/tad-by-sex.pdf")
 
 
-###############################################################################################
-# And that's the run: from a folder of raw tag files to oriented, calibrated, analysis-ready
-# datasets, plus cohort-level summaries and figures. Every object still carries its own story -
-# processingHistory(x) will show you exactly how it was made.
-###############################################################################################
+################################################################################
+# End of pipeline: raw tag files to quality-controlled, oriented and processed 
+# datasets, with deployment- and cohort-level summaries and visualisations. 
+# Use processingHistory(x) to inspect how an individual dataset was processed. 
+################################################################################
