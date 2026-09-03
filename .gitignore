@@ -12,13 +12,6 @@ _archive/
 tutorials/legacy/
 Circling_Events_Detection.R
 
-# Internal development docs (kept locally, not published)
-AUDIT.md
-REVIEW.md
-ISSUES.md
-AXIS_MAPPING_PLAN.md
-DESIGN_INGESTION.md
-
 # R build / check artefacts
 *.tar.gz
 /doc/

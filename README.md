@@ -305,6 +305,8 @@ covers both styles.
 
 - **Function reference** &mdash; every exported function is documented with runnable
   examples; open help with `?processTagData` (or any other function name).
+- **Developer guide** &mdash; [`DEVELOPER_GUIDE.md`](DEVELOPER_GUIDE.md) records the implemented
+  architecture, scientific invariants, coding conventions, known hazards and release workflow.
 - **Changelog** &mdash; see [`NEWS.md`](NEWS.md) for what is new in each version.
 - **Worked scripts** &mdash; the [`tutorials/`](tutorials/) directory holds two complete,
   runnable examples: [*data processing*](tutorials/tutorial01%20-%20data%20processing.R),
