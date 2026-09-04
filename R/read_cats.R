@@ -294,7 +294,7 @@
 
   requested_offset <- .tzOffsetHours(timezone, ref)
   timezone_mismatch <- is.finite(recording_offset) &&
-    abs(recording_offset - requested_offset) > 0.5
+    abs(recording_offset - requested_offset) > 1 / 3600
   timezone_note <- if (timezone_mismatch) {
     if (recording_offset == 0) {
       sprintf("%s but timezone is %s. Use timezone = \"UTC\".", source_label, timezone)
@@ -316,9 +316,9 @@
   # Only the sidecar can establish a device-versus-logging difference. Keep this separate from the
   # sensor/source warning: it is actionable for video alignment, not evidence that sensor rows are wrong.
   device_clock_mismatch <- is.finite(logging_offset) && is.finite(device_offset) &&
-    abs(logging_offset - device_offset) > 0.5
+    abs(logging_offset - device_offset) > 1 / 3600
   device_clock_note <- if (device_clock_mismatch && logging_offset == 0) {
-    sprintf("[logging] is UTC but [device] offset is %gh. Video timestamps may require manual %+gh correction.",
+    sprintf("[logging] is UTC but [device] offset is %gh. Video timestamps may require %+gh correction.",
             device_offset, -device_offset)
   } else if (device_clock_mismatch) {
     sprintf("[logging] offset is %gh but [device] offset is %gh. Check video timestamps.",

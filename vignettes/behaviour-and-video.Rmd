@@ -132,10 +132,14 @@ on-screen clock), and falls back to reading the burned-in overlay clock by OCR o
 name carries no time.
 
 ```{r video-metadata}
+clock_corrections <- getVideoClockCorrections(tags)
+clock_corrections                         # review before applying
+
 vmeta <- getVideoMetadata(
   "./videos",
   timestamp.source = "auto",   # file name first, OCR only where needed
-  cross.check      = TRUE      # also OCR the overlay and flag disagreements > 2 s
+  cross.check      = TRUE,     # also OCR the overlay and flag disagreements > 2 s
+  clock.corrections = clock_corrections
 )
 ```
 
@@ -149,14 +153,27 @@ OCR-sourced, missing, or flagged, so you can confirm them by eye:
 vmeta <- saveUncertainTimestampFrames(vmeta, output.dir = "./timestamp-review")
 ```
 
-Then correct only the few clips that are genuinely wrong -- typically a camera with a mis-set
-clock -- by overwriting `start` (recompute `end` from `duration`):
+If the sensor import retained a CATS sidecar whose `[logging]` clock is explicitly UTC, the sensor object
+was imported in UTC, and the `[device]` clock has a non-zero offset, `getVideoClockCorrections()` puts the
+corresponding correction in the reviewable table above. No correction is inferred from ambiguous or
+non-UTC declarations.
+
+For a correction established independently, supply the same compact contract manually. The value is
+the number of seconds **added** to the extracted video clock:
 
 ```{r override}
-i <- which(vmeta$video == "230831-161949_CAM0bc99448_30.mp4")
-vmeta$start[i] <- as.POSIXct("2023-08-31 16:19:49", tz = "UTC")
-vmeta$end[i]   <- vmeta$start[i] + vmeta$duration[i]
+clock_corrections <- data.frame(
+  ID = "PIN_CAM_31",
+  clock_correction_s = 3600,
+  clock_correction_source = "manual"
+)
+
+vmeta <- getVideoMetadata("./videos/PIN_CAM_31", clock.corrections = clock_corrections)
 ```
+
+Every returned row records `clock_correction_s` (`0` when uncorrected) and
+`clock_correction_source` (`NA` when uncorrected), so the original reading remains recoverable as
+`start - clock_correction_s` without duplicating the timestamp columns.
 
 **Dependencies and the OCR model.** `ffprobe` (from FFmpeg) is always needed for duration and
 frame rate; a pure filename run needs nothing more. OCR additionally uses `ffmpeg` and the

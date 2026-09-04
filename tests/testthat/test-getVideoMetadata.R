@@ -71,3 +71,148 @@ test_that("getVideoMetadata() reports missing and empty folders clearly", {
   d <- tempfile(); dir.create(d); on.exit(unlink(d, recursive = TRUE), add = TRUE)
   expect_error(getVideoMetadata(d, verbose = FALSE), "No .*video", ignore.case = TRUE)   # empty folder
 })
+
+
+# Video-clock correction contract ####################################################################
+
+.video_clock_tag <- function(id, device.offset = NA_real_, logging.offset = NA_real_, timezone = "UTC") {
+  d <- data.table::data.table(ID = id, datetime = as.POSIXct("2022-09-04 12:30:25", tz = "UTC"),
+                              depth = 1)
+  meta <- nautilus:::.newNautilusMeta()
+  meta$id <- id
+  meta$sensors$timezone <- timezone
+  meta$sensors$recording_utc_offset <- logging.offset
+  meta$sidecar <- list(
+    source = paste0(id, ".txt"), source_type = "cats_diary_txt",
+    device = list(utc_offset = device.offset),
+    logging = list(utc_offset = logging.offset)
+  )
+  nautilus:::new_nautilus_tag(d, meta)
+}
+
+test_that("getVideoClockCorrections() derives only explicit UTC device corrections", {
+  tags <- list(
+    PIN_CAM_31 = .video_clock_tag("PIN_CAM_31", device.offset = -1, logging.offset = 0),
+    PIN_CAM_32 = .video_clock_tag("PIN_CAM_32", device.offset = 0, logging.offset = 0),
+    PIN_CAM_33 = .video_clock_tag("PIN_CAM_33", device.offset = 0.5, logging.offset = 0)
+  )
+
+  got <- getVideoClockCorrections(tags)
+  expect_s3_class(got, "data.frame")
+  expect_named(got, c("ID", "clock_correction_s", "clock_correction_source",
+                      "device_utc_offset_h", "logging_utc_offset_h"))
+  expect_equal(got$ID, c("PIN_CAM_31", "PIN_CAM_33"))
+  expect_equal(got$clock_correction_s, c(3600, -1800))
+  expect_equal(got$clock_correction_source, rep("cats_sidecar_device_to_utc", 2))
+  expect_equal(got$device_utc_offset_h, c(-1, 0.5))
+  expect_equal(got$logging_utc_offset_h, c(0, 0))
+})
+
+test_that("getVideoClockCorrections() declines ambiguous clock metadata", {
+  no_logging <- .video_clock_tag("NO_LOG", device.offset = -1, logging.offset = NA_real_)
+  local_logging <- .video_clock_tag("LOCAL_LOG", device.offset = -1, logging.offset = 1)
+  wrong_import_zone <- .video_clock_tag("WRONG_ZONE", device.offset = -1, logging.offset = 0,
+                                        timezone = "Europe/Lisbon")
+
+  expect_warning(
+    got <- getVideoClockCorrections(list(no_logging, local_logging, wrong_import_zone)),
+    "could not be derived"
+  )
+  expect_equal(nrow(got), 0)
+  expect_named(got, c("ID", "clock_correction_s", "clock_correction_source",
+                      "device_utc_offset_h", "logging_utc_offset_h"))
+})
+
+test_that("video-clock correction tables are strict and canonical", {
+  validate <- nautilus:::.validateVideoClockCorrections
+  manual <- validate(data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600), "PIN_CAM_31")
+  expect_equal(manual$clock_correction_source, "manual")
+
+  expect_error(validate(list(ID = "A", clock_correction_s = 1)), "data frame")
+  expect_error(validate(data.frame(ID = "A")), "clock_correction_s")
+  expect_error(validate(data.frame(ID = c("A", "A"), clock_correction_s = c(1, 2))), "more than one row")
+  expect_error(validate(data.frame(ID = "A", clock_correction_s = NA_real_)), "finite numeric")
+  expect_error(validate(data.frame(ID = "TYPO", clock_correction_s = 1), "A"), "do not match")
+})
+
+test_that("video-clock corrections shift every device-clock timestamp and retain provenance", {
+  start <- as.POSIXct("2022-09-04 11:30:25", tz = "UTC") + c(0, 100, 200)
+  video <- data.frame(
+    ID = c("PIN_CAM_31", "PIN_CAM_31", "PIN_CAM_32"),
+    video = c("a.mp4", "b.mp4", "c.mp4"),
+    start = start,
+    end = start + 10,
+    duration = c(10, 10, 10),
+    ocr_start = start + 1,
+    ocr_offset_s = rep(-1, 3),
+    stringsAsFactors = FALSE
+  )
+  corrections <- nautilus:::.validateVideoClockCorrections(
+    data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600,
+               clock_correction_source = "manual"),
+    unique(video$ID)
+  )
+
+  got <- nautilus:::.applyVideoClockCorrections(video, corrections)
+  expect_equal(got$start[1:2], video$start[1:2] + 3600)
+  expect_equal(got$start[3], video$start[3])
+  expect_equal(got$end, got$start + got$duration)
+  expect_equal(got$ocr_start[1:2], video$ocr_start[1:2] + 3600)
+  expect_equal(got$ocr_offset_s, video$ocr_offset_s)
+  expect_equal(got$clock_correction_s, c(3600, 3600, 0))
+  expect_equal(got$clock_correction_source, c("manual", "manual", NA_character_))
+
+  expect_error(nautilus:::.applyVideoClockCorrections(got, corrections), "already applied")
+
+  plain <- nautilus:::.applyVideoClockCorrections(
+    video, nautilus:::.validateVideoClockCorrections(NULL)
+  )
+  expect_equal(plain$clock_correction_s, rep(0, 3))
+  expect_true(all(is.na(plain$clock_correction_source)))
+})
+
+test_that("videos without a timestamp remain uncorrected and are reported", {
+  missing <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+  video <- data.frame(ID = "PIN_CAM_31", start = missing, end = missing, duration = 10)
+  corrections <- nautilus:::.validateVideoClockCorrections(
+    data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600), "PIN_CAM_31")
+
+  expect_warning(
+    got <- nautilus:::.applyVideoClockCorrections(video, corrections),
+    "without a start timestamp"
+  )
+  expect_true(is.na(got$start))
+  expect_equal(got$clock_correction_s, 0)
+  expect_true(is.na(got$clock_correction_source))
+})
+
+test_that("getVideoMetadata() applies a correction table after extraction", {
+  root <- tempfile(); dir.create(root)
+  folder <- file.path(root, "PIN_CAM_31"); dir.create(folder)
+  video_path <- file.path(folder, "20220904-113025_CAM.mp4")
+  file.create(video_path)
+  on.exit(unlink(root, recursive = TRUE), add = TRUE)
+
+  testthat::local_mocked_bindings(
+    .ffprobeBin = function() "unused",
+    .analyseVideo = function(video, id, fn_start, timestamp.source, cross.check,
+                             ocr, ocr_model, whitelist, ocr_engine, ffmpeg_bin, ffprobe_bin) {
+      data.frame(ID = id, video = basename(video), start = fn_start, end = fn_start + 10,
+                 duration = 10, frame_rate = 25, file = video,
+                 timestamp_source = "filename", stringsAsFactors = FALSE)
+    },
+    .package = "nautilus"
+  )
+
+  corrections <- data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600)
+  got <- NULL
+  output <- cli::cli_fmt(
+    got <- getVideoMetadata(folder, timestamp.source = "filename", clock.corrections = corrections,
+                            use.parallel = FALSE, verbose = "detailed")
+  )
+  expect_equal(got$start, as.POSIXct("2022-09-04 12:30:25", tz = "UTC"))
+  expect_equal(got$clock_correction_s, 3600)
+  expect_equal(got$clock_correction_source, "manual")
+  expect_match(paste(output, collapse = "\n"), "clock \\+3600 s")
+  expect_match(paste(output, collapse = "\n"), "clock corrected: 1/1 video")
+})

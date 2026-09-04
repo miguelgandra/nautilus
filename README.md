@@ -114,7 +114,11 @@ may include a multi-sensor tag and satellite tag, while another may contain only
 multi-sensor data.
 
 Onboard video sits under its own root, passed separately to `getVideoMetadata()`, since
-footage is usually much larger than the sensor records and often kept on another drive.
+footage is usually much larger than the sensor records and often kept on another drive. If a CATS
+sidecar shows that its device/video clock differs from sensor data explicitly logged and imported in UTC,
+`getVideoClockCorrections()` produces a reviewable correction table that can be passed to
+`getVideoMetadata(clock.corrections = ...)`; the applied seconds and their source remain in the
+returned video metadata.
 
 The deployment table is the main metadata file linking your raw files to deployment
 information. It should contain one row per deployment and can use your existing column

@@ -229,7 +229,7 @@ test_that("device and logging clocks are kept separate and reported through both
     suppressMessages(run(FALSE)),
     warning = function(w) { msgs <<- c(msgs, conditionMessage(w)); invokeRestart("muffleWarning") })
   expect_true(any(grepl("Device clock", msgs, fixed = TRUE)))
-  expect_true(any(grepl("manual \\+1h correction", msgs)))
+  expect_true(any(grepl("require \\+1h correction", msgs)))
   expect_false(any(grepl("Time zone", msgs, fixed = TRUE)))
   stored <- nautilus:::.getMeta(quiet$tag)
   expect_equal(format(quiet$tag$datetime[1], "%Y-%m-%d %H:%M:%S", tz = "UTC"),
@@ -242,7 +242,7 @@ test_that("device and logging clocks are kept separate and reported through both
   # block. `cli_fmt()` captures both paths reliably under testthat.
   detailed <- suppressWarnings(run("detailed"))$output
   expect_match(detailed, "\\[logging\\] is UTC but \\[device\\] offset is -1h")
-  expect_match(detailed, "Video timestamps may require manual \\+1h correction")
+  expect_match(detailed, "Video timestamps may require \\+1h correction")
   expect_match(detailed, "Device clock: 1 deployment")
 })
 
@@ -277,6 +277,18 @@ test_that("clock status without a sidecar has no device/logging diagnostic", {
   expect_false(status$timezone_mismatch)
   expect_false(status$device_clock_mismatch)
   expect_true(is.na(status$recording_utc_offset))
+})
+
+test_that("half-hour device offsets are not treated as matching UTC", {
+  mapping <- data.frame(colname_in_csv = "dt", sensor_name_out = "datetime",
+                        original_units_map = "UTC", stringsAsFactors = FALSE)
+  sidecar <- list(device = list(utc_offset = 0.5), logging = list(utc_offset = 0))
+  status <- nautilus:::.catsClockStatus(
+    mapping, sidecar, "UTC", as.POSIXct("2020-01-01", tz = "UTC"))
+
+  expect_true(status$device_clock_mismatch)
+  expect_match(status$device_clock_note, "device.*0.5h", ignore.case = TRUE)
+  expect_match(status$device_clock_note, "-0.5h correction", fixed = TRUE)
 })
 
 test_that(".reportSidecar confirms the sidecar but does not recite its constant values", {

@@ -98,9 +98,14 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 ## Onboard camera video
 
 * `getVideoMetadata()` extracts recording timestamps (from file names, with an OCR fallback for the
-  on-screen clock via `ocrControl()`), `filterVideoPeriod()` restricts sensor data to filmed intervals,
-  and `annotateData()` joins behavioural annotations. `launchVideo()`, `reencodeVideos()` and
-  `renderOverlayVideo()` support review and sensor-overlay rendering.
+  on-screen clock via `ocrControl()`). Deployment-level corrections can be supplied through
+  `clock.corrections`; the applied seconds and their source are retained in the returned table.
+  `getVideoClockCorrections()` derives only the unambiguous CATS case where sensor logging is explicitly
+  UTC, the sensor object was imported in UTC, and the device clock has a non-zero offset. Clock
+  comparisons now retain a one-second numerical tolerance while correctly detecting half-hour offsets.
+* `filterVideoPeriod()` restricts sensor data to filmed intervals, and `annotateData()` joins behavioural
+  annotations. `launchVideo()`, `reencodeVideos()` and `renderOverlayVideo()` support review and
+  sensor-overlay rendering.
 
 ## Notes
 

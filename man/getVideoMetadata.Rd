@@ -9,6 +9,7 @@ getVideoMetadata(
   video.format = "mp4",
   timestamp.source = c("auto", "filename", "ocr"),
   cross.check = FALSE,
+  clock.corrections = NULL,
   ocr = ocrControl(),
   use.parallel = TRUE,
   n.cores = NULL,
@@ -33,6 +34,11 @@ the file name, and compare the two (default \code{FALSE}). It costs an optical-c
 pass per video but validates the file-name times, which is worth doing once for a new camera system
 before trusting them for a whole study. Disagreements beyond two seconds are flagged in \code{ocr_flag}.}
 
+\item{clock.corrections}{Optional data frame with one row per deployment and columns \code{ID} and
+\code{clock_correction_s}, the number of seconds to add to its extracted video timestamps. An optional
+\code{clock_correction_source} column records provenance; it defaults to \code{"manual"}. Use
+\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} to derive a reviewable table from imported CATS sidecar metadata.}
+
 \item{ocr}{A control object from \code{\link[=ocrControl]{ocrControl()}} holding the recognition settings - the model, the
 position of the timestamp on screen, and how many frames to search. Only consulted when the screen
 is actually read. Pass \code{ocrControl(...)} to change it.}
@@ -48,7 +54,9 @@ videos is limited by disk and decoding rather than by R, so this helps considera
 \value{
 A data frame with one row per video and columns \code{ID}, \code{video} (the file name), \code{start} and
 \code{end}, \code{duration} in seconds, \code{frame_rate}, \code{file} (the full path), and \code{timestamp_source}, which is
-\code{"filename"}, \code{"ocr"}, or \code{NA} where no timestamp could be obtained at all.
+\code{"filename"}, \code{"ocr"}, or \code{NA} where no timestamp could be obtained at all. \code{clock_correction_s}
+records the number of seconds added to the extracted clock (\code{0} where none was applied), and
+\code{clock_correction_source} records its provenance (\code{NA} where uncorrected).
 
 With \code{cross.check = TRUE}, three further columns are added: \code{ocr_start}, the time read from the
 screen; \code{ocr_offset_s}, the file-name time minus that; and \code{ocr_flag}, which is \code{TRUE} where the two
@@ -82,6 +90,20 @@ Duration and frame rate are always read from the file itself with \code{ffprobe}
 installation is needed for every run. The \code{ffmpeg} binary itself, and the character-recognition
 packages, are needed only when the screen is actually read.
 }
+
+\subsection{Clock corrections}{
+
+File-name and OCR timestamps are clock readings parsed in UTC. When a camera clock was configured at
+a fixed offset, \code{clock.corrections} adds the specified number of seconds after extraction and before
+the video table is returned. Corrections match the exact deployment IDs derived from the video-folder
+basenames; unknown or duplicate IDs are errors. The original clock reading is recoverable as
+\code{start - clock_correction_s}.
+
+A correction is applied to \code{start}, \code{end}, and, when present, \code{ocr_start}; the filename-versus-OCR
+difference in \code{ocr_offset_s} therefore does not change. A video with no start timestamp remains
+uncorrected and is reported. Re-running this function starts again from the source files, so
+corrections cannot accumulate across runs.
+}
 }
 \examples{
 \dontrun{
@@ -91,9 +113,14 @@ meta <- getVideoMetadata(c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02"))
 # validate those file-name timestamps against the clock burned into the picture
 meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
 subset(meta, ocr_flag)
+
+# Explicit manual correction: add one hour to this deployment's camera clock.
+corrections <- data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600)
+meta <- getVideoMetadata("./videos/PIN_CAM_31", clock.corrections = corrections)
 }
 }
 \seealso{
-\code{\link[=ocrControl]{ocrControl()}} for the recognition settings; \code{\link[=launchVideo]{launchVideo()}} and \code{\link[=filterVideoPeriod]{filterVideoPeriod()}} for
-what consumes this table; \code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for compositing footage with sensor data.
+\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} for deriving corrections from imported tag metadata;
+\code{\link[=ocrControl]{ocrControl()}} for the recognition settings; \code{\link[=launchVideo]{launchVideo()}} and \code{\link[=filterVideoPeriod]{filterVideoPeriod()}} for what
+consumes this table; \code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for compositing footage with sensor data.
 }

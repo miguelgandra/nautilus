@@ -2,6 +2,123 @@
 # Extract recording timestamps and metadata from biologging tag videos ################################
 #######################################################################################################
 
+#' Derive video-clock corrections from imported tag metadata
+#'
+#' @description
+#' Builds a small, reviewable correction table from the device and sensor-logging clock metadata retained
+#' by [importTagData()]. It does not modify either the sensor data or any video timestamps. Pass the result
+#' explicitly to the `clock.corrections` argument of [getVideoMetadata()] to apply it.
+#'
+#' @param data Imported sensor data in any standard pipeline form: a `nautilus_tag`, a named list of tag
+#'   objects, or paths to saved `.rds` objects.
+#'
+#' @details
+#' A correction is derived only for the unambiguous CATS sidecar case: `[logging]` explicitly states that
+#' the sensor stream is UTC, the sensor object was imported in a fixed UTC-equivalent time zone, and
+#' `[device] utc_offset` is finite and non-zero. The device clock is converted to UTC by adding
+#' `-utc_offset * 3600` seconds. Thus a device offset of `-1` produces a video-clock correction of `+3600`
+#' seconds.
+#'
+#' A non-zero device offset without an explicit UTC logging declaration is reported but omitted. The
+#' function deliberately does not infer corrections from ambiguous or non-UTC logging metadata.
+#'
+#' @return A data frame with one row per suggested deployment correction and columns `ID`,
+#'   `clock_correction_s`, `clock_correction_source`, `device_utc_offset_h`, and
+#'   `logging_utc_offset_h`. A deployment needing no correction is omitted.
+#'
+#' @seealso [getVideoMetadata()] for applying the returned corrections while extracting video timing;
+#'   [tagMetadata()] for inspecting the underlying sidecar provenance.
+#'
+#' @examples
+#' \dontrun{
+#' corrections <- getVideoClockCorrections(imported_tags)
+#' corrections
+#'
+#' video_metadata <- getVideoMetadata("./videos", clock.corrections = corrections)
+#' }
+#' @export
+
+getVideoClockCorrections <- function(data) {
+  src <- .resolveInput(data)
+  rows <- list()
+  ambiguous <- character(0)
+
+  scalar_offset <- function(x) {
+    if (length(x) != 1L) return(NA_real_)
+    value <- suppressWarnings(as.numeric(x))
+    if (length(value) != 1L || !is.finite(value)) NA_real_ else value
+  }
+  utc_zones <- c("UTC", "GMT", "UCT", "UNIVERSAL", "ZULU", "UTC0", "GMT0",
+                 "ETC/UTC", "ETC/GMT", "ETC/UCT", "ETC/UNIVERSAL", "ETC/ZULU")
+
+  for (i in seq_len(src$n)) {
+    tag <- src$get(i)
+    meta <- .getMeta(tag)
+    id <- meta$id %||% src$ids[i]
+    if (length(id) != 1L || is.na(id) || !nzchar(as.character(id)))
+      .abort("Every item in {.arg data} must have a non-missing deployment ID in its tag metadata.")
+    id <- as.character(id)
+
+    sidecar <- meta$sidecar
+    if (is.null(sidecar) || !identical(sidecar$source_type, "cats_diary_txt") ||
+        is.null(sidecar$device)) next
+    device_offset <- scalar_offset(sidecar$device$utc_offset)
+    if (!is.finite(device_offset) || abs(device_offset) < sqrt(.Machine$double.eps)) next
+
+    logging_offset <- if (!is.null(sidecar$logging)) scalar_offset(sidecar$logging$utc_offset) else NA_real_
+    if (!is.finite(logging_offset) || abs(logging_offset) >= sqrt(.Machine$double.eps)) {
+      reason <- if (!is.finite(logging_offset)) "no explicit [logging] UTC declaration" else
+        sprintf("[logging] offset is %gh, not UTC", logging_offset)
+      ambiguous <- c(ambiguous, sprintf("%s (%s)", id, reason))
+      next
+    }
+
+    sensor_timezone <- meta$sensors$timezone
+    sensor_timezone <- if (length(sensor_timezone) == 1L && !is.na(sensor_timezone))
+      toupper(as.character(sensor_timezone)) else NA_character_
+    if (is.na(sensor_timezone) || !sensor_timezone %in% utc_zones) {
+      label <- if (is.na(sensor_timezone)) "unknown" else sensor_timezone
+      ambiguous <- c(ambiguous, sprintf("%s (sensor data use timezone %s, not fixed UTC)", id, label))
+      next
+    }
+
+    rows[[length(rows) + 1L]] <- data.frame(
+      ID = id,
+      clock_correction_s = -device_offset * 3600,
+      clock_correction_source = "cats_sidecar_device_to_utc",
+      device_utc_offset_h = device_offset,
+      logging_utc_offset_h = logging_offset,
+      stringsAsFactors = FALSE
+    )
+  }
+
+  if (length(ambiguous)) {
+    ambiguous <- unique(ambiguous)
+    .warn_grouped(
+      "A video-clock correction could not be derived for {length(ambiguous)} deployment{?s}.",
+      ambiguous,
+      hints = "Automatic correction requires explicit UTC [logging] metadata and sensor data imported in UTC.",
+      items.header = "Not corrected:"
+    )
+  }
+
+  if (!length(rows)) {
+    return(data.frame(
+      ID = character(0), clock_correction_s = numeric(0),
+      clock_correction_source = character(0), device_utc_offset_h = numeric(0),
+      logging_utc_offset_h = numeric(0), stringsAsFactors = FALSE
+    ))
+  }
+
+  out <- do.call(rbind, rows)
+  duplicate_ids <- unique(out$ID[duplicated(out$ID)])
+  if (length(duplicate_ids))
+    .abort("{.arg data} contains more than one applicable clock record for deployment{?s} {.val {duplicate_ids}}.")
+  rownames(out) <- NULL
+  out
+}
+
+
 #' Read the timing of every camera-tag video file
 #'
 #' @description
@@ -26,6 +143,10 @@
 #'   the file name, and compare the two (default `FALSE`). It costs an optical-character-recognition
 #'   pass per video but validates the file-name times, which is worth doing once for a new camera system
 #'   before trusting them for a whole study. Disagreements beyond two seconds are flagged in `ocr_flag`.
+#' @param clock.corrections Optional data frame with one row per deployment and columns `ID` and
+#'   `clock_correction_s`, the number of seconds to add to its extracted video timestamps. An optional
+#'   `clock_correction_source` column records provenance; it defaults to `"manual"`. Use
+#'   [getVideoClockCorrections()] to derive a reviewable table from imported CATS sidecar metadata.
 #' @param ocr A control object from [ocrControl()] holding the recognition settings - the model, the
 #'   position of the timestamp on screen, and how many frames to search. Only consulted when the screen
 #'   is actually read. Pass `ocrControl(...)` to change it.
@@ -53,16 +174,32 @@
 #' installation is needed for every run. The `ffmpeg` binary itself, and the character-recognition
 #' packages, are needed only when the screen is actually read.
 #'
+#' ## Clock corrections
+#'
+#' File-name and OCR timestamps are clock readings parsed in UTC. When a camera clock was configured at
+#' a fixed offset, `clock.corrections` adds the specified number of seconds after extraction and before
+#' the video table is returned. Corrections match the exact deployment IDs derived from the video-folder
+#' basenames; unknown or duplicate IDs are errors. The original clock reading is recoverable as
+#' `start - clock_correction_s`.
+#'
+#' A correction is applied to `start`, `end`, and, when present, `ocr_start`; the filename-versus-OCR
+#' difference in `ocr_offset_s` therefore does not change. A video with no start timestamp remains
+#' uncorrected and is reported. Re-running this function starts again from the source files, so
+#' corrections cannot accumulate across runs.
+#'
 #' @return A data frame with one row per video and columns `ID`, `video` (the file name), `start` and
 #'   `end`, `duration` in seconds, `frame_rate`, `file` (the full path), and `timestamp_source`, which is
-#'   `"filename"`, `"ocr"`, or `NA` where no timestamp could be obtained at all.
+#'   `"filename"`, `"ocr"`, or `NA` where no timestamp could be obtained at all. `clock_correction_s`
+#'   records the number of seconds added to the extracted clock (`0` where none was applied), and
+#'   `clock_correction_source` records its provenance (`NA` where uncorrected).
 #'
 #'   With `cross.check = TRUE`, three further columns are added: `ocr_start`, the time read from the
 #'   screen; `ocr_offset_s`, the file-name time minus that; and `ocr_flag`, which is `TRUE` where the two
 #'   disagree by more than two seconds.
 #'
-#' @seealso [ocrControl()] for the recognition settings; [launchVideo()] and [filterVideoPeriod()] for
-#'   what consumes this table; [renderOverlayVideo()] for compositing footage with sensor data.
+#' @seealso [getVideoClockCorrections()] for deriving corrections from imported tag metadata;
+#'   [ocrControl()] for the recognition settings; [launchVideo()] and [filterVideoPeriod()] for what
+#'   consumes this table; [renderOverlayVideo()] for compositing footage with sensor data.
 #'
 #' @examples
 #' \dontrun{
@@ -72,6 +209,10 @@
 #' # validate those file-name timestamps against the clock burned into the picture
 #' meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
 #' subset(meta, ocr_flag)
+#'
+#' # Explicit manual correction: add one hour to this deployment's camera clock.
+#' corrections <- data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600)
+#' meta <- getVideoMetadata("./videos/PIN_CAM_31", clock.corrections = corrections)
 #' }
 #' @export
 
@@ -79,6 +220,7 @@ getVideoMetadata <- function(video.folders,
                              video.format = "mp4",
                              timestamp.source = c("auto", "filename", "ocr"),
                              cross.check = FALSE,
+                             clock.corrections = NULL,
                              ocr = ocrControl(),
                              use.parallel = TRUE,
                              n.cores = NULL,
@@ -127,6 +269,10 @@ getVideoMetadata <- function(video.folders,
   # load-balances across deployments (a 2-video folder and a 90-video one draw from the same pool)
   tasks <- data.frame(id = rep(names(video.folders), lengths(video_files)),
                       video = unlist(video_files, use.names = FALSE), stringsAsFactors = FALSE)
+
+  # Validate the whole correction plan before invoking ffprobe/OCR, including exact matching to the
+  # deployment IDs derived from the supplied folder names. A typo must fail before expensive work starts.
+  clock.corrections <- .validateVideoClockCorrections(clock.corrections, unique(tasks$id))
 
 
   ##############################################################################
@@ -212,9 +358,12 @@ getVideoMetadata <- function(video.folders,
               bullets = sprintf("Input: %d video%s across %d dataset%s",
                                 n_videos, if (n_videos != 1) "s" else "",
                                 n_animals, if (n_animals != 1) "s" else ""),
-              arrow = sprintf("Timestamp source: %s%s%s", src_desc,
+              arrow = sprintf("Timestamp source: %s%s%s%s", src_desc,
                               if (cross.check) " \u00b7 OCR cross-check" else "",
-                              if (use_par) sprintf(" \u00b7 %d cores", n.cores) else ""))
+                              if (use_par) sprintf(" \u00b7 %d cores", n.cores) else "",
+                              if (nrow(clock.corrections))
+                                sprintf(" \u00b7 %d clock correction%s", nrow(clock.corrections),
+                                        if (nrow(clock.corrections) != 1L) "s" else "") else ""))
 
 
   ##############################################################################
@@ -247,6 +396,11 @@ getVideoMetadata <- function(video.folders,
   }
   if (!is.null(pb_id)) cli::cli_progress_done(id = pb_id)
 
+  # Extraction above always starts from the source clock, so a fresh getVideoMetadata() call cannot
+  # stack corrections. The shared helper still guards existing non-zero provenance so it is safe to
+  # reuse on a previously produced table if that becomes part of the public API later.
+  all_rows <- .applyVideoClockCorrections(all_rows, clock.corrections)
+
 
   ##############################################################################
   # Per-deployment reporting + summary #########################################
@@ -260,8 +414,10 @@ getVideoMetadata <- function(video.folders,
       nn <- sum(is.na(dep$timestamp_source))
       bits <- c(if (nf) sprintf("%d file name", nf), if (no) sprintf("%d OCR", no), if (nn) sprintf("%d none", nn))
       flag <- if (cross.check) { fl <- sum(dep$ocr_flag, na.rm = TRUE); if (fl) sprintf(" \u00b7 %d flagged", fl) else "" } else ""
-      .log_ok(lvl, sprintf("%s \u00b7 %d video%s \u00b7 %s%s", dep$ID[1], nrow(dep),
-                           if (nrow(dep) != 1) "s" else "", paste(bits, collapse = ", "), flag))
+      shifts <- unique(dep$clock_correction_s[is.finite(dep$clock_correction_s) & dep$clock_correction_s != 0])
+      clock <- if (length(shifts) == 1L) sprintf(" \u00b7 clock %+.10g s", shifts) else ""
+      .log_ok(lvl, sprintf("%s \u00b7 %d video%s \u00b7 %s%s%s", dep$ID[1], nrow(dep),
+                           if (nrow(dep) != 1) "s" else "", paste(bits, collapse = ", "), flag, clock))
     }
     dep
   }))
@@ -279,6 +435,12 @@ getVideoMetadata <- function(video.folders,
       fl <- sum(result$ocr_flag, na.rm = TRUE)
       .log_detail(lvl, sprintf("cross-check discrepancies (> 2 s): %d/%d", fl, nrow(result)))
     }
+    nc <- sum(result$clock_correction_s != 0)
+    if (nc) {
+      nd <- length(unique(result$ID[result$clock_correction_s != 0]))
+      .log_detail(lvl, sprintf("clock corrected: %d/%d video%s across %d deployment%s", nc, nrow(result),
+                               if (nc != 1L) "s" else "", nd, if (nd != 1L) "s" else ""))
+    }
     if (nn) cli::cli_alert_warning(sprintf("No timestamp for %d video%s (source unavailable) - {.field start} set to NA.",
                                            nn, if (nn != 1) "s" else ""))
     n_ok <- nf + no
@@ -287,6 +449,129 @@ getVideoMetadata <- function(video.folders,
   }
 
   result
+}
+
+
+################################################################################
+# Video-clock correction contract #############################################
+################################################################################
+
+#' Validate and canonicalise a video-clock correction table
+#' @keywords internal
+#' @noRd
+
+.validateVideoClockCorrections <- function(corrections, video.ids = NULL) {
+  empty <- data.frame(ID = character(0), clock_correction_s = numeric(0),
+                      clock_correction_source = character(0), stringsAsFactors = FALSE)
+  if (is.null(corrections)) return(empty)
+  if (!is.data.frame(corrections))
+    .abort("{.arg clock.corrections} must be a data frame, or {.code NULL}.")
+
+  .assert_columns(corrections, c("ID", "clock_correction_s"), "clock.corrections")
+  if (!nrow(corrections)) return(empty)
+
+  ids <- as.character(corrections$ID)
+  bad_ids <- is.na(ids) | !nzchar(ids)
+  if (any(bad_ids))
+    .abort("{.field ID} in {.arg clock.corrections} must contain non-missing deployment identifiers.")
+  duplicate_ids <- unique(ids[duplicated(ids)])
+  if (length(duplicate_ids))
+    .abort("{.arg clock.corrections} has more than one row for deployment{?s} {.val {duplicate_ids}}.")
+
+  shifts <- corrections$clock_correction_s
+  if (!is.numeric(shifts) || any(!is.finite(shifts)))
+    .abort("{.field clock_correction_s} in {.arg clock.corrections} must contain finite numeric seconds.")
+
+  if ("clock_correction_source" %in% names(corrections)) {
+    source <- corrections$clock_correction_source
+    if (is.factor(source)) source <- as.character(source)
+    if (!is.character(source))
+      .abort("{.field clock_correction_source} in {.arg clock.corrections} must be character.")
+    source[is.na(source) | !nzchar(source)] <- "manual"
+  } else {
+    source <- rep("manual", length(ids))
+  }
+
+  if (!is.null(video.ids)) {
+    unmatched <- setdiff(ids, as.character(video.ids))
+    if (length(unmatched))
+      .abort(c("Some {.arg clock.corrections} IDs do not match the supplied video folders: {.val {unmatched}}.",
+               "i" = "Correction IDs must exactly match the video-folder basenames."))
+  }
+
+  data.frame(ID = ids, clock_correction_s = as.numeric(shifts),
+             clock_correction_source = source, stringsAsFactors = FALSE)
+}
+
+
+#' Apply an already-validated video-clock correction plan
+#'
+#' Corrections are transactional with respect to existing provenance: every target is checked before any
+#' timestamp is changed, and a non-zero prior correction aborts the whole operation. Rows with no start
+#' timestamp cannot be changed and are reported; all other rows for that deployment are still corrected.
+#' @keywords internal
+#' @noRd
+
+.applyVideoClockCorrections <- function(video.metadata, corrections) {
+  .assert_columns(video.metadata, c("ID", "start", "end", "duration"), "video.metadata")
+  if (!inherits(video.metadata$start, "POSIXct") || !inherits(video.metadata$end, "POSIXct"))
+    .abort("Columns {.field start} and {.field end} in {.arg video.metadata} must be POSIXct.")
+  if (!is.numeric(video.metadata$duration))
+    .abort("Column {.field duration} in {.arg video.metadata} must contain numeric seconds.")
+  if ("ocr_start" %in% names(video.metadata) && !inherits(video.metadata$ocr_start, "POSIXct"))
+    .abort("Column {.field ocr_start} in {.arg video.metadata} must be POSIXct.")
+
+  if (!"clock_correction_s" %in% names(video.metadata)) {
+    video.metadata$clock_correction_s <- rep(0, nrow(video.metadata))
+  } else if (!is.numeric(video.metadata$clock_correction_s) ||
+             any(!is.finite(video.metadata$clock_correction_s))) {
+    .abort("Existing {.field clock_correction_s} values in {.arg video.metadata} must be finite numeric seconds.")
+  }
+  if (!"clock_correction_source" %in% names(video.metadata)) {
+    video.metadata$clock_correction_source <- rep(NA_character_, nrow(video.metadata))
+  } else {
+    if (is.factor(video.metadata$clock_correction_source))
+      video.metadata$clock_correction_source <- as.character(video.metadata$clock_correction_source)
+    if (!is.character(video.metadata$clock_correction_source))
+      .abort("Existing {.field clock_correction_source} values in {.arg video.metadata} must be character.")
+  }
+
+  if (!nrow(corrections)) return(video.metadata)
+
+  plan_row <- match(as.character(video.metadata$ID), corrections$ID)
+  targeted <- !is.na(plan_row)
+  shift <- rep(0, nrow(video.metadata))
+  source <- rep(NA_character_, nrow(video.metadata))
+  shift[targeted] <- corrections$clock_correction_s[plan_row[targeted]]
+  source[targeted] <- corrections$clock_correction_source[plan_row[targeted]]
+  targeted <- targeted & shift != 0
+
+  already <- targeted & video.metadata$clock_correction_s != 0
+  if (any(already)) {
+    ids <- unique(as.character(video.metadata$ID[already]))
+    .abort("Clock correction already applied to deployment{?s} {.val {ids}}. Refusing to apply another correction.")
+  }
+
+  missing_start <- targeted & is.na(video.metadata$start)
+  if (any(missing_start)) {
+    ids <- unique(as.character(video.metadata$ID[missing_start]))
+    warning(sprintf("Clock correction was not applied to %d video%s without a start timestamp (%s).",
+                    sum(missing_start), if (sum(missing_start) != 1L) "s" else "",
+                    paste(ids, collapse = ", ")), call. = FALSE)
+  }
+
+  apply <- targeted & !missing_start
+  if (!any(apply)) return(video.metadata)
+
+  video.metadata$start[apply] <- video.metadata$start[apply] + shift[apply]
+  video.metadata$end[apply] <- video.metadata$start[apply] + video.metadata$duration[apply]
+  if ("ocr_start" %in% names(video.metadata)) {
+    have_ocr <- apply & !is.na(video.metadata$ocr_start)
+    video.metadata$ocr_start[have_ocr] <- video.metadata$ocr_start[have_ocr] + shift[have_ocr]
+  }
+  video.metadata$clock_correction_s[apply] <- shift[apply]
+  video.metadata$clock_correction_source[apply] <- source[apply]
+  video.metadata
 }
 
 
