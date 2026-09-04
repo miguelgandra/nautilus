@@ -130,6 +130,8 @@ test_that("smoothing and the speed cap behave, and neither is applied upstream a
   # first and last half-window NA, which is not the cap's doing)
   free <- .pwRun(tags, calibration = .pwCal(), max.speed = NULL, smoothing = NULL)$A$paddle_speed
   expect_false(any(is.na(free)))
+  default_free <- .pwRun(tags, calibration = .pwCal(), smoothing = NULL)$A$paddle_speed
+  expect_equal(default_free, free)                              # no silent censoring by default
   # smoothing is a plain argument here; smoothingControl() no longer carries a paddle window
   expect_null(smoothingControl()$speed)
   expect_equal(smoothingControl()$vertical, 1)
@@ -635,6 +637,10 @@ test_that("the method names are the five documented ones", {
                      "in-situ-deployment", "in-situ-pooled"))
   expect_error(suppressWarnings(calculatePaddleSpeed(.pwCohort(), method = "in-situ", verbose = 0)),
                "should be one of")
+})
+
+test_that("speed threshold filtering is opt-in", {
+  expect_null(eval(formals(calculatePaddleSpeed)$max.speed))
 })
 
 

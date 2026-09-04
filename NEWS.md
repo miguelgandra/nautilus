@@ -42,6 +42,8 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Processing, kinematics and behaviour
 
+* `calculatePaddleSpeed()` no longer censors speeds above 10 km/h by default. Its `max.speed` argument
+  now defaults to `NULL`; an upper cutoff is applied only when supplied explicitly.
 * `processTagData()` derives orientation (tilt-compensated compass or Madgwick fusion), kinematics,
   dynamic body acceleration and paddle-wheel swimming speed, applies the magnetometer calibration when
   trusted, and optionally down-samples; tuned via `orientationControl()`, `smoothingControl()`,

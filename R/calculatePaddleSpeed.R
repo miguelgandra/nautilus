@@ -45,8 +45,8 @@
 #' @param smoothing Window, in seconds, applied to the rotation frequency before converting it to a
 #'   speed. Default `1`; `NULL` disables it. On data downsampled to 1 Hz or coarser the binning has
 #'   already smoothed at least this much, so the window has little left to do.
-#' @param max.speed Speeds above this many km/h are treated as implausible and set to `NA` (default
-#'   `10`). `NULL` disables the check.
+#' @param max.speed Optional upper speed limit in km/h. Values above it are set to `NA`. The default
+#'   `NULL` leaves all finite calculated speeds unchanged; supply a cutoff explicitly to enable filtering.
 #' @param min.pitch Steepest-swimming threshold, in degrees, for the in-situ estimate (default `10`).
 #'   Shallower samples are excluded: the closer the animal is to level, the less its depth change says
 #'   about how fast it is going.
@@ -264,7 +264,7 @@ calculatePaddleSpeed <- function(data,
                                  validate = FALSE,
                                  agreement.threshold = 0.35,
                                  smoothing = 1,
-                                 max.speed = 10,
+                                 max.speed = NULL,
                                  min.pitch = 10,
                                  id.col = "ID",
                                  plot = FALSE,

@@ -13,7 +13,7 @@ calculatePaddleSpeed(
   validate = FALSE,
   agreement.threshold = 0.35,
   smoothing = 1,
-  max.speed = 10,
+  max.speed = NULL,
   min.pitch = 10,
   id.col = "ID",
   plot = FALSE,
@@ -58,8 +58,8 @@ apart.}
 speed. Default \code{1}; \code{NULL} disables it. On data downsampled to 1 Hz or coarser the binning has
 already smoothed at least this much, so the window has little left to do.}
 
-\item{max.speed}{Speeds above this many km/h are treated as implausible and set to \code{NA} (default
-\code{10}). \code{NULL} disables the check.}
+\item{max.speed}{Optional upper speed limit in km/h. Values above it are set to \code{NA}. The default
+\code{NULL} leaves all finite calculated speeds unchanged; supply a cutoff explicitly to enable filtering.}
 
 \item{min.pitch}{Steepest-swimming threshold, in degrees, for the in-situ estimate (default \code{10}).
 Shallower samples are excluded: the closer the animal is to level, the less its depth change says
