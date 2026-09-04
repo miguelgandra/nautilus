@@ -64,9 +64,10 @@
 #'   writes nothing.
 #' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
 #'   deployment this stage set aside and why. The log holds current state, not history: each stage
-#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
-#'   deployment is missing. Default `NULL`, which writes nothing.
+#'   refreshes its own rows for the deployments in the current call, so a deployment that stops being
+#'   excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+#'   every stage, and to [summarizeTagData()], which uses it to report why each deployment is missing.
+#'   Default `NULL`, which writes nothing.
 #' @param output.suffix Optional string appended to the deployment identifier in saved file names,
 #'   before `.rds`, to label a processing run or avoid overwriting an earlier one. Only used when
 #'   `output.dir` is specified.
@@ -453,10 +454,12 @@ processTagData <- function(data,
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+  scope_ids <- character(0)     # every deployment evaluated, including successful partial runs
   # every skip also records WHY, for the shared exclusions log: the reason is already computed for the
   # console line, and discarding it is what left a dropped deployment unexplained in the summary
   skipped_rows <- list()
   note_skip <- function(id, reason) {
+    scope_ids <<- c(scope_ids, as.character(id))
     skipped_ids <<- c(skipped_ids, id)
     skipped_rows[[length(skipped_rows) + 1L]] <<- .exclusionsRow(id, "processTagData", reason)
   }
@@ -548,6 +551,7 @@ processTagData <- function(data,
 
     # get ID
     id <- unique(individual_data$ID)[1]
+    scope_ids <- c(scope_ids, as.character(id))
     ids[i] <- as.character(id)                  # index-aligned with data_list / saved (skipped slots stay NA)
 
     # per-individual sub-header (level-2 only; groups this individual's detail lines)
@@ -1802,10 +1806,9 @@ processTagData <- function(data,
   .warn_grouped("{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
                 items = skipped_ids, style = "inline")
 
-  # This stage's rows in the shared log, replacing whatever it wrote before: a deployment that stops
-  # being skipped loses its row, which is why the write happens even when nothing was skipped.
+  # Refresh only this stage's rows for deployments evaluated by the current call.
   excl <- .exclusionsBind(skipped_rows)
-  .exclusionsWrite(excl, exclusions.file, "processTagData")
+  .exclusionsWrite(excl, exclusions.file, "processTagData", scope.ids = scope_ids)
 
   if (lvl >= 1L) {
     .log_summary(lvl)

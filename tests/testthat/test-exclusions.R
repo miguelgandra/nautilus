@@ -1,6 +1,6 @@
-# Tests for the shared deployment-exclusion log: one CSV holding CURRENT STATE, each stage replacing
-# its own rows. The design's whole point is that a deployment which stops being excluded loses its row,
-# which an append-only log cannot express, so that is what most of these check.
+# Tests for the shared deployment-exclusion log: one CSV holding CURRENT STATE, each stage refreshing
+# its own rows within the current call's deployment scope. A deployment which stops being excluded loses
+# its row, while an intentional partial run cannot erase rows for deployments it never evaluated.
 
 .exRow <- function(...) nautilus:::.exclusionsRow(...)
 .exWrite <- function(...) nautilus:::.exclusionsWrite(...)
@@ -48,6 +48,27 @@ test_that("a stage that excludes nothing still clears its rows", {
   .exWrite(.exBind(list(.exRow("A", "filterDeploymentData", "too short"))), f, "filterDeploymentData")
   .exWrite(.exBind(list()), f, "filterDeploymentData")     # a clean re-run
   expect_identical(nrow(.exRead(f)), 0L)
+})
+
+
+test_that("a scoped stage refresh preserves out-of-scope exclusions", {
+  f <- .exFile()
+  .exWrite(.exBind(list(.exRow("A", "filterDeploymentData", "old A failure"),
+                        .exRow("B", "filterDeploymentData", "old B failure"))),
+           f, "filterDeploymentData", scope.ids = c("A", "B"))
+  .exWrite(.exBind(list(.exRow("C", "processTagData", "missing columns"))),
+           f, "processTagData", scope.ids = "C")
+
+  # A clean partial re-run of B removes B's stale row, but A and the other stage survive.
+  .exWrite(.exBind(list()), f, "filterDeploymentData", scope.ids = "B")
+  ex <- .exRead(f)
+  expect_setequal(ex$id, c("A", "C"))
+  expect_identical(ex$reason[ex$id == "A"], "old A failure")
+
+  expect_error(
+    .exWrite(.exBind(list(.exRow("OUT", "filterDeploymentData", "x"))),
+             f, "filterDeploymentData", scope.ids = "A"),
+    "outside.*scope.ids")
 })
 
 

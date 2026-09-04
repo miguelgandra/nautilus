@@ -52,9 +52,10 @@
 #'   deployment. Supplying a directory is what triggers saving; `NULL` (default) writes nothing.
 #' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
 #'   deployment this stage set aside and why. The log holds current state, not history: each stage
-#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
-#'   deployment is missing. Default `NULL`, which writes nothing.
+#'   refreshes its own rows for the deployments in the current call, so a deployment that stops being
+#'   excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+#'   every stage, and to [summarizeTagData()], which uses it to report why each deployment is missing.
+#'   Default `NULL`, which writes nothing.
 #' @param output.suffix Optional string appended to each saved file name, before `.rds`, to label a
 #'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is specified.
 #' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
@@ -285,9 +286,11 @@ regularizeTimeSeries <- function(data,
 
   # iterate over each animal
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+  scope_ids <- character(0)     # every deployment evaluated, including successful partial runs
   # the reason travels with the id, for the shared exclusions log
   skipped_rows <- list()
   note_skip <- function(id, reason) {
+    scope_ids <<- c(scope_ids, as.character(id))
     skipped_ids <<- c(skipped_ids, id)
     skipped_rows[[length(skipped_rows) + 1L]] <<- .exclusionsRow(id, "regularizeTimeSeries", reason)
   }
@@ -332,6 +335,8 @@ regularizeTimeSeries <- function(data,
       id <- names(data)[i]
       individual_data <- data[[i]]
     }
+
+    scope_ids <- c(scope_ids, as.character(id))
 
     # per-individual sub-header (level-2 only; groups this individual's detail lines)
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals))
@@ -702,10 +707,9 @@ regularizeTimeSeries <- function(data,
     hints = c("They carry no entry in the returned data and were not written to {.arg output.dir}.",
               "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
 
-  # this stage's rows in the shared log, replacing whatever it wrote before, and before the summary
-  # announces the file so that a reported path always exists
+  # Refresh only this stage's rows for deployments evaluated by the current call.
   excl <- .exclusionsBind(skipped_rows)
-  .exclusionsWrite(excl, exclusions.file, "regularizeTimeSeries")
+  .exclusionsWrite(excl, exclusions.file, "regularizeTimeSeries", scope.ids = scope_ids)
 
   if (lvl >= 1L) {
     .log_summary(lvl)

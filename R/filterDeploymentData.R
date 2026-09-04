@@ -57,10 +57,11 @@
 #' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
 #'   deployment this stage set aside and why: its identifier, the rule that set it aside and, for one
 #'   detected and then rejected as too short, the window that was detected. The log holds current
-#'   state, not history: each stage replaces its own rows on every run, so a deployment that stops
-#'   being excluded loses its row. Pass the same path to every stage, and to [summarizeTagData()],
-#'   which uses it to report why each deployment is missing and to fill the window of one that was
-#'   detected and then rejected. The table is also attached to the result as
+#'   state, not history: each stage refreshes its own rows for the deployments in the current call, so a
+#'   deployment that stops being excluded loses its row without disturbing deployments outside a partial
+#'   run. Pass the same path to every stage, and to [summarizeTagData()], which uses it to report why each
+#'   deployment is missing and to fill the window of one that was detected and then rejected. The table is
+#'   also attached to the result as
 #'   `attr(x, "nautilus.exclusions")`; this argument only decides whether it is also written. Do not
 #'   place it inside `output.dir`. Default `NULL`.
 
@@ -210,7 +211,7 @@
 #'
 #' # A batch too large for memory: read paths, write filtered files, keep the exclusions table.
 #' filterDeploymentData(list.files("./imported", full.names = TRUE),
-#'                      exclusions.file = "./qc/exclusions.rds",
+#'                      exclusions.file = "./qc/exclusions.csv",
 #'                      return.data = FALSE, output.dir = "./deployed")
 #' }
 #' @export
@@ -402,7 +403,9 @@ filterDeploymentData <- function(data,
   # a diagnostic panel, and died with the iteration - so a summary table built afterwards could not say
   # when a rejected deployment started, and reported it as a bare "excluded" with no times at all.
   exclusions <- list()
+  scope_ids <- character(0)              # every deployment evaluated, including successful partial runs
   note_exclusion <- function(id, reason, from = NULL, to = NULL, hours = NA_real_) {
+    scope_ids <<- c(scope_ids, as.character(id))
     exclusions[[length(exclusions) + 1L]] <<-
       .exclusionsRow(id, "filterDeploymentData", reason, from, to, hours)
   }
@@ -457,6 +460,8 @@ filterDeploymentData <- function(data,
       # access the individual dataset
       individual_data <- data[[i]]
     }
+
+    scope_ids <- c(scope_ids, as.character(id))
 
     # per-individual sub-header (level-2 only; groups this individual's detail lines)
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals))
@@ -989,7 +994,7 @@ filterDeploymentData <- function(data,
               "A channel removed by {.fn checkSensorIntegrity} is recorded in {.code meta$sensors$excluded}."))
 
   excl <- .exclusionsBind(exclusions)
-  .exclusionsWrite(excl, exclusions.file, "filterDeploymentData")
+  .exclusionsWrite(excl, exclusions.file, "filterDeploymentData", scope.ids = scope_ids)
 
   if (lvl >= 1L) {
     .log_summary(lvl)
@@ -1317,4 +1322,3 @@ filterDeploymentData <- function(data,
 #' to report, and inventing one would make the two indistinguishable.
 #' @keywords internal
 #' @noRd
-

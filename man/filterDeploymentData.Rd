@@ -79,10 +79,11 @@ individual, or \code{NULL} (default). The parent directory must already exist, a
 \item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
 deployment this stage set aside and why: its identifier, the rule that set it aside and, for one
 detected and then rejected as too short, the window that was detected. The log holds current
-state, not history: each stage replaces its own rows on every run, so a deployment that stops
-being excluded loses its row. Pass the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}},
-which uses it to report why each deployment is missing and to fill the window of one that was
-detected and then rejected. The table is also attached to the result as
+state, not history: each stage refreshes its own rows for the deployments in the current call, so a
+deployment that stops being excluded loses its row without disturbing deployments outside a partial
+run. Pass the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each
+deployment is missing and to fill the window of one that was detected and then rejected. The table is
+also attached to the result as
 \code{attr(x, "nautilus.exclusions")}; this argument only decides whether it is also written. Do not
 place it inside \code{output.dir}. Default \code{NULL}.}
 
@@ -256,7 +257,7 @@ deployed <- filterDeploymentData(imported, custom.deployment.times = deployment_
 
 # A batch too large for memory: read paths, write filtered files, keep the exclusions table.
 filterDeploymentData(list.files("./imported", full.names = TRUE),
-                     exclusions.file = "./qc/exclusions.rds",
+                     exclusions.file = "./qc/exclusions.csv",
                      return.data = FALSE, output.dir = "./deployed")
 }
 }

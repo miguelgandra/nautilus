@@ -72,9 +72,10 @@ a directory is what triggers saving; \code{NULL} (default) writes nothing. The d
 
 \item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
 deployment this stage set aside and why. The log holds current state, not history: each stage
-replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each
-deployment is missing. Default \code{NULL}, which writes nothing.}
+refreshes its own rows for the deployments in the current call, so a deployment that stops being
+excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each deployment is missing.
+Default \code{NULL}, which writes nothing.}
 
 \item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
 to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}

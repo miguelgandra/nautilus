@@ -227,6 +227,64 @@ test_that("verbose = 2 adds per-individual sub-headers + grouped detail; tally s
   expect_match(d1, "skipping 1 folder \\(no sensor file found\\)")   # issues block also shown at the normal level
 })
 
+test_that("metadata deployments without folders are excluded by default and reported twice", {
+  root <- .make_fixture("ID_01")
+  on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  exclusions_file <- file.path(root, "exclusions.csv")
+  res <- NULL
+
+  txt <- paste(cli::cli_fmt(suppressWarnings(
+    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
+                         metadata = .meta(c("ID_01", "GHOST")),
+                         columns = metadataColumns(deploy_datetime = "deploy_date"),
+                         exclusions.file = exclusions_file,
+                         return.data = TRUE, verbose = 2))), collapse = "\n")
+
+  expect_identical(formals(importTagData)$missing.deployments, "exclude")
+  expect_equal(lengths(regmatches(txt, gregexpr("Missing data:", txt, fixed = TRUE))), 2L)
+  expect_match(txt, "2 expected deployments")
+  expect_match(txt, "GHOST", fixed = TRUE)
+
+  ex <- nautilus:::.exclusionsRead(exclusions_file)
+  expect_identical(ex$id, "GHOST")
+  expect_identical(ex$stage, "importTagData")
+  expect_identical(ex$reason, "no matching raw data folder in data.folders")
+  expect_identical(attr(res, "nautilus.exclusions")$id, "GHOST")
+
+  quiet_warnings <- testthat::capture_warnings(
+    importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
+                  metadata = .meta(c("ID_01", "GHOST")),
+                  columns = metadataColumns(deploy_datetime = "deploy_date"),
+                  return.data = TRUE, verbose = 0))
+  expect_identical(sum(grepl("Missing data:", quiet_warnings, fixed = TRUE)), 1L)
+})
+
+test_that("missing.deployments = ignore makes a partial import scope-safe", {
+  root <- .make_fixture("ID_01")
+  on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  exclusions_file <- file.path(root, "exclusions.csv")
+  old <- nautilus:::.exclusionsBind(list(
+    nautilus:::.exclusionsRow("ID_01", "importTagData", "old selected failure"),
+    nautilus:::.exclusionsRow("GHOST", "importTagData", "existing out-of-scope failure")
+  ))
+  nautilus:::.exclusionsWrite(old, exclusions_file, "importTagData",
+                              scope.ids = c("ID_01", "GHOST"))
+
+  warnings <- testthat::capture_warnings(
+    res <- importTagData(file.path(root, "ID_01"), import.mapping = .mapping,
+                         metadata = .meta(c("ID_01", "GHOST")),
+                         missing.deployments = "ignore",
+                         columns = metadataColumns(deploy_datetime = "deploy_date"),
+                         exclusions.file = exclusions_file,
+                         return.data = TRUE, verbose = 0))
+
+  expect_false(any(grepl("Missing data:", warnings, fixed = TRUE)))
+  expect_null(attr(res, "nautilus.exclusions"))
+  ex <- nautilus:::.exclusionsRead(exclusions_file)
+  expect_identical(ex$id, "GHOST")                    # outside this partial call, so it survives
+  expect_identical(ex$reason, "existing out-of-scope failure")
+})
+
 # ---- temperature blacklisting (electronics temp vs water temp) -----------------------------------
 
 # minimal active mapping mirroring the production defaults' reliable temp sources

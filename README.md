@@ -97,6 +97,12 @@ Each deployment folder must be named after the deployment ID used in your metada
 table. This allows nautilus to associate raw files with the corresponding deployment
 information.
 
+By default, the metadata table is treated as the expected study roster. Deployments
+without a matching folder are reported and recorded in the shared exclusions log; use
+`missing.deployments = "ignore"` for an intentional partial import. Exclusion-log updates
+are scoped to the deployments in each call, so partial reruns do not erase unrelated
+records.
+
 Inside each deployment folder, create one subfolder for each available data source.
 The names shown above (CMD, SPOT, MiniPAT, etc.) are examples only and can be adapted
 to your own file organisation: the multi-sensor folder is read from

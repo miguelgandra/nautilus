@@ -13,6 +13,7 @@ importTagData(
   import.mapping = NULL,
   required.sensors = NULL,
   metadata,
+  missing.deployments = "exclude",
   columns = metadataColumns(),
   return.data = TRUE,
   output.dir = NULL,
@@ -52,6 +53,11 @@ channel.}
 and tag, and optionally carrying deployment times, locations and other fields recognised by
 \code{\link[=metadataColumns]{metadataColumns()}}. An object returned by \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} is recommended.}
 
+\item{missing.deployments}{How to handle deployments present in \code{metadata} but absent from
+\code{data.folders}. The default, \code{"exclude"}, treats \code{metadata} as the expected study roster: missing
+folders are reported and recorded as import-stage exclusions. \code{"ignore"} treats them as outside
+the scope of this call, which is useful for an intentional partial import.}
+
 \item{columns}{Metadata-column mapping built with \code{\link[=metadataColumns]{metadataColumns()}} (default \code{metadataColumns()}).
 Needed only where your metadata column names differ from the package defaults.}
 
@@ -64,9 +70,10 @@ deployment. Supplying a directory is what triggers saving; \code{NULL} (default)
 
 \item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
 deployment this stage set aside and why. The log holds current state, not history: each stage
-replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each
-deployment is missing. Default \code{NULL}, which writes nothing.}
+refreshes its own rows for the deployments in the current call, so a deployment that stops being
+excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each deployment is missing.
+Default \code{NULL}, which writes nothing.}
 
 \item{output.suffix}{Optional string appended to each output file name, before \code{.rds}, to
 distinguish one import run from another. Only used when \code{output.dir} is specified.}
@@ -169,6 +176,11 @@ checked during import.
 
 Metadata fields are stored separately from the sensor time series and are carried through subsequent
 processing stages.
+
+By default \code{metadata} is also the expected import roster. A metadata deployment with no matching
+folder in \code{data.folders} is reported and recorded as excluded with the reason that no raw-data folder
+was supplied. This records absence without guessing why the tag was unavailable. For an intentional
+partial import, set \code{missing.deployments = "ignore"} or subset \code{metadata} to the selected folders.
 }
 
 \subsection{Time handling}{
@@ -286,6 +298,11 @@ meta <- checkDeploymentMetadata(raw_metadata)
 tags <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
                       metadata = meta,
                       timezone = "UTC")
+
+# Import an intentional subset without treating the remainder of the roster as missing.
+subset_tags <- importTagData(data.folders = selected_folders,
+                             metadata = meta,
+                             missing.deployments = "ignore")
 
 # An archive holding more than one tag make: identify each deployment from its own files.
 tags <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),

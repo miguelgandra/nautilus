@@ -3,8 +3,9 @@
 #######################################################################################################
 #
 # One CSV, holding CURRENT STATE rather than history: every stage that can drop a deployment writes the
-# exclusions it produced, replacing whatever it wrote before. A deployment that stops being excluded
-# loses its row, which an append-only log cannot express - absence of a record is not a record.
+# exclusions it produced, refreshing its earlier rows for the deployments in the current call. A
+# deployment that stops being excluded loses its row, while an intentional partial run leaves other
+# deployments untouched. An append-only log can express neither property reliably.
 #
 # The log and the data products go stale together, because running a stage refreshes both. A row left
 # by a stage that has not re-run therefore still describes the data that stage last wrote, which is why
@@ -99,20 +100,35 @@
   ex[, names(.exclusionsEmpty()), drop = FALSE]
 }
 
-#' Replace one stage's rows in the log and write it back.
+#' Refresh one stage's in-scope rows in the log and write it back.
 #'
 #' Read-modify-write, through a temporary file renamed over the target: the rename is atomic, so an
-#' interrupted run cannot leave the log truncated. A stage that excluded nothing still rewrites, which
-#' is how a deployment that stops being excluded loses its row.
+#' interrupted run cannot leave the log truncated. `scope.ids` names every deployment evaluated by this
+#' call. Existing rows for that stage and those IDs are removed before the current rows are appended;
+#' rows for other deployments and stages survive. `NULL` retains whole-stage replacement for internal
+#' maintenance and backwards compatibility with older package-internal callers.
 #' @keywords internal
 #' @noRd
-.exclusionsWrite <- function(rows, file, stage) {
+.exclusionsWrite <- function(rows, file, stage, scope.ids = NULL) {
   if (is.null(file)) return(invisible(NULL))
+
+  if (!is.null(scope.ids)) {
+    scope.ids <- unique(as.character(scope.ids))
+    scope.ids <- scope.ids[!is.na(scope.ids) & nzchar(scope.ids)]
+    outside <- setdiff(unique(as.character(rows$id)), scope.ids)
+    if (length(outside)) {
+      .abort(c("Cannot write exclusion rows outside {.arg scope.ids}: {.val {outside}}.",
+               "i" = "Every exclusion row must belong to a deployment evaluated by this call."))
+    }
+  }
+
   keep <- if (file.exists(file)) {
     old <- tryCatch(.exclusionsRead(file), error = function(e)
       .abort(c("Could not read the existing exclusions log at {.file {file}}.",
                "i" = conditionMessage(e))))
-    old[!old$stage %in% stage, , drop = FALSE]
+    replace <- old$stage %in% stage
+    if (!is.null(scope.ids)) replace <- replace & old$id %in% scope.ids
+    old[!replace, , drop = FALSE]
   } else .exclusionsEmpty()
 
   out <- rbind(keep, rows)

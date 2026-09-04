@@ -41,6 +41,10 @@
 #' @param metadata Data frame of deployment-level metadata identifying the deployment and its animal
 #'   and tag, and optionally carrying deployment times, locations and other fields recognised by
 #'   [metadataColumns()]. An object returned by [checkDeploymentMetadata()] is recommended.
+#' @param missing.deployments How to handle deployments present in `metadata` but absent from
+#'   `data.folders`. The default, `"exclude"`, treats `metadata` as the expected study roster: missing
+#'   folders are reported and recorded as import-stage exclusions. `"ignore"` treats them as outside
+#'   the scope of this call, which is useful for an intentional partial import.
 #' @param columns Metadata-column mapping built with [metadataColumns()] (default `metadataColumns()`).
 #'   Needed only where your metadata column names differ from the package defaults.
 #' @param return.data Whether to return the imported datasets in memory (default `TRUE`). When `FALSE`,
@@ -50,9 +54,10 @@
 #'   deployment. Supplying a directory is what triggers saving; `NULL` (default) writes nothing.
 #' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
 #'   deployment this stage set aside and why. The log holds current state, not history: each stage
-#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
-#'   deployment is missing. Default `NULL`, which writes nothing.
+#'   refreshes its own rows for the deployments in the current call, so a deployment that stops being
+#'   excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+#'   every stage, and to [summarizeTagData()], which uses it to report why each deployment is missing.
+#'   Default `NULL`, which writes nothing.
 #' @param output.suffix Optional string appended to each output file name, before `.rds`, to
 #'   distinguish one import run from another. Only used when `output.dir` is specified.
 #' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
@@ -122,6 +127,11 @@
 #'
 #' Metadata fields are stored separately from the sensor time series and are carried through subsequent
 #' processing stages.
+#'
+#' By default `metadata` is also the expected import roster. A metadata deployment with no matching
+#' folder in `data.folders` is reported and recorded as excluded with the reason that no raw-data folder
+#' was supplied. This records absence without guessing why the tag was unavailable. For an intentional
+#' partial import, set `missing.deployments = "ignore"` or subset `metadata` to the selected folders.
 #'
 #' ## Time handling
 #'
@@ -241,6 +251,11 @@
 #'                       metadata = meta,
 #'                       timezone = "UTC")
 #'
+#' # Import an intentional subset without treating the remainder of the roster as missing.
+#' subset_tags <- importTagData(data.folders = selected_folders,
+#'                              metadata = meta,
+#'                              missing.deployments = "ignore")
+#'
 #' # An archive holding more than one tag make: identify each deployment from its own files.
 #' tags <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
 #'                       metadata = meta,
@@ -261,6 +276,7 @@ importTagData <- function(data.folders,
                           import.mapping = NULL,
                           required.sensors = NULL,
                           metadata,
+                          missing.deployments = "exclude",
                           columns = metadataColumns(),
                           return.data = TRUE,
                           output.dir = NULL,
@@ -318,6 +334,10 @@ importTagData <- function(data.folders,
   # verbosity level (0 quiet / 1 normal / 2 detailed); also validates `verbose`
   lvl <- .verbosity(verbose)
 
+  # Strict by default: metadata describes the expected cohort. An intentional partial run can opt out
+  # without having to alter the authoritative metadata table.
+  missing.deployments <- match.arg(missing.deployments, c("exclude", "ignore"))
+
   # resolve the cross-device clock-alignment control (accepts an alignmentControl() object or a named
   # list of its fields); validates its fields up front, before any deployment is read
   alignment <- .as_control(alignment, alignmentControl, "nautilus_alignment", "alignment")
@@ -331,6 +351,7 @@ importTagData <- function(data.folders,
   #                    mid-run) - this is the channel headless / automated callers can catch.
   # Collectors are initialised up front so the on.exit builder is robust even if the run errors early.
   preflight_issues <- character(0)                                  # pre-flight (folder / metadata QC)
+  missing_deployment_ids <- character(0)                            # metadata rows with no supplied folder
   failed_ids <- character(0); timezone_issue_ids <- character(0)
   device_clock_ids <- character(0); device_clock_notes <- character(0)
   # the reason travels with the id, for the shared exclusions log
@@ -484,8 +505,15 @@ importTagData <- function(data.folders,
     }
   }
 
-  # check if deployment info exists for all individuals
-  processing_ids <- basename(data.folders)
+  # Folder basenames are deployment identifiers throughout import. Keep them positional: two paths may
+  # legitimately share a basename, and the reader/discovery state for one must never mask the other.
+  folder_ids <- basename(data.folders)
+
+  # check if deployment info exists for all individuals. In strict mode the whole metadata roster is in
+  # scope (including rows whose raw folder is absent); ignore mode deliberately limits QC to the selected
+  # folders, preserving the established partial-import behaviour.
+  metadata_ids <- as.character(metadata[[id.col]])
+  processing_ids <- if (identical(missing.deployments, "exclude")) metadata_ids else folder_ids
   processing_metadata <- metadata[metadata[[id.col]] %in% processing_ids, ]
   missing_deploy_idx <- is.na(processing_metadata[[deploy.date.col]]) | is.na(processing_metadata[[deploy.lon.col]]) | is.na(processing_metadata[[deploy.lat.col]])
   missing_deploy_ids <- processing_metadata[missing_deploy_idx, id.col]
@@ -523,12 +551,31 @@ importTagData <- function(data.folders,
   ##############################################################################
 
   # validate folder animal IDs against metadata
-  folder_ids <- basename(data.folders)
-  missing_ids <- setdiff(folder_ids, metadata[[id.col]])
+  missing_ids <- setdiff(folder_ids, metadata_ids)
   if (length(missing_ids) > 0) {
     .abort(c("Some folder IDs were not found in {.arg metadata}: {.val {missing_ids}}.",
              "i" = "Add these IDs to {.arg metadata}, or drop the folders from {.arg data.folders}."))
   }
+
+  # Reverse match: in the default strict mode every valid metadata ID is an expected deployment. This is
+  # observational only - absence of a folder cannot establish whether a tag was lost, unrecovered, or
+  # archived elsewhere - so the exclusion reason states exactly what the importer could verify.
+  valid_metadata_ids <- unique(metadata_ids[!is.na(metadata_ids) & nzchar(metadata_ids)])
+  if (identical(missing.deployments, "exclude")) {
+    missing_deployment_ids <- setdiff(valid_metadata_ids, folder_ids)
+    if (length(missing_deployment_ids)) {
+      preflight_issues <- c(
+        preflight_issues,
+        sprintf("Missing data: %d metadata deployment%s had no matching folder in data.folders%s",
+                length(missing_deployment_ids),
+                if (length(missing_deployment_ids) != 1L) "s" else "",
+                ids_str(missing_deployment_ids))
+      )
+      for (id in missing_deployment_ids)
+        note_fail(id, "no matching raw data folder in data.folders")
+    }
+  }
+  exclusion_scope_ids <- if (identical(missing.deployments, "exclude")) valid_metadata_ids else folder_ids
 
   # resolve each deployment's raw format: the `tag_format` metadata column wins (so one call can mix tag
   # makes), otherwise the `format` argument applies to all. Both are explicit and QC'd - nothing is sniffed
@@ -727,6 +774,10 @@ importTagData <- function(data.folders,
 
   # header: a framed block, visually isolated from the per-individual sections that follow
   hdr_bullets <- sprintf("Input: %d folder%s", n_animals, if (n_animals != 1) "s" else "")
+  n_expected <- length(exclusion_scope_ids)
+  if (identical(missing.deployments, "exclude") && n_expected != n_animals)
+    hdr_bullets <- c(hdr_bullets, sprintf("Expected: %d metadata deployment%s",
+                                          n_expected, if (n_expected != 1L) "s" else ""))
   if (!is.null(output.dir)) hdr_bullets <- c(hdr_bullets, paste0("Output: ", output.dir))
   hdr_arrow <- paste0("Mode: ", if (n_animals > 1) "batch import" else "single run")
   if (!is.null(qc_stamp))
@@ -771,6 +822,7 @@ importTagData <- function(data.folders,
 
   # iterate over each animal. Per-run issue trackers (counts + affected IDs) feed the final summary.
   n_done <- 0L                                        # issue collectors are initialised at the top
+  imported_ids <- character(0)                        # deployment count stays unique across duplicate basenames
   tot_rows <- 0; tot_secs <- 0                        # cohort volume, for the summary line
   for (i in seq_along(data_files)) {
 
@@ -1117,6 +1169,7 @@ importTagData <- function(data.folders,
     tot_rows <- tot_rows + nrow(sensor_data)
     tot_secs <- tot_secs + .tagSpanSeconds(sensor_data[["datetime"]])
     n_done <- n_done + 1L
+    imported_ids <- c(imported_ids, id)
     if (lvl >= 2L) {
       .log_ok(lvl, if (!is.null(saved_to)) paste0("saved ", basename(saved_to)) else "imported")
     } else {
@@ -1143,17 +1196,24 @@ importTagData <- function(data.folders,
   # Return imported data #######################################################
   ##############################################################################
 
-  # this stage's rows in the shared log, replacing whatever it wrote before, and before the summary
-  # announces the file so that a reported path always exists
+  # Refresh only the import-stage rows for deployments this call evaluated. In strict mode that is the
+  # full metadata roster; in ignore mode it is just the supplied folders, so a partial run cannot erase
+  # exclusions belonging to deployments outside its scope.
   excl <- .exclusionsBind(failed_rows)
-  .exclusionsWrite(excl, exclusions.file, "importTagData")
+  .exclusionsWrite(excl, exclusions.file, "importTagData", scope.ids = exclusion_scope_ids)
 
   # ---- final run summary -----------------------------------------------------------------------
   # Its own block (its own rule + blank-line separation), because the overall run statistics are
   # conceptually distinct from the continuous per-individual processing above.
   if (lvl >= 1L) {
     .log_summary(lvl)
-    .log_done(lvl, n_done, " of ", n_animals, " folder", if (n_animals != 1) "s", " imported")
+    if (identical(missing.deployments, "exclude")) {
+      n_imported <- length(unique(imported_ids))
+      .log_done(lvl, n_imported, " of ", n_expected, " expected deployment",
+                if (n_expected != 1L) "s", " imported")
+    } else {
+      .log_done(lvl, n_done, " of ", n_animals, " folder", if (n_animals != 1) "s", " imported")
+    }
     # scale of what was ingested: raw samples at native rate, and summed tracked time across tags
     if (n_done > 0)
       .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_rows),

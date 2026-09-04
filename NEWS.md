@@ -12,7 +12,11 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 * `importTagData()` reads each animal's multi-sensor CSVs, standardises sensor names and units, folds
   in Wildlife Computers location files, and stores everything as a `nautilus_tag` object (a `data.table`
   carrying a single consolidated metadata record; inspect it with `tagMetadata()` and
-  `processingHistory()`).
+  `processingHistory()`). Metadata deployments without a matching raw-data folder are now reported and
+  recorded as exclusions by default; `missing.deployments = "ignore"` supports intentional partial runs.
+* Updates to the shared exclusions log are deployment-scoped. A partial rerun refreshes current-state
+  rows only for the deployments it evaluated and cannot erase exclusions belonging to the rest of the
+  cohort.
 * `buildTagData()` constructs the same `nautilus_tag` from sensor data already in memory -- for tag
   makes `importTagData()` does not read (e.g. Little Leonardo loggers), data exported from another tool,
   or simulated data. It synthesises timestamps from a start time and rate when the raw has no clock, and

@@ -94,9 +94,10 @@
 #'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
 #' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
 #'   deployment this stage set aside and why. The log holds current state, not history: each stage
-#'   replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-#'   the same path to every stage, and to [summarizeTagData()], which uses it to report why each
-#'   deployment is missing. Default `NULL`, which writes nothing.
+#'   refreshes its own rows for the deployments in the current call, so a deployment that stops being
+#'   excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+#'   every stage, and to [summarizeTagData()], which uses it to report why each deployment is missing.
+#'   Default `NULL`, which writes nothing.
 #' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
 #'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
 #' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
@@ -183,6 +184,7 @@ applyAxisMapping <- function(data,
   ##############################################################################
 
   matched_ids <- character(0)                                   # mapping ids actually routed to a dataset
+  scope_ids <- character(0)                                     # every deployment evaluated in this call
   excluded_ids <- set$excluded %||% character(0)                # review decision == "exclude": drop from output
   excluded_out <- character(0)
   n_remapped  <- 0L; n_nomap <- 0L; n_noimu <- 0L; n_reflect <- 0L; n_excluded <- 0L; n_coreg_fail <- 0L
@@ -199,6 +201,7 @@ applyAxisMapping <- function(data,
     # fall back to the resolved id (file basename / list name).
     true_id   <- tryCatch(as.character(unique(x[[id.col]])[1]), error = function(e) NA_character_)
     who       <- if (!is.na(true_id)) true_id else id            # best display / message id
+    scope_ids <- c(scope_ids, as.character(who))
     lookup_id <- if (!is.null(set$by_id)) {
       if (!is.na(true_id) && true_id %in% names(set$by_id)) true_id
       else if (id %in% names(set$by_id)) id else NA_character_
@@ -444,11 +447,11 @@ applyAxisMapping <- function(data,
   keep <- if (return.data) !vapply(results, is.null, logical(1)) else !vapply(saved, is.null, logical(1))
   out <- .collectOutput(results[keep], saved[keep], return.data, r$ids[keep])
   if (length(excluded_out)) attr(out, "excluded") <- excluded_out
-  # this stage's rows in the shared log, replacing whatever it wrote before. A review decision is the
-  # only way a deployment leaves here, so the reason is the same for every one of them.
+  # Refresh only this stage's rows for deployments evaluated by the current call. A review decision is
+  # the only way a deployment leaves here, so the reason is the same for every one of them.
   excl <- .exclusionsBind(lapply(excluded_out, function(i)
     .exclusionsRow(i, "applyAxisMapping", "excluded by tag-mapping review")))
-  .exclusionsWrite(excl, exclusions.file, "applyAxisMapping")
+  .exclusionsWrite(excl, exclusions.file, "applyAxisMapping", scope.ids = scope_ids)
   if (nrow(excl)) attr(out, "nautilus.exclusions") <- excl
   # assigning to `out` and returning it bare would strip the invisibility .collectOutput set on the paths
   # branch, re-printing the wall of paths; re-apply it (the data branch stays visible, as requested).

@@ -80,9 +80,10 @@ writes nothing.}
 
 \item{exclusions.file}{Optional path to the shared deployment-exclusion log, a CSV recording every
 deployment this stage set aside and why. The log holds current state, not history: each stage
-replaces its own rows on every run, so a deployment that stops being excluded loses its row. Pass
-the same path to every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each
-deployment is missing. Default \code{NULL}, which writes nothing.}
+refreshes its own rows for the deployments in the current call, so a deployment that stops being
+excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
+every stage, and to \code{\link[=summarizeTagData]{summarizeTagData()}}, which uses it to report why each deployment is missing.
+Default \code{NULL}, which writes nothing.}
 
 \item{output.suffix}{Optional string appended to the deployment identifier in saved file names,
 before \code{.rds}, to label a processing run or avoid overwriting an earlier one. Only used when
