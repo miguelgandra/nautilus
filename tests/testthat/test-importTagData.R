@@ -220,11 +220,46 @@ test_that("verbose = 2 adds per-individual sub-headers + grouped detail; tally s
   expect_match(d2, "sensors:")                     # new grouped detail
   expect_match(d2, "span:")
   expect_match(d2, "SUMMARY")                       # final summary block has its own marker
-  expect_match(d2, "Issues")                        # consolidated end-of-run issues block
+  expect_match(d2, "ISSUES")                        # consolidated end-of-run issues block
   expect_match(d2, "skipping 1 folder \\(no sensor file found\\)")   # concise, present-tense pre-flight
   expect_match(d2, "ID_03")                         # affected ID listed
   expect_false(grepl("sensors:", d1))               # detail is level-2 only
   expect_match(d1, "skipping 1 folder \\(no sensor file found\\)")   # issues block also shown at the normal level
+})
+
+test_that("structured import issues group categories, reasons, IDs, and unique counts", {
+  issues <- list(
+    nautilus:::.newImportIssue("clock_alignment", "PIN_CAM_13", "no_archive_depth"),
+    nautilus:::.newImportIssue("clock_alignment", "PIN_23", "low_correlation",
+                               list(correlation = 0.33, threshold = 0.90)),
+    nautilus:::.newImportIssue("clock_alignment", "PIN_11", "flat_reference_depth"),
+    # Repeating the same fact must not inflate either the category count or its ID list.
+    nautilus:::.newImportIssue("clock_alignment", "PIN_11", "flat_reference_depth"),
+    nautilus:::.newImportIssue("device_clock", "PIN_CAM_31", details = list(
+      logging_utc_offset = 0, device_utc_offset = -1, suggested_video_shift_h = 1))
+  )
+
+  groups <- nautilus:::.groupImportIssues(issues)
+  expect_identical(vapply(groups, `[[`, "", "category"), c("clock_alignment", "device_clock"))
+  expect_identical(groups[[1]]$count, 3L)
+  expect_true(any(grepl("No shared depth channel: PIN_CAM_13", groups[[1]]$detail, fixed = TRUE)))
+  expect_true(any(grepl("Peak correlation too low (0.33 < 0.90): PIN_23",
+                        groups[[1]]$detail, fixed = TRUE)))
+  expect_true(any(grepl("Reference depth too flat to align: PIN_11",
+                        groups[[1]]$detail, fixed = TRUE)))
+  expect_identical(groups[[2]]$detail,
+                   "[logging] UTC vs [device] -1h (Video may need +1h shift): PIN_CAM_31")
+
+  rendered <- paste(cli::cli_fmt(nautilus:::.renderImportIssues(1L, issues)), collapse = "\n")
+  expect_match(rendered, "ISSUES")
+  expect_match(rendered, "Clock alignment not applied \\(3\\)")
+  expect_match(rendered, "Device clock mismatch \\(1\\)")
+  expect_length(cli::cli_fmt(nautilus:::.renderImportIssues(1L, list())), 0L)
+
+  quiet <- testthat::capture_warnings(nautilus:::.warnImportIssues(issues))
+  expect_length(quiet, 2L)                         # one catchable warning per category, not per deployment
+  expect_match(quiet[1], "Clock alignment not applied \\(3\\)")
+  expect_match(quiet[2], "Device clock mismatch \\(1\\)")
 })
 
 test_that("metadata deployments without folders are excluded by default and reported twice", {
@@ -370,7 +405,7 @@ test_that("importTagData leaves temp unset and warns when only an electronics te
   out <- .import_temp(root, "ID_T1")
   expect_false("temp" %in% names(out$data))                 # missing-sensor convention: column absent
   # verbose == 0 -> aggregated deferred warning carries the temperature tally
-  expect_true(any(grepl("discarded, electronics sensor only", out$warnings)))
+  expect_true(any(grepl("Temperature discarded: electronics sensor only", out$warnings, fixed = TRUE)))
 })
 
 test_that("importTagData keeps a reliable water temp and does not warn", {
@@ -389,7 +424,7 @@ test_that("importTagData honours an explicit override of a blacklisted temp but 
                                stringsAsFactors = FALSE))
   out <- .import_temp(root, "ID_T3", mapping = override)
   expect_true("temp" %in% names(out$data))                  # explicit intent wins
-  expect_true(any(grepl("using an overridden electronics sensor", out$warnings)))
+  expect_true(any(grepl("Temperature override: electronics sensor used", out$warnings, fixed = TRUE)))
 })
 
 test_that("at verbose >= 1 issues are cli-only (inline + tally, no base-R warning)", {
@@ -404,7 +439,7 @@ test_that("at verbose >= 1 issues are cli-only (inline + tally, no base-R warnin
     warning = function(w) { msgs <<- c(msgs, conditionMessage(w)); invokeRestart("muffleWarning") })),
     collapse = "\n")
   expect_match(txt, "temp: electronics sensor only \\(Temp\\. \\(magnet\\.\\)\\)")  # inline bullet (lvl 2)
-  expect_match(txt, "Temperature: 1 discarded, electronics sensor only")           # echoed in the tally
+  expect_match(txt, "Temperature discarded: electronics sensor only \\(1\\)")      # grouped tally heading
   expect_length(msgs, 0)                                                            # no base-R warnings
 })
 

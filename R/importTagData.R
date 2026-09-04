@@ -2,6 +2,143 @@
 # Import and standardise archival tag data ############################################################
 #######################################################################################################
 
+# The import loop records facts; these helpers own their presentation. Keeping the two separate lets a
+# detailed deployment block stay terse while the final cohort report explains the same finding fully.
+# Category and reason codes are internal contracts: tests and renderers may rely on them, but user-facing
+# wording remains free to improve without changing the readers.
+.importIssueSpecs <- function() {
+  list(
+    skipped_folder = list(title = "Skipped folders: no sensor file found", order = 1L),
+    missing_data = list(title = "Missing data: no matching folder in data.folders", order = 2L),
+    failed_import = list(title = "Folders could not be imported", order = 3L),
+    sensor_timezone = list(title = "Sensor/source time-zone mismatch", order = 4L),
+    clock_alignment = list(title = "Clock alignment not applied", order = 5L),
+    temperature_discarded = list(title = "Temperature discarded: electronics sensor only", order = 6L),
+    temperature_override = list(title = "Temperature override: electronics sensor used", order = 7L),
+    device_clock = list(title = "Device clock mismatch", order = 8L),
+    unread_channels = list(title = "Unread channels", order = 9L)
+  )
+}
+
+.newImportIssue <- function(category, id, reason_code = NA_character_, details = list(), key = id) {
+  list(category = as.character(category), id = as.character(id), key = as.character(key),
+       reason_code = as.character(reason_code %||% NA_character_), details = details)
+}
+
+.formatClockOffset <- function(x) {
+  if (length(x) != 1L || !is.finite(x)) return("unknown")
+  x <- .noNegZero(x, 6)
+  paste0(if (x > 0) "+" else "", format(x, trim = TRUE, scientific = FALSE), "h")
+}
+
+.formatImportIssueReason <- function(issue) {
+  d <- issue$details
+  switch(
+    issue$category,
+    failed_import = as.character(d$reason %||% "Unspecified import failure"),
+    sensor_timezone = sub("[.]$", "", as.character(d$note %||% "Time-zone declarations disagree")),
+    clock_alignment = switch(
+      issue$reason_code,
+      no_shared_depth_samples = "No shared depth samples",
+      insufficient_overlap = {
+        if (is.finite(d$overlap_seconds %||% NA_real_) && is.finite(d$minimum_minutes %||% NA_real_))
+          sprintf("Insufficient depth overlap (%s < %g min)",
+                  .fmt_duration(max(d$overlap_seconds, 0)), d$minimum_minutes)
+        else "Insufficient depth overlap"
+      },
+      flat_reference_depth = "Reference depth too flat to align",
+      degenerate_correlation = "Degenerate cross-correlation",
+      search_edge = "Best lag at search edge (increase alignment max.lag)",
+      no_wc_streams = "No Wildlife Computers streams to align",
+      primary_depth_missing = "Primary tag has no depth channel",
+      no_archive_depth = "No shared depth channel",
+      alignment_disabled = "Alignment disabled",
+      low_correlation = {
+        if (is.finite(d$correlation %||% NA_real_) && is.finite(d$threshold %||% NA_real_))
+          sprintf("Peak correlation too low (%.2f < %.2f)", d$correlation, d$threshold)
+        else "Peak correlation too low"
+      },
+      sub("[.]$", "", as.character(d$reason %||% "Unspecified reason"))
+    ),
+    device_clock = {
+      logging <- .formatClockOffset(d$logging_utc_offset %||% NA_real_)
+      if (identical(logging, "0h")) logging <- "UTC"
+      device <- .formatClockOffset(d$device_utc_offset %||% NA_real_)
+      shift <- .formatClockOffset(d$suggested_video_shift_h %||% NA_real_)
+      hint <- if (!identical(shift, "unknown")) paste0(" (Video may need ", shift, " shift)") else ""
+      paste0("[logging] ", logging, " vs [device] ", device, hint)
+    },
+    unread_channels = as.character(d$columns %||% "Unspecified columns"),
+    ""
+  )
+}
+
+.groupImportIssues <- function(issues) {
+  if (!length(issues)) return(list())
+  specs <- .importIssueSpecs()
+  rows <- data.frame(
+    category = vapply(issues, `[[`, "", "category"),
+    id = vapply(issues, `[[`, "", "id"),
+    key = vapply(issues, `[[`, "", "key"),
+    reason = vapply(issues, .formatImportIssueReason, ""),
+    stringsAsFactors = FALSE
+  )
+  rows <- unique(rows)
+  known <- names(sort(vapply(specs, `[[`, integer(1), "order")))
+  categories <- unique(rows$category)
+  categories <- c(known[known %in% categories], setdiff(categories, known))
+  lapply(categories, function(category) {
+    x <- rows[rows$category == category, , drop = FALSE]
+    reasons <- unique(x$reason)
+    detail <- vapply(reasons, function(reason) {
+      ids <- unique(x$id[x$reason == reason])
+      ids <- paste(ids, collapse = ", ")
+      if (nzchar(reason)) paste0(reason, ": ", ids) else ids
+    }, "")
+    list(category = category,
+         title = specs[[category]]$title %||% category,
+         count = length(unique(x$key)),
+         detail = unname(detail))
+  })
+}
+
+.formatImportPreflight <- function(issues) {
+  groups <- .groupImportIssues(Filter(function(x) x$category %in% c("missing_data", "skipped_folder"), issues))
+  vapply(groups, function(g) {
+    # These two categories deliberately have no sub-reason: their detail rows are plain ID lists.
+    ids <- paste(g$detail, collapse = ", ")
+    if (identical(g$category, "missing_data")) {
+      sprintf("Missing data: %d metadata deployment%s had no matching folder in data.folders (%s)",
+              g$count, if (g$count != 1L) "s" else "", ids)
+    } else {
+      sprintf("skipping %d folder%s (no sensor file found): %s",
+              g$count, if (g$count != 1L) "s" else "", ids)
+    }
+  }, "")
+}
+
+.renderImportIssues <- function(lvl, issues) {
+  groups <- .groupImportIssues(issues)
+  if (lvl < 1L || !length(groups)) return(invisible(NULL))
+  cli::cli_text("")
+  .log_h2(lvl, "ISSUES", min_level = 1L)
+  for (i in seq_along(groups)) {
+    if (i > 1L) cli::cli_text("")
+    heading <- sprintf("%s (%d)", groups[[i]]$title, groups[[i]]$count)
+    cli::cli_alert_warning("{.strong {heading}}")
+    for (detail in groups[[i]]$detail) .log_issue_detail(lvl, detail)
+  }
+  invisible(NULL)
+}
+
+.warnImportIssues <- function(issues) {
+  for (group in .groupImportIssues(issues)) {
+    warning(paste(c(sprintf("%s (%d)", group$title, group$count),
+                    paste0("  - ", group$detail)), collapse = "\n"), call. = FALSE)
+  }
+  invisible(NULL)
+}
+
 #' Import and standardise archival tag data
 #'
 #' @description
@@ -349,59 +486,22 @@ importTagData <- function(data.folders,
   #   * verbose == 0 : the cli UI is silent; instead every collected issue is emitted once, aggregated,
   #                    as a base-R warning() at the very end (via on.exit, so they survive an error
   #                    mid-run) - this is the channel headless / automated callers can catch.
-  # Collectors are initialised up front so the on.exit builder is robust even if the run errors early.
-  preflight_issues <- character(0)                                  # pre-flight (folder / metadata QC)
+  # The typed collector is initialised up front so the on.exit renderer is robust even if the run errors
+  # early. A record keeps its machine-readable category/reason and raw evidence; presentation is deferred
+  # to the inline, final-cli, or quiet-warning renderer appropriate to that output channel.
+  import_issues <- list()
+  add_issue <- function(category, id, reason_code = NA_character_, details = list(), key = id) {
+    import_issues[[length(import_issues) + 1L]] <<-
+      .newImportIssue(category, id, reason_code, details, key)
+    invisible(NULL)
+  }
   missing_deployment_ids <- character(0)                            # metadata rows with no supplied folder
-  failed_ids <- character(0); timezone_issue_ids <- character(0)
-  device_clock_ids <- character(0); device_clock_notes <- character(0)
   # the reason travels with the id, for the shared exclusions log
   failed_rows <- list()
   note_fail <- function(id, reason) {
     failed_rows[[length(failed_rows) + 1L]] <<- .exclusionsRow(id, "importTagData", reason)
   }
-  temp_discard_ids <- character(0); temp_override_ids <- character(0)
-  align_skip_ids <- character(0); align_skip_reasons <- character(0)   # clock alignment abstentions
-  unread_ids <- character(0); unread_desc <- character(0)              # channels a reader declined to read
-  ids_str <- function(ids) { ids <- unique(ids); if (length(ids)) paste0(" (", paste(ids, collapse = ", "), ")") else "" }
-  # consolidate every collector into one ordered set of issue lines (read at call time, so the closure
-  # always sees the final counts). Used for both the cli tally and the deferred warnings.
-  .collectIssues <- function() {
-    out <- preflight_issues
-    if (length(failed_ids))        out <- c(out, sprintf("Failed: %d folder%s could not be imported%s",
-                                                         length(failed_ids), if (length(failed_ids) != 1) "s" else "", ids_str(failed_ids)))
-    if (length(timezone_issue_ids)) out <- c(out, sprintf("Time zone: %d sensor/source mismatch%s",
-                                                          length(timezone_issue_ids), ids_str(timezone_issue_ids)))
-    if (length(device_clock_ids)) {
-      by_note <- split(device_clock_ids, device_clock_notes)
-      for (note in names(by_note)) {
-        ids <- by_note[[note]]
-        out <- c(out, sprintf("Device clock: %d deployment%s - %s%s",
-                              length(ids), if (length(ids) != 1L) "s" else "",
-                              sub("[.]$", "", note), ids_str(ids)))
-      }
-    }
-    if (length(temp_discard_ids))  out <- c(out, sprintf("Temperature: %d discarded, electronics sensor only%s", length(temp_discard_ids), ids_str(temp_discard_ids)))
-    if (length(temp_override_ids)) out <- c(out, sprintf("Temperature: %d using an overridden electronics sensor%s", length(temp_override_ids), ids_str(temp_override_ids)))
-    # grouped BY REASON, so the summary says why the clock was not aligned rather than only how often.
-    # A run where three tags abstained for three different causes needs three lines, not one count.
-    if (length(align_skip_ids)) {
-      by_reason <- split(align_skip_ids, align_skip_reasons)
-      for (rs in names(by_reason))
-        out <- c(out, sprintf("Clock alignment: %d not applied - %s%s",
-                              length(by_reason[[rs]]), rs, ids_str(by_reason[[rs]])))
-    }
-    # grouped BY THE COLUMNS LEFT UNREAD, for the same reason: a run where two tag models each declare a
-    # different extra channel needs to name both, not report "2 deployments had unread columns".
-    if (length(unread_ids)) {
-      by_cols <- split(unread_ids, unread_desc)
-      for (cl in names(by_cols))
-        out <- c(out, sprintf("Unread channels: %d deployment%s with columns this reader does not read - %s%s",
-                              length(by_cols[[cl]]), if (length(by_cols[[cl]]) != 1) "s" else "",
-                              cl, ids_str(by_cols[[cl]])))
-    }
-    out
-  }
-  if (lvl == 0L) on.exit(for (it in .collectIssues()) warning(it, call. = FALSE), add = TRUE)
+  if (lvl == 0L) on.exit(.warnImportIssues(import_issues), add = TRUE)
 
   # validate data.folders
   if (!is.character(data.folders)) .abort("{.arg data.folders} must be a character vector of folder paths.")
@@ -564,15 +664,10 @@ importTagData <- function(data.folders,
   if (identical(missing.deployments, "exclude")) {
     missing_deployment_ids <- setdiff(valid_metadata_ids, folder_ids)
     if (length(missing_deployment_ids)) {
-      preflight_issues <- c(
-        preflight_issues,
-        sprintf("Missing data: %d metadata deployment%s had no matching folder in data.folders%s",
-                length(missing_deployment_ids),
-                if (length(missing_deployment_ids) != 1L) "s" else "",
-                ids_str(missing_deployment_ids))
-      )
-      for (id in missing_deployment_ids)
+      for (id in missing_deployment_ids) {
+        add_issue("missing_data", id)
         note_fail(id, "no matching raw data folder in data.folders")
+      }
     }
   }
   exclusion_scope_ids <- if (identical(missing.deployments, "exclude")) valid_metadata_ids else folder_ids
@@ -791,15 +886,18 @@ importTagData <- function(data.folders,
   # under the framed header so the user can spot
   # structural problems and abort before the long read; echoed again in the final tally. At verbose 0
   # the cli is silent and these are emitted as deferred warnings (on.exit) like every other issue.
-  if (length(missing_folders) > 0)
-    preflight_issues <- c(preflight_issues, sprintf("skipping %d folder%s (no sensor file found): %s",
-                                                    length(missing_folders), if (length(missing_folders) != 1) "s" else "",
-                                                    paste(unique(missing_folders), collapse = ", ")))
+  missing_folder_idx <- which(is.na(data_files))
+  if (length(missing_folder_idx) > 0L) {
+    for (k in missing_folder_idx) {
+      add_issue("skipped_folder", names(data_files)[k], key = data.folders[k])
+    }
+  }
   # the "QC not run" notice is a status line, not a data-quality issue: shown at lvl >= 1 only, and
   # deliberately kept out of the deferred-warning collector (headless callers get the abort instead).
   qc_notice <- if (qc_guard_inline) "metadata QC not run \u2014 validating inline" else NULL
-  if (lvl >= 1L && (length(preflight_issues) || !is.null(qc_notice))) {
-    for (it in preflight_issues) cli::cli_alert_warning("Pre-flight: {it}")
+  preflight_messages <- .formatImportPreflight(import_issues)
+  if (lvl >= 1L && (length(preflight_messages) || !is.null(qc_notice))) {
+    for (it in preflight_messages) cli::cli_alert_warning("Pre-flight: {it}")
     if (!is.null(qc_notice)) cli::cli_alert_warning("Pre-flight: {qc_notice}")
     cli::cli_text("")                                   # blank line before the first individual block
   }
@@ -878,7 +976,8 @@ importTagData <- function(data.folders,
           cli::cli_alert_danger(paste0("{id}: could not identify the tag format ({.code format = \"auto\"}); ",
                                        "set {.arg format} or the {.field tag_format} metadata column. Data not imported."))
         }
-        failed_ids <- c(failed_ids, id)
+        add_issue("failed_import", id, "unidentified_format",
+                  details = list(reason = "Could not identify the tag format"))
         note_fail(id, "could not identify the tag format")
       }
       data_list[[i]] <- NA
@@ -905,17 +1004,17 @@ importTagData <- function(data.folders,
     # skip this individual if no usable sensor data could be assembled. A "no sensor CSV" folder that
     # was already flagged pre-flight (missing_folders) is covered there - just a quiet inline skip, no
     # double-counting. Anything else (corrupt file, missing required sensors, or a no-CSV not caught
-    # pre-flight) is a genuine per-deployment failure -> collected into `failed_ids`.
+    # pre-flight) is a genuine per-deployment failure -> collected as a typed import issue.
     if (is.null(res$data)) {
       # "no data here" reads differently per format ("no sensor CSV ..." / "no sensor file: ...");
       # either way, a folder the pre-flight already flagged is a quiet skip, not a second failure.
       preflight_covered <- (startsWith(res$reason, "no sensor CSV") ||
-                            startsWith(res$reason, "no sensor file")) && id %in% missing_folders
+                            startsWith(res$reason, "no sensor file")) && is.na(data_files[[i]])
       if (preflight_covered) {
         .log_skip(lvl, id, " skipped ", cli::symbol$bullet, " ", res$reason)
       } else {
         if (lvl >= 1L) cli::cli_alert_danger("{id}: {res$reason}. Data not imported.")
-        failed_ids <- c(failed_ids, id)
+        add_issue("failed_import", id, "reader_failure", details = list(reason = res$reason))
       }
       note_fail(id, res$reason)
       data_list[[i]] <- NA
@@ -938,20 +1037,25 @@ importTagData <- function(data.folders,
     # user override is honoured but flagged. Clock findings distinguish the sensor recording zone from
     # a different device/camera clock; neither condition causes timestamps to be shifted.
     # Surfaced inline (lvl >= 2) below, echoed in the final tally (lvl >= 1), deferred warning (lvl == 0).
-    if (identical(temp_status, "blacklisted_only")) temp_discard_ids  <- c(temp_discard_ids, id)
-    else if (identical(temp_status, "override"))    temp_override_ids <- c(temp_override_ids, id)
-    if (isTRUE(res$timezone_mismatch)) timezone_issue_ids <- c(timezone_issue_ids, id)
+    if (identical(temp_status, "blacklisted_only")) add_issue("temperature_discarded", id)
+    else if (identical(temp_status, "override"))    add_issue("temperature_override", id)
+    if (isTRUE(res$timezone_mismatch)) {
+      add_issue("sensor_timezone", id, details = list(note = res$timezone_note))
+    }
     if (isTRUE(res$device_clock_mismatch)) {
-      device_clock_ids   <- c(device_clock_ids, id)
-      device_clock_notes <- c(device_clock_notes, res$device_clock_note)
+      add_issue("device_clock", id, details = list(
+        logging_utc_offset = res$logging_utc_offset,
+        device_utc_offset = res$device_utc_offset,
+        suggested_video_shift_h = res$suggested_video_shift_h
+      ))
     }
     # Columns the raw files declare but the reader does not read (e.g. a Little Leonardo compass or
     # propeller channel). Not a fault in the data and not a reason to refuse the import - the channels
     # that WERE read are correct - but it must not pass silently, or a user loses a sensor without
     # being told. Same three-tier route as the issues above: inline, tally, deferred warning.
     if (length(res$unread_columns)) {
-      unread_ids  <- c(unread_ids, id)
-      unread_desc <- c(unread_desc, paste(res$unread_columns, collapse = "; "))
+      add_issue("unread_channels", id,
+                details = list(columns = paste(res$unread_columns, collapse = "; ")))
     }
 
     if (lvl >= 2L && length(excluded_channels)) {
@@ -1004,7 +1108,15 @@ importTagData <- function(data.folders,
     # Sensor/source and device/logging discrepancies are separate diagnostics and neither shifts data.
     if (isTRUE(import.sidecar)) .reportSidecar(sidecar_info, lvl)
     if (lvl >= 2L && !is.null(res$timezone_note)) .log_skip(lvl, res$timezone_note)
-    if (lvl >= 2L && !is.null(res$device_clock_note)) .log_skip(lvl, res$device_clock_note)
+    if (lvl >= 2L && isTRUE(res$device_clock_mismatch)) {
+      logging <- .formatClockOffset(res$logging_utc_offset)
+      device <- .formatClockOffset(res$device_utc_offset)
+      if (identical(logging, "0h")) {
+        .log_skip(lvl, "[logging] is UTC but [device] offset is ", device, ".")
+      } else {
+        .log_skip(lvl, "[logging] offset is ", logging, " but [device] offset is ", device, ".")
+      }
+    }
 
 
     # unit conversion happened in read_cats() (every channel to canonical g / rad/s / uT, driven by the
@@ -1066,8 +1178,14 @@ importTagData <- function(data.folders,
     # exactly the question asked at the end. Collection is independent of whether it was narrated.
     if (length(wc_anc) && !is.null(att$info) &&
         !identical(att$info$status, "disabled") && !identical(att$info$status, "aligned")) {
-      align_skip_ids <- c(align_skip_ids, id)
-      align_skip_reasons <- c(align_skip_reasons, as.character(att$info$reason %||% "unspecified"))
+      add_issue("clock_alignment", id, att$info$reason_code %||% "unspecified",
+                details = list(
+                  reason = att$info$reason %||% "unspecified",
+                  correlation = att$info$correlation %||% NA_real_,
+                  threshold = alignment$min.correlation,
+                  overlap_seconds = att$info$overlap.seconds %||% NA_real_,
+                  minimum_minutes = alignment$min.overlap
+                ))
     }
     if (lvl >= 2L && length(wc_anc)) .reportAlignment(att$info, lvl)
 
@@ -1222,14 +1340,9 @@ importTagData <- function(data.folders,
     if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
     .log_runtime(lvl, start.time)
 
-    # master Issues tally - echoes EVERY category (pre-flight + per-deployment) so the final verdict
-    # is complete without scrolling. cli only; the verbose == 0 channel is the deferred warnings.
-    issues <- .collectIssues()
-    if (length(issues)) {
-      cli::cli_text("")
-      cli::cli_alert_warning("{.strong Issues}")
-      for (it in issues) cli::cli_text("  {cli::symbol$bullet} {it}")
-    }
+    # Master issues report - echoes every category (pre-flight + per-deployment) so the final verdict is
+    # complete without scrolling. The quiet channel renders these same records as grouped warnings.
+    .renderImportIssues(lvl, import_issues)
   }
 
 
@@ -1873,20 +1986,24 @@ importTagData <- function(data.folders,
 #' @param wc_t,wc_d Moving time (numeric seconds) and depth (the Wildlife Computers archive).
 #' @param control A `nautilus_alignment` control (uses `max.lag`, `min.overlap`, `min.correlation`).
 #' @return list(status = "aligned"|"abstained", lag, correlation, correlation.unaligned, overlap.sec,
-#'   reason). `lag` is present (best estimate) even on abstain for diagnostics.
+#'   reason_code, reason). `lag` is present (best estimate) even on abstain for diagnostics.
 #' @keywords internal
 #' @noRd
 .estimateClockOffset <- function(ref_t, ref_d, wc_t, wc_d, control) {
-  abstain <- function(reason, ...) c(list(status = "abstained", reason = reason), list(...))
+  abstain <- function(reason_code, reason, ...) {
+    c(list(status = "abstained", reason_code = reason_code, reason = reason), list(...))
+  }
   okr <- is.finite(ref_t) & is.finite(ref_d); ref_t <- ref_t[okr]; ref_d <- ref_d[okr]
   okw <- is.finite(wc_t)  & is.finite(wc_d);  wc_t  <- wc_t[okw];  wc_d  <- wc_d[okw]
-  if (length(ref_t) < 10L || length(wc_t) < 10L) return(abstain("no shared depth samples"))
+  if (length(ref_t) < 10L || length(wc_t) < 10L)
+    return(abstain("no_shared_depth_samples", "no shared depth samples"))
 
   # overlap window shared by both records
   lo <- max(min(ref_t), min(wc_t)); hi <- min(max(ref_t), max(wc_t))
   overlap <- hi - lo
   if (!is.finite(overlap) || overlap < control$min.overlap * 60)
-    return(abstain(sprintf("depth overlap %s < %g min", .fmt_duration(max(overlap, 0)), control$min.overlap),
+    return(abstain("insufficient_overlap",
+                   sprintf("depth overlap %s < %g min", .fmt_duration(max(overlap, 0)), control$min.overlap),
                    overlap.sec = max(overlap, 0)))
 
   # decimate a very dense reference (e.g. 100 Hz over days) so the one-off interpolation stays cheap;
@@ -1896,7 +2013,7 @@ importTagData <- function(data.folders,
   g   <- seq(lo, hi, by = 2)                                   # 1 Hz is overkill; 0.5 Hz grid
   ref <- stats::approx(ref_t, ref_d, xout = g, rule = 2)$y
   if (!any(is.finite(ref)) || stats::sd(ref, na.rm = TRUE) < 0.5)
-    return(abstain("reference depth too flat to align (no dives to lock onto)"))
+    return(abstain("flat_reference_depth", "reference depth too flat to align (no dives to lock onto)"))
 
   corAt <- function(L) {
     w <- stats::approx(wc_t + L, wc_d, xout = g, rule = 2)$y
@@ -1905,10 +2022,10 @@ importTagData <- function(data.folders,
   span   <- control$max.lag
   coarse <- seq(-span, span, by = 10)
   cc     <- vapply(coarse, corAt, numeric(1))
-  if (!any(is.finite(cc))) return(abstain("degenerate cross-correlation"))
+  if (!any(is.finite(cc))) return(abstain("degenerate_correlation", "degenerate cross-correlation"))
   bi <- which.max(cc)
   if (bi == 1L || bi == length(coarse))
-    return(abstain("best lag at search edge (increase alignment max.lag)",
+    return(abstain("search_edge", "best lag at search edge (increase alignment max.lag)",
                    lag = coarse[bi], correlation = cc[bi], overlap.sec = overlap))
   c0   <- coarse[bi]
   fine <- seq(c0 - 9, c0 + 9, by = 1)
@@ -1916,10 +2033,12 @@ importTagData <- function(data.folders,
   bestL <- fine[which.max(ccf)]; bestcor <- max(ccf, na.rm = TRUE)
   cor0  <- corAt(0)
   if (!is.finite(bestcor) || bestcor < control$min.correlation)
-    return(abstain(sprintf("peak correlation %.2f < %.2f", bestcor, control$min.correlation),
+    return(abstain("low_correlation",
+                   sprintf("peak correlation %.2f < %.2f", bestcor, control$min.correlation),
                    lag = bestL, correlation = bestcor, correlation.unaligned = cor0, overlap.sec = overlap))
   list(status = "aligned", lag = bestL, correlation = bestcor,
-       correlation.unaligned = cor0, overlap.sec = overlap, reason = NA_character_)
+       correlation.unaligned = cor0, overlap.sec = overlap,
+       reason_code = NA_character_, reason = NA_character_)
 }
 
 
@@ -1940,20 +2059,23 @@ importTagData <- function(data.folders,
 #' @keywords internal
 #' @noRd
 .alignWCClocks <- function(sensor_data, positions_anc, dry_anc, archive_file, control) {
-  none <- function(status, reason) list(positions_anc = positions_anc, dry_anc = dry_anc,
-    info = list(method = control$method, status = status, reason = reason,
+  none <- function(status, reason_code, reason) list(positions_anc = positions_anc, dry_anc = dry_anc,
+    info = list(method = control$method, status = status, reason_code = reason_code, reason = reason,
                 offset.seconds = 0, correlation = NA_real_))
-  if (identical(control$method, "none")) return(none("disabled", "alignment method = none"))
+  if (identical(control$method, "none"))
+    return(none("disabled", "alignment_disabled", "alignment method = none"))
   if (is.null(positions_anc) && is.null(dry_anc))
-    return(none("abstained", "no Wildlife Computers streams to align"))
+    return(none("abstained", "no_wc_streams", "no Wildlife Computers streams to align"))
   if (is.null(sensor_data[["depth"]]) || !any(is.finite(sensor_data$depth)))
-    return(none("abstained", "primary tag has no depth channel"))
+    return(none("abstained", "primary_depth_missing", "primary tag has no depth channel"))
   arch <- .readArchiveDepth(archive_file)
-  if (is.null(arch)) return(none("abstained", "no shared depth channel in WC archive"))
+  if (is.null(arch))
+    return(none("abstained", "no_archive_depth", "no shared depth channel in WC archive"))
 
   est <- .estimateClockOffset(as.numeric(sensor_data$datetime), sensor_data$depth,
                               arch$t, arch$depth, control)
-  info <- list(method = control$method, status = est$status, reason = est$reason %||% NA_character_,
+  info <- list(method = control$method, status = est$status,
+               reason_code = est$reason_code %||% NA_character_, reason = est$reason %||% NA_character_,
                offset.seconds = if (identical(est$status, "aligned")) est$lag else 0,
                correlation = est$correlation %||% NA_real_,
                correlation.unaligned = est$correlation.unaligned %||% NA_real_,

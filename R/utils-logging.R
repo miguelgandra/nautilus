@@ -212,6 +212,20 @@
   invisible(NULL)
 }
 
+#' An indented action/detail row in a final issues block.
+#'
+#' Unlike `.log_subdetail()`, this uses the ordinary right arrow: issue rows are alternatives within a
+#' category, not diagnostic evidence nested below an individual sensor line. The blank-name cli bullet
+#' supplies the indentation and preserves a hanging indent when a long list of deployment IDs wraps.
+#' @keywords internal
+#' @noRd
+.log_issue_detail <- function(lvl, ..., min_level = 1L) {
+  if (lvl < min_level) return(invisible(NULL))
+  txt <- paste0(cli::symbol$arrow_right, " ", paste0(...))
+  cli::cli_bullets(stats::setNames("{txt}", " "))
+  invisible(NULL)
+}
+
 #' `.log_subdetail()` for rows whose columns must line up.
 #'
 #' Same glyph and indent, so the two are interchangeable within a block, but routed through

@@ -49,6 +49,7 @@ test_that(".estimateClockOffset(): abstains when the depth records barely overla
   p <- .mkDives(dur = 600)                        # 10 min record, well under the 30 min minimum overlap
   est <- nautilus:::.estimateClockOffset(p$t, p$depth, p$t, p$depth, alignmentControl())
   expect_equal(est$status, "abstained")
+  expect_equal(est$reason_code, "insufficient_overlap")
   expect_match(est$reason, "overlap")
 })
 
@@ -58,6 +59,7 @@ test_that(".estimateClockOffset(): abstains when the reference depth is flat (no
   flat <- rep(10, length(p$t))
   est <- nautilus:::.estimateClockOffset(p$t, flat, p$t + 120, p$depth, alignmentControl())
   expect_equal(est$status, "abstained")
+  expect_equal(est$reason_code, "flat_reference_depth")
   expect_match(est$reason, "flat")
 })
 
@@ -68,6 +70,7 @@ test_that(".estimateClockOffset(): abstains when the two depth traces do not mat
   noise <- runif(length(p$t), 0, 100)            # unrelated to the dive profile -> low peak correlation
   est <- nautilus:::.estimateClockOffset(p$t, p$depth, p$t, noise, alignmentControl())
   expect_equal(est$status, "abstained")
+  expect_equal(est$reason_code, "low_correlation")
   expect_match(est$reason, "correlation")
 })
 
@@ -77,6 +80,7 @@ test_that(".estimateClockOffset(): abstains when the true offset exceeds the sea
   est <- nautilus:::.estimateClockOffset(p$t, p$depth, p$t + 300, p$depth,
                                          alignmentControl(max.lag = 100))   # true offset 300 > 100
   expect_equal(est$status, "abstained")
+  expect_equal(est$reason_code, "search_edge")
   expect_match(est$reason, "search edge")
 })
 

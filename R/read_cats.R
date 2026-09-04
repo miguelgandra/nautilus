@@ -317,19 +317,16 @@
   # sensor/source warning: it is actionable for video alignment, not evidence that sensor rows are wrong.
   device_clock_mismatch <- is.finite(logging_offset) && is.finite(device_offset) &&
     abs(logging_offset - device_offset) > 1 / 3600
-  device_clock_note <- if (device_clock_mismatch && logging_offset == 0) {
-    sprintf("[logging] is UTC but [device] offset is %gh. Video timestamps may require %+gh correction.",
-            device_offset, -device_offset)
-  } else if (device_clock_mismatch) {
-    sprintf("[logging] offset is %gh but [device] offset is %gh. Check video timestamps.",
-            logging_offset, device_offset)
-  } else {
-    NULL
-  }
+  # A device-clock timestamp needs this value added to place it in the logging clock domain. Return the
+  # fact, not a console sentence: importTagData() deliberately uses a terse inline diagnostic and a more
+  # explanatory final issue row, while getVideoClockCorrections() consumes the same sidecar provenance.
+  suggested_video_shift_h <- if (device_clock_mismatch) logging_offset - device_offset else NA_real_
 
   list(recording_utc_offset = recording_offset,
        timezone_mismatch = timezone_mismatch, timezone_note = timezone_note,
-       device_clock_mismatch = device_clock_mismatch, device_clock_note = device_clock_note)
+       logging_utc_offset = logging_offset, device_utc_offset = device_offset,
+       device_clock_mismatch = device_clock_mismatch,
+       suggested_video_shift_h = suggested_video_shift_h)
 }
 
 
@@ -379,7 +376,8 @@ read_cats <- function(folder,
     return(list(data = NULL, reason = assembly$reason, assembly = assembly, mapping = NULL,
                 selected_cols = NULL, sidecar_info = NULL, temp_status = "none",
                 excluded = character(0), timezone_mismatch = FALSE, timezone_note = NULL,
-                device_clock_mismatch = FALSE, device_clock_note = NULL,
+                device_clock_mismatch = FALSE, logging_utc_offset = NA_real_,
+                device_utc_offset = NA_real_, suggested_video_shift_h = NA_real_,
                 recording_utc_offset = NA_real_,
                 unit_notes = character(0)))
   }
@@ -452,7 +450,9 @@ read_cats <- function(folder,
        temp_status = temp_status, excluded = excluded_channels,
        timezone_mismatch = clock$timezone_mismatch, timezone_note = clock$timezone_note,
        device_clock_mismatch = clock$device_clock_mismatch,
-       device_clock_note = clock$device_clock_note,
+       logging_utc_offset = clock$logging_utc_offset,
+       device_utc_offset = clock$device_utc_offset,
+       suggested_video_shift_h = clock$suggested_video_shift_h,
        recording_utc_offset = clock$recording_utc_offset,
        unit_notes = unit_notes)
 }

@@ -229,7 +229,7 @@ test_that("device and logging clocks are kept separate and reported through both
     suppressMessages(run(FALSE)),
     warning = function(w) { msgs <<- c(msgs, conditionMessage(w)); invokeRestart("muffleWarning") })
   expect_true(any(grepl("Device clock", msgs, fixed = TRUE)))
-  expect_true(any(grepl("require \\+1h correction", msgs)))
+  expect_true(any(grepl("Video may need \\+1h shift", msgs)))
   expect_false(any(grepl("Time zone", msgs, fixed = TRUE)))
   stored <- nautilus:::.getMeta(quiet$tag)
   expect_equal(format(quiet$tag$datetime[1], "%Y-%m-%d %H:%M:%S", tz = "UTC"),
@@ -238,12 +238,17 @@ test_that("device and logging clocks are kept separate and reported through both
   expect_equal(stored$sidecar$logging$utc_offset, 0)
   expect_equal(stored$sidecar$device$utc_offset, -1)
 
-  # Detailed mode emits the concise deployment-level line and repeats the category in the final Issues
-  # block. `cli_fmt()` captures both paths reliably under testthat.
+  # Detailed mode keeps the deployment-level line terse and reserves the correction hint for the final
+  # hierarchical ISSUES block. `cli_fmt()` captures both paths reliably under testthat.
   detailed <- suppressWarnings(run("detailed"))$output
-  expect_match(detailed, "\\[logging\\] is UTC but \\[device\\] offset is -1h")
-  expect_match(detailed, "Video timestamps may require \\+1h correction")
-  expect_match(detailed, "Device clock: 1 deployment")
+  issue_start <- regexpr("ISSUES", detailed, fixed = TRUE)[1]
+  expect_gt(issue_start, 0L)
+  inline <- substr(detailed, 1L, issue_start - 1L)
+  summary <- substr(detailed, issue_start, nchar(detailed))
+  expect_match(inline, "\\[logging\\] is UTC but \\[device\\] offset is -1h\\.")
+  expect_false(grepl("Video may need", inline, fixed = TRUE))
+  expect_match(summary, "Device clock mismatch \\(1\\)")
+  expect_match(summary, "\\[logging\\] UTC vs \\[device\\] -1h \\(Video may need \\+1h shift\\): ID_01")
 })
 
 test_that("an explicit logging zone is checked against the requested sensor timezone", {
@@ -287,8 +292,9 @@ test_that("half-hour device offsets are not treated as matching UTC", {
     mapping, sidecar, "UTC", as.POSIXct("2020-01-01", tz = "UTC"))
 
   expect_true(status$device_clock_mismatch)
-  expect_match(status$device_clock_note, "device.*0.5h", ignore.case = TRUE)
-  expect_match(status$device_clock_note, "-0.5h correction", fixed = TRUE)
+  expect_equal(status$logging_utc_offset, 0)
+  expect_equal(status$device_utc_offset, 0.5)
+  expect_equal(status$suggested_video_shift_h, -0.5)
 })
 
 test_that(".reportSidecar confirms the sidecar but does not recite its constant values", {
