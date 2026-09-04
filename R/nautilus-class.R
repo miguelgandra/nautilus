@@ -13,12 +13,12 @@
 #                       magnetic_declination, attachment_site)
 #   $ tag          list(model, type, package_id, logger_id, paddle_wheel, axis_config)
 #   $ biometrics   list of passive animal traits (sex, length, species, ...); imported via metadataColumns(traits=)
-#   $ sensors      list(present, excluded, sampling_hz_original, sampling_hz_processed, timezone)
+#   $ sensors      list(present, excluded, sampling_hz_original, sampling_hz_processed, timezone,
+#                       recording_utc_offset)
 #   $ span         list(first_datetime, last_datetime, original_rows)
-#   $ calibration  parsed sidecar constants (depth/sensor offsets+factors, mag ASA) or NULL - an AUDIT
-#                  record of the corrections the tag firmware already applied to the exported CSV; kept for
-#                  provenance, NOT applied by nautilus and not read by any analysis step (the recording UTC
-#                  offset, cross-checked against `timezone`, is the one functional field)
+#   $ sidecar      parsed device, logging and calibration metadata paired with the primary export, or
+#                  NULL. Calibration values are provenance for firmware corrections already present in
+#                  the CSV and are never re-applied by nautilus.
 #   $ axis_mapping structured list (see .newAxisMappingMeta): applied flag, net signed-perm per
 #                  sensor family, determinant (handedness), dropped axes, source, original from/to rows
 #   $ mag_calibration nested list (see .newMagCalibrationMeta): status, applied, applied_params
@@ -47,10 +47,11 @@
                         paddle_wheel = NA, axis_config = NA_character_),
     biometrics   = list(),                                 # passive animal traits (sex, length, species, ...); roles ACT, traits RIDE
     sensors      = list(present = character(0), excluded = character(0), sampling_hz_original = NA_real_,
-                        sampling_hz_processed = NA_real_, timezone = "UTC"),
+                        sampling_hz_processed = NA_real_, timezone = "UTC",
+                        recording_utc_offset = NA_real_),
     span         = list(first_datetime = as.POSIXct(NA), last_datetime = as.POSIXct(NA),
                         original_rows = NA_integer_),
-    calibration  = NULL,
+    sidecar      = NULL,
     ancillary    = list(),
     axis_mapping = .newAxisMappingMeta(),
     mag_calibration = .newMagCalibrationMeta(),
@@ -334,7 +335,7 @@ is_nautilus_tag <- function(x) inherits(x, "nautilus_tag")
   meta$span$first_datetime <- a$first.datetime %||% as.POSIXct(NA)
   meta$span$last_datetime  <- a$last.datetime %||% as.POSIXct(NA)
   meta$span$original_rows  <- a$original.rows %||% NA_integer_
-  meta$calibration  <- a$calibration
+  meta$sidecar      <- a$sidecar %||% a$calibration
   meta$axis_mapping <- .normalizeAxisMappingMeta(a$axis.mapping, source = "importTagData")
   meta
 }
@@ -414,7 +415,8 @@ is_nautilus_tag <- function(x) inherits(x, "nautilus_tag")
 #' Access the metadata of a nautilus tag object
 #'
 #' Returns the consolidated metadata record carried by a \code{nautilus_tag} (deployment details,
-#' tag model, sensors, time span, calibration, axis mapping, and the processing audit trail). This
+#' tag model, sensors, time span, source sidecar, calibration state, ancillary streams, axis mapping,
+#' and the processing audit trail). This
 #' is the supported way to read metadata: user code should never reach into the underlying
 #' attribute directly, since a partial match would otherwise return the unrelated
 #' \code{nautilus.version} marker.
@@ -423,8 +425,9 @@ is_nautilus_tag <- function(x) inherits(x, "nautilus_tag")
 #' are migrated to the current schema on the fly, so this accessor works on both new and legacy data.
 #'
 #' @param x A \code{nautilus_tag} object (or a data.frame/data.table produced by an earlier version).
-#' @return A named list with the metadata schema: \code{id}, \code{deployment}, \code{tag},
-#'   \code{sensors}, \code{span}, \code{calibration}, \code{axis_mapping}, and \code{processing}.
+#' @return A named list with the metadata schema: \code{id}, \code{animal_id}, \code{deployment},
+#'   \code{tag}, \code{biometrics}, \code{sensors}, \code{span}, \code{sidecar}, \code{ancillary},
+#'   \code{axis_mapping}, \code{mag_calibration}, and \code{processing}.
 #' @seealso \code{\link{processingHistory}} for a tabular view of the processing trail.
 #' @examples
 #' \dontrun{

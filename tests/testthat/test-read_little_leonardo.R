@@ -208,7 +208,7 @@ test_that("read_little_leonardo refuses to guess a clock, and reports why", {
   expect_match(nautilus:::read_little_leonardo(f$dir, start = NA)$reason, "no recording start time")
   # the contract's failure shape: data NULL, reason set
   r <- nautilus:::read_little_leonardo(f$dir, start = NULL)
-  expect_null(r$data); expect_false(r$tz_mismatch); expect_identical(r$temp_status, "none")
+  expect_null(r$data); expect_false(r$timezone_mismatch); expect_identical(r$temp_status, "none")
 })
 
 test_that("read_little_leonardo reports a missing or unreadable acceleration file", {

@@ -20,7 +20,7 @@ importTagData(
   output.suffix = NULL,
   compress = TRUE,
   data.table.threads = NULL,
-  import.calibration = TRUE,
+  import.sidecar = TRUE,
   alignment = alignmentControl(),
   verbose = "detailed"
 )
@@ -77,8 +77,9 @@ distinguish one import run from another. Only used when \code{output.dir} is spe
 \item{data.table.threads}{Number of threads available to \pkg{data.table}, or \code{NULL} (default) to
 leave the current setting unchanged. More threads may speed up large imports at the cost of memory.}
 
-\item{import.calibration}{Whether calibration information supplied with the source export is retained
-as provenance (default \code{TRUE}). These values are recorded, never re-applied. See Details.}
+\item{import.sidecar}{Whether the sidecar paired with the primary sensor export is read and retained
+as provenance (default \code{TRUE}). Sidecars may describe the device clock, the sensor logging period,
+and calibration constants already applied by the exporter. See Details.}
 
 \item{alignment}{Control object from \code{\link[=alignmentControl]{alignmentControl()}} specifying how the archival tag clock is
 aligned with paired Wildlife Computers data. Use \code{alignmentControl(method = "none")} to retain the
@@ -179,8 +180,10 @@ The time zone is therefore expected to match the one the tag used while recordin
 places the record at the wrong point in the solar day and will bias any analysis involving time of
 day, including diel activity and movement patterns.
 
-Where the source data provide a recording UTC offset, it is checked against \code{timezone} and retained
-as provenance.
+Explicit sensor-clock information in the source header or sidecar \verb{[logging]} block is checked against
+\code{timezone} and retained as provenance. A \verb{[device]} UTC offset is kept separate: it may describe the
+camera clock used by video file names or overlays rather than the exported sensor timestamps. Neither
+source causes observations to be shifted silently.
 }
 
 \subsection{Custom column mappings}{
@@ -224,12 +227,13 @@ Mapping such a channel explicitly through \code{import.mapping} overrides this, 
 the import diagnostics.
 }
 
-\subsection{Calibration provenance}{
+\subsection{Sidecar provenance}{
 
-With \code{import.calibration = TRUE}, calibration information accompanying the export is recorded as
-provenance where available. These constants document processing already performed by the tag
-firmware and are not re-applied during import. The one field that is acted on is the recording UTC
-offset, which is checked for consistency with \code{timezone}.
+With \code{import.sidecar = TRUE}, information accompanying the primary export is recorded under
+\code{meta$sidecar} where available. This includes separate \code{device} and \code{logging} clock metadata plus any
+calibration constants. Calibration constants document processing already performed by the tag
+firmware and are not re-applied during import. Clock metadata are used only for validation and
+provenance; they never trigger a silent time shift.
 }
 
 \subsection{Paired Wildlife Computers tags}{

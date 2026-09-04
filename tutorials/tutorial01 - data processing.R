@@ -192,7 +192,7 @@ importTagData(data.folders         = data_folders,
               wc.subdirectory      = NULL,      # NULL = auto-detect the Wildlife Computers folder
               metadata             = deployments,
               import.mapping       = NULL,      # NULL = standard CATS / CEiiA layout
-              import.calibration   = TRUE,
+              import.sidecar       = TRUE,
               timezone             = "UTC",
               alignment            = alignmentControl(method = "depth-xcorr"),
               exclusions.file      = "./data interim/exclusions.csv",

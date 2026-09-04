@@ -59,8 +59,9 @@
 #'   `"gzip"`, `"bzip2"` or `"xz"`. See [base::saveRDS()].
 #' @param data.table.threads Number of threads available to \pkg{data.table}, or `NULL` (default) to
 #'   leave the current setting unchanged. More threads may speed up large imports at the cost of memory.
-#' @param import.calibration Whether calibration information supplied with the source export is retained
-#'   as provenance (default `TRUE`). These values are recorded, never re-applied. See Details.
+#' @param import.sidecar Whether the sidecar paired with the primary sensor export is read and retained
+#'   as provenance (default `TRUE`). Sidecars may describe the device clock, the sensor logging period,
+#'   and calibration constants already applied by the exporter. See Details.
 #' @param alignment Control object from [alignmentControl()] specifying how the archival tag clock is
 #'   aligned with paired Wildlife Computers data. Use `alignmentControl(method = "none")` to retain the
 #'   original clocks.
@@ -131,8 +132,10 @@
 #' places the record at the wrong point in the solar day and will bias any analysis involving time of
 #' day, including diel activity and movement patterns.
 #'
-#' Where the source data provide a recording UTC offset, it is checked against `timezone` and retained
-#' as provenance.
+#' Explicit sensor-clock information in the source header or sidecar `[logging]` block is checked against
+#' `timezone` and retained as provenance. A `[device]` UTC offset is kept separate: it may describe the
+#' camera clock used by video file names or overlays rather than the exported sensor timestamps. Neither
+#' source causes observations to be shifted silently.
 #'
 #' ## Custom column mappings
 #'
@@ -172,12 +175,13 @@
 #' Mapping such a channel explicitly through `import.mapping` overrides this, and is still flagged in
 #' the import diagnostics.
 #'
-#' ## Calibration provenance
+#' ## Sidecar provenance
 #'
-#' With `import.calibration = TRUE`, calibration information accompanying the export is recorded as
-#' provenance where available. These constants document processing already performed by the tag
-#' firmware and are not re-applied during import. The one field that is acted on is the recording UTC
-#' offset, which is checked for consistency with `timezone`.
+#' With `import.sidecar = TRUE`, information accompanying the primary export is recorded under
+#' `meta$sidecar` where available. This includes separate `device` and `logging` clock metadata plus any
+#' calibration constants. Calibration constants document processing already performed by the tag
+#' firmware and are not re-applied during import. Clock metadata are used only for validation and
+#' provenance; they never trigger a silent time shift.
 #'
 #' ## Paired Wildlife Computers tags
 #'
@@ -264,7 +268,7 @@ importTagData <- function(data.folders,
                           output.suffix = NULL,
                           compress = TRUE,
                           data.table.threads = NULL,
-                          import.calibration = TRUE,
+                          import.sidecar = TRUE,
                           alignment = alignmentControl(),
                           verbose = "detailed") {
 
@@ -327,7 +331,8 @@ importTagData <- function(data.folders,
   #                    mid-run) - this is the channel headless / automated callers can catch.
   # Collectors are initialised up front so the on.exit builder is robust even if the run errors early.
   preflight_issues <- character(0)                                  # pre-flight (folder / metadata QC)
-  failed_ids <- character(0); tz_issue_ids <- character(0)
+  failed_ids <- character(0); timezone_issue_ids <- character(0)
+  device_clock_ids <- character(0); device_clock_notes <- character(0)
   # the reason travels with the id, for the shared exclusions log
   failed_rows <- list()
   note_fail <- function(id, reason) {
@@ -343,7 +348,17 @@ importTagData <- function(data.folders,
     out <- preflight_issues
     if (length(failed_ids))        out <- c(out, sprintf("Failed: %d folder%s could not be imported%s",
                                                          length(failed_ids), if (length(failed_ids) != 1) "s" else "", ids_str(failed_ids)))
-    if (length(tz_issue_ids))      out <- c(out, sprintf("Time zone: %d UTC-offset mismatch%s", length(tz_issue_ids), ids_str(tz_issue_ids)))
+    if (length(timezone_issue_ids)) out <- c(out, sprintf("Time zone: %d sensor/source mismatch%s",
+                                                          length(timezone_issue_ids), ids_str(timezone_issue_ids)))
+    if (length(device_clock_ids)) {
+      by_note <- split(device_clock_ids, device_clock_notes)
+      for (note in names(by_note)) {
+        ids <- by_note[[note]]
+        out <- c(out, sprintf("Device clock: %d deployment%s - %s%s",
+                              length(ids), if (length(ids) != 1L) "s" else "",
+                              sub("[.]$", "", note), ids_str(ids)))
+      }
+    }
     if (length(temp_discard_ids))  out <- c(out, sprintf("Temperature: %d discarded, electronics sensor only%s", length(temp_discard_ids), ids_str(temp_discard_ids)))
     if (length(temp_override_ids)) out <- c(out, sprintf("Temperature: %d using an overridden electronics sensor%s", length(temp_override_ids), ids_str(temp_override_ids)))
     # grouped BY REASON, so the summary says why the clock was not aligned rather than only how often.
@@ -387,6 +402,7 @@ importTagData <- function(data.folders,
 
   # the sole illegal output request: keep nothing and write nowhere
   .assert_flag(return.data, "return.data")
+  .assert_flag(import.sidecar, "import.sidecar")
   .assert_compress(compress)
   .assert_output(return.data, output.dir)
 
@@ -786,7 +802,7 @@ importTagData <- function(data.folders,
 
     # files -> canonical frame: probe/merge every candidate CSV (maximal-unique-coverage, resilient to
     # overlapping fragments and corrupt trailing rows), map the header onto sensor roles, parse the
-    # timestamps, drop excluded channels, read the calibration sidecar and convert to canonical units.
+    # timestamps, drop excluded channels, read the paired sidecar and convert to canonical units.
     # read_cats() RETURNS its per-deployment status and report data rather than printing or collecting:
     # the collectors below are locals read by an on.exit closure, so a write from inside another frame
     # would silently vanish, and the report has to interleave with metadata lines only known out here.
@@ -825,7 +841,7 @@ importTagData <- function(data.folders,
         active_mapping = active_mapping, active_mapping_norm = active_mapping_norm,
         temp_blacklist_norm = temp_blacklist_norm,
         required.sensors = required.sensors, timezone = timezone,
-        import.calibration = import.calibration, exclude.channels = exclude_want,
+        import.sidecar = import.sidecar, exclude.channels = exclude_want,
         verbose = lvl >= 2L),
       little_leonardo = read_little_leonardo(
         folder = data.folders[i], sensor.subdirectory = sensor.subdirectory,
@@ -858,7 +874,7 @@ importTagData <- function(data.folders,
     sensor_data       <- res$data
     file_mapping      <- res$mapping
     selected_cols     <- res$selected_cols
-    calibration_info  <- res$calibration_info
+    sidecar_info      <- res$sidecar_info
     excluded_channels <- res$excluded
     temp_status       <- res$temp_status
     reader_ancillary  <- res$ancillary          # primary-tag ancillary streams the reader parsed in-band
@@ -867,11 +883,16 @@ importTagData <- function(data.folders,
     # collect the reader's per-deployment issues. Temperature: the reliable `temp` is the pressure-sensor
     # thermistor; electronics channels (IMU board / magnetometer chip) are blacklisted, so `temp` is left
     # unset (missing-sensor convention) when the only temperature column is blacklisted, while an explicit
-    # user override is honoured but flagged. Timezone: the sidecar's UTC offset disagreed with `timezone`.
+    # user override is honoured but flagged. Clock findings distinguish the sensor recording zone from
+    # a different device/camera clock; neither condition causes timestamps to be shifted.
     # Surfaced inline (lvl >= 2) below, echoed in the final tally (lvl >= 1), deferred warning (lvl == 0).
     if (identical(temp_status, "blacklisted_only")) temp_discard_ids  <- c(temp_discard_ids, id)
     else if (identical(temp_status, "override"))    temp_override_ids <- c(temp_override_ids, id)
-    if (isTRUE(res$tz_mismatch)) tz_issue_ids <- c(tz_issue_ids, id)
+    if (isTRUE(res$timezone_mismatch)) timezone_issue_ids <- c(timezone_issue_ids, id)
+    if (isTRUE(res$device_clock_mismatch)) {
+      device_clock_ids   <- c(device_clock_ids, id)
+      device_clock_notes <- c(device_clock_notes, res$device_clock_note)
+    }
     # Columns the raw files declare but the reader does not read (e.g. a Little Leonardo compass or
     # propeller channel). Not a fault in the data and not a reason to refuse the import - the channels
     # that WERE read are correct - but it must not pass silently, or a user loses a sensor without
@@ -927,14 +948,11 @@ importTagData <- function(data.folders,
                   " (", .fmt_duration(secs), ")")
     }
 
-    # calibration sidecar (read by read_cats(); parsed and stored for provenance, values are NOT applied
-    # to the sensor data at this stage) and the recording-zone cross-check: if the sidecar reports a UTC
-    # offset that disagrees with `timezone`, the recorded clock is probably local (never silently
-    # shifted). Rendered in the original order: report, then the timezone note.
-    if (isTRUE(import.calibration)) {
-      .reportCalibration(calibration_info, lvl)
-      if (lvl >= 2L && !is.null(res$tz_note)) .log_skip(lvl, res$tz_note)
-    }
+    # Sidecar provenance and clock checks. Calibration constants are retained but never re-applied.
+    # Sensor/source and device/logging discrepancies are separate diagnostics and neither shifts data.
+    if (isTRUE(import.sidecar)) .reportSidecar(sidecar_info, lvl)
+    if (lvl >= 2L && !is.null(res$timezone_note)) .log_skip(lvl, res$timezone_note)
+    if (lvl >= 2L && !is.null(res$device_clock_note)) .log_skip(lvl, res$device_clock_note)
 
 
     # unit conversion happened in read_cats() (every channel to canonical g / rad/s / uT, driven by the
@@ -1059,12 +1077,10 @@ importTagData <- function(data.folders,
 
     # ---- extras only the file-import path has -------------------------------------------------------
     meta$sensors$excluded <- excluded_channels       # channels dropped per the exclude_sensors metadata
-    meta$sensors$recording_utc_offset <- if (!is.null(calibration_info)) calibration_info$device$utc_offset else NA_real_
-    # store only calibration-specific provenance; sampling frequency is inferred from the data,
-    # never persisted as a calibration-derived attribute
-    cal_to_store <- calibration_info
-    if (!is.null(cal_to_store)) cal_to_store$sample_rate <- NULL
-    meta$calibration  <- cal_to_store
+    meta$sensors$recording_utc_offset <- res$recording_utc_offset
+    # The sidecar declaration is provenance only; processing still infers its working sampling rate from
+    # timestamps rather than trusting or copying `sidecar$sample_rate` into the sensor metadata.
+    meta$sidecar <- sidecar_info
     # ancillary streams from any co-deployed device (read + clock-aligned above): wet/dry
     # (transition-encoded, consumed by the depth drift correction) and the full position record. The
     # clock-alignment provenance rides alongside them, so the applied offset - or the reason the aligner
@@ -1444,7 +1460,7 @@ importTagData <- function(data.folders,
 
 
 ################################################################################
-# Internal helpers for sidecar calibration ingestion ###########################
+# Internal helpers for sidecar ingestion #######################################
 ################################################################################
 
 #' Parse a comma-separated numeric list (e.g. "-37.8, -1") into a numeric vector
@@ -1457,12 +1473,39 @@ importTagData <- function(data.folders,
 }
 
 
-#' Parse a CATS mini-diary `.txt` sidecar into a calibration structure
+#' Parse one CATS `[logging]` timestamp
 #'
-#' Reads the INI-style device/calibration file written alongside CATS multisensor
-#' CSVs. Returns NULL if the file is not a calibration sidecar (e.g. a Wildlife
-#' Computers `version.txt`/`sources.txt`), i.e. if it lacks the `[device]` and
-#' `[activated sensors]` sections. Channels are identified by their `NN_name`
+#' Recognises only the unambiguous UTC/GMT labels. Unknown labels and malformed values are preserved as
+#' raw provenance but are not guessed into an instant or UTC offset.
+#' @keywords internal
+#' @noRd
+
+.parseCATSLoggingTime <- function(x) {
+  missing_time <- as.POSIXct(NA_real_, origin = "1970-01-01", tz = "UTC")
+  out <- list(raw = x, datetime = missing_time, timezone_label = NA_character_, utc_offset = NA_real_)
+  if (length(x) != 1L || is.na(x) || !nzchar(trimws(x))) return(out)
+
+  match <- regmatches(x, regexec("^\\s*(.*?)\\s*\\(([^()]*)\\)\\s*$", x))[[1]]
+  if (length(match) != 3L) return(out)
+  clock <- trimws(match[2])
+  label <- toupper(trimws(match[3]))
+  out$timezone_label <- label
+  if (!label %in% c("UTC", "GMT")) return(out)
+
+  out$timezone_label <- "UTC"
+  out$utc_offset <- 0
+  parsed <- suppressWarnings(as.POSIXct(clock, format = "%d.%m.%Y %H:%M:%OS", tz = "UTC"))
+  if (length(parsed) == 1L) out$datetime <- parsed
+  out
+}
+
+
+#' Parse a CATS mini-diary `.txt` sidecar
+#'
+#' Reads the INI-style device/logging/calibration file written alongside CATS multisensor CSVs. Returns
+#' NULL if the file is not a CATS sidecar (e.g. a Wildlife Computers `version.txt`/`sources.txt`). A
+#' `[device]` section plus either `[logging]` or `[activated sensors]` is required. Channels are identified
+#' by their `NN_name`
 #' (not the numeric index, which is not stable across firmwares). Magnetometer
 #' ASA coefficients of `0/0/0` are treated as unset (NA).
 #' @keywords internal
@@ -1475,8 +1518,9 @@ importTagData <- function(data.folders,
   lines <- trimws(gsub("\r", "", lines))
   low <- tolower(lines)
 
-  # must look like a CATS device/calibration file
-  if (!any(low == "[device]") || !any(low == "[activated sensors]")) return(NULL)
+  # must look like a CATS sidecar rather than an unrelated text file
+  if (!any(low == "[device]") ||
+      !any(low %in% c("[logging]", "[activated sensors]"))) return(NULL)
 
   is_header <- grepl("^\\[", lines)
   section_range <- function(name) {
@@ -1497,6 +1541,29 @@ importTagData <- function(data.folders,
   dev <- section_range("[device]")
   device <- list(sn = kv(dev, "sn"), id = kv(dev, "id"),
                  utc_offset = suppressWarnings(as.numeric(kv(dev, "utc_offset"))))
+
+  # --- sensor logging block ---
+  log_rng <- section_range("[logging]")
+  logging <- NULL
+  if (length(log_rng)) {
+    first <- .parseCATSLoggingTime(kv(log_rng, "first_entry"))
+    last  <- .parseCATSLoggingTime(kv(log_rng, "last_entry"))
+    labels <- unique(stats::na.omit(c(first$timezone_label, last$timezone_label)))
+    raw_entries <- c(first$raw, last$raw)
+    present <- !is.na(raw_entries) & nzchar(trimws(raw_entries))
+    entry_offsets <- c(first$utc_offset, last$utc_offset)
+    offsets <- unique(stats::na.omit(entry_offsets))
+    logging_offset <- if (any(present) && all(is.finite(entry_offsets[present])) &&
+                              length(offsets) == 1L) offsets else NA_real_
+    logging <- list(
+      first_entry = first$datetime,
+      last_entry = last$datetime,
+      first_entry_raw = first$raw,
+      last_entry_raw = last$raw,
+      timezone_label = if (length(labels) == 1L) labels else NA_character_,
+      utc_offset = logging_offset
+    )
+  }
 
   # --- activated sensors block ---
   as_rng <- section_range("[activated sensors]")
@@ -1524,10 +1591,9 @@ importTagData <- function(data.folders,
     }
     cal[[chan]] <- entry
   }
-  if (!length(cal)) return(NULL)
-
   list(source = path, source_type = "cats_diary_txt",
-       device = device, sample_rate = NA_real_, calibration = cal)
+       device = device, logging = logging, sample_rate = NA_real_,
+       calibration = if (length(cal)) cal else NULL)
 }
 
 
@@ -1547,19 +1613,19 @@ importTagData <- function(data.folders,
   m <- regmatches(txt, regexpr('"[0-9.]*sampleRate"\\s*:\\s*[0-9.]+', txt, ignore.case = TRUE))
   if (length(m)) sr <- suppressWarnings(as.numeric(sub('.*:\\s*', '', m)))
   list(source = path, source_type = "cats_resume_json",
-       device = list(), sample_rate = sr, calibration = NULL)
+       device = list(), logging = NULL, sample_rate = sr, calibration = NULL)
 }
 
 
-#' Read the calibration sidecar paired with a sensor CSV
+#' Read the sidecar paired with a sensor CSV
 #'
-#' Looks for a sibling `<basename>.txt` (CATS mini-diary calibration) and, failing
+#' Looks for a sibling `<basename>.txt` (CATS mini-diary metadata) and, failing
 #' that, a `<basename>_resume.json` (CATS camera metadata). Returns NULL when no
 #' valid sidecar is found.
 #' @keywords internal
 #' @noRd
 
-.readSidecarCalibration <- function(csv_path) {
+.readSidecar <- function(csv_path) {
   base <- sub("\\.csv$", "", csv_path, ignore.case = TRUE)
   txt  <- paste0(base, ".txt")
   json <- paste0(base, "_resume.json")
@@ -1572,24 +1638,18 @@ importTagData <- function(data.folders,
 }
 
 
-#' Summarise an ingested calibration sidecar (level-2 detail): the sidecar file on a `->` line, then
-#' the parsed calibration constants on their own indented sub-lines (no `->` prefix) to show they are
-#' metadata belonging to that file. Values are stored for provenance only; they are NOT applied at
-#' import. `depth offset` / `mag ASA` may be vectors (one value per depth channel, or the three
-#' magnetometer axes) - all non-missing values are shown, joined by " / ".
+#' Report an ingested sidecar at detailed verbosity
+#'
+#' Values are retained for provenance but not printed or re-applied during import.
 #' @keywords internal
 #' @noRd
 
-.reportCalibration <- function(cal, lvl = 1L) {
+.reportSidecar <- function(sidecar, lvl = 1L) {
   if (lvl < 2L) return(invisible(NULL))
-  if (is.null(cal)) { .log_detail(lvl, "no calibration sidecar found"); return(invisible(NULL)) }
-  # Provenance only: confirm the sidecar was found and captured, but do NOT recite its constant values
-  # (depth zero-offset, per-sensor offsets/factors, magnetometer ASA). Those are already baked into the
-  # calibrated CSV export by the tag firmware, so nautilus stores them in `meta$calibration` for auditing
-  # but never applies them - printing them each import is noise no analysis step acts on. The one
-  # functional field, the recording UTC offset, is cross-checked against `timezone` and surfaces
-  # separately as a warning when it disagrees; that path is intentionally left loud.
-  .log_detail(lvl, "calibration sidecar: ", basename(cal$source))
+  if (is.null(sidecar)) { .log_detail(lvl, "no sidecar found"); return(invisible(NULL)) }
+  # Confirm the source without reciting constants that the exporter has already applied. Clock findings
+  # are reported separately because they are actionable rather than provenance noise.
+  .log_detail(lvl, "sidecar: ", basename(sidecar$source))
   invisible(NULL)
 }
 

@@ -601,9 +601,9 @@ test_that("clock-alignment abstentions reach the final SUMMARY, not only the inl
   expect_match(hit, "ID_01", fixed = TRUE)          # names the affected deployment, not just a count
 })
 
-test_that("the calibration sidecar line carries no redundant parenthetical", {
+test_that("the sidecar line carries no redundant parenthetical", {
   # cosmetic: "(stored in metadata)" was implicit and only lengthened the line
-  src <- deparse(nautilus:::.reportCalibration)
+  src <- deparse(nautilus:::.reportSidecar)
   expect_false(any(grepl("stored in metadata", src, fixed = TRUE)))
-  expect_true(any(grepl("calibration sidecar", src, fixed = TRUE)))
+  expect_true(any(grepl("sidecar", src, fixed = TRUE)))
 })

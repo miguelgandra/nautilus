@@ -234,7 +234,7 @@ buildTagData <- function(data,
 #'
 #' It deliberately does NOT append a processing record: each caller appends its own, so an imported
 #' tag's audit trail names \code{importTagData} - the operation the user actually invoked - rather than
-#' leaking this internal step. Callers add their own extras afterwards (calibration sidecar, excluded
+#' leaking this internal step. Callers add their own extras afterwards (source sidecar, excluded
 #' channels, WC ancillary streams).
 #' @param data The canonical frame (read for the channels present and the recorded span).
 #' @param id Deployment ID.

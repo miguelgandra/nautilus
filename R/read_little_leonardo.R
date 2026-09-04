@@ -139,8 +139,8 @@
 #' @param exclude.channels Channels to drop (resolved from metadata by the caller).
 #' @param verbose Unused; present for reader-contract symmetry with read_cats().
 #' @return The reader contract: `data` (canonical frame, or NULL), `reason`, `assembly`, `mapping`,
-#'   `selected_cols`, `calibration_info`, `temp_status`, `excluded`, `tz_mismatch`, `tz_note`,
-#'   `unit_notes`, `unread_columns` (channels the files declare but this reader does not read - one
+#'   `selected_cols`, `sidecar_info`, `temp_status`, `excluded`, clock diagnostics,
+#'   `recording_utc_offset`, `unit_notes`, `unread_columns` (channels the files declare but this reader does not read - one
 #'   entry per file, `"<file>: <names>"`; the caller reports them), and
 #'   `ancillary` - a named list of primary-tag ancillary streams parsed in-band, or
 #'   `NULL`. Currently this carries `video` (the DT file's per-second camera-on flag, transition-encoded
@@ -159,8 +159,11 @@ read_little_leonardo <- function(folder,
   # the contract's failure shape: data = NULL + a reason the caller reports verbatim
   fail <- function(reason, assembly = NULL) {
     list(data = NULL, reason = reason, assembly = assembly, mapping = NULL, selected_cols = NULL,
-         calibration_info = NULL, temp_status = "none", excluded = character(0),
-         tz_mismatch = FALSE, tz_note = NULL, unit_notes = character(0),
+         sidecar_info = NULL, temp_status = "none", excluded = character(0),
+         timezone_mismatch = FALSE, timezone_note = NULL,
+         device_clock_mismatch = FALSE, device_clock_note = NULL,
+         recording_utc_offset = NA_real_,
+         unit_notes = character(0),
          unread_columns = character(0))
   }
 
@@ -280,8 +283,10 @@ read_little_leonardo <- function(folder,
 
   list(data = dt, reason = NULL, assembly = assembly, mapping = NULL,
        selected_cols = c("X", "Y", "Z", if (!is.na(files$depth)) c("Depth", "Temp")),
-       calibration_info = NULL, temp_status = "none", excluded = excluded_channels,
-       tz_mismatch = FALSE, tz_note = NULL,
+       sidecar_info = NULL, temp_status = "none", excluded = excluded_channels,
+       timezone_mismatch = FALSE, timezone_note = NULL,
+       device_clock_mismatch = FALSE, device_clock_note = NULL,
+       recording_utc_offset = .tzOffsetHours(timezone, dt$datetime[1]),
        ancillary = if (!is.null(video_anc)) list(video = video_anc) else NULL,
        unread_columns = unread_columns,
        unit_notes = sprintf("timestamps synthesised from data_start + %g Hz (header)", hz))

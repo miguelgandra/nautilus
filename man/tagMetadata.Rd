@@ -10,12 +10,14 @@ tagMetadata(x)
 \item{x}{A \code{nautilus_tag} object (or a data.frame/data.table produced by an earlier version).}
 }
 \value{
-A named list with the metadata schema: \code{id}, \code{deployment}, \code{tag},
-\code{sensors}, \code{span}, \code{calibration}, \code{axis_mapping}, and \code{processing}.
+A named list with the metadata schema: \code{id}, \code{animal_id}, \code{deployment},
+\code{tag}, \code{biometrics}, \code{sensors}, \code{span}, \code{sidecar}, \code{ancillary},
+\code{axis_mapping}, \code{mag_calibration}, and \code{processing}.
 }
 \description{
 Returns the consolidated metadata record carried by a \code{nautilus_tag} (deployment details,
-tag model, sensors, time span, calibration, axis mapping, and the processing audit trail). This
+tag model, sensors, time span, source sidecar, calibration state, ancillary streams, axis mapping,
+and the processing audit trail). This
 is the supported way to read metadata: user code should never reach into the underlying
 attribute directly, since a partial match would otherwise return the unrelated
 \code{nautilus.version} marker.

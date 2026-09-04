@@ -8,18 +8,18 @@
 #
 # Contract: files on disk -> a canonical sensor frame. It reads and merges the deployment's sensor CSVs,
 # maps the header onto nautilus sensor roles, parses the timestamps, drops caller-specified channels,
-# reads the calibration sidecar and converts every channel to canonical units (g / rad/s / uT). What it
+# reads the paired sidecar and converts every channel to canonical units (g / rad/s / uT). What it
 # returns is exactly what `buildTagData()`/the tag assembly needs as input.
 #
 # Two rules keep it honest, both learned from the code it replaces:
 #  1. It NEVER writes to the caller's deferred-issue collectors. Those are locals in importTagData()
 #     mutated via `<-` and read by an on.exit closure; assigning to them from inside another function
 #     frame would silently vanish and the verbose=0 warning channel would go quiet. Status is RETURNED
-#     (`temp_status`, `tz_mismatch`) and the caller collects.
+#     (`temp_status`, `timezone_mismatch`, `device_clock_mismatch`) and the caller collects.
 #  2. It NEVER prints the per-deployment report. Logging in the original is interleaved with parsing
-#     (exclusion -> attrs -> assembly -> sensors -> temp -> span -> calibration -> timezone -> units), so
-#     the reader returns report DATA (`assembly`, `unit_notes`, `tz_note`, ...) and the caller renders it
-#     in that order - the pattern `.reportAssembly()` / `.reportCalibration()` already established.
+#     (exclusion -> attrs -> assembly -> sensors -> temp -> span -> sidecar -> timezone -> units), so
+#     the reader returns report DATA (`assembly`, `unit_notes`, clock notes, ...) and the caller renders it
+#     in that order - the pattern `.reportAssembly()` / `.reportSidecar()` already established.
 
 
 #' The CATS column dialect: `colname -> sensor role + original unit`
@@ -252,6 +252,87 @@
 }
 
 
+#' Determine the clock domain of the selected CATS timestamp columns
+#'
+#' The CATS export can carry two clocks: the sensor logging clock and a device/camera clock. The selected
+#' CSV headers and `[logging]` sidecar block describe the former; `[device] utc_offset` describes the
+#' latter and must never be used to reinterpret or shift sensor rows.
+#' @keywords internal
+#' @noRd
+
+.catsClockStatus <- function(file_mapping, sidecar, timezone, ref) {
+  roles <- file_mapping$sensor_name_out %in% c("date", "time", "datetime")
+  time_headers <- file_mapping$colname_in_csv[roles]
+  header_utc <- length(time_headers) > 0L &&
+    all(grepl("(^|[^[:alpha:]])UTC([^[:alpha:]]|$)", time_headers, ignore.case = TRUE))
+  header_local <- length(time_headers) > 0L &&
+    any(grepl("(^|[^[:alpha:]])local([^[:alpha:]]|$)", time_headers, ignore.case = TRUE))
+
+  logging_offset <- if (!is.null(sidecar) && !is.null(sidecar$logging)) {
+    sidecar$logging$utc_offset
+  } else {
+    NA_real_
+  }
+  if (length(logging_offset) != 1L || !is.finite(logging_offset)) logging_offset <- NA_real_
+
+  # An explicit selected CSV header wins over general logging metadata. A selected local-time column is
+  # intentionally governed by the public `timezone` argument; otherwise an explicit logging zone is the
+  # best available source declaration.
+  if (header_utc) {
+    recording_offset <- 0
+    source_label <- "Sensor columns are UTC"
+  } else if (header_local) {
+    recording_offset <- .tzOffsetHours(timezone, ref)
+    source_label <- NULL
+  } else if (is.finite(logging_offset)) {
+    recording_offset <- logging_offset
+    source_label <- if (logging_offset == 0) "[logging] is UTC" else "[logging] declares the sensor offset"
+  } else {
+    recording_offset <- NA_real_
+    source_label <- NULL
+  }
+
+  requested_offset <- .tzOffsetHours(timezone, ref)
+  timezone_mismatch <- is.finite(recording_offset) &&
+    abs(recording_offset - requested_offset) > 0.5
+  timezone_note <- if (timezone_mismatch) {
+    if (recording_offset == 0) {
+      sprintf("%s but timezone is %s. Use timezone = \"UTC\".", source_label, timezone)
+    } else {
+      sprintf("Sensor offset is %gh but timezone %s is %gh.",
+              recording_offset, timezone, round(requested_offset, 1))
+    }
+  } else {
+    NULL
+  }
+
+  device_offset <- if (!is.null(sidecar) && !is.null(sidecar$device)) {
+    sidecar$device$utc_offset
+  } else {
+    NA_real_
+  }
+  if (length(device_offset) != 1L || !is.finite(device_offset)) device_offset <- NA_real_
+
+  # Only the sidecar can establish a device-versus-logging difference. Keep this separate from the
+  # sensor/source warning: it is actionable for video alignment, not evidence that sensor rows are wrong.
+  device_clock_mismatch <- is.finite(logging_offset) && is.finite(device_offset) &&
+    abs(logging_offset - device_offset) > 0.5
+  device_clock_note <- if (device_clock_mismatch && logging_offset == 0) {
+    sprintf("[logging] is UTC but [device] offset is %gh. Video timestamps may require manual %+gh correction.",
+            device_offset, -device_offset)
+  } else if (device_clock_mismatch) {
+    sprintf("[logging] offset is %gh but [device] offset is %gh. Check video timestamps.",
+            logging_offset, device_offset)
+  } else {
+    NULL
+  }
+
+  list(recording_utc_offset = recording_offset,
+       timezone_mismatch = timezone_mismatch, timezone_note = timezone_note,
+       device_clock_mismatch = device_clock_mismatch, device_clock_note = device_clock_note)
+}
+
+
 #' Read a CATS/CEiiA deployment folder into a canonical sensor frame
 #'
 #' @param folder Path to the deployment folder.
@@ -260,14 +341,15 @@
 #' @param temp_blacklist_norm Normalised names of blacklisted (electronics) temperature columns.
 #' @param required.sensors Channels that must be present, or NULL.
 #' @param timezone Time zone the tag recorded its clock in.
-#' @param import.calibration Logical; read the paired calibration sidecar.
+#' @param import.sidecar Logical; read the paired sensor sidecar.
 #' @param exclude.channels Character vector of channels to drop (resolved from deployment metadata by
 #'   the caller). Applied BEFORE unit conversion, so the unit notes describe only retained channels -
 #'   exactly as the original ordering did.
 #' @param verbose Logical; passed to `.assembleSensorData()` for its own inline reporting.
 #' @return A list: `data` (canonical frame, or NULL when unusable), `reason` (why, when `data` is NULL),
-#'   `assembly` (pass-through for `.reportAssembly()`), `mapping`, `selected_cols`, `calibration_info`,
-#'   `temp_status`, `excluded`, `tz_mismatch` (flag), `tz_note` (string or NULL), `unit_notes`.
+#'   `assembly` (pass-through for `.reportAssembly()`), `mapping`, `selected_cols`, `sidecar_info`,
+#'   `temp_status`, `excluded`, sensor/source and device/logging clock diagnostics,
+#'   `recording_utc_offset`, and `unit_notes`.
 #' @keywords internal
 #' @noRd
 read_cats <- function(folder,
@@ -277,7 +359,7 @@ read_cats <- function(folder,
                       temp_blacklist_norm,
                       required.sensors,
                       timezone,
-                      import.calibration = TRUE,
+                      import.sidecar = TRUE,
                       exclude.channels = character(0),
                       verbose = FALSE) {
 
@@ -295,8 +377,10 @@ read_cats <- function(folder,
   # "no sensor CSV" folder from a genuine failure, so these strings are part of the contract)
   if (is.null(assembly$data)) {
     return(list(data = NULL, reason = assembly$reason, assembly = assembly, mapping = NULL,
-                selected_cols = NULL, calibration_info = NULL, temp_status = "none",
-                excluded = character(0), tz_mismatch = FALSE, tz_note = NULL,
+                selected_cols = NULL, sidecar_info = NULL, temp_status = "none",
+                excluded = character(0), timezone_mismatch = FALSE, timezone_note = NULL,
+                device_clock_mismatch = FALSE, device_clock_note = NULL,
+                recording_utc_offset = NA_real_,
                 unit_notes = character(0)))
   }
 
@@ -316,27 +400,11 @@ read_cats <- function(folder,
   # ---- temperature reliability (returned, never collected here) ------------------------------------
   temp_status <- attr(file_mapping, "temp_status") %||% "none"
 
-  # ---- calibration sidecar paired with the primary CSV ---------------------------------------------
-  # parsed and stored for provenance; values are NOT applied to the sensor data at this stage
-  calibration_info <- NULL
-  tz_mismatch <- FALSE
-  tz_note <- NULL
-  if (isTRUE(import.calibration)) {
-    calibration_info <- .readSidecarCalibration(assembly$primary_file)
-
-    # cross-check the recording zone: if the sidecar reports a UTC offset (assumed hours) that disagrees
-    # with `timezone`, the recorded clock is probably local (we never silently shift it).
-    off <- if (!is.null(calibration_info)) calibration_info$device$utc_offset else NA_real_
-    if (length(off) == 1L && is.finite(off) && off != 0) {
-      tz_off <- .tzOffsetHours(timezone, sensor_data$datetime[1])
-      if (abs(off - tz_off) > 0.5) {
-        tz_mismatch <- TRUE
-        tz_note <- sprintf(
-          "timezone: sidecar UTC offset %gh vs timestamps read as %s (offset %gh); if logged in local time, set `timezone` to match.",
-          off, timezone, round(tz_off, 1))
-      }
-    }
-  }
+  # ---- sidecar + clock domains ---------------------------------------------------------------------
+  # The sensor log and the device/camera clock are distinct. Sidecar calibration constants are retained
+  # as provenance but never applied; clock metadata validate the caller's timezone and never shift rows.
+  sidecar_info <- if (isTRUE(import.sidecar)) .readSidecar(assembly$primary_file) else NULL
+  clock <- .catsClockStatus(file_mapping, sidecar_info, timezone, sensor_data$datetime[1])
 
   # ---- convert every sensor group to its canonical unit --------------------------------------------
   # Note: `datetime` was already parsed to POSIXct during assembly (.addDatetime), where a tiny +0.0001 s
@@ -380,7 +448,11 @@ read_cats <- function(folder,
   }
 
   list(data = sensor_data, reason = NULL, assembly = assembly, mapping = file_mapping,
-       selected_cols = selected_cols, calibration_info = calibration_info,
+       selected_cols = selected_cols, sidecar_info = sidecar_info,
        temp_status = temp_status, excluded = excluded_channels,
-       tz_mismatch = tz_mismatch, tz_note = tz_note, unit_notes = unit_notes)
+       timezone_mismatch = clock$timezone_mismatch, timezone_note = clock$timezone_note,
+       device_clock_mismatch = clock$device_clock_mismatch,
+       device_clock_note = clock$device_clock_note,
+       recording_utc_offset = clock$recording_utc_offset,
+       unit_notes = unit_notes)
 }
