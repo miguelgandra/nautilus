@@ -120,6 +120,11 @@ sidecar shows that its device/video clock differs from sensor data explicitly lo
 `getVideoMetadata(clock.corrections = ...)`; the applied seconds and their source remain in the
 returned video metadata.
 
+Pass one deployment root per `video.folders` path; each root is searched recursively, so footage in a
+child such as `PIN_CAM_31/MP4` is discovered while the ID remains `PIN_CAM_31`. If the paths themselves
+must point at generic media directories, name them explicitly—for example
+`c(PIN_CAM_31 = "/videos/PIN_CAM_31/MP4")`—and those names become the deployment IDs.
+
 The deployment table is the main metadata file linking your raw files to deployment
 information. It should contain one row per deployment and can use your existing column
 names. Use `metadataColumns()` to map your columns to the roles expected by nautilus;

@@ -60,10 +60,31 @@ test_that("getVideoMetadata() argument validation fires before any OCR / ffprobe
   d <- tempfile(); dir.create(d); on.exit(unlink(d, recursive = TRUE), add = TRUE)
   expect_error(getVideoMetadata(123, verbose = FALSE), "video.folders", ignore.case = TRUE)
   expect_error(getVideoMetadata(character(0), verbose = FALSE), "video.folders", ignore.case = TRUE)
+  partial <- c(PIN_CAM_31 = d, d)
+  expect_error(getVideoMetadata(partial, verbose = FALSE), "entirely unnamed", ignore.case = TRUE)
   expect_error(getVideoMetadata(d, video.format = "avi", verbose = FALSE), "video.format", ignore.case = TRUE)
   expect_error(getVideoMetadata(d, timestamp.source = "bogus", verbose = FALSE), "timestamp.source", ignore.case = TRUE)
   expect_error(getVideoMetadata(d, cross.check = "yes", verbose = FALSE), "cross.check", ignore.case = TRUE)
   expect_error(getVideoMetadata(d, ocr = list(bogus = 1), verbose = FALSE), "ocr", ignore.case = TRUE)
+})
+
+test_that("video folders use basename IDs by default and fully named vectors as explicit mappings", {
+  root <- tempfile(); dir.create(root); on.exit(unlink(root, recursive = TRUE), add = TRUE)
+  deployment <- file.path(root, "PIN_CAM_31")
+  media <- file.path(deployment, "MP4")
+  dir.create(media, recursive = TRUE)
+
+  inferred <- nautilus:::.resolveVideoFolders(deployment)
+  expect_identical(inferred$ID, "PIN_CAM_31")
+  expect_identical(inferred$folder, deployment)
+
+  explicit <- nautilus:::.resolveVideoFolders(c(PIN_CAM_31 = media))
+  expect_identical(explicit$ID, "PIN_CAM_31")
+  expect_identical(explicit$folder, media)
+
+  # Repeated names are intentional: footage for one deployment may live on several drives/folders.
+  repeated <- nautilus:::.resolveVideoFolders(c(PIN_CAM_31 = media, PIN_CAM_31 = media))
+  expect_identical(repeated$ID, rep("PIN_CAM_31", 2))
 })
 
 test_that("getVideoMetadata() reports missing and empty folders clearly", {
@@ -188,8 +209,9 @@ test_that("videos without a timestamp remain uncorrected and are reported", {
 
 test_that("getVideoMetadata() applies a correction table after extraction", {
   root <- tempfile(); dir.create(root)
-  folder <- file.path(root, "PIN_CAM_31"); dir.create(folder)
-  video_path <- file.path(folder, "20220904-113025_CAM.mp4")
+  folder <- file.path(root, "PIN_CAM_31")
+  media <- file.path(folder, "MP4"); dir.create(media, recursive = TRUE)
+  video_path <- file.path(media, "20220904-113025_CAM.mp4")
   file.create(video_path)
   on.exit(unlink(root, recursive = TRUE), add = TRUE)
 
@@ -215,4 +237,13 @@ test_that("getVideoMetadata() applies a correction table after extraction", {
   expect_equal(got$clock_correction_source, "manual")
   expect_match(paste(output, collapse = "\n"), "clock \\+3600 s")
   expect_match(paste(output, collapse = "\n"), "clock corrected: 1/1 video")
+
+  # Supplying the generic media directory itself works when its vector name states the deployment ID.
+  named_media <- c(PIN_CAM_31 = media)
+  got_named <- getVideoMetadata(named_media, timestamp.source = "filename",
+                                clock.corrections = corrections,
+                                use.parallel = FALSE, verbose = FALSE)
+  expect_identical(got_named$ID, "PIN_CAM_31")
+  expect_equal(got_named$start, as.POSIXct("2022-09-04 12:30:25", tz = "UTC"))
+  expect_equal(got_named$clock_correction_s, 3600)
 })

@@ -2,7 +2,7 @@
 % Please edit documentation in R/getVideoMetadata.R
 \name{getVideoMetadata}
 \alias{getVideoMetadata}
-\title{Read the timing of every camera-tag video file}
+\title{Extract timing metadata from camera-tag videos}
 \usage{
 getVideoMetadata(
   video.folders,
@@ -17,110 +17,208 @@ getVideoMetadata(
 )
 }
 \arguments{
-\item{video.folders}{One or more directories holding video files.}
+\item{video.folders}{Character vector of directories to search for videos. Subdirectories are
+searched recursively. For an unnamed vector, each directory basename becomes its deployment ID.
+For arbitrary layouts, supply a fully named vector whose names are the authoritative deployment
+IDs and whose values are the directories to search, for example
+\code{c(PIN_CAM_31 = "./PIN_CAM_31/MP4")}. Names may be repeated when one deployment spans several
+directories. A vector that mixes named and unnamed elements is rejected.}
 
-\item{video.format}{Which formats to read, \code{"mp4"} and/or \code{"mov"}. Default \code{"mp4"}.}
+\item{video.format}{Character vector of video-file extensions to include: \code{"mp4"}, \code{"mov"}, or both
+(default \code{"mp4"}).}
 
-\item{timestamp.source}{Where to take each video's start time from:
-\itemize{
-\item \code{"auto"} (default) uses the file-name timestamp and falls back to reading the screen only for
-videos whose name has none.
-\item \code{"filename"} uses the file name alone, leaving videos without a timestamp as \code{NA}.
-\item \code{"ocr"} reads every timestamp off the screen, ignoring the file name.
-}}
+\item{timestamp.source}{Method used to obtain recording start times. \code{"auto"} (default) uses a
+recognised file-name timestamp where available and otherwise falls back to OCR. \code{"filename"} uses
+file names only and leaves an unrecognised start time as \code{NA}. \code{"ocr"} reads the on-screen clock
+for every video and ignores any timestamp in the file name.}
 
-\item{cross.check}{Whether to also read the on-screen timestamp for videos whose start time came from
-the file name, and compare the two (default \code{FALSE}). It costs an optical-character-recognition
-pass per video but validates the file-name times, which is worth doing once for a new camera system
-before trusting them for a whole study. Disagreements beyond two seconds are flagged in \code{ocr_flag}.}
+\item{cross.check}{Logical; whether to read the on-screen clock for videos whose primary timestamp
+came from the file name and compare the two estimates (default \code{FALSE}). Differences greater than
+two seconds are flagged in \code{ocr_flag}. This requires an additional OCR pass for every applicable
+video.}
 
-\item{clock.corrections}{Optional data frame with one row per deployment and columns \code{ID} and
-\code{clock_correction_s}, the number of seconds to add to its extracted video timestamps. An optional
-\code{clock_correction_source} column records provenance; it defaults to \code{"manual"}. Use
-\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} to derive a reviewable table from imported CATS sidecar metadata.}
+\item{clock.corrections}{Optional data frame containing one row per deployment to correct, with
+columns \code{ID} and \code{clock_correction_s}. The latter gives the number of seconds to add to the
+extracted camera timestamp. An optional character column \code{clock_correction_source} records the
+provenance of each value and defaults to \code{"manual"} when absent or empty. Use
+\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} to derive a reviewable table from imported CATS sidecar metadata.
+Default \code{NULL}, which applies no correction.}
 
-\item{ocr}{A control object from \code{\link[=ocrControl]{ocrControl()}} holding the recognition settings - the model, the
-position of the timestamp on screen, and how many frames to search. Only consulted when the screen
-is actually read. Pass \code{ocrControl(...)} to change it.}
+\item{ocr}{A control object from \code{\link[=ocrControl]{ocrControl()}} specifying the recognition model, position of the
+on-screen timestamp, image preprocessing and frame-search behaviour. It is consulted only when OCR
+is required.}
 
-\item{use.parallel}{Whether to process videos in parallel (default \code{TRUE}). Reading a directory of
-videos is limited by disk and decoding rather than by R, so this helps considerably.}
+\item{use.parallel}{Logical; whether to process videos in parallel when more than one file is found
+(default \code{TRUE}).}
 
-\item{n.cores}{How many cores to use. \code{NULL} (default) leaves one free.}
+\item{n.cores}{Number of parallel workers, or \code{NULL} (default) to use all detected cores except one.
+Only used when \code{use.parallel = TRUE} and more than one video is processed.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
-(default).}
+(default), which reports deployment-level extraction outcomes.}
 }
 \value{
-A data frame with one row per video and columns \code{ID}, \code{video} (the file name), \code{start} and
-\code{end}, \code{duration} in seconds, \code{frame_rate}, \code{file} (the full path), and \code{timestamp_source}, which is
-\code{"filename"}, \code{"ocr"}, or \code{NA} where no timestamp could be obtained at all. \code{clock_correction_s}
-records the number of seconds added to the extracted clock (\code{0} where none was applied), and
-\code{clock_correction_source} records its provenance (\code{NA} where uncorrected).
+A data frame with one row per discovered video and the following columns:
 
-With \code{cross.check = TRUE}, three further columns are added: \code{ocr_start}, the time read from the
-screen; \code{ocr_offset_s}, the file-name time minus that; and \code{ocr_flag}, which is \code{TRUE} where the two
-disagree by more than two seconds.
+\describe{
+\item{\code{ID}}{Deployment identifier resolved from \code{video.folders}.}
+\item{\code{video}}{Video file name, without its directory.}
+\item{\code{start}, \code{end}}{Recording start and end as \code{POSIXct} values represented in UTC. These include
+any applied clock correction.}
+\item{\code{duration}}{Video duration in seconds.}
+\item{\code{frame_rate}}{Nominal video frame rate in frames per second.}
+\item{\code{file}}{Full path to the video file.}
+\item{\code{timestamp_source}}{Source selected for \code{start}: \code{"filename"}, \code{"ocr"}, or \code{NA} when neither
+produced a timestamp.}
+\item{\code{clock_correction_s}}{Number of seconds added to the extracted camera clock; \code{0} where no
+correction was applied.}
+\item{\code{clock_correction_source}}{Provenance supplied with the applied correction, or \code{NA} where the
+row was not corrected.}
+}
+
+With \code{cross.check = TRUE}, the result also contains:
+
+\describe{
+\item{\code{ocr_start}}{Start time obtained independently from the on-screen clock, including any
+applied correction.}
+\item{\code{ocr_offset_s}}{File-name start minus OCR start, in seconds. Defined only where the primary
+timestamp came from the file name and OCR also succeeded.}
+\item{\code{ocr_flag}}{Logical flag indicating an absolute \code{ocr_offset_s} greater than two seconds.}
+}
 }
 \description{
-Sensor data and video are only comparable once you know, to the second, when each video frame was
-recorded. Camera tags do not make this easy: the camera keeps its own clock, files are split into
-segments of arbitrary length, and different camera systems record the start time in different places
-or not at all.
+Recursively discovers camera-tag video files and extracts the timing information required to align
+them with archival sensor data. The function returns a standardised segment table with one row per
+video, including its deployment identifier, recording start and end, duration, frame rate and file
+path.
 
-This function builds the bridge. It reads the start time, end time, duration and frame rate of every
-video in one or more directories and returns one row per file - the table every other video function
-in the package takes as its map from a timestamp to a file and an offset within it.
+Recording start times can be read from timestamps encoded in file names, obtained by optical
+character recognition (OCR) from a clock burned into the image, or resolved by using the file name
+first and OCR only as a fallback. Duration and frame rate are read directly from each video with
+\code{ffprobe}. An optional OCR cross-check can identify disagreements between the encoded and on-screen
+clocks.
+
+Deployment-level clock corrections can be supplied explicitly to place camera timestamps on the
+same time base as the sensor stream. Every applied correction is retained in the returned table as
+provenance. Corrections may be created manually or derived for supported sidecar metadata with
+\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}}; they are never inferred or applied silently by this function.
+
+The returned table is the entry point to the \pkg{nautilus} video workflow. It can be used to locate
+the file covering a sensor-data interval, launch or annotate footage, inspect uncertain timestamps,
+and render sensor overlays.
 }
 \details{
-\subsection{Where the start time comes from, and why the file name is preferred}{
+\subsection{Deployment identifiers and file discovery}{
 
-Most on-camera systems encode the recording time in the file name, as \code{YYYYMMDD-HHMMSS} or
-\code{YYMMDD-HHMMSS}. That is the primary and default source, because it is exact, costs nothing to read,
-and does not depend on the camera model, the video quality or where on the frame a clock happens to
-be drawn.
+Every supplied directory is searched recursively for the extensions selected by \code{video.format}.
+Empty directories are omitted; the function stops if none of the supplied directories contains a
+matching video. Each discovered file is assigned to the deployment associated with its search
+directory.
 
-Some cameras write no timestamp into the file name, and for those the start time can be read by
-optical character recognition from the clock burned into the picture. This is a secondary source: it
-is slower, and it can misread a digit on a dark or motion-blurred frame. It is used only where the
-file name has nothing to offer, or, with \code{cross.check = TRUE}, as an independent check on the file
-name.
-
-Duration and frame rate are always read from the file itself with \code{ffprobe}, so an FFmpeg
-installation is needed for every run. The \code{ffmpeg} binary itself, and the character-recognition
-packages, are needed only when the screen is actually read.
+For the usual layout, in which each path is a deployment root, an unnamed vector is sufficient and
+the basename of each path is used as the ID. When the search path itself is a generic media directory
+such as \code{MP4} or \code{DCIM}, the path cannot identify the deployment reliably. In that case the vector
+must be named explicitly. These resolved IDs are used throughout the returned table and are also the
+keys against which \code{clock.corrections} is validated.
 }
 
-\subsection{Clock corrections}{
+\subsection{Timestamp extraction}{
 
-File-name and OCR timestamps are clock readings parsed in UTC. When a camera clock was configured at
-a fixed offset, \code{clock.corrections} adds the specified number of seconds after extraction and before
-the video table is returned. Corrections match the exact deployment IDs derived from the video-folder
-basenames; unknown or duplicate IDs are errors. The original clock reading is recoverable as
-\code{start - clock_correction_s}.
+The file-name parser recognises plausible timestamps in either \code{YYYYMMDD-HHMMSS} or
+\code{YYMMDD-HHMMSS} form. File-name timestamps are preferred by \code{timestamp.source = "auto"} because they
+are exact to the second, inexpensive to read and independent of image quality. File names without a
+recognised timestamp fall back to OCR under \code{"auto"}, or remain missing under \code{"filename"}.
 
-A correction is applied to \code{start}, \code{end}, and, when present, \code{ocr_start}; the filename-versus-OCR
-difference in \code{ocr_offset_s} therefore does not change. A video with no start timestamp remains
-uncorrected and is reported. Re-running this function starts again from the source files, so
-corrections cannot accumulate across runs.
+OCR reads the clock burned into the video image using the settings in \code{ocr}. It is slower and may be
+affected by darkness, motion blur, compression artefacts or an incorrectly specified crop. Use
+\code{cross.check = TRUE} when validating a new camera system or file-naming convention. The difference is
+calculated as the file-name time minus the OCR time; an absolute difference greater than two seconds
+sets \code{ocr_flag} to \code{TRUE}.
+
+Duration and frame rate are read independently of the timestamp source. \code{end} is calculated as
+\code{start + duration}; it is \code{NA} when either component is unavailable.
+}
+
+\subsection{Clock corrections and time zones}{
+
+File-name and OCR clock readings are parsed and stored as \code{POSIXct} values in UTC. This assigns a
+common time-zone representation; it does not establish that the physical camera clock was configured
+to UTC. Where a camera clock used a fixed local offset, the appropriate number of seconds must be
+supplied through \code{clock.corrections} before the video and sensor timelines are compared.
+
+Correction IDs must match the deployment IDs resolved from \code{video.folders} exactly. Duplicate or
+unmatched correction IDs are errors, and the complete correction table is validated before video
+decoding begins. A non-zero correction is added to \code{start}, \code{end} and, where present, \code{ocr_start}.
+The within-file comparison \code{ocr_offset_s} is unchanged because both clock estimates receive the same
+shift. The original camera-clock reading remains recoverable as \code{start - clock_correction_s}.
+
+A new call always extracts timestamps afresh from the source files, so corrections cannot accumulate
+across calls. Internal application also refuses to add a correction to a row already carrying a
+non-zero \code{clock_correction_s}. A file without a start timestamp cannot be corrected: it remains in
+the output with zero correction and missing correction provenance, and is reported to the user.
+}
+
+\subsection{External software and parallel processing}{
+
+\code{ffprobe} is required for every run to read video duration and frame rate. OCR additionally requires
+\code{ffmpeg} to extract frames and the \pkg{tesseract} and \pkg{magick} packages to process them. The
+camera-specific OCR model is prepared only when an OCR operation is actually required; a pure
+file-name workflow does not load the image-recognition dependencies.
+
+Parallel processing uses a single worker pool across all discovered files, allowing deployments with
+different numbers of segments to share the available workers. Set \code{use.parallel = FALSE} for
+sequential execution or when diagnosing external-software problems.
+}
+
+\subsection{Quality control and warnings}{
+
+The function retains every discovered video, including files for which no reliable start timestamp
+could be obtained. Such rows have missing \code{start}, \code{end} and \code{timestamp_source} values and are
+reported in the final summary rather than silently discarded. OCR cross-check discrepancies are
+returned as flags for review; they do not alter or remove the file-name timestamp.
+
+Missing input directories, unsupported arguments, a complete absence of matching video files, and
+invalid clock-correction tables are treated as errors. Unreadable video properties are returned as
+missing values where possible, preserving the file record for subsequent inspection.
 }
 }
 \examples{
 \dontrun{
-# one row per video, start times taken from the file names where present
-meta <- getVideoMetadata(c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02"))
+# Extract one row per video from deployment-root directories.
+video_metadata <- getVideoMetadata(
+  c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02")
+)
 
-# validate those file-name timestamps against the clock burned into the picture
-meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
-subset(meta, ocr_flag)
+# Map nested media directories explicitly to deployment IDs.
+camera_folders <- c(
+  PIN_CAM_31 = "./videos/PIN_CAM_31/MP4",
+  PIN_CAM_32 = "./videos/PIN_CAM_32/MP4"
+)
 
-# Explicit manual correction: add one hour to this deployment's camera clock.
-corrections <- data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600)
-meta <- getVideoMetadata("./videos/PIN_CAM_31", clock.corrections = corrections)
+# Derive reviewable clock corrections from imported sensor datasets.
+imported_files <- list.files("./01_imported", pattern = "[.]rds$", full.names = TRUE)
+corrections <- getVideoClockCorrections(imported_files)
+video_metadata <- getVideoMetadata(
+  camera_folders,
+  clock.corrections = corrections
+)
+
+# Supply a manual correction when no supported sidecar record is available.
+manual_correction <- data.frame(
+  ID = "PIN_CAM_31",
+  clock_correction_s = 3600,
+  clock_correction_source = "deployment log"
+)
+video_metadata <- getVideoMetadata(
+  camera_folders["PIN_CAM_31"],
+  clock.corrections = manual_correction,
+  cross.check = TRUE
+)
 }
 }
 \seealso{
-\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} for deriving corrections from imported tag metadata;
-\code{\link[=ocrControl]{ocrControl()}} for the recognition settings; \code{\link[=launchVideo]{launchVideo()}} and \code{\link[=filterVideoPeriod]{filterVideoPeriod()}} for what
-consumes this table; \code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for compositing footage with sensor data.
+\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} for deriving clock corrections from imported tag metadata;
+\code{\link[=ocrControl]{ocrControl()}} for configuring timestamp recognition; \code{\link[=saveUncertainTimestampFrames]{saveUncertainTimestampFrames()}} for
+reviewing unresolved or discrepant timestamps; \code{\link[=filterVideoPeriod]{filterVideoPeriod()}} and \code{\link[=launchVideo]{launchVideo()}} for
+locating and opening footage; \code{\link[=renderOverlayVideo]{renderOverlayVideo()}} for compositing video with sensor data.
 }

@@ -356,27 +356,40 @@ filterLocations(data           = list.files("./data interim/03_checked", full.na
 # STEP 7. Read the camera video (optional; camera tags only)                   #
 ################################################################################
 
-# For camera-equipped tags, getVideoMetadata() extracts video start times,
-# durations and frame rates for alignment with the sensor data. Timestamps are
-# taken from file names where available, with OCR used when needed; cross-checking
-# can flag disagreements between the two sources.
+# Camera clocks can differ from the sensor logging clock. getVideoClockCorrections()
+# inspects the CATS sidecar metadata retained during STEP 3 and returns a small,
+# reviewable table containing only deployments with an explicit, safely resolvable
+# device-to-UTC correction. It does not alter the sensor data.
+imported_tags <- list.files("./data interim/01_imported",
+                            pattern = "[.]rds$", full.names = TRUE)
+video_clock_corrections <- getVideoClockCorrections(imported_tags)
+video_clock_corrections   # review the affected IDs, offsets and provenance before applying
 
-# This step is only needed for the video-based orientation check in STEP 8 and
-# can be skipped for deployments without cameras.
+# Video files on the external drive are nested below year and deployment folders,
+# with each deployment's footage stored inside a generic MP4 directory, for example:
+#   CAMS/2019/PIN_CAM_01/MP4
+#   CAMS/2019/PIN_CAM_14_15_16/PIN_CAM_14/MP4
+#   CAMS/2020/PIN_CAM_17/MP4
+# Discover those directories recursively, then name each path with the deployment ID
+# in its immediate parent directory. A fully named video.folders vector tells
+# getVideoMetadata() to use these names as IDs instead of the generic basename "MP4".
+video_root <- "/Volumes/T7 Shield/CAMS"
+camera_folders <- list.dirs(video_root, recursive = TRUE, full.names = TRUE)
+camera_folders <- camera_folders[toupper(basename(camera_folders)) == "MP4"]
+names(camera_folders) <- basename(dirname(camera_folders))
 
-# Root directory containing the camera-tag video folders
-camera_folders <- list.dirs("/Users/Mig/Desktop/Whale Sharks/CAMS", recursive = FALSE)
-#camera_folders <- list.dirs("/Volumes/T7 Shield/CAMS", recursive = TRUE)
-#camera_folders <- camera_folders[grepl("MP4", basename(camera_folders), fixed = TRUE)]
-
-# Extract video metadata and resolve clip start times for alignment with the sensor data
-video_metadata <- getVideoMetadata(video.folders    = camera_folders,
-                                   video.format     = c("mp4", "mov"),
-                                   timestamp.source = "auto",   # file name first, OCR only where needed
-                                   cross.check      = TRUE,     # also OCR the overlay and flag disagreements
-                                   use.parallel     = TRUE,
-                                   verbose          = "detailed")
-#video_metadata$ID <- sub(".*/([^/]+)/MP4/.*", "\\1", video_metadata$file)
+# Extract each clip's timing and apply the reviewed camera-clock corrections. File-name
+# timestamps are preferred; OCR supplies missing timestamps and independently checks
+# file-name timestamps when cross.check = TRUE. Applied shifts and their provenance are
+# retained in clock_correction_s and clock_correction_source.
+video_metadata <- getVideoMetadata(
+  video.folders     = camera_folders,
+  video.format      = c("mp4", "mov"),
+  timestamp.source  = "auto",
+  cross.check       = TRUE,
+  clock.corrections = video_clock_corrections,
+  use.parallel      = TRUE,
+  verbose           = "detailed")
 
 # Save timestamp crops for clips with uncertain or flagged start times, for
 # manual verification

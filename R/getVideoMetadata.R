@@ -119,100 +119,227 @@ getVideoClockCorrections <- function(data) {
 }
 
 
-#' Read the timing of every camera-tag video file
+#' Resolve video search folders to deployment identifiers
+#'
+#' An unnamed character vector follows the convenient deployment-root convention (`basename(path)` is
+#' the ID). A fully named vector is the explicit escape hatch for arbitrary media layouts: its names are
+#' the IDs, so `c(PIN_CAM_31 = ".../PIN_CAM_31/MP4")` never has to infer identity from path depth.
+#' Mixing named and unnamed paths is rejected because a silent mixture of explicit and inferred IDs is
+#' difficult to audit and especially dangerous when clock corrections are keyed by deployment.
+#' @keywords internal
+#' @noRd
+.resolveVideoFolders <- function(video.folders) {
+  if (!is.character(video.folders) || !length(video.folders))
+    .abort("{.arg video.folders} must be a character vector.")
+  if (anyNA(video.folders) || any(!nzchar(video.folders)))
+    .abort("{.arg video.folders} must contain non-missing, non-empty folder paths.")
+
+  supplied_names <- names(video.folders)
+  named <- if (is.null(supplied_names)) rep(FALSE, length(video.folders)) else
+    !is.na(supplied_names) & nzchar(supplied_names)
+  if (any(named) && !all(named)) {
+    .abort(c("{.arg video.folders} must be either entirely unnamed or have a deployment ID name for every folder.",
+             "i" = "Use a fully named vector such as {.code c(PIN_CAM_31 = '/path/to/PIN_CAM_31/MP4')}."))
+  }
+
+  ids <- if (all(named)) supplied_names else basename(video.folders)
+  if (anyNA(ids) || any(!nzchar(ids)))
+    .abort("Could not derive a non-empty deployment ID for every {.arg video.folders} path.")
+
+  data.frame(ID = as.character(ids), folder = unname(video.folders), stringsAsFactors = FALSE)
+}
+
+
+#' Extract timing metadata from camera-tag videos
 #'
 #' @description
-#' Sensor data and video are only comparable once you know, to the second, when each video frame was
-#' recorded. Camera tags do not make this easy: the camera keeps its own clock, files are split into
-#' segments of arbitrary length, and different camera systems record the start time in different places
-#' or not at all.
+#' Recursively discovers camera-tag video files and extracts the timing information required to align
+#' them with archival sensor data. The function returns a standardised segment table with one row per
+#' video, including its deployment identifier, recording start and end, duration, frame rate and file
+#' path.
 #'
-#' This function builds the bridge. It reads the start time, end time, duration and frame rate of every
-#' video in one or more directories and returns one row per file - the table every other video function
-#' in the package takes as its map from a timestamp to a file and an offset within it.
+#' Recording start times can be read from timestamps encoded in file names, obtained by optical
+#' character recognition (OCR) from a clock burned into the image, or resolved by using the file name
+#' first and OCR only as a fallback. Duration and frame rate are read directly from each video with
+#' `ffprobe`. An optional OCR cross-check can identify disagreements between the encoded and on-screen
+#' clocks.
 #'
-#' @param video.folders One or more directories holding video files.
-#' @param video.format Which formats to read, `"mp4"` and/or `"mov"`. Default `"mp4"`.
-#' @param timestamp.source Where to take each video's start time from:
+#' Deployment-level clock corrections can be supplied explicitly to place camera timestamps on the
+#' same time base as the sensor stream. Every applied correction is retained in the returned table as
+#' provenance. Corrections may be created manually or derived for supported sidecar metadata with
+#' [getVideoClockCorrections()]; they are never inferred or applied silently by this function.
 #'
-#'   - `"auto"` (default) uses the file-name timestamp and falls back to reading the screen only for
-#'     videos whose name has none.
-#'   - `"filename"` uses the file name alone, leaving videos without a timestamp as `NA`.
-#'   - `"ocr"` reads every timestamp off the screen, ignoring the file name.
-#' @param cross.check Whether to also read the on-screen timestamp for videos whose start time came from
-#'   the file name, and compare the two (default `FALSE`). It costs an optical-character-recognition
-#'   pass per video but validates the file-name times, which is worth doing once for a new camera system
-#'   before trusting them for a whole study. Disagreements beyond two seconds are flagged in `ocr_flag`.
-#' @param clock.corrections Optional data frame with one row per deployment and columns `ID` and
-#'   `clock_correction_s`, the number of seconds to add to its extracted video timestamps. An optional
-#'   `clock_correction_source` column records provenance; it defaults to `"manual"`. Use
+#' The returned table is the entry point to the \pkg{nautilus} video workflow. It can be used to locate
+#' the file covering a sensor-data interval, launch or annotate footage, inspect uncertain timestamps,
+#' and render sensor overlays.
+#'
+#' @param video.folders Character vector of directories to search for videos. Subdirectories are
+#'   searched recursively. For an unnamed vector, each directory basename becomes its deployment ID.
+#'   For arbitrary layouts, supply a fully named vector whose names are the authoritative deployment
+#'   IDs and whose values are the directories to search, for example
+#'   `c(PIN_CAM_31 = "./PIN_CAM_31/MP4")`. Names may be repeated when one deployment spans several
+#'   directories. A vector that mixes named and unnamed elements is rejected.
+#' @param video.format Character vector of video-file extensions to include: `"mp4"`, `"mov"`, or both
+#'   (default `"mp4"`).
+#' @param timestamp.source Method used to obtain recording start times. `"auto"` (default) uses a
+#'   recognised file-name timestamp where available and otherwise falls back to OCR. `"filename"` uses
+#'   file names only and leaves an unrecognised start time as `NA`. `"ocr"` reads the on-screen clock
+#'   for every video and ignores any timestamp in the file name.
+#' @param cross.check Logical; whether to read the on-screen clock for videos whose primary timestamp
+#'   came from the file name and compare the two estimates (default `FALSE`). Differences greater than
+#'   two seconds are flagged in `ocr_flag`. This requires an additional OCR pass for every applicable
+#'   video.
+#' @param clock.corrections Optional data frame containing one row per deployment to correct, with
+#'   columns `ID` and `clock_correction_s`. The latter gives the number of seconds to add to the
+#'   extracted camera timestamp. An optional character column `clock_correction_source` records the
+#'   provenance of each value and defaults to `"manual"` when absent or empty. Use
 #'   [getVideoClockCorrections()] to derive a reviewable table from imported CATS sidecar metadata.
-#' @param ocr A control object from [ocrControl()] holding the recognition settings - the model, the
-#'   position of the timestamp on screen, and how many frames to search. Only consulted when the screen
-#'   is actually read. Pass `ocrControl(...)` to change it.
-#' @param use.parallel Whether to process videos in parallel (default `TRUE`). Reading a directory of
-#'   videos is limited by disk and decoding rather than by R, so this helps considerably.
-#' @param n.cores How many cores to use. `NULL` (default) leaves one free.
+#'   Default `NULL`, which applies no correction.
+#' @param ocr A control object from [ocrControl()] specifying the recognition model, position of the
+#'   on-screen timestamp, image preprocessing and frame-search behaviour. It is consulted only when OCR
+#'   is required.
+#' @param use.parallel Logical; whether to process videos in parallel when more than one file is found
+#'   (default `TRUE`).
+#' @param n.cores Number of parallel workers, or `NULL` (default) to use all detected cores except one.
+#'   Only used when `use.parallel = TRUE` and more than one video is processed.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default).
+#'   (default), which reports deployment-level extraction outcomes.
 #'
 #' @details
-#' ## Where the start time comes from, and why the file name is preferred
+#' ## Deployment identifiers and file discovery
 #'
-#' Most on-camera systems encode the recording time in the file name, as `YYYYMMDD-HHMMSS` or
-#' `YYMMDD-HHMMSS`. That is the primary and default source, because it is exact, costs nothing to read,
-#' and does not depend on the camera model, the video quality or where on the frame a clock happens to
-#' be drawn.
+#' Every supplied directory is searched recursively for the extensions selected by `video.format`.
+#' Empty directories are omitted; the function stops if none of the supplied directories contains a
+#' matching video. Each discovered file is assigned to the deployment associated with its search
+#' directory.
 #'
-#' Some cameras write no timestamp into the file name, and for those the start time can be read by
-#' optical character recognition from the clock burned into the picture. This is a secondary source: it
-#' is slower, and it can misread a digit on a dark or motion-blurred frame. It is used only where the
-#' file name has nothing to offer, or, with `cross.check = TRUE`, as an independent check on the file
-#' name.
+#' For the usual layout, in which each path is a deployment root, an unnamed vector is sufficient and
+#' the basename of each path is used as the ID. When the search path itself is a generic media directory
+#' such as `MP4` or `DCIM`, the path cannot identify the deployment reliably. In that case the vector
+#' must be named explicitly. These resolved IDs are used throughout the returned table and are also the
+#' keys against which `clock.corrections` is validated.
 #'
-#' Duration and frame rate are always read from the file itself with `ffprobe`, so an FFmpeg
-#' installation is needed for every run. The `ffmpeg` binary itself, and the character-recognition
-#' packages, are needed only when the screen is actually read.
+#' ## Timestamp extraction
 #'
-#' ## Clock corrections
+#' The file-name parser recognises plausible timestamps in either `YYYYMMDD-HHMMSS` or
+#' `YYMMDD-HHMMSS` form. File-name timestamps are preferred by `timestamp.source = "auto"` because they
+#' are exact to the second, inexpensive to read and independent of image quality. File names without a
+#' recognised timestamp fall back to OCR under `"auto"`, or remain missing under `"filename"`.
 #'
-#' File-name and OCR timestamps are clock readings parsed in UTC. When a camera clock was configured at
-#' a fixed offset, `clock.corrections` adds the specified number of seconds after extraction and before
-#' the video table is returned. Corrections match the exact deployment IDs derived from the video-folder
-#' basenames; unknown or duplicate IDs are errors. The original clock reading is recoverable as
-#' `start - clock_correction_s`.
+#' OCR reads the clock burned into the video image using the settings in `ocr`. It is slower and may be
+#' affected by darkness, motion blur, compression artefacts or an incorrectly specified crop. Use
+#' `cross.check = TRUE` when validating a new camera system or file-naming convention. The difference is
+#' calculated as the file-name time minus the OCR time; an absolute difference greater than two seconds
+#' sets `ocr_flag` to `TRUE`.
 #'
-#' A correction is applied to `start`, `end`, and, when present, `ocr_start`; the filename-versus-OCR
-#' difference in `ocr_offset_s` therefore does not change. A video with no start timestamp remains
-#' uncorrected and is reported. Re-running this function starts again from the source files, so
-#' corrections cannot accumulate across runs.
+#' Duration and frame rate are read independently of the timestamp source. `end` is calculated as
+#' `start + duration`; it is `NA` when either component is unavailable.
 #'
-#' @return A data frame with one row per video and columns `ID`, `video` (the file name), `start` and
-#'   `end`, `duration` in seconds, `frame_rate`, `file` (the full path), and `timestamp_source`, which is
-#'   `"filename"`, `"ocr"`, or `NA` where no timestamp could be obtained at all. `clock_correction_s`
-#'   records the number of seconds added to the extracted clock (`0` where none was applied), and
-#'   `clock_correction_source` records its provenance (`NA` where uncorrected).
+#' ## Clock corrections and time zones
 #'
-#'   With `cross.check = TRUE`, three further columns are added: `ocr_start`, the time read from the
-#'   screen; `ocr_offset_s`, the file-name time minus that; and `ocr_flag`, which is `TRUE` where the two
-#'   disagree by more than two seconds.
+#' File-name and OCR clock readings are parsed and stored as `POSIXct` values in UTC. This assigns a
+#' common time-zone representation; it does not establish that the physical camera clock was configured
+#' to UTC. Where a camera clock used a fixed local offset, the appropriate number of seconds must be
+#' supplied through `clock.corrections` before the video and sensor timelines are compared.
 #'
-#' @seealso [getVideoClockCorrections()] for deriving corrections from imported tag metadata;
-#'   [ocrControl()] for the recognition settings; [launchVideo()] and [filterVideoPeriod()] for what
-#'   consumes this table; [renderOverlayVideo()] for compositing footage with sensor data.
+#' Correction IDs must match the deployment IDs resolved from `video.folders` exactly. Duplicate or
+#' unmatched correction IDs are errors, and the complete correction table is validated before video
+#' decoding begins. A non-zero correction is added to `start`, `end` and, where present, `ocr_start`.
+#' The within-file comparison `ocr_offset_s` is unchanged because both clock estimates receive the same
+#' shift. The original camera-clock reading remains recoverable as `start - clock_correction_s`.
+#'
+#' A new call always extracts timestamps afresh from the source files, so corrections cannot accumulate
+#' across calls. Internal application also refuses to add a correction to a row already carrying a
+#' non-zero `clock_correction_s`. A file without a start timestamp cannot be corrected: it remains in
+#' the output with zero correction and missing correction provenance, and is reported to the user.
+#'
+#' ## External software and parallel processing
+#'
+#' `ffprobe` is required for every run to read video duration and frame rate. OCR additionally requires
+#' `ffmpeg` to extract frames and the \pkg{tesseract} and \pkg{magick} packages to process them. The
+#' camera-specific OCR model is prepared only when an OCR operation is actually required; a pure
+#' file-name workflow does not load the image-recognition dependencies.
+#'
+#' Parallel processing uses a single worker pool across all discovered files, allowing deployments with
+#' different numbers of segments to share the available workers. Set `use.parallel = FALSE` for
+#' sequential execution or when diagnosing external-software problems.
+#'
+#' ## Quality control and warnings
+#'
+#' The function retains every discovered video, including files for which no reliable start timestamp
+#' could be obtained. Such rows have missing `start`, `end` and `timestamp_source` values and are
+#' reported in the final summary rather than silently discarded. OCR cross-check discrepancies are
+#' returned as flags for review; they do not alter or remove the file-name timestamp.
+#'
+#' Missing input directories, unsupported arguments, a complete absence of matching video files, and
+#' invalid clock-correction tables are treated as errors. Unreadable video properties are returned as
+#' missing values where possible, preserving the file record for subsequent inspection.
+#'
+#' @return A data frame with one row per discovered video and the following columns:
+#'
+#' \describe{
+#'   \item{`ID`}{Deployment identifier resolved from `video.folders`.}
+#'   \item{`video`}{Video file name, without its directory.}
+#'   \item{`start`, `end`}{Recording start and end as `POSIXct` values represented in UTC. These include
+#'     any applied clock correction.}
+#'   \item{`duration`}{Video duration in seconds.}
+#'   \item{`frame_rate`}{Nominal video frame rate in frames per second.}
+#'   \item{`file`}{Full path to the video file.}
+#'   \item{`timestamp_source`}{Source selected for `start`: `"filename"`, `"ocr"`, or `NA` when neither
+#'     produced a timestamp.}
+#'   \item{`clock_correction_s`}{Number of seconds added to the extracted camera clock; `0` where no
+#'     correction was applied.}
+#'   \item{`clock_correction_source`}{Provenance supplied with the applied correction, or `NA` where the
+#'     row was not corrected.}
+#' }
+#'
+#' With `cross.check = TRUE`, the result also contains:
+#'
+#' \describe{
+#'   \item{`ocr_start`}{Start time obtained independently from the on-screen clock, including any
+#'     applied correction.}
+#'   \item{`ocr_offset_s`}{File-name start minus OCR start, in seconds. Defined only where the primary
+#'     timestamp came from the file name and OCR also succeeded.}
+#'   \item{`ocr_flag`}{Logical flag indicating an absolute `ocr_offset_s` greater than two seconds.}
+#' }
+#'
+#' @seealso [getVideoClockCorrections()] for deriving clock corrections from imported tag metadata;
+#'   [ocrControl()] for configuring timestamp recognition; [saveUncertainTimestampFrames()] for
+#'   reviewing unresolved or discrepant timestamps; [filterVideoPeriod()] and [launchVideo()] for
+#'   locating and opening footage; [renderOverlayVideo()] for compositing video with sensor data.
 #'
 #' @examples
 #' \dontrun{
-#' # one row per video, start times taken from the file names where present
-#' meta <- getVideoMetadata(c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02"))
+#' # Extract one row per video from deployment-root directories.
+#' video_metadata <- getVideoMetadata(
+#'   c("./videos/PIN_CAM_01", "./videos/PIN_CAM_02")
+#' )
 #'
-#' # validate those file-name timestamps against the clock burned into the picture
-#' meta <- getVideoMetadata("./videos/PIN_CAM_01", cross.check = TRUE)
-#' subset(meta, ocr_flag)
+#' # Map nested media directories explicitly to deployment IDs.
+#' camera_folders <- c(
+#'   PIN_CAM_31 = "./videos/PIN_CAM_31/MP4",
+#'   PIN_CAM_32 = "./videos/PIN_CAM_32/MP4"
+#' )
 #'
-#' # Explicit manual correction: add one hour to this deployment's camera clock.
-#' corrections <- data.frame(ID = "PIN_CAM_31", clock_correction_s = 3600)
-#' meta <- getVideoMetadata("./videos/PIN_CAM_31", clock.corrections = corrections)
+#' # Derive reviewable clock corrections from imported sensor datasets.
+#' imported_files <- list.files("./01_imported", pattern = "[.]rds$", full.names = TRUE)
+#' corrections <- getVideoClockCorrections(imported_files)
+#' video_metadata <- getVideoMetadata(
+#'   camera_folders,
+#'   clock.corrections = corrections
+#' )
+#'
+#' # Supply a manual correction when no supported sidecar record is available.
+#' manual_correction <- data.frame(
+#'   ID = "PIN_CAM_31",
+#'   clock_correction_s = 3600,
+#'   clock_correction_source = "deployment log"
+#' )
+#' video_metadata <- getVideoMetadata(
+#'   camera_folders["PIN_CAM_31"],
+#'   clock.corrections = manual_correction,
+#'   cross.check = TRUE
+#' )
 #' }
 #' @export
 
@@ -234,15 +361,17 @@ getVideoMetadata <- function(video.folders,
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
 
-  # validate arguments
-  if (!is.character(video.folders) || !length(video.folders)) .abort("{.arg video.folders} must be a character vector.")
+  # validate arguments and resolve the explicit deployment-ID -> search-folder contract before touching
+  # the file system. Names are authoritative only when every path is named; otherwise basenames retain
+  # the simple historical behaviour.
+  folder_plan <- .resolveVideoFolders(video.folders)
   if (any(!video.format %in% c("mp4", "mov"))) .abort("{.arg video.format} must be {.val mp4} and/or {.val mov}.")
   timestamp.source <- timestamp.source[1]                    # take the default when the full vector is passed
   .assert_choice(timestamp.source, "timestamp.source", c("auto", "filename", "ocr"))
   .assert_flag(cross.check, "cross.check")
   .assert_flag(use.parallel, "use.parallel")
   ocr <- .as_control(ocr, ocrControl, "nautilus_ocr", "ocr")
-  missing_folders <- video.folders[!dir.exists(video.folders)]
+  missing_folders <- folder_plan$folder[!dir.exists(folder_plan$folder)]
   if (length(missing_folders))
     .abort(c("These folders were not found:", stats::setNames(missing_folders, rep("*", length(missing_folders)))))
 
@@ -251,27 +380,26 @@ getVideoMetadata <- function(video.folders,
   # Discover video files #######################################################
   ##############################################################################
 
-  names(video.folders) <- basename(video.folders)
   search_pattern <- paste0("[.](", paste0(video.format, collapse = "|"), ")$")
-  video_files <- lapply(video.folders, function(folder)
+  video_files <- lapply(folder_plan$folder, function(folder)
     list.files(folder, full.names = TRUE, pattern = search_pattern, recursive = TRUE))
 
   # keep only folders with at least one video file
   keep <- lengths(video_files) > 0
-  video.folders <- video.folders[keep]; video_files <- video_files[keep]
+  folder_plan <- folder_plan[keep, , drop = FALSE]; video_files <- video_files[keep]
   if (!length(video_files))
     .abort("No {.val {video.format}} video files found in {.arg video.folders}.")
 
-  n_animals <- length(video.folders)
+  n_deployments <- length(unique(folder_plan$ID))
   n_videos  <- sum(lengths(video_files))
 
   # flat task list: one row per (deployment, video) across ALL deployments, so a single worker pool
   # load-balances across deployments (a 2-video folder and a 90-video one draw from the same pool)
-  tasks <- data.frame(id = rep(names(video.folders), lengths(video_files)),
+  tasks <- data.frame(id = rep(folder_plan$ID, lengths(video_files)),
                       video = unlist(video_files, use.names = FALSE), stringsAsFactors = FALSE)
 
   # Validate the whole correction plan before invoking ffprobe/OCR, including exact matching to the
-  # deployment IDs derived from the supplied folder names. A typo must fail before expensive work starts.
+  # resolved deployment IDs. A typo must fail before expensive work starts.
   clock.corrections <- .validateVideoClockCorrections(clock.corrections, unique(tasks$id))
 
 
@@ -357,7 +485,7 @@ getVideoMetadata <- function(video.folders,
   .log_header(lvl, "getVideoMetadata", "Reading timestamp metadata from camera videos",
               bullets = sprintf("Input: %d video%s across %d dataset%s",
                                 n_videos, if (n_videos != 1) "s" else "",
-                                n_animals, if (n_animals != 1) "s" else ""),
+                                n_deployments, if (n_deployments != 1) "s" else ""),
               arrow = sprintf("Timestamp source: %s%s%s%s", src_desc,
                               if (cross.check) " \u00b7 OCR cross-check" else "",
                               if (use_par) sprintf(" \u00b7 %d cores", n.cores) else "",
@@ -496,7 +624,7 @@ getVideoMetadata <- function(video.folders,
     unmatched <- setdiff(ids, as.character(video.ids))
     if (length(unmatched))
       .abort(c("Some {.arg clock.corrections} IDs do not match the supplied video folders: {.val {unmatched}}.",
-               "i" = "Correction IDs must exactly match the video-folder basenames."))
+               "i" = "Correction IDs must exactly match the resolved deployment IDs ({.arg video.folders} names when supplied, otherwise folder basenames)."))
   }
 
   data.frame(ID = ids, clock_correction_s = as.numeric(shifts),
