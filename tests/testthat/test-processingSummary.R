@@ -10,6 +10,7 @@
          orientation_algorithm = algo, median_pitch_deg = median_pitch, median_roll_deg = median_roll,
          pitch_offset_deg = pitch_off, pitch_offset_r2 = r2, roll_offset_deg = roll_off,
          hard_iron_offset_uT = 15.9, magnetic_declination = -3.2,
+         paddle_acceptance_pct = 72.5, paddle_dominant_failure = "low_prominence",
          pitch_anomaly_detected = pitch_anom, roll_anomaly_detected = roll_anom,
          n_input = 100000L, n_output = 20000L)
   if (!is.null(drift))
@@ -28,6 +29,7 @@ test_that("processingSummary projects provenance into one typed row per deployme
   expect_equal(a$algorithm, "tilt_compass")
   expect_equal(a$pitch_offset, -2.9); expect_equal(a$pitch_r2, 0.8); expect_equal(a$roll_offset, -1.5)
   expect_equal(a$median_pitch, -1); expect_equal(a$hard_iron_uT, 15.9); expect_equal(a$declination, -3.2)
+  expect_equal(a$paddle_acceptance, 72.5); expect_equal(a$paddle_failure, "low_prominence")
   expect_equal(a$drift_status, "applied"); expect_equal(a$drift_offset_m, 48)   # max(|c(1, 48)|)
   expect_equal(a$drift_residual_m, 0.1); expect_equal(a$drift_anchors, 7L)
   expect_equal(a$hz_in, 100); expect_equal(a$hz_out, 20)

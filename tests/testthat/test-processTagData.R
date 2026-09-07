@@ -739,6 +739,30 @@ test_that("manual mode applies a fixed de-noise window to a paddle deployment", 
   expect_equal(nautilus:::.getMeta(m)$sensors$heading_denoise_window, 1.5)
 })
 
+test_that("paddle-frequency QC stays in metadata rather than growing output columns", {
+  rate <- 100; f <- 12
+  pad <- .mk_paddle(rate = rate, secs = 40, f = f)
+  pad[, ID := "PADDLE"]
+  t <- seq_len(nrow(pad)) / rate
+  pad[, mz := 0.4 + 4 * sin(2 * pi * f * t)]
+  m <- nautilus:::.newNautilusMeta(); m$id <- "PADDLE"; m$tag$paddle_wheel <- TRUE
+  m$axis_mapping$applied <- TRUE; m$deployment$lon <- -25; m$deployment$lat <- 11
+  m$deployment$datetime <- pad$datetime[1]
+  pad <- nautilus:::new_nautilus_tag(pad, m)
+
+  out <- .run(list(PADDLE = pad), downsample.to = 20,
+              paddle = paddleFrequencyControl(min.prominence = 20))$PADDLE
+  rec <- .proc_rec(out)
+  expect_equal(median(out$paddle_freq, na.rm = TRUE), f, tolerance = 0.3)
+  expect_gt(rec$paddle_acceptance_pct, 90)
+  expect_identical(rec$paddle_dominant_failure, "none")
+  expect_false(any(c("peak.prominence", "paddle_peak_prominence", "paddle_qc") %in% names(out)))
+
+  summary <- processingSummary(list(PADDLE = out))
+  expect_equal(summary$paddle_acceptance, rec$paddle_acceptance_pct)
+  expect_identical(summary$paddle_failure, "none")
+})
+
 # ---- a constant imported paddle channel is dropped, not kept ---------------------------------------
 
 test_that("a CONSTANT imported paddle channel is dropped to NA and warned about once", {

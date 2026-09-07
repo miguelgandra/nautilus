@@ -29,6 +29,8 @@
 #'   NA without a gyroscope), `hard_iron_uT`, `heading_conf` (stored magnetometer heading confidence
 #'   `"high"`/`"medium"`/`"low"` from \code{\link{calibrateMagnetometer}}; NA if none stored), `mag_radcv`
 #'   (calibrated-radius CV) and `mag_dip_resid` (IGRF dip residual, deg), `declination` (deg),
+#'   `paddle_acceptance` (percentage of paddle-frequency windows accepted) and `paddle_failure` (the
+#'   dominant rejection reason),
 #'   `drift_status`, `drift_offset_m` (max |offset| applied), `drift_residual_m`, `drift_anchors`,
 #'   `hz_in` / `hz_out` (sampling rates), `n_in` / `n_out` (row counts), and `flag` (comma-separated
 #'   orientation anomalies: `"pitch"` (unusual median pitch), `"mount"` (unusual estimated mounting roll,
@@ -71,6 +73,7 @@ processingSummary <- function(data, id.col = "ID") {
              coreg_corr = numeric(0),
              hard_iron_uT = numeric(0), heading_conf = character(0),
              mag_radcv = numeric(0), mag_dip_resid = numeric(0), declination = numeric(0),
+             paddle_acceptance = numeric(0), paddle_failure = character(0),
              drift_status = character(0), drift_offset_m = numeric(0),
              drift_residual_m = numeric(0), drift_anchors = integer(0),
              hz_in = numeric(0), hz_out = numeric(0),
@@ -117,6 +120,8 @@ processingSummary <- function(data, id.col = "ID") {
     mag_radcv        = num(mqc(meta$mag_calibration, "radcv")),
     mag_dip_resid    = num(mqc(meta$mag_calibration, "igrf_residual")),
     declination      = num(pr$magnetic_declination),
+    paddle_acceptance = num(pr$paddle_acceptance_pct),
+    paddle_failure    = chr(pr$paddle_dominant_failure),
     drift_status     = chr(dd$status %||% "none"),
     drift_offset_m   = if (!is.null(off) && length(off) == 2L) max(abs(off)) else NA_real_,
     drift_residual_m = num(if (!is.null(dd)) dd$outcome$residual_m else NULL),

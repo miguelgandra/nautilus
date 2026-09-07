@@ -24,8 +24,11 @@
 #'   a single table with an `id.col`, or a character vector of `.rds` paths. The output of
 #'   [processTagData()] is expected.
 #' @param calibration A table of calibrations with columns `year`, `package_id` and `slope`. A row
-#'   matching a deployment's own tag and season is used exactly as measured. `NULL` (default) supplies
-#'   no calibration at all, in which case only the in-situ methods can produce a speed.
+#'   matching a deployment's own tag and season is used exactly as measured. Controlled-trial limits
+#'   may be supplied as paired columns `min_freq_hz` / `max_freq_hz`, `min_speed_m_s` /
+#'   `max_speed_m_s`, or both; these define where the fitted relationship is supported and enable the
+#'   `extrapolation` check. `NULL` (default) supplies no calibration at all, in which case only the
+#'   in-situ methods can produce a speed.
 #' @param method How to fill a gap when a deployment has no calibration of its own. The three
 #'   `"projected-*"` methods carry the calibrations you do have forward in time, following
 #'   [imputePaddleCalibration()]; the two `"in-situ-*"` methods estimate the slope from the animal's own
@@ -47,6 +50,15 @@
 #'   already smoothed at least this much, so the window has little left to do.
 #' @param max.speed Optional upper speed limit in km/h. Values above it are set to `NA`. The default
 #'   `NULL` leaves all finite calculated speeds unchanged; supply a cutoff explicitly to enable filtering.
+#' @param extrapolation What to do when a frequency or calculated speed falls outside the controlled-
+#'   trial range supplied in `calibration`: `"warn"` (default) retains the estimate and raises one
+#'   grouped warning, `"exclude"` sets it to `NA`, and `"allow"` retains it silently. All three record
+#'   the result in deployment metadata. Where no range is available, `"warn"` and `"exclude"` report
+#'   that extrapolation could not be assessed rather than pretending the range is unlimited.
+#' @param retain.qc Whether to add the logical column `paddle_speed_extrapolated` (default `FALSE`). It
+#'   is `TRUE` outside a known calibration range, `FALSE` inside it and `NA` where the range cannot be
+#'   assessed. The count and percentage are recorded in metadata regardless, so this column is only
+#'   needed for row-level filtering or inspection.
 #' @param min.pitch Steepest-swimming threshold, in degrees, for the in-situ estimate (default `10`).
 #'   Shallower samples are excluded: the closer the animal is to level, the less its depth change says
 #'   about how fast it is going.
@@ -85,6 +97,20 @@
 #'
 #' A calibration is always used as it stands: estimation fills gaps, it does not smooth or revise what
 #' you observed.
+#'
+#' ## Calibration support and extrapolation
+#'
+#' The slope alone defines a mathematical line but says nothing about the interval over which that line
+#' was tested. When the optional frequency or speed limits are present, each calculated value is checked
+#' against them after frequency smoothing and before any explicit `max.speed` cap. A value beyond either
+#' supplied pair is an extrapolation. The default retains it but warns, distinguishing scientific
+#' uncertainty from a user-chosen hard cutoff; `extrapolation = "exclude"` is the explicit opt-in to
+#' remove it.
+#'
+#' Projected slopes inherit the observed envelope from the same physical tag, or from the calibration
+#' fleet when the slope itself is fleet-projected. In-situ slopes have no controlled-trial range and are
+#' left with unknown limits. Range provenance is recorded in `range_source` in the returned calibration
+#' table.
 #'
 #' ## Choosing a method
 #'
@@ -211,6 +237,9 @@
 #'   and season, with:
 #'
 #'   - `slope` and `slope_source` - the slope applied and where it came from.
+#'   - `min_freq_hz`, `max_freq_hz`, `min_speed_m_s`, `max_speed_m_s` and `range_source` - the
+#'     controlled-trial domain used for extrapolation QC and where that domain came from; missing when no
+#'     defensible range was supplied.
 #'   - `n_deployments` - how many deployments that slope covers.
 #'   - `in_situ_slope`, `in_situ_lo`, `in_situ_hi` - the in-situ estimate and its 95% interval, present
 #'     when the estimate was computed.
@@ -265,6 +294,8 @@ calculatePaddleSpeed <- function(data,
                                  agreement.threshold = 0.35,
                                  smoothing = 1,
                                  max.speed = NULL,
+                                 extrapolation = c("warn", "exclude", "allow"),
+                                 retain.qc = FALSE,
                                  min.pitch = 10,
                                  id.col = "ID",
                                  plot = FALSE,
@@ -278,8 +309,9 @@ calculatePaddleSpeed <- function(data,
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
   method <- match.arg(method)
+  extrapolation <- match.arg(extrapolation)
   .assert_string(id.col, "id.col")
-  .assert_flag(validate, "validate"); .assert_flag(plot, "plot")
+  .assert_flag(validate, "validate"); .assert_flag(plot, "plot"); .assert_flag(retain.qc, "retain.qc")
   .assert_number(agreement.threshold, "agreement.threshold", min = 0)
   if (agreement.threshold <= 0)
     .abort("{.arg agreement.threshold} must be greater than zero; got {.val {agreement.threshold}}.")
@@ -320,6 +352,7 @@ calculatePaddleSpeed <- function(data,
       sprintf("Smoothing: %g s on the rotation frequency", smoothing) else "Smoothing: none")
     .log_arrow(lvl, if (!is.null(max.speed)) sprintf("Speed cap: %g km/h", max.speed)
                else "Speed cap: none")
+    .log_arrow(lvl, "Calibration extrapolation: ", extrapolation)
     .log_arrow(lvl, if (isTRUE(validate))
       sprintf("Validation: from pitch and vertical velocity (pitch \u2265 %g\u00b0)", min.pitch)
       else "Validation: off (validate = FALSE)")
@@ -346,6 +379,8 @@ calculatePaddleSpeed <- function(data,
   data_list <- vector("list", src$n); saved <- vector("list", src$n)
   ids <- rep(NA_character_, src$n); statuses <- character(0)
   speeds <- rep(NA_real_, src$n)          # per-deployment median speed, for the cohort roll-up
+  extrapolated_items <- character(0)
+  unknown_range_ids <- character(0)
 
   for (i in seq_len(src$n)) {
     x <- data.table::as.data.table(src$get(i))
@@ -354,10 +389,16 @@ calculatePaddleSpeed <- function(data,
     # the slope a deployment uses is its own row: under `in-situ-deployment` it can differ from the
     # tag-season value, which is why the resolver returns a per-deployment table as well
     drow <- dep[match(scan[[i]]$id, dep$id), , drop = FALSE]
-    res <- .paddleApplyOne(x, scan[[i]], drow, smoothing, max.speed)
+    res <- .paddleApplyOne(x, scan[[i]], drow, smoothing, max.speed,
+                           extrapolation = extrapolation, retain.qc = retain.qc)
     statuses <- c(statuses, res$status)
     if (!is.null(res$speed)) speeds[i] <- res$speed[["med"]]
-    .logPaddleDeployment(lvl, id, scan[[i]], res, drow, cal, method)
+    if (res$n_extrapolated > 0L)
+      extrapolated_items <- c(extrapolated_items,
+                              sprintf("%s (%.1f%%)", id, res$pct_extrapolated))
+    if (identical(res$status, "applied") && !isTRUE(res$range_available))
+      unknown_range_ids <- c(unknown_range_ids, id)
+    .logPaddleDeployment(lvl, id, scan[[i]], res, drow, cal, method, extrapolation)
 
     meta <- .getMeta(res$data)
     meta <- .appendProcessing(meta, "calculatePaddleSpeed",
@@ -365,6 +406,16 @@ calculatePaddleSpeed <- function(data,
                               method = method, degradation_rate = degradation.rate %||% NA_real_,
                               smoothing_s = smoothing %||% NA_real_,
                               max_speed_kmh = max.speed %||% NA_real_,
+                              extrapolation = extrapolation,
+                              retain_qc = retain.qc,
+                              calibration_min_freq_hz = if (nrow(drow)) drow$min_freq_hz else NA_real_,
+                              calibration_max_freq_hz = if (nrow(drow)) drow$max_freq_hz else NA_real_,
+                              calibration_min_speed_m_s = if (nrow(drow)) drow$min_speed_m_s else NA_real_,
+                              calibration_max_speed_m_s = if (nrow(drow)) drow$max_speed_m_s else NA_real_,
+                              calibration_range_source = if (nrow(drow)) drow$range_source else NA_character_,
+                              calibration_range_available = res$range_available,
+                              n_extrapolated = res$n_extrapolated,
+                              pct_extrapolated = res$pct_extrapolated,
                               # this deployment's own in-situ fit, not the tag-season's: a
                               # per-deployment record should describe the deployment
                               in_situ_slope = if (nrow(drow)) drow$own_slope else NA_real_,
@@ -383,6 +434,13 @@ calculatePaddleSpeed <- function(data,
   # the source tally counts deployments that actually used a slope, so each deployment carries the
   # outcome that decided it: a tag with no paddle inherits its tag-season's source but never applies it
   dep$status <- statuses[match(dep$id, ids)]
+
+  if (identical(extrapolation, "warn"))
+    .warn_grouped("Paddle speed exceeded its supported calibration range in {length(extrapolated_items)} deployment{?s} (percentage of assessed values).",
+                  items = extrapolated_items, style = "inline")
+  if (!identical(extrapolation, "allow"))
+    .warn_grouped("No controlled-trial range was available for {length(unknown_range_ids)} deployment{?s}; extrapolation could not be assessed.",
+                  items = unknown_range_ids, style = "inline")
 
   if (lvl >= 1L) {
     .log_summary(lvl)

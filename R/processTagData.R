@@ -43,6 +43,8 @@
 #'   options, and whether a previously estimated calibration should be reused.
 #' @param smoothing A control object from [smoothingControl()] specifying the temporal windows used to
 #'   separate static and dynamic acceleration and to smooth derived movement variables.
+#' @param paddle A control object from [paddleFrequencyControl()] specifying the spectral band, quality
+#'   threshold, Nyquist guard and interpolation limit used to recover paddle-wheel rotation frequency.
 #' @param depth.drift A control object from [depthDriftControl()] specifying the method and parameters
 #'   used to correct depth sensor drift. Use `depthDriftControl(method = "none")` to disable it.
 #' @param burst.quantiles Numeric vector of quantiles of instantaneous VeDBA used to identify periods of
@@ -167,9 +169,11 @@
 #'     during ascent. It is derived from a smoothed copy of the depth record, since differentiating the
 #'     raw pressure trace amplifies its quantisation noise; the window is set by `smoothing$depth`.}
 #'   \item{`paddle_freq`}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
-#'     carrying a paddle wheel, where the recording rate is sufficient. This is a rotation rate, not a
-#'     speed: converting it to swimming speed requires a tag-specific calibration and is done by
-#'     [calculatePaddleSpeed()].}
+#'     carrying a paddle wheel. A window is retained only when its dominant component is an interior
+#'     spectral peak below the Nyquist guard and exceeds `paddle$min.prominence` times the median
+#'     background power. Short rejected intervals may be interpolated up to `paddle$max.interp.gap`;
+#'     longer intervals remain `NA`. This is a rotation rate, not a speed: converting it to swimming
+#'     speed requires a tag-specific calibration and is done by [calculatePaddleSpeed()].}
 #' }
 #'
 #' Depth drift is corrected before vertical velocity is calculated.
@@ -242,6 +246,12 @@
 #'   \item{constant paddle channel}{The paddle-wheel channel held a single constant value for the whole
 #'     deployment, indicating an absent or failed sensor rather than a measurement, and was set to `NA`.
 #'     The rotation frequency is re-estimated from the magnetometer where the recording rate allows.}
+#'   \item{paddle power near Nyquist}{One or more paddle-frequency windows were dominated by power above
+#'     the safe fraction of Nyquist specified by `paddle$nyquist.guard`. Those windows are withheld rather
+#'     than converted into high, precise-looking rotation rates. The processing metadata records the
+#'     overall accepted-window percentage and the dominant rejection reason, without adding QC columns to
+#'     the returned sensor table. The guard cannot recover a physical rotation frequency that was already
+#'     aliased during recording, so the sensor sampling rate must still cover the expected rotor range.}
 #'   \item{already processed}{The input already contained a `processTagData` step. Calibration and
 #'     downsampling are not repeated, but derived metrics are recalculated from the already-downsampled
 #'     columns and will not reproduce the first run, since jerk and the separation of gravity from
@@ -295,6 +305,7 @@ processTagData <- function(data,
                            orientation = orientationControl(),
                            calibration = calibrationControl(),
                            smoothing = smoothingControl(),
+                           paddle = paddleFrequencyControl(),
                            depth.drift = depthDriftControl(),
                            burst.quantiles = c(0.95, 0.99),
                            plot = FALSE,
@@ -311,6 +322,7 @@ processTagData <- function(data,
   calibration <- .as_control(calibration, calibrationControl, "nautilus_calibration", "calibration")
   orientation <- .as_control(orientation, orientationControl, "nautilus_orientation", "orientation")
   smoothing   <- .as_control(smoothing,   smoothingControl,   "nautilus_smoothing",   "smoothing")
+  paddle <- .as_control(paddle, paddleFrequencyControl, "nautilus_paddle_frequency", "paddle")
   depth.control <- .as_control(depth.drift, depthDriftControl, "nautilus_depth_drift", "depth.drift")
   hard.iron.calibration <- calibration$hard.iron
   soft.iron.calibration <- calibration$soft.iron
@@ -473,6 +485,7 @@ processTagData <- function(data,
   roll_mount_items   <- character(0)   # unusual mounting roll, offset APPLIED
   roll_uncorr_items  <- character(0)   # unusual mounting roll, offset NOT applied (exceeds mount.roll.max)
   roll_resid_items   <- character(0)   # roll left over after a correction that did not take
+  paddle_nyquist_items <- character(0) # frequency windows rejected because power was near Nyquist
 
   for (i in seq_along(data)) {
 
@@ -1379,6 +1392,10 @@ processTagData <- function(data,
       # calculatePaddleSpeed() - where it can be revised, or checked against the animal's own pitch and
       # vertical velocity, without reprocessing the raw sensors.
 
+      # Compact deployment-level QC. The complete window table stays inside the estimator; only these
+      # two outcomes enter the processing record, so processTagData() does not grow paddle-only columns.
+      paddle_qc <- list(acceptance_pct = NA_real_, dominant_failure = NA_character_)
+
       # determine if pre-calculated columns exist
       has_precalculated_freq <- "paddle_freq" %in% names(individual_data)
       has_precalculated_speed <- "paddle_speed" %in% names(individual_data)
@@ -1403,10 +1420,10 @@ processTagData <- function(data,
         !all(is.na(individual_data$paddle_speed)) &&
         length(unique(na.omit(individual_data$paddle_speed))) > 1
 
-      if (is_freq_meaningful && is_speed_meaningful) {
-        perform_internal_calculation <- FALSE
-
-      } else if (has_precalculated_speed && !has_precalculated_freq && is_speed_meaningful) {
+      if (is_freq_meaningful || is_speed_meaningful) {
+        # A logger-supplied rotation rate is already the quantity this step would estimate, and a
+        # logger-supplied speed has no frequency to recover. Preserve either rather than overwriting it
+        # with a second estimate from the magnetometer.
         perform_internal_calculation <- FALSE
       }
 
@@ -1426,10 +1443,9 @@ processTagData <- function(data,
         }
       }
 
-      # the rotation peak is picked out of the magnetometer, so the record has to be fast enough to
-      # carry it
-      if (perform_internal_calculation && sampling_freq < 50) {
+      if (perform_internal_calculation && !isTRUE(valid_magnetometer_data)) {
         perform_internal_calculation <- FALSE
+        paddle_qc$dominant_failure <- "magnetometer_unavailable"
       }
 
       #############################################################
@@ -1439,9 +1455,24 @@ processTagData <- function(data,
 
         # rotation frequency from the raw magnetometer. Unsmoothed: the smoothing window belongs with
         # the speed calculation, and this series is already a 5 s windowed estimate stepped every second.
-        paddle_data <- .getPaddleSpeed(mz = mz_raw, sampling.rate = sampling_freq)
+        paddle_data <- .getPaddleSpeed(
+          mz = mz_raw,
+          sampling.rate = sampling_freq,
+          window.size = paddle$window.size,
+          step.size = paddle$step.size,
+          min.freq.Hz = paddle$min.freq.Hz,
+          max.freq.Hz = paddle$max.freq.Hz,
+          nyquist.guard = paddle$nyquist.guard,
+          min.prominence = paddle$min.prominence,
+          max.interp.gap = paddle$max.interp.gap)
 
         individual_data[, paddle_freq := paddle_data$freq]
+        paddle_qc <- paddle_data$qc[c("acceptance_pct", "dominant_failure")]
+        nyq_n <- unname(paddle_data$qc$failure_counts["nyquist_guard"])
+        if (length(nyq_n) && is.finite(nyq_n) && nyq_n > 0L) {
+          nyq_pct <- 100 * nyq_n / max(1L, paddle_data$qc$n_windows)
+          paddle_nyquist_items <- c(paddle_nyquist_items, sprintf("%s (%.1f%% of windows)", id, nyq_pct))
+        }
       }
 
       #############################################################
@@ -1649,7 +1680,16 @@ processTagData <- function(data,
                                 magnetic_declination    = declination_deg %||% NA_real_,
                                 heading_reference       = heading_ref,
                                 heading_denoise_window  = heading_denoise_used,
-                                paddle_freq_hz          = if (!is.null(paddle_state)) paddle_state$freq else NA_real_,
+                                paddle_denoise_freq_hz  = if (!is.null(paddle_state)) paddle_state$freq else NA_real_,
+                                paddle_window_s         = paddle$window.size,
+                                paddle_step_s           = paddle$step.size,
+                                paddle_min_freq_hz      = paddle$min.freq.Hz,
+                                paddle_max_freq_hz      = paddle$max.freq.Hz %||% NA_real_,
+                                paddle_nyquist_guard    = paddle$nyquist.guard,
+                                paddle_min_prominence   = paddle$min.prominence,
+                                paddle_max_interp_gap_s = paddle$max.interp.gap %||% NA_real_,
+                                paddle_acceptance_pct   = paddle_qc$acceptance_pct,
+                                paddle_dominant_failure = paddle_qc$dominant_failure,
                                 static_window           = static.window,
                                 dba_smoothing           = dba.smoothing %||% NA_real_,
                                 orientation_smoothing   = orientation.smoothing %||% NA_real_,
@@ -1797,6 +1837,9 @@ processTagData <- function(data,
 
   .warn_grouped("{length(roll_resid_items)} deployment{?s} {?has/have} a roll residual after correction (median roll).",
                 items = roll_resid_items, style = "inline")
+
+  .warn_grouped("Paddle-frequency power reached the Nyquist guard in {length(paddle_nyquist_items)} deployment{?s}.",
+                items = paddle_nyquist_items, style = "inline")
 
   .warn_grouped("{length(nodecl_ids)} deployment{?s} {?has/have} a magnetic heading (no position for the declination).",
                 items = nodecl_ids, style = "inline")

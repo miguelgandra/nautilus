@@ -11,6 +11,7 @@ processTagData(
   orientation = orientationControl(),
   calibration = calibrationControl(),
   smoothing = smoothingControl(),
+  paddle = paddleFrequencyControl(),
   depth.drift = depthDriftControl(),
   burst.quantiles = c(0.95, 0.99),
   plot = FALSE,
@@ -52,6 +53,9 @@ options, and whether a previously estimated calibration should be reused.}
 
 \item{smoothing}{A control object from \code{\link[=smoothingControl]{smoothingControl()}} specifying the temporal windows used to
 separate static and dynamic acceleration and to smooth derived movement variables.}
+
+\item{paddle}{A control object from \code{\link[=paddleFrequencyControl]{paddleFrequencyControl()}} specifying the spectral band, quality
+threshold, Nyquist guard and interpolation limit used to recover paddle-wheel rotation frequency.}
 
 \item{depth.drift}{A control object from \code{\link[=depthDriftControl]{depthDriftControl()}} specifying the method and parameters
 used to correct depth sensor drift. Use \code{depthDriftControl(method = "none")} to disable it.}
@@ -213,9 +217,11 @@ vertical excursions retain their true amplitude.}
 during ascent. It is derived from a smoothed copy of the depth record, since differentiating the
 raw pressure trace amplifies its quantisation noise; the window is set by \code{smoothing$depth}.}
 \item{\code{paddle_freq}}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
-carrying a paddle wheel, where the recording rate is sufficient. This is a rotation rate, not a
-speed: converting it to swimming speed requires a tag-specific calibration and is done by
-\code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.}
+carrying a paddle wheel. A window is retained only when its dominant component is an interior
+spectral peak below the Nyquist guard and exceeds \code{paddle$min.prominence} times the median
+background power. Short rejected intervals may be interpolated up to \code{paddle$max.interp.gap};
+longer intervals remain \code{NA}. This is a rotation rate, not a speed: converting it to swimming
+speed requires a tag-specific calibration and is done by \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.}
 }
 
 Depth drift is corrected before vertical velocity is calculated.
@@ -292,6 +298,12 @@ heading remains relative to magnetic north.}
 \item{constant paddle channel}{The paddle-wheel channel held a single constant value for the whole
 deployment, indicating an absent or failed sensor rather than a measurement, and was set to \code{NA}.
 The rotation frequency is re-estimated from the magnetometer where the recording rate allows.}
+\item{paddle power near Nyquist}{One or more paddle-frequency windows were dominated by power above
+the safe fraction of Nyquist specified by \code{paddle$nyquist.guard}. Those windows are withheld rather
+than converted into high, precise-looking rotation rates. The processing metadata records the
+overall accepted-window percentage and the dominant rejection reason, without adding QC columns to
+the returned sensor table. The guard cannot recover a physical rotation frequency that was already
+aliased during recording, so the sensor sampling rate must still cover the expected rotor range.}
 \item{already processed}{The input already contained a \code{processTagData} step. Calibration and
 downsampling are not repeated, but derived metrics are recalculated from the already-downsampled
 columns and will not reproduce the first run, since jerk and the separation of gravity from

@@ -23,6 +23,8 @@ the estimate itself is kept in the processing record as \code{roll_offset_estima
 NA without a gyroscope), \code{hard_iron_uT}, \code{heading_conf} (stored magnetometer heading confidence
 \code{"high"}/\code{"medium"}/\code{"low"} from \code{\link{calibrateMagnetometer}}; NA if none stored), \code{mag_radcv}
 (calibrated-radius CV) and \code{mag_dip_resid} (IGRF dip residual, deg), \code{declination} (deg),
+\code{paddle_acceptance} (percentage of paddle-frequency windows accepted) and \code{paddle_failure} (the
+dominant rejection reason),
 \code{drift_status}, \code{drift_offset_m} (max |offset| applied), \code{drift_residual_m}, \code{drift_anchors},
 \code{hz_in} / \code{hz_out} (sampling rates), \code{n_in} / \code{n_out} (row counts), and \code{flag} (comma-separated
 orientation anomalies: \code{"pitch"} (unusual median pitch), \code{"mount"} (unusual estimated mounting roll,

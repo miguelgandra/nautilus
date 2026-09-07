@@ -533,7 +533,8 @@ calibrateMagnetometer(data          = list.files("./data interim/04_oriented", f
 # metrics used in subsequent analyses, including body attitude (roll, pitch and
 # heading), static and dynamic acceleration, dynamic body acceleration
 # (VeDBA/ODBA), surge, sway, heave, vertical velocity and, where available,
-# paddle-wheel speed.
+# paddle-wheel rotation frequency. The separate calibration in STEP 11 converts
+# that frequency into swimming speed.
 
 # This step must be applied to the oriented data because posture and
 # acceleration-derived metrics depend on a correctly defined body frame.
@@ -557,6 +558,13 @@ processTagData(
   # Smoothing windows, in seconds. 'static' sets the gravity/movement split and can't be switched off;
   # the rest are optional post-smoothers (set any to NULL to disable it).
   smoothing = smoothingControl(static = 5, orientation = 1, dba = 2, depth = 10, vertical = 1),
+  # Paddle-frequency QC. A window is retained only when it contains an interior spectral peak whose
+  # power is at least 20 times the median spectral background. Peaks near Nyquist are rejected, and
+  # only short gaps between accepted windows are interpolated. This estimates frequency only; the
+  # calibration and extrapolation policy are applied in STEP 11.
+  paddle = paddleFrequencyControl(window.size = 5, step.size = 1,
+                                  nyquist.guard = 0.9, min.prominence = 20,
+                                  max.interp.gap = 2),
   # Correct the slow (mostly thermal) drift in the pressure sensor's zero, anchored to moments the tag
   # is known to be at the surface (the wet/dry sensor and GPS fixes). Set method = "none" to skip it.
   depth.drift = depthDriftControl(method = "surface", surface.evidence = c("dry", "gps")),
@@ -566,14 +574,19 @@ processTagData(
   exclusions.file    = "./data interim/exclusions.csv",
   return.data        = FALSE,
   output.dir         = "./data interim/05_processed",
-  output.suffix      = "-20Hz",
   verbose            = "detailed")
 
 
 # processingSummary() is the companion view: one row per deployment describing what the *pipeline* did
-# (orientation estimator, mounting-offset corrections, magnetometer heading confidence, depth-drift
-# outcome, sampling rates). Handy as a final provenance check across the whole cohort.
+# (orientation estimator, mounting-offset corrections, magnetometer heading confidence, paddle-frequency
+# acceptance and dominant failure mode, depth-drift outcome, sampling rates). Handy as a final provenance
+# check across the whole cohort.
 processing_summary <- processingSummary(list.files("./data interim/05_processed", full.names = TRUE))
+
+# Review the compact paddle-frequency QC before calibration. No window-level QC columns are added to
+# the sensor tables by processTagData(). NA means that frequency extraction was not attempted (for
+# example, because the deployment had no paddle wheel or already contained a recorded paddle channel).
+paddle_frequency_qc <- processing_summary[, c("id", "paddle_acceptance", "paddle_failure")]
 
 
 
@@ -583,7 +596,7 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 
 # Some tags carry a magnetic paddle wheel that spins as the animal swims. processTagData() recovers
 # its rotation rate from the magnetometer and stores it as `paddle_freq`; turning that into a speed
-# needs one number per tag, measured by calibrating it before deployment.
+# needs one slope per physical tag, measured in controlled trials before deployment.
 
 # calculatePaddleSpeed() turns the rotation rate recorded in STEP 10 into a swimming speed, using one
 # calibration slope per tag and season. Tags that were never calibrated get a slope estimated from the
@@ -595,11 +608,34 @@ processing_summary <- processingSummary(list.files("./data interim/05_processed"
 # it needed one. The agreement is their ratio: 1 means the two agree, and anything far from it is
 # flagged as worth a look.
 # Because only one column depends on the calibration, a revised slope can be applied in seconds - there
-# is no need to process the raw sensor data again.
+# is no need to process the raw sensor data again. A slope alone does not define where the relationship
+# was tested, however. The observed minimum and maximum trial frequencies/speeds are therefore supplied
+# below so calculatePaddleSpeed() can identify extrapolation instead of hiding it behind a global speed cap.
 
-# Measured calibration slopes (one row per calibration): year, package_id, slope (+ fit quality).
+# Measured zero-intercept calibration slopes (one row per calibration): year, package_id, slope and fit
+# quality. Keep package_id as character because it identifies hardware; it is not a quantity.
 calibration_regression <- read.csv("./paddle wheel calibration/Velocity_RotationHz_Regression.csv")
 colnames(calibration_regression) <- c("year", "package_id", "slope", "r.squared", "adj.r.squared")
+calibration_regression$package_id <- as.character(calibration_regression$package_id)
+
+# Controlled-trial envelopes recovered from the original 2019 and 2021 trial files. Speeds are m/s and
+# frequencies are Hz. Package 134 has a fitted slope but no retained raw trials, so its limits remain
+# explicitly unknown rather than being borrowed from another tag.
+calibration_support <- data.frame(
+  year          = c(2021,     2021,     2021,     2019,      2019,      2019),
+  package_id    = c("91",     "52",     "51",     "51",      "52",      "134"),
+  min_freq_hz   = c(7.450617, 4.293795, 6.532149, 10.103551, 10.787708, NA),
+  max_freq_hz   = c(23.132401,16.995947,26.453752,28.423224, 30.249755, NA),
+  min_speed_m_s = c(0.633499, 0.619992, 0.612955, 0.731839,  0.736904, NA),
+  max_speed_m_s = c(2.225028, 2.295046, 2.261334, 2.082162,  2.167033, NA),
+  stringsAsFactors = FALSE)
+
+# Join the support limits without changing the order of the regression table. calculatePaddleSpeed()
+# also accepts frequency-only or speed-only limits, but each supplied minimum/maximum pair must be complete.
+support_columns <- c("min_freq_hz", "max_freq_hz", "min_speed_m_s", "max_speed_m_s")
+support_match <- match(paste(calibration_regression$year, calibration_regression$package_id, sep = "/"),
+                       paste(calibration_support$year, calibration_support$package_id, sep = "/"))
+calibration_regression[support_columns] <- calibration_support[support_match, support_columns]
 
 
 paddle <- calculatePaddleSpeed(data        = list.files("./data interim/05_processed", full.names = TRUE),
@@ -607,6 +643,11 @@ paddle <- calculatePaddleSpeed(data        = list.files("./data interim/05_proce
                                method      = "projected-shared",
                                validate    = TRUE,            # check every tag against the animal's own diving
                                min.pitch   = 20,
+                               # Retain estimates outside the controlled-trial envelope, but warn and
+                               # record their prevalence. Use "exclude" to replace them with NA, or
+                               # "allow" only when extrapolation has been reviewed and accepted.
+                               extrapolation = "warn",
+                               retain.qc     = FALSE,         # keep the production sensor tables compact
                                plot.file   = "./plots/paddle_calibration.pdf",
                                return.data = FALSE,
                                output.dir  = "./data interim/05_processed",
@@ -616,6 +657,14 @@ paddle <- calculatePaddleSpeed(data        = list.files("./data interim/05_proce
 # One row per tag and season: the slope applied, where it came from, and how it compares in situ.
 paddle_calibration <- attr(paddle, "calibration")
 write.csv(paddle_calibration, "./outputs/paddle_calibration.csv", row.names = FALSE)
+
+# The extrapolation counts, percentages and applied limits are stored in each deployment's processing
+# history. Inspect any deployment directly when a warning needs investigation.
+paddle_history <- processingHistory(readRDS(paddle[1]))
+paddle_history[paddle_history$step == "calculatePaddleSpeed", ]
+
+# For a temporary row-level diagnostic run, set retain.qc = TRUE. This adds the logical column
+# `paddle_speed_extrapolated`; FALSE (the production default above) keeps that detail in metadata only.
 
 
 ################################################################################

@@ -19,6 +19,12 @@
 }
 .pwCal <- function(slope = 0.07, pkg = "71", year = 2019)
   data.frame(year = year, package_id = pkg, slope = slope, stringsAsFactors = FALSE)
+.pwCalRange <- function(slope = 0.07, pkg = "71", year = 2019,
+                        min.freq = 10, max.freq = 20, min.speed = 0.7, max.speed = 1.4)
+  data.frame(year = year, package_id = pkg, slope = slope,
+             min_freq_hz = min.freq, max_freq_hz = max.freq,
+             min_speed_m_s = min.speed, max_speed_m_s = max.speed,
+             stringsAsFactors = FALSE)
 .pwRun <- function(...) suppressWarnings(calculatePaddleSpeed(..., verbose = FALSE))
 
 
@@ -641,6 +647,82 @@ test_that("the method names are the five documented ones", {
 
 test_that("speed threshold filtering is opt-in", {
   expect_null(eval(formals(calculatePaddleSpeed)$max.speed))
+  expect_identical(eval(formals(calculatePaddleSpeed)$extrapolation),
+                   c("warn", "exclude", "allow"))
+  expect_false(eval(formals(calculatePaddleSpeed)$retain.qc))
+})
+
+
+# ---- controlled-trial range and extrapolation ------------------------------------------------------
+
+test_that("extrapolation = warn retains values, records QC, and does not add a column by default", {
+  set.seed(50)
+  tag <- .pwTag("A", "71", speed = 1.2)
+  cal <- .pwCalRange(max.freq = 15, max.speed = 1.0)
+  expect_warning(out <- calculatePaddleSpeed(list(A = tag), calibration = cal,
+                                              smoothing = NULL, verbose = 0),
+                 "exceeded its supported calibration range")
+  expect_true(any(is.finite(out$A$paddle_speed)))
+  expect_false("paddle_speed_extrapolated" %in% names(out$A))
+  rec <- tail(nautilus:::.getMeta(out$A)$processing, 1)[[1]]
+  expect_gt(rec$n_extrapolated, 0)
+  expect_gt(rec$pct_extrapolated, 90)
+  expect_identical(rec$extrapolation, "warn")
+})
+
+test_that("extrapolation = exclude masks unsupported values and retain.qc exposes their rows", {
+  set.seed(51)
+  tag <- .pwTag("A", "71", speed = 1.2)
+  cal <- .pwCalRange(max.freq = 15, max.speed = 1.0)
+  out <- calculatePaddleSpeed(list(A = tag), calibration = cal, smoothing = NULL,
+                              extrapolation = "exclude", retain.qc = TRUE, verbose = 0)
+  expect_true(all(is.na(out$A$paddle_speed)))
+  expect_true(all(out$A$paddle_speed_extrapolated %in% TRUE))
+})
+
+test_that("extrapolation = allow is silent but still records the result", {
+  set.seed(52)
+  tag <- .pwTag("A", "71", speed = 1.2)
+  cal <- .pwCalRange(max.freq = 15, max.speed = 1.0)
+  expect_silent(out <- calculatePaddleSpeed(list(A = tag), calibration = cal,
+                                             smoothing = NULL, extrapolation = "allow", verbose = 0))
+  expect_true(any(is.finite(out$A$paddle_speed)))
+  rec <- tail(nautilus:::.getMeta(out$A)$processing, 1)[[1]]
+  expect_gt(rec$n_extrapolated, 0)
+})
+
+test_that("an unavailable controlled-trial range is explicit", {
+  set.seed(53)
+  tag <- .pwTag("A", "71")
+  expect_warning(calculatePaddleSpeed(list(A = tag), calibration = .pwCal(), verbose = 0),
+                 "extrapolation could not be assessed")
+  expect_silent(calculatePaddleSpeed(list(A = tag), calibration = .pwCal(),
+                                     extrapolation = "allow", verbose = 0))
+})
+
+test_that("calibration range columns are paired and ordered", {
+  tag <- list(A = .pwTag("A", "71"))
+  one <- .pwCal(); one$min_freq_hz <- 10
+  expect_error(calculatePaddleSpeed(tag, calibration = one, verbose = 0), "both")
+  bad <- .pwCalRange(min.freq = 20, max.freq = 10)
+  expect_error(calculatePaddleSpeed(tag, calibration = bad, verbose = 0), "minimum < maximum")
+})
+
+test_that("projected slopes inherit a transparent observed calibration envelope", {
+  set.seed(54)
+  cal <- rbind(.pwCalRange(0.06, "51", 2019, 8, 28, 0.6, 2.1),
+               .pwCalRange(0.08, "51", 2021, 6, 26, 0.5, 2.3))
+  same <- suppressWarnings(calculatePaddleSpeed(
+    list(A = .pwTag("A", "51", year = 2022)), calibration = cal, verbose = 0))
+  r <- attr(same, "calibration")
+  expect_identical(r$range_source, "projected-from-tag")
+  expect_equal(r[c("min_freq_hz", "max_freq_hz", "min_speed_m_s", "max_speed_m_s")],
+               data.frame(min_freq_hz = 6, max_freq_hz = 28,
+                          min_speed_m_s = 0.5, max_speed_m_s = 2.3))
+
+  fleet <- suppressWarnings(calculatePaddleSpeed(
+    list(A = .pwTag("A", "99", year = 2022)), calibration = cal, verbose = 0))
+  expect_identical(attr(fleet, "calibration")$range_source, "projected-from-fleet")
 })
 
 

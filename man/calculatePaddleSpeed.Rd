@@ -14,6 +14,8 @@ calculatePaddleSpeed(
   agreement.threshold = 0.35,
   smoothing = 1,
   max.speed = NULL,
+  extrapolation = c("warn", "exclude", "allow"),
+  retain.qc = FALSE,
   min.pitch = 10,
   id.col = "ID",
   plot = FALSE,
@@ -31,8 +33,11 @@ a single table with an \code{id.col}, or a character vector of \code{.rds} paths
 \code{\link[=processTagData]{processTagData()}} is expected.}
 
 \item{calibration}{A table of calibrations with columns \code{year}, \code{package_id} and \code{slope}. A row
-matching a deployment's own tag and season is used exactly as measured. \code{NULL} (default) supplies
-no calibration at all, in which case only the in-situ methods can produce a speed.}
+matching a deployment's own tag and season is used exactly as measured. Controlled-trial limits
+may be supplied as paired columns \code{min_freq_hz} / \code{max_freq_hz}, \code{min_speed_m_s} /
+\code{max_speed_m_s}, or both; these define where the fitted relationship is supported and enable the
+\code{extrapolation} check. \code{NULL} (default) supplies no calibration at all, in which case only the
+in-situ methods can produce a speed.}
 
 \item{method}{How to fill a gap when a deployment has no calibration of its own. The three
 \code{"projected-*"} methods carry the calibrations you do have forward in time, following
@@ -60,6 +65,17 @@ already smoothed at least this much, so the window has little left to do.}
 
 \item{max.speed}{Optional upper speed limit in km/h. Values above it are set to \code{NA}. The default
 \code{NULL} leaves all finite calculated speeds unchanged; supply a cutoff explicitly to enable filtering.}
+
+\item{extrapolation}{What to do when a frequency or calculated speed falls outside the controlled-
+trial range supplied in \code{calibration}: \code{"warn"} (default) retains the estimate and raises one
+grouped warning, \code{"exclude"} sets it to \code{NA}, and \code{"allow"} retains it silently. All three record
+the result in deployment metadata. Where no range is available, \code{"warn"} and \code{"exclude"} report
+that extrapolation could not be assessed rather than pretending the range is unlimited.}
+
+\item{retain.qc}{Whether to add the logical column \code{paddle_speed_extrapolated} (default \code{FALSE}). It
+is \code{TRUE} outside a known calibration range, \code{FALSE} inside it and \code{NA} where the range cannot be
+assessed. The count and percentage are recorded in metadata regardless, so this column is only
+needed for row-level filtering or inspection.}
 
 \item{min.pitch}{Steepest-swimming threshold, in degrees, for the in-situ estimate (default \code{10}).
 Shallower samples are excluded: the closer the animal is to level, the less its depth change says
@@ -94,6 +110,9 @@ Either way the resolved calibration is attached as the \code{"calibration"} attr
 and season, with:
 \itemize{
 \item \code{slope} and \code{slope_source} - the slope applied and where it came from.
+\item \code{min_freq_hz}, \code{max_freq_hz}, \code{min_speed_m_s}, \code{max_speed_m_s} and \code{range_source} - the
+controlled-trial domain used for extrapolation QC and where that domain came from; missing when no
+defensible range was supplied.
 \item \code{n_deployments} - how many deployments that slope covers.
 \item \code{in_situ_slope}, \code{in_situ_lo}, \code{in_situ_hi} - the in-situ estimate and its 95\% interval, present
 when the estimate was computed.
@@ -149,6 +168,21 @@ are kept untouched and no slope applies.
 
 A calibration is always used as it stands: estimation fills gaps, it does not smooth or revise what
 you observed.
+}
+
+\subsection{Calibration support and extrapolation}{
+
+The slope alone defines a mathematical line but says nothing about the interval over which that line
+was tested. When the optional frequency or speed limits are present, each calculated value is checked
+against them after frequency smoothing and before any explicit \code{max.speed} cap. A value beyond either
+supplied pair is an extrapolation. The default retains it but warns, distinguishing scientific
+uncertainty from a user-chosen hard cutoff; \code{extrapolation = "exclude"} is the explicit opt-in to
+remove it.
+
+Projected slopes inherit the observed envelope from the same physical tag, or from the calibration
+fleet when the slope itself is fleet-projected. In-situ slopes have no controlled-trial range and are
+left with unknown limits. Range provenance is recorded in \code{range_source} in the returned calibration
+table.
 }
 
 \subsection{Choosing a method}{

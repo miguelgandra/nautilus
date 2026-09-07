@@ -15,6 +15,28 @@
              "i" = "It needs {.field year}, {.field package_id} and {.field slope}."))
   if (!is.numeric(calibration$year))  .abort("{.field year} in {.arg calibration} must be numeric.")
   if (!is.numeric(calibration$slope)) .abort("{.field slope} in {.arg calibration} must be numeric.")
+  range_pairs <- list(c("min_freq_hz", "max_freq_hz"), c("min_speed_m_s", "max_speed_m_s"))
+  for (pair in range_pairs) {
+    present <- pair %in% names(calibration)
+    if (xor(present[1], present[2]))
+      .abort("{.arg calibration} must contain both {.field {pair[1]}} and {.field {pair[2]}}, or neither.")
+    if (all(present)) {
+      if (!is.numeric(calibration[[pair[1]]]) || !is.numeric(calibration[[pair[2]]]))
+        .abort("{.field {pair[1]}} and {.field {pair[2]}} in {.arg calibration} must be numeric.")
+      one_missing <- xor(is.na(calibration[[pair[1]]]), is.na(calibration[[pair[2]]]))
+      if (any(one_missing))
+        .abort("Each calibration row must provide both {.field {pair[1]}} and {.field {pair[2]}}, or leave both missing.")
+      supplied <- !is.na(calibration[[pair[1]]])
+      bad <- supplied & (!is.finite(calibration[[pair[1]]]) | !is.finite(calibration[[pair[2]]]) |
+                         calibration[[pair[1]]] < 0 |
+                         calibration[[pair[2]]] <= calibration[[pair[1]]])
+      if (any(bad))
+        .abort("Calibration ranges must be non-negative and have minimum < maximum in {.field {pair[1]}} / {.field {pair[2]}}.")
+    } else {
+      calibration[[pair[1]]] <- NA_real_
+      calibration[[pair[2]]] <- NA_real_
+    }
+  }
   calibration
 }
 
@@ -108,6 +130,7 @@
 #' @keywords internal
 #' @noRd
 .paddleResolve <- function(scan, calibration, method, degradation.rate, agreement.threshold, lvl) {
+  calibration <- .assert_calibration(calibration)
   keys <- unique(vapply(scan, function(z) z$key, character(1)))
   in_situ_method <- method %in% c("in-situ-deployment", "in-situ-pooled")
 
@@ -157,11 +180,18 @@
 
   ## ---- a calibration for this tag and season always wins ------------------------------------------
   cal$slope <- NA_real_; cal$slope_source <- NA_character_
+  range_cols <- c("min_freq_hz", "max_freq_hz", "min_speed_m_s", "max_speed_m_s")
+  for (nm in range_cols) cal[[nm]] <- NA_real_
+  cal$range_source <- NA_character_
   if (!is.null(calibration)) {
     m <- match(paste0(calibration$year, "/", as.character(calibration$package_id)), cal$key)
     ok <- !is.na(m)
     cal$slope[m[ok]] <- calibration$slope[ok]
     cal$slope_source[m[ok]] <- "calibrated"
+    for (nm in range_cols) cal[[nm]][m[ok]] <- calibration[[nm]][ok]
+    has_range <- vapply(which(ok), function(j)
+      any(is.finite(unlist(calibration[j, range_cols, drop = FALSE]))), logical(1))
+    cal$range_source[m[ok][has_range]] <- "calibrated"
   }
 
   ## ---- fill what is left, for the tags that have a rotation rate to convert -----------------------
@@ -183,9 +213,16 @@
   # left without a slope, but for a reason worth naming: the logger reported speed itself
   cal$slope_source[is.na(cal$slope) & cal$as_recorded] <- "as-recorded"
 
+  # A projected slope inherits only the tested domain, never a made-up universal limit. A projection
+  # from the same physical tag uses that tag's observed envelope; a fleet projection uses the fleet
+  # envelope. In-situ slopes have no controlled-trial domain and therefore remain explicitly unknown.
+  cal <- .paddleResolveRanges(cal, calibration)
+
   ## ---- carry the tag-season answer down to each deployment ---------------------------------------
   m <- match(dep$key, cal$key)
   dep$slope <- cal$slope[m]; dep$slope_source <- cal$slope_source[m]
+  for (nm in range_cols) dep[[nm]] <- cal[[nm]][m]
+  dep$range_source <- cal$range_source[m]
 
   # `in-situ-deployment` prefers a deployment's own fit, but only where the tag-season had no
   # calibration to apply: a real calibration is never displaced by an estimate.
@@ -224,6 +261,38 @@
   list(cal = cal[order(cal$year, cal$package_id), , drop = FALSE], dep = dep)
 }
 
+#' Carry controlled-trial ranges onto projected slopes
+#' @keywords internal
+#' @noRd
+.paddleResolveRanges <- function(cal, calibration) {
+  if (is.null(calibration) || !nrow(calibration)) return(cal)
+  range_cols <- c("min_freq_hz", "max_freq_hz", "min_speed_m_s", "max_speed_m_s")
+  any_range <- function(d) any(vapply(d[range_cols], function(x) any(is.finite(x)), logical(1)))
+  envelope <- function(d) {
+    out <- rep(NA_real_, length(range_cols)); names(out) <- range_cols
+    for (pair in list(c("min_freq_hz", "max_freq_hz"), c("min_speed_m_s", "max_speed_m_s"))) {
+      ok <- is.finite(d[[pair[1]]]) & is.finite(d[[pair[2]]])
+      if (any(ok)) out[pair] <- c(min(d[[pair[1]]][ok]), max(d[[pair[2]]][ok]))
+    }
+    out
+  }
+  if (!any_range(calibration)) return(cal)
+
+  for (i in seq_len(nrow(cal))) {
+    if (!is.na(cal$range_source[i]) ||
+        !cal$slope_source[i] %in% c("projected-from-tag", "projected-from-fleet")) next
+    source <- if (identical(cal$slope_source[i], "projected-from-tag"))
+      calibration[as.character(calibration$package_id) == cal$package_id[i], , drop = FALSE]
+    else calibration
+    bounds <- envelope(source)
+    if (any(is.finite(bounds))) {
+      for (nm in range_cols) cal[[nm]][i] <- bounds[[nm]]
+      cal$range_source[i] <- cal$slope_source[i]
+    }
+  }
+  cal
+}
+
 #' Fill the remaining gaps through imputePaddleCalibration(), keeping its provenance labels.
 #' @keywords internal
 #' @noRd
@@ -256,11 +325,22 @@
 #' speed distribution - so the caller can report the deployment without walking the data a second time.
 #' @keywords internal
 #' @noRd
-.paddleApplyOne <- function(dt, sc, row, smoothing, max.speed) {
+.paddleApplyOne <- function(dt, sc, row, smoothing, max.speed,
+                            extrapolation = "warn", retain.qc = FALSE) {
   # every early return goes through out(), so the fields the per-deployment log reads are always present
-  out <- function(data, status, slope = NA_real_, slope_source = NA_character_, speed = NULL)
+  out <- function(data, status, slope = NA_real_, slope_source = NA_character_, speed = NULL,
+                  n_extrapolated = 0L, n_assessed = 0L, pct_extrapolated = NA_real_,
+                  range_available = FALSE) {
+    if (isTRUE(retain.qc) && !"paddle_speed_extrapolated" %in% names(data))
+      data[, paddle_speed_extrapolated := NA]
     list(data = data, status = status, slope = slope, slope_source = slope_source,
-         speed = speed, n_rows = nrow(data), fs = .estimateHz(data$datetime))
+         speed = speed, n_rows = nrow(data), fs = .estimateHz(data$datetime),
+         n_extrapolated = n_extrapolated, n_assessed = n_assessed,
+         pct_extrapolated = pct_extrapolated, range_available = range_available)
+  }
+
+  if (!isTRUE(retain.qc) && "paddle_speed_extrapolated" %in% names(dt))
+    dt[, paddle_speed_extrapolated := NULL]
 
   if (!sc$has_freq) {
     if (sc$has_speed) {
@@ -284,10 +364,29 @@
     if (k > 1L && k <= nrow(dt)) fq <- data.table::frollmean(fq, n = k, fill = NA, align = "center")
   }
   sp <- fq * slope
+  assessed <- rep(FALSE, length(sp))
+  extrapolated <- rep(NA, length(sp))
+  freq_range <- nrow(row) && all(is.finite(c(row$min_freq_hz, row$max_freq_hz)))
+  speed_range <- nrow(row) && all(is.finite(c(row$min_speed_m_s, row$max_speed_m_s)))
+  if (freq_range || speed_range) {
+    assessed <- is.finite(fq) & is.finite(sp)
+    extrapolated[assessed] <- FALSE
+    if (freq_range)
+      extrapolated[assessed & (fq < row$min_freq_hz | fq > row$max_freq_hz)] <- TRUE
+    if (speed_range)
+      extrapolated[assessed & (sp < row$min_speed_m_s | sp > row$max_speed_m_s)] <- TRUE
+  }
+  n_assessed <- sum(assessed)
+  n_extrapolated <- sum(extrapolated %in% TRUE)
+  pct_extrapolated <- if (n_assessed) 100 * n_extrapolated / n_assessed else NA_real_
+  if (identical(extrapolation, "exclude")) sp[extrapolated %in% TRUE] <- NA_real_
   if (!is.null(max.speed)) sp[is.finite(sp) & sp > max.speed / 3.6] <- NA_real_
   dt[, paddle_speed := sp]
+  if (isTRUE(retain.qc)) dt[, paddle_speed_extrapolated := extrapolated]
   list(data = dt, status = "applied", slope = row$slope, slope_source = row$slope_source,
-       speed = .paddleSpeedStats(sp), n_rows = nrow(dt), fs = fs)
+       speed = .paddleSpeedStats(sp), n_rows = nrow(dt), fs = fs,
+       n_extrapolated = n_extrapolated, n_assessed = n_assessed,
+       pct_extrapolated = pct_extrapolated, range_available = freq_range || speed_range)
 }
 
 #' Median and range of a speed column, or NULL when it holds nothing finite.
@@ -349,7 +448,7 @@
 #' @keywords internal
 #' @noRd
 .logPaddleDeployment <- function(lvl, id, sc, res, dep_row = NULL, cal = NULL,
-                                 method = NULL) {
+                                 method = NULL, extrapolation = "warn") {
   if (lvl < 1L) return(invisible(NULL))
   # `\u00b7` separates facts WITHIN a line and the heavier bullet marks the skip line: the two glyphs
   # are doing different jobs and are not interchangeable.
@@ -403,6 +502,12 @@
                              res$speed[["med"]], res$speed[["lo"]], res$speed[["hi"]]))
   else
     .log_detail(lvl, "speed: no finite values")
+  if (res$n_extrapolated > 0L)
+    .log_subdetail_aligned(lvl, sprintf("outside calibration range: %.1f%% (%s)",
+                                        res$pct_extrapolated,
+                                        if (identical(extrapolation, "exclude")) "excluded" else "retained"))
+  else if (identical(res$status, "applied") && !isTRUE(res$range_available))
+    .log_subdetail_aligned(lvl, "calibration range: unavailable")
   .log_ok(lvl, id, " processed")
   invisible(NULL)
 }

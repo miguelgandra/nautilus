@@ -1,185 +1,222 @@
-#' Estimate Paddle Wheel Frequency (Optimized Block-wise FFT)
-#'
-#' Efficient paddle wheel frequency estimation using optimized FFT processing with
-#' improved spectral analysis. The function processes the magnetometer's z-axis
-#' data in overlapping windows, applies Fast Fourier Transform (FFT) to identify
-#' dominant frequencies within a specified range, and converts these frequencies
-#' to animal swimming speeds using a provided calibration slope (assuming a zero y-intercept).
-#'
-#' @param mz Numeric vector of magnetometer z-axis values. Windows that contain
-#'   `NA` values yield an `NA` frequency estimate, which is then interpolated
-#'   across in the final step. For best results, impute large gaps in `mz`
-#'   beforehand.
-#' @param sampling.rate Sampling rate of the `mz` data in Hz (e.g., 100). Must be positive.
-#' @param window.size Size of the FFT window in seconds (default: 5). Must be positive.
-#' @param step.size Step size for overlapping windows in seconds (default: 1). Must be positive.
-#' @param min.freq.Hz Minimum frequency (Hz) to consider for peak detection (default: 0.1).
-#'   This should be chosen based on the expected minimum paddle wheel rotation frequency.
-#' @param max.freq.Hz Maximum frequency (Hz) to consider for peak detection (default: 100).
-#'   This should be chosen based on the expected maximum paddle wheel rotation frequency.
-#' @param calibration.slope Numeric value representing the slope of the calibration line
-#'   (speed = slope * frequency). (default: 0.25).
-#' @param smooth.window Smoothing window in seconds for the final frequency and
-#'   speed estimates (default: NULL). If provided, a rolling mean is applied.
-#' @param quality.check Logical; if TRUE, calculates and returns a quality metric
-#'   for each frequency estimate, indicating the prominence of the detected peak
-#'   relative to other frequencies within the search band (default: TRUE).
-#' @param verbose Logical; if TRUE, prints progress messages during execution (default: FALSE).
-#'
-#' @return A list with:
-#' \itemize{
-#'   \item **freq**: Numeric vector of estimated paddle wheel frequencies (Hz),
-#'     interpolated to the full length of `mz`. `NA` values will be present where
-#'     a frequency could not be reliably estimated.
-#'   \item **speed**: Numeric vector of estimated animal swimming speeds (m/s),
-#'     derived from `freq` using `calibration.slope`.
-#'   \item **peak.prominence**: Numeric vector quantifying the prominence of each
-#'     frequency estimate, computed as the ratio of the peak power to the mean
-#'     power of the remaining frequencies within the search band. Values > 1
-#'     indicate a dominant peak (higher = more reliable); values near 1 indicate
-#'     a flat, ambiguous spectrum. Only included if `quality.check` is TRUE. `NA`
-#'     where prominence could not be estimated.
-#' }
-#' @importFrom stats fft lm predict sd
-#' @importFrom zoo na.approx zoo
-#' @importFrom data.table frollmean
+#######################################################################################################
+# Paddle-wheel frequency estimation ##################################################################
+#######################################################################################################
 
+#' Estimate paddle-wheel rotation frequency with windowed spectra
+#'
+#' The strongest component is accepted only when it lies below the Nyquist guard, is an interior local
+#' maximum of the analysis band, and clears a power-to-median-background prominence threshold. Rejected
+#' windows remain missing except for short, bounded gaps between accepted estimates.
+#'
+#' @param mz Numeric magnetometer channel containing the paddle-wheel oscillation.
+#' @param sampling.rate Sampling rate in hertz.
+#' @param window.size,step.size Spectral-window length and step in seconds.
+#' @param min.freq.Hz,max.freq.Hz Analysis-band limits. `NULL` for `max.freq.Hz` uses the Nyquist guard.
+#' @param nyquist.guard Fraction of Nyquist retained as the safe upper band.
+#' @param min.prominence Required peak power / median background power ratio.
+#' @param max.interp.gap Longest rejected interval in seconds that may be interpolated; `NULL` disables
+#'   interpolation.
+#' @param calibration.slope Optional zero-intercept speed-calibration slope. The production pipeline
+#'   leaves this `NULL` and performs calibration in [calculatePaddleSpeed()].
+#' @param smooth.window Optional post-estimation smoothing window in seconds. Retained for internal
+#'   compatibility; the production pipeline smooths only in [calculatePaddleSpeed()].
+#' @param quality.check Retained for internal compatibility. Quality is always evaluated because it is
+#'   part of the acceptance rule; setting this to `FALSE` only omits the full-length prominence vector.
+#' @param verbose Whether to report the number of windows being processed.
+#'
+#' @return A list containing full-length `freq`, optional `speed`, optional `peak.prominence`, and `qc`.
+#'   `qc` contains the compact acceptance summary plus the window-level results used to derive it. The
+#'   window table is internal diagnostic state and is not appended to processed tag data.
+#' @keywords internal
+#' @noRd
 .getPaddleSpeed <- function(mz,
                             sampling.rate,
                             window.size = 5,
                             step.size = 1,
                             min.freq.Hz = 0.1,
-                            max.freq.Hz = 100,
+                            max.freq.Hz = NULL,
+                            nyquist.guard = 0.9,
+                            min.prominence = 20,
+                            max.interp.gap = 2,
                             calibration.slope = NULL,
                             smooth.window = NULL,
                             quality.check = TRUE,
                             verbose = FALSE) {
-
-
-  # --- Input Validation ---
   if (!is.numeric(mz)) stop("`mz` must be a numeric vector.")
-  if (length(mz) < 2) stop("`mz` must have length > 1 to perform meaningful analysis.")
-  if (sampling.rate <= 0) stop("`sampling.rate` must be positive.")
-  if (window.size <= 0) stop("`window.size` must be positive.")
-  if (step.size <= 0) stop("`step.size` must be positive.")
-  if (min.freq.Hz >= max.freq.Hz) stop("`min.freq.Hz` must be less than `max.freq.Hz`.")
-  if (!is.null(smooth.window) && smooth.window <= 0) stop("`smooth.window` must be positive if provided.")
-
-  # Validate calibration.slope. NULL is allowed and means "frequency only": turning the rotation rate
-  # into a speed is calculatePaddleSpeed()'s job, and it needs a slope this function has no business
-  # knowing about.
-  if (!is.null(calibration.slope) && (!is.numeric(calibration.slope) || length(calibration.slope) != 1)) {
-    stop("`calibration.slope` must be a single numeric value, or NULL for frequency only.")
-  }
+  if (length(mz) < 2L) stop("`mz` must have length > 1 to perform meaningful analysis.")
+  if (!is.numeric(sampling.rate) || length(sampling.rate) != 1L ||
+      !is.finite(sampling.rate) || sampling.rate <= 0)
+    stop("`sampling.rate` must be a single positive number.")
+  if (!is.numeric(window.size) || length(window.size) != 1L ||
+      !is.finite(window.size) || window.size <= 0)
+    stop("`window.size` must be a single positive number.")
+  if (!is.numeric(step.size) || length(step.size) != 1L || !is.finite(step.size) || step.size <= 0)
+    stop("`step.size` must be a single positive number.")
+  if (step.size > window.size) stop("`step.size` must not exceed `window.size`.")
+  if (!is.numeric(min.freq.Hz) || length(min.freq.Hz) != 1L ||
+      !is.finite(min.freq.Hz) || min.freq.Hz <= 0)
+    stop("`min.freq.Hz` must be a single positive number.")
+  if (!is.null(max.freq.Hz) && (!is.numeric(max.freq.Hz) || length(max.freq.Hz) != 1L ||
+                                !is.finite(max.freq.Hz) || max.freq.Hz <= min.freq.Hz))
+    stop("`max.freq.Hz` must be NULL or a single number greater than `min.freq.Hz`.")
+  if (!is.numeric(nyquist.guard) || length(nyquist.guard) != 1L || !is.finite(nyquist.guard) ||
+      nyquist.guard <= 0 || nyquist.guard >= 1)
+    stop("`nyquist.guard` must lie strictly between zero and one.")
+  if (!is.numeric(min.prominence) || length(min.prominence) != 1L ||
+      !is.finite(min.prominence) || min.prominence < 0)
+    stop("`min.prominence` must be a single non-negative number.")
+  if (!is.null(max.interp.gap) && (!is.numeric(max.interp.gap) || length(max.interp.gap) != 1L ||
+                                   !is.finite(max.interp.gap) || max.interp.gap < 0))
+    stop("`max.interp.gap` must be NULL or a single non-negative number.")
+  if (!is.null(calibration.slope) && (!is.numeric(calibration.slope) ||
+                                      length(calibration.slope) != 1L ||
+                                      !is.finite(calibration.slope)))
+    stop("`calibration.slope` must be a single finite number, or NULL for frequency only.")
+  if (!is.null(smooth.window) && (!is.numeric(smooth.window) || length(smooth.window) != 1L ||
+                                  !is.finite(smooth.window) || smooth.window <= 0))
+    stop("`smooth.window` must be a single positive number if supplied.")
 
   n <- length(mz)
-  win_len <- round(window.size * sampling.rate)
-  step_len <- round(step.size * sampling.rate)
+  win_len <- min(n, max(4L, round(window.size * sampling.rate)))
+  step_len <- max(1L, round(step.size * sampling.rate))
+  starts <- seq.int(1L, n - win_len + 1L, by = step_len)
+  centres <- starts + floor((win_len - 1L) / 2L)
+  freq_axis <- seq.int(0L, floor(win_len / 2L)) * sampling.rate / win_len
+  nyquist <- sampling.rate / 2
+  safe_upper <- min(max.freq.Hz %||% Inf, nyquist.guard * nyquist)
 
-  # Ensure window isn't longer than data
-  if (win_len > n) {
-    warning("`window.size` is larger than the data length. Adjusting `window.size` to full data length.")
-    win_len <- n
+  empty_result <- function(status) {
+    windows <- data.frame(index = centres, freq_hz = NA_real_, prominence = NA_real_,
+                          accepted = FALSE, status = status, stringsAsFactors = FALSE)
+    qc <- .paddleFrequencyQC(windows, min.freq.Hz, safe_upper, nyquist)
+    list(freq = rep(NA_real_, n), speed = if (is.null(calibration.slope)) NULL else rep(NA_real_, n),
+         peak.prominence = if (isTRUE(quality.check)) rep(NA_real_, n) else NULL, qc = qc)
   }
-  starts <- seq(1, n - win_len + 1, by = step_len)
+  if (!is.finite(safe_upper) || safe_upper <= min.freq.Hz ||
+      sum(freq_axis >= min.freq.Hz & freq_axis <= safe_upper) < 3L)
+    return(empty_result("sampling_rate_too_low"))
 
-  # Pre-calculate frequency axis once
-  freq_axis <- (0:(floor(win_len/2))) * sampling.rate / win_len
+  broad_idx <- which(freq_axis >= min.freq.Hz & freq_axis <= nyquist)
+  band_idx <- which(freq_axis >= min.freq.Hz & freq_axis <= safe_upper)
+  taper <- 0.5 * (1 - cos(2 * pi * seq.int(0L, win_len - 1L) / (win_len - 1L)))
 
-  # --- Internal Function for Frequency Estimation ---
-  freq_estimates_single_window <- function(i) {
-    segment <- mz[i:(i + win_len - 1)]
+  estimate_one <- function(i) {
+    segment <- mz[i:(i + win_len - 1L)]
+    if (any(!is.finite(segment)))
+      return(list(freq = NA_real_, prominence = NA_real_, status = "missing_data"))
+    spread <- stats::sd(segment)
+    if (!is.finite(spread) || spread < sqrt(.Machine$double.eps))
+      return(list(freq = NA_real_, prominence = NA_real_, status = "constant_signal"))
 
-    # Handle segments with constant values (no variance) to avoid errors in lm() or meaningless FFT
-    if (sd(segment, na.rm = TRUE) < .Machine$double.eps) {
-      return(list(freq = NA_real_, quality = NA_real_))
-    }
+    # Linear detrending reduces leakage without the NA/recycling failure mode of predict(lm(...)).
+    tt <- seq_along(segment)
+    segment <- stats::.lm.fit(cbind(1, tt), segment)$residuals
+    power <- Mod(stats::fft(segment * taper))[seq_along(freq_axis)]^2
+    if (!any(is.finite(power[band_idx]) & power[band_idx] > 0))
+      return(list(freq = NA_real_, prominence = NA_real_, status = "no_spectral_power"))
 
-    # Remove linear trend to reduce spectral leakage (end effects).
-    # Use na.exclude so predict() returns a full-length, NA-padded vector;
-    # the default (na.omit) would drop NA rows and silently misalign the
-    # subtraction below (recycling a shorter fitted vector against `segment`).
-    trend_fit <- lm(segment ~ seq_along(segment), na.action = stats::na.exclude)
-    segment <- segment - stats::predict(trend_fit)
+    # Do not quietly choose a weaker, apparently valid peak when the spectrum is actually dominated by
+    # the region nearest Nyquist. That is the precise route that produced the 25/50-Hz speed artefacts.
+    broad_peak <- broad_idx[which.max(power[broad_idx])]
+    if (is.finite(power[broad_peak]) && freq_axis[broad_peak] > nyquist.guard * nyquist)
+      return(list(freq = NA_real_, prominence = NA_real_, status = "nyquist_guard"))
 
-    # Apply Hanning window to reduce side lobes and improve frequency resolution
-    window <- 0.5 * (1 - cos(2*pi*seq(0, 1, length.out = win_len)))
-    segment <- segment * window
-
-    # Compute FFT and take the magnitude of the single-sided spectrum
-    spec <- abs(stats::fft(segment))[1:(floor(win_len/2) + 1)]
-
-    # Identify valid frequency range based on min.freq.Hz and max.freq.Hz
-    valid_indices <- which(freq_axis >= min.freq.Hz & freq_axis <= max.freq.Hz)
-
-    # If no valid frequencies or all spectral values are NA/zero in the valid range
-    if (length(valid_indices) == 0 || all(is.na(spec[valid_indices])) || all(spec[valid_indices] == 0)) {
-      return(list(freq = NA_real_, quality = NA_real_))
-    }
-
-    # Find the index of the maximum power within the valid frequency range
-    band_power <- spec[valid_indices]
+    band_power <- power[band_idx]
     peak_pos <- which.max(band_power)
-    max_idx_in_valid <- valid_indices[peak_pos]
+    peak_idx <- band_idx[peak_pos]
+    if (peak_pos == 1L || peak_pos == length(band_idx))
+      return(list(freq = NA_real_, prominence = NA_real_, status = "band_edge"))
+    if (!(band_power[peak_pos] > band_power[peak_pos - 1L] &&
+          band_power[peak_pos] > band_power[peak_pos + 1L]))
+      return(list(freq = NA_real_, prominence = NA_real_, status = "not_local_maximum"))
+
+    # Exclude the adjacent leakage bins from the background but use the robust median of everything
+    # else. Unlike the former magnitude/mean score this has a stable noise baseline and is not diluted
+    # by a few strong side lobes.
+    omit <- unique(pmax(1L, pmin(length(band_power), peak_pos + (-1L:1L))))
+    background <- stats::median(band_power[-omit], na.rm = TRUE)
     peak_power <- band_power[peak_pos]
+    prominence <- if (is.finite(background) && background > 0) peak_power / background
+                  else if (is.finite(peak_power) && peak_power > 0) Inf else NA_real_
+    if (is.na(prominence))
+      return(list(freq = NA_real_, prominence = NA_real_, status = "no_background"))
+    if (prominence < min.prominence)
+      return(list(freq = NA_real_, prominence = prominence, status = "low_prominence"))
 
-    # Peak prominence: ratio of the peak power to the mean power of the
-    # *remaining* frequencies within the search band. Values > 1 indicate a
-    # dominant (reliable) peak; values near 1 indicate a flat, ambiguous
-    # spectrum. (The previous version divided the peak by max(band), which is
-    # the peak itself, so the metric was identically 1.)
-    background <- if (length(band_power) > 1) mean(band_power[-peak_pos], na.rm = TRUE) else NA_real_
-    quality <- if (!is.na(background) && background > 0) peak_power / background else NA_real_
-
-    list(freq = freq_axis[max_idx_in_valid],
-         quality = quality)
+    list(freq = freq_axis[peak_idx], prominence = prominence, status = "accepted")
   }
 
-  if (verbose) message("Processing ", length(starts), " windows...")
+  if (isTRUE(verbose)) message("Processing ", length(starts), " windows...")
+  estimates <- lapply(starts, estimate_one)
+  windows <- data.frame(
+    index = centres,
+    freq_hz = vapply(estimates, `[[`, numeric(1), "freq"),
+    prominence = vapply(estimates, `[[`, numeric(1), "prominence"),
+    status = vapply(estimates, `[[`, character(1), "status"),
+    stringsAsFactors = FALSE)
+  windows$accepted <- windows$status == "accepted"
 
-  # --- Sequential Processing (Parallel option removed) ---
-  results <- lapply(starts, freq_estimates_single_window)
+  freq_full <- .paddleExpandWindows(windows$freq_hz, centres, n, step.size, max.interp.gap)
+  prom_values <- ifelse(windows$accepted, windows$prominence, NA_real_)
+  prom_full <- .paddleExpandWindows(prom_values, centres, n, step.size, max.interp.gap)
 
-
-  # Extract frequencies and qualities from results
-  freqs <- sapply(results, `[[`, "freq")
-  qualities <- if (quality.check) sapply(results, `[[`, "quality") else NULL
-  time_index <- starts + floor(win_len / 2) # Time index corresponds to the center of each window
-
-  # --- Interpolation to Full Length ---
-  freq_full <- zoo::na.approx(zoo::zoo(freqs, time_index), xout = seq_len(n), na.rm = FALSE)
-  freq_full <- as.numeric(freq_full)
-
-  # --- Smoothing ---
   if (!is.null(smooth.window)) {
-    k <- max(3, round(smooth.window * sampling.rate))
-    if (k > length(freq_full)) {
-      warning("`smooth.window` results in a window larger than the data. No smoothing applied to frequency.")
+    k <- max(3L, round(smooth.window * sampling.rate))
+    if (k <= n)
+      freq_full <- data.table::frollmean(freq_full, n = k, fill = NA_real_, align = "center")
+  }
+
+  list(freq = freq_full,
+       speed = if (is.null(calibration.slope)) NULL else freq_full * calibration.slope,
+       peak.prominence = if (isTRUE(quality.check)) prom_full else NULL,
+       qc = .paddleFrequencyQC(windows, min.freq.Hz, safe_upper, nyquist))
+}
+
+
+#' Expand window-centre estimates without bridging long rejected intervals
+#' @keywords internal
+#' @noRd
+.paddleExpandWindows <- function(values, centres, n, step.size, max.interp.gap) {
+  values <- as.numeric(values)
+  if (!is.null(max.interp.gap) && max.interp.gap > 0 && any(is.finite(values))) {
+    maxgap <- floor(max.interp.gap / step.size + sqrt(.Machine$double.eps))
+    if (maxgap > 0L) values <- zoo::na.approx(values, x = centres, maxgap = maxgap, na.rm = FALSE)
+  }
+
+  out <- rep(NA_real_, n)
+  finite <- is.finite(values)
+  if (!any(finite)) return(out)
+  runs <- rle(finite)
+  ends <- cumsum(runs$lengths)
+  starts <- ends - runs$lengths + 1L
+  for (j in which(runs$values)) {
+    ix <- starts[j]:ends[j]
+    if (length(ix) == 1L) {
+      out[centres[ix]] <- values[ix]
     } else {
-      freq_full <- data.table::frollmean(freq_full, n = k, fill = NA, align = "center")
+      target <- seq.int(centres[ix[1]], centres[ix[length(ix)]])
+      out[target] <- stats::approx(centres[ix], values[ix], xout = target, rule = 1)$y
     }
   }
+  out
+}
 
-  # --- Calculate Speed using the Calibration Slope ---
-  # Apply the linear calibration: speed = slope * frequency (intercept is 0)
-  return_list <- list(
-    freq  = freq_full,
-    speed = if (is.null(calibration.slope)) NULL else freq_full * calibration.slope
-  )
 
-  if (quality.check) {
-    qual_full <- zoo::na.approx(zoo::zoo(qualities, time_index), xout = seq_len(n), na.rm = FALSE)
-    return_list$peak.prominence <- as.numeric(qual_full)
-
-    if (!is.null(smooth.window)) {
-      k_qual <- max(3, round(smooth.window * sampling.rate))
-      if (k_qual > length(qual_full)) {
-        warning("`smooth.window` results in a window larger than the data. No smoothing applied to quality.")
-      } else {
-        return_list$peak.prominence <- data.table::frollmean(return_list$peak.prominence, n = k_qual, fill = NA, align = "center")
-      }
-    }
-  }
-
-  return(return_list)
+#' Summarise paddle-frequency window acceptance
+#' @keywords internal
+#' @noRd
+.paddleFrequencyQC <- function(windows, min.freq.Hz, max.freq.Hz, nyquist) {
+  n <- nrow(windows)
+  accepted <- sum(windows$accepted)
+  rejected <- windows$status[!windows$accepted]
+  counts <- sort(table(rejected), decreasing = TRUE)
+  dominant <- if (length(counts)) names(counts)[1] else "none"
+  list(n_windows = n,
+       n_accepted = accepted,
+       acceptance_pct = if (n) 100 * accepted / n else NA_real_,
+       dominant_failure = dominant,
+       band_hz = c(min = min.freq.Hz, max = max.freq.Hz),
+       nyquist_hz = nyquist,
+       failure_counts = counts,
+       windows = windows)
 }
