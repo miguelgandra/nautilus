@@ -52,6 +52,8 @@ test_that("input validation aborts clearly (before touching av/ffmpeg)", {
   # codec is a family enum, not a raw ffmpeg encoder name
   expect_error(renderOverlayVideo(vid, .mk_sensor(), file.path(tempdir(), "o.mp4"), codec = "libx264", verbose = FALSE),
                "should be one of", ignore.case = TRUE)
+  expect_error(renderOverlayVideo(vid, .mk_sensor(), out, orientation.model = "penguin", verbose = FALSE),
+               "should be one of", ignore.case = TRUE)
 })
 
 test_that(".dashboardColumns lists the right required columns per dashboard", {
@@ -70,6 +72,10 @@ test_that(".dashboardColumns lists the right required columns per dashboard", {
 test_that("dashboard plans resolve presets, orientation alternatives, and metric windows", {
   model <- nautilus:::.resolveDashboardPlan("general")
   expect_equal(model$metrics, c("orientation", "depth", "vedba", "vertical_velocity"))
+  expect_equal(model$orientation.model, "shark")
+
+  cetacean <- nautilus:::.resolveDashboardPlan("general", orientation.model = "cetacean")
+  expect_equal(cetacean$orientation.model, "cetacean")
 
   dials <- nautilus:::.resolveDashboardPlan("general", orientation = "dials")
   expect_equal(dials$metrics[1:3], c("heading", "pitch", "roll"))
@@ -121,6 +127,8 @@ test_that(".drawAttitudeModel3D is NA-tolerant and draws", {
   expect_no_error(nautilus:::.drawAttitudeModel3D(NA_real_, NA_real_, .theme, label = "x"))
   expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme))
   expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, heading = 270, show.heading = TRUE))
+  for (model in c("shark", "cetacean", "turtle", "fish", "manta"))
+    expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, model = model))
 })
 
 test_that("pseudo-trajectory preparation fixes projection, bounds, and exaggeration for the clip", {
@@ -142,12 +150,27 @@ test_that("metric ranges are robust and vertical velocity is symmetric", {
   expect_equal(nautilus:::.overlayRange(c(0.1, 0.2), "vedba")[1], 0)
 })
 
-test_that(".tagModel3D is a valid low-poly mesh", {
-  m <- nautilus:::.tagModel3D()
-  expect_true(length(m$faces) > 20L)                       # a body tube + fins
-  expect_equal(length(m$faces), length(m$part))
-  expect_true(all(vapply(m$faces, function(f) is.matrix(f) && nrow(f) == 3L && ncol(f) >= 3L, logical(1))))
-  expect_setequal(unique(m$part), c("body", "fin"))
+test_that("all configured orientation models are valid low-poly meshes", {
+  expect_setequal(names(nautilus:::.orientationModelRegistry()),
+                  c("shark", "cetacean", "turtle", "fish", "manta"))
+  for (model in names(nautilus:::.orientationModelRegistry())) {
+    m <- nautilus:::.tagModel3D(model)
+    expect_true(length(m$faces) > 20L)                     # a body tube + appendages
+    expect_equal(length(m$faces), length(m$part))
+    expect_true(all(vapply(m$faces, function(f) is.matrix(f) && nrow(f) == 3L && ncol(f) >= 3L, logical(1))))
+    expect_setequal(unique(m$part), c("body", "fin"))
+  }
+  expect_error(nautilus:::.tagModel3D("penguin"), "Unknown orientation model")
+})
+
+test_that("presentation geometry shortens the orientation and timestamp rows", {
+  expect_equal(nautilus:::.moduleHeight("orientation"), 2.1)
+  expect_equal(nautilus:::.moduleHeight("depth"), 1.15)
+})
+
+test_that("FFmpeg progress timestamps are parsed in seconds", {
+  expect_equal(nautilus:::.ffmpegProgressSeconds("01:02:03.500000"), 3723.5)
+  expect_true(is.na(nautilus:::.ffmpegProgressSeconds("N/A")))
 })
 
 test_that("the 3-D attitude projection has the correct handedness (roll right-down, pitch nose-up)", {

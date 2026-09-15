@@ -13,6 +13,7 @@ renderOverlayVideo(
   metrics = NULL,
   composition = c("beside", "overlay"),
   orientation = c("model", "dials"),
+  orientation.model = c("shark", "cetacean", "turtle", "fish", "manta"),
   video.start = NULL,
   start = NULL,
   end = NULL,
@@ -63,6 +64,12 @@ dashboard requires \code{"overlay"}.}
 draws a single three-dimensional attitude model with a heading compass and numeric heading, pitch
 and roll. \code{"dials"} replaces it with three separate gauges. This argument does not change the fixed
 validation dashboards.}
+
+\item{orientation.model}{Schematic animal model used by three-dimensional orientation modules:
+\code{"shark"} (default), \code{"cetacean"}, \code{"turtle"}, \code{"fish"} or \code{"manta"}. The choice changes only the
+displayed silhouette; it does not alter the underlying orientation values or coordinate
+conventions. Presentation dashboards ignore it when \code{orientation = "dials"}; fixed validation
+dashboards always use the selected model.}
 
 \item{video.start}{One finite \code{POSIXct} value giving the sensor-clock time represented by the first
 frame of \code{video}. \code{NULL} (default) attempts to read a UTC timestamp in \code{YYYYMMDD-HHMMSS} or
@@ -118,7 +125,8 @@ available and retries with the corresponding software encoder if the hardware se
 directory for diagnosis (default \code{FALSE}).}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
-(default).}
+(default). Normal and detailed output include separate progress indicators for dashboard-frame
+rendering and FFmpeg composition when the console supports live progress output.}
 }
 \value{
 The \code{output} path, returned invisibly after the video has been written.
@@ -206,7 +214,9 @@ A requested module with missing required columns causes an error rather than bei
 Orientation modules display values already present in \code{data}; they do not estimate orientation or
 verify that the inertial axes are expressed in the animal's body frame. Apply \code{\link[=applyAxisMapping]{applyAxisMapping()}} and
 \code{\link[=processTagData]{processTagData()}} before interpreting the model as animal posture. The three-dimensional model is a
-visual representation of pitch and roll, not an independent orientation estimate.
+visual representation of pitch and roll, not an independent orientation estimate. Model choices are
+deliberately schematic and are intended to provide a recognisable attitude cue rather than an
+anatomically precise reconstruction.
 
 Plot limits are calculated once from the sensor subset used for the render, including context-window
 padding, so they do not expand and contract between frames. For series with more than 20 observations,
@@ -265,6 +275,13 @@ renderOverlayVideo(video = video_metadata$file[1],
                    data = tag,
                    output = "./overlay/PIN_CAM_01_dials.mp4",
                    orientation = "dials",
+                   video.start = video_metadata$start[1])
+
+# Use a different schematic body model without changing the sensor mapping.
+renderOverlayVideo(video = video_metadata$file[1],
+                   data = tag,
+                   output = "./overlay/PIN_CAM_01_cetacean.mp4",
+                   orientation.model = "cetacean",
                    video.start = video_metadata$start[1])
 
 # Give the reconstructed pseudo-trajectory priority in an expanded dashboard.
