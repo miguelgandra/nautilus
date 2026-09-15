@@ -2,7 +2,7 @@
 % Please edit documentation in R/renderOverlayVideo.R
 \name{renderOverlayVideo}
 \alias{renderOverlayVideo}
-\title{Composite a sensor dashboard with camera-tag video}
+\title{Render a time-synchronised sensor dashboard with camera-tag video}
 \usage{
 renderOverlayVideo(
   video,
@@ -32,191 +32,253 @@ renderOverlayVideo(
 )
 }
 \arguments{
-\item{video}{Path to the source video file.}
+\item{video}{Path to one source video file.}
 
-\item{data}{A tag object, or a single table, holding the time-synchronised sensor series. Which
-columns are required depends on \code{dashboard}; see the Details.}
+\item{data}{A \code{nautilus_tag}, data frame or data table containing the sensor data for one deployment;
+alternatively, a list containing exactly one such dataset. A finite \code{POSIXct} column named
+\code{datetime} is required. Additional required columns depend on \code{dashboard} and \code{metrics}; see
+Details. Processed output from \code{\link[=processTagData]{processTagData()}} is recommended.}
 
-\item{output}{Path of the video file to create. Its directory must already exist.}
+\item{output}{Path of the video file to create. The parent directory must already exist. An existing
+file at this path is overwritten. An \code{.mp4} output is recommended for the supported codecs.}
 
-\item{dashboard}{Dashboard layout. \code{"general"} (default) is the full presentation dashboard;
-\code{"compact"} is a narrow stack; \code{"expanded"} gives the pseudo-trajectory priority; \code{"ribbon"}
-is a lower-third overlay; and \code{"focus"} enlarges the first selected metric. \code{"validation"} and
-\code{"validation-compare"} are fixed layouts used by \code{\link[=reviewTagMapping]{reviewTagMapping()}}.}
+\item{dashboard}{Dashboard layout. \code{"general"} (default), \code{"compact"}, \code{"expanded"}, \code{"ribbon"}
+and \code{"focus"} are configurable presentation layouts. \code{"validation"} and
+\code{"validation-compare"} are fixed sensor-axis review layouts used by \code{\link[=reviewTagMapping]{reviewTagMapping()}}. See
+Details.}
 
-\item{metrics}{Character vector of presentation modules to draw, in display order, or \code{NULL}
-(default) for the selected dashboard's preset. Supported modules are \code{"orientation"}, \code{"heading"},
+\item{metrics}{Character vector naming presentation modules in display order, or \code{NULL} (default) to
+use the preset associated with \code{dashboard}. Supported values are \code{"orientation"}, \code{"heading"},
 \code{"pitch"}, \code{"roll"}, \code{"depth"}, \code{"vedba"}, \code{"vertical_velocity"}, \code{"paddle_speed"},
-\code{"paddle_freq"}, \code{"tbf_hz_peaks"}, \code{"tbf_hz_wavelet"}, and \code{"pseudo_trajectory"}. The composite
-\code{"orientation"} module combines a three-dimensional attitude model, compass heading, and exact
-heading/pitch/roll values. \code{metrics} is not used by the validation dashboards.}
+\code{"paddle_freq"}, \code{"tbf_hz_peaks"}, \code{"tbf_hz_wavelet"} and \code{"pseudo_trajectory"}. Module names
+must be unique after resolving \code{orientation}. This argument cannot be supplied for the fixed
+validation dashboards.}
 
-\item{composition}{How to combine dashboard and footage. \code{"beside"} (default) preserves the existing
-opaque black panel and increases output width. \code{"overlay"} composites a transparent dashboard over
-the footage and preserves its width and height. The \code{"ribbon"} dashboard requires \code{"overlay"}.}
+\item{composition}{Method used to combine the dashboard and footage. \code{"beside"} (default) adds an
+opaque panel to the left or right of the video, increasing the output width. \code{"overlay"} places a
+transparent dashboard over the video and preserves the source width and height. The \code{"ribbon"}
+dashboard requires \code{"overlay"}.}
 
-\item{orientation}{How the \code{"orientation"} module is drawn: \code{"model"} (default) uses one 3-D attitude
-complication with a compass and numeric values; \code{"dials"} expands it into separate heading, pitch,
-and roll dials. The model is the presentation default; dials remain useful when independent scales
-matter more than an immediate impression of posture.}
+\item{orientation}{Representation used when \code{metrics} contains \code{"orientation"}. \code{"model"} (default)
+draws a single three-dimensional attitude model with a heading compass and numeric heading, pitch
+and roll. \code{"dials"} replaces it with three separate gauges. This argument does not change the fixed
+validation dashboards.}
 
-\item{video.start}{The sensor-clock time of the video's first frame - the anchor the whole
-synchronisation rests on. \code{NULL} looks for a \code{YYYYMMDD-HHMMSS} or \code{YYMMDD-HHMMSS} timestamp
-anywhere in the file name and errors if it finds neither. For frame-accurate work take it from
-\code{\link[=getVideoMetadata]{getVideoMetadata()}}.}
+\item{video.start}{One finite \code{POSIXct} value giving the sensor-clock time represented by the first
+frame of \code{video}. \code{NULL} (default) attempts to read a UTC timestamp in \code{YYYYMMDD-HHMMSS} or
+\code{YYMMDD-HHMMSS} form from the file name. A value returned by \code{\link[=getVideoMetadata]{getVideoMetadata()}} is recommended.}
 
-\item{start, end}{Optional bounds, in sensor time, clipping the output to a segment of interest - a
-validation window from \code{\link[=findValidationSegments]{findValidationSegments()}}, for instance. The default is the full overlap of
-video and sensor coverage, which for a whole deployment is a very long render.}
+\item{start, end}{Optional finite \code{POSIXct} bounds, expressed on the same clock as \code{video.start} and
+\code{data$datetime}. \code{NULL} (default) uses the full temporal overlap between the sensor record and video.
+These arguments can restrict the render to a validation or behavioural interval.}
 
-\item{side}{Which side to place the dashboard: \code{"right"} (default) or \code{"left"}. In beside mode this
-controls stacking order; in overlay mode it anchors the transparent panel. The ribbon spans the
-lower edge and therefore ignores \code{side}.}
+\item{side}{Position of the dashboard: \code{"right"} (default) or \code{"left"}. In beside mode it determines
+panel order; in overlay mode it anchors the dashboard to that edge. It is ignored by the full-width
+\code{"ribbon"} layout.}
 
-\item{overlay.fps}{How many times a second to redraw the dashboard (default \code{5}). See the note on
-speed below. Lower is faster; the source video keeps its own frame rate regardless.}
+\item{overlay.fps}{Positive dashboard update rate in frames per second (default \code{5}). It is independent
+of the source video frame rate, which is retained in the output. Lower values reduce rendering time
+but update sensor indicators less frequently.}
 
-\item{panel.width}{Dashboard width in pixels. \code{NULL} (default) scales it to the video and layout.
-It is ignored by the full-width ribbon.}
+\item{panel.width}{Dashboard width in pixels, or \code{NULL} (default) to calculate it from the source video
+and selected layout. In overlay mode the automatically calculated width is limited to part of the
+source frame. Ignored by the full-width \code{"ribbon"} layout.}
 
-\item{depth.window, activity.window}{Seconds shown on either side of the current time for depth and
-other scrolling metrics (defaults \code{300} and \code{30}). These remain convenient global defaults.}
+\item{depth.window, activity.window}{Positive context windows in seconds on each side of the current
+frame. \code{depth.window} controls \code{"depth"} (default \code{300}); \code{activity.window} controls the other
+scrolling scalar modules (default \code{30}). Module-specific values in \code{metric.windows} take precedence.}
 
-\item{metric.windows}{Optional named numeric vector overriding the context window for individual
-modules, for example \code{c(depth = 600, vedba = 20, pseudo_trajectory = 120)}. Values are seconds on
-either side of the current time.}
+\item{metric.windows}{Optional named numeric vector giving context windows, in seconds on each side of
+the current frame, for selected scrolling modules. For example,
+\code{c(depth = 600, vedba = 20, pseudo_trajectory = 120)}. Names must identify modules selected for the
+current dashboard; non-scrolling modules cannot be assigned a window. Default \code{NULL}.}
 
-\item{background.alpha}{Opacity of local module backplates in overlay mode, from zero to one
-(default \code{0.72}). The surrounding canvas remains fully transparent. Ignored in beside mode.}
+\item{background.alpha}{Opacity of the local module backplates in overlay mode, between \code{0} and \code{1}
+(default \code{0.72}). Text, traces and indicators remain opaque, and areas outside the modules remain
+transparent. Ignored in beside mode.}
 
-\item{caption}{An optional one-line caption for the validation dashboards, such as the mapping under
-test and the reason it was flagged.}
+\item{caption}{Optional one-line caption for \code{"validation"} or \code{"validation-compare"}, such as the
+candidate mapping and reason for review. Default \code{NULL}.}
 
-\item{candidates}{For \code{"validation-compare"} only: a table describing the attitude indicators to draw,
-with columns \code{label}, \code{pitch} and \code{roll}, the last two naming the per-candidate pitch and roll
-columns in \code{data}.}
+\item{candidates}{For \code{"validation-compare"}, a data frame with columns \code{label}, \code{pitch} and \code{roll}.
+Each row defines one candidate: \code{label} supplies its displayed name, while \code{pitch} and \code{roll} contain
+the names of the corresponding columns in \code{data}. Required for \code{"validation-compare"} and otherwise
+ignored.}
 
-\item{crf}{The constant rate factor for the software encoders, where lower means higher quality and a
-larger file. Default \code{23}. Ignored by the macOS hardware encoders, which use a fixed quality
-setting.}
+\item{crf}{Non-negative constant-rate-factor value used by software encoders (default \code{23}). Lower
+values generally increase output quality and file size. Ignored when a macOS VideoToolbox hardware
+encoder is used.}
 
-\item{codec}{The output codec family: \code{"hevc"} (default) or \code{"h264"}. HEVC gives much smaller files
-and is tagged for QuickTime compatibility; H.264 is larger but plays essentially everywhere,
-including older devices and every browser. Choose H.264 for anything you intend to circulate. Each
-prefers the macOS hardware encoder where present and falls back to software.}
+\item{codec}{Output codec family: \code{"hevc"} (default) or \code{"h264"}. HEVC generally produces smaller
+files and is written with the \code{hvc1} tag for QuickTime compatibility. H.264 has broader playback
+support and is preferable for distribution. The function uses a macOS hardware encoder when
+available and retries with the corresponding software encoder if the hardware session fails.}
 
-\item{keep.temp}{Whether to keep the temporary dashboard video or frame directory for diagnosis.
-Default \code{FALSE}.}
+\item{keep.temp}{Logical; whether to retain the intermediate dashboard video or transparent PNG frame
+directory for diagnosis (default \code{FALSE}).}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
 (default).}
 }
 \value{
-The output file path, invisibly.
+The \code{output} path, returned invisibly after the video has been written.
 }
 \description{
-Sensor data and footage answer each other's questions. The sensors say the animal rolled thirty
-degrees to its left; the video says whether it did. But comparing them means holding a plot in one
-window and a video in another and matching timestamps by eye, which is slow enough that most records
-never get checked.
+Renders sensor measurements from one archival-tag deployment together with its corresponding video.
+The result provides a common visual timeline for checking inferred movement against observed
+behaviour, reviewing sensor-axis mappings, and preparing annotated material for presentation.
 
-This function renders the two together as one synchronised video. The dashboard can sit beside the
-footage on an opaque panel or over it on a transparent canvas without changing the source dimensions.
-Presentation dashboards are assembled from reusable metric modules; the axis-validation dashboards
-retain their fixed scientific purpose.
+The dashboard can be placed beside the footage on an opaque panel or composited directly over the
+footage with a transparent background. Presentation dashboards are assembled from selectable metric
+modules, while the validation dashboards retain fixed layouts designed for assessing sensor-axis
+orientation.
+
+Synchronisation is determined by \code{video.start}, which identifies the sensor-clock time represented by
+the first frame of \code{video}. The function does not estimate or correct clock offsets. Video timestamps
+should therefore be checked with \code{\link[=getVideoMetadata]{getVideoMetadata()}} and, where necessary, corrected before
+rendering. Sensor values and metadata are not modified.
 }
 \details{
-\subsection{Dashboard presets}{
+\subsection{Time alignment and rendered interval}{
+
+\code{video.start} is the only synchronisation anchor: it must give the time, on the sensor clock, of the
+first source-video frame. If it is omitted, the file-name timestamp is interpreted as UTC. No
+time-zone conversion, device-clock correction or cross-correlation is performed during rendering.
+Where video and sensor clocks differ, resolve that discrepancy through \code{\link[=getVideoMetadata]{getVideoMetadata()}} and
+\code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} before calling this function.
+
+The rendered interval is the intersection of the video coverage, the sensor coverage, and any
+\code{start}/\code{end} bounds. The function stops if that intersection is empty. At each dashboard update, the
+displayed state is taken from the most recent sensor observation at or before the frame time. The
+timestamp printed on the dashboard is displayed in UTC.
+}
+
+\subsection{Dashboard layouts}{
 
 \describe{
-\item{\code{"general"}}{The composite orientation model plus depth, VeDBA and signed vertical velocity.
-This remains the default and works in either composition mode.}
-\item{\code{"compact"}}{A narrow presentation stack, by default orientation, depth and VeDBA.}
-\item{\code{"expanded"}}{A wide presentation panel led by the 3-D pseudo-trajectory, followed by
-orientation and scrolling context.}
-\item{\code{"ribbon"}}{Depth, VeDBA and vertical velocity arranged as a lower-third overlay.}
-\item{\code{"focus"}}{The first selected module occupies most of the panel; the remaining modules are
-compact current-value tiles.}
-\item{\code{"validation"}}{One large attitude indicator - a low-poly three-dimensional body model, seen
-from behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace
-and depth. Tuned for judging an axis mapping by eye. Heading is deliberately omitted: how the body
-banks is the cue that decides the mapping, and an uncalibrated heading is not reliable enough to
-put on screen beside it.}
-\item{\code{"validation-compare"}}{Two or more labelled attitude indicators side by side, one per
-candidate mapping, beneath a one-line guidance header. The correct mapping is then read off a
-single clip by keeping the model that banks the way the animal does. This is what
-\code{\link[=reviewTagMapping]{reviewTagMapping()}} renders.}
+\item{\code{"general"}}{Full presentation dashboard. Its preset contains \code{"orientation"}, \code{"depth"},
+\code{"vedba"} and \code{"vertical_velocity"}. It supports both composition modes.}
+\item{\code{"compact"}}{Narrow stacked dashboard. Its preset contains \code{"orientation"}, \code{"depth"} and
+\code{"vedba"}.}
+\item{\code{"expanded"}}{Wide dashboard led by \code{"pseudo_trajectory"}, followed by orientation and
+scrolling depth and activity context. The input must normally be the output of
+\code{\link[=reconstructTrack]{reconstructTrack()}}.}
+\item{\code{"ribbon"}}{Full-width lower-third overlay. Its preset contains \code{"depth"}, \code{"vedba"} and
+\code{"vertical_velocity"}; at most four modules can be selected.}
+\item{\code{"focus"}}{Emphasises the first selected module and presents the remaining modules as compact
+current-value tiles.}
+\item{\code{"validation"}}{Fixed sensor-axis review dashboard containing one large pitch/roll attitude
+model, a three-axis gyroscope trace where those channels are available, and depth. Heading is
+intentionally omitted because roll handedness, rather than compass direction, is the relevant
+validation cue.}
+\item{\code{"validation-compare"}}{Fixed comparison dashboard containing one pitch/roll attitude model
+for each row of \code{candidates}, together with depth and the optional review caption.}
 }
 }
 
-\subsection{Metric modules and required columns}{
+\subsection{Metric modules and input columns}{
 
-All alongside the timestamp column:
-\itemize{
-\item \code{"orientation"}: \code{heading}, \code{pitch}, and \code{roll}; the dial alternative uses the same columns.
-\item Scalar modules use their identically named data column.
-\item \code{"pseudo_trajectory"}: \code{pseudo_lon}, \code{pseudo_lat}, and \code{pseudo_depth}, normally from
-\code{\link[=reconstructTrack]{reconstructTrack()}}. Heading is used for its current-direction arrow when present but is optional.
-\item \code{"validation"}: \code{depth}, \code{pitch} and \code{roll}; the gyroscope panel draws whichever of \code{gx}, \code{gy}
-and \code{gz} are present, and is labelled unavailable where none is.
-\item \code{"validation-compare"}: \code{depth}, plus the per-candidate pitch and roll columns named in
-\code{candidates}.
+Every input requires \code{datetime}. Presentation modules have the following additional contracts:
+
+\describe{
+\item{\code{"orientation"}}{\code{heading}, \code{pitch} and \code{roll}, in degrees. The model represents pitch and
+roll; heading is shown on the accompanying compass. \code{orientation = "dials"} uses the same columns.}
+\item{\code{"heading"}, \code{"pitch"}, \code{"roll"}}{The identically named angular column, in degrees.}
+\item{\code{"depth"}}{\code{depth}, in metres.}
+\item{\code{"vedba"}}{\code{vedba}, in g.}
+\item{\code{"vertical_velocity"}}{\code{vertical_velocity}, in m/s, positive during descent and negative
+during ascent.}
+\item{\code{"paddle_speed"}}{\code{paddle_speed}, in m/s.}
+\item{\code{"paddle_freq"}}{\code{paddle_freq}, in Hz.}
+\item{\code{"tbf_hz_peaks"}, \code{"tbf_hz_wavelet"}}{The identically named tail-beat frequency estimate,
+in Hz.}
+\item{\code{"pseudo_trajectory"}}{\code{pseudo_lon} and \code{pseudo_lat}, in decimal degrees, and \code{pseudo_depth},
+in metres. \code{heading} is optional and, where present, supplies the current-direction arrow.}
 }
 
-Missing columns are errors when their module was requested; an unavailable module is never silently
-removed. This makes a custom dashboard auditable and prevents two deployments from producing
-superficially identical videos with different contents.
+The \code{"validation"} dashboard requires \code{depth}, \code{pitch} and \code{roll}; \code{gx}, \code{gy} and \code{gz} are optional.
+\code{"validation-compare"} requires \code{depth} plus every pitch and roll column named by \code{candidates}.
+A requested module with missing required columns causes an error rather than being silently omitted.
 }
 
-\subsection{Visual conventions}{
+\subsection{Scientific and visual conventions}{
 
-VeDBA is drawn from zero as a translucent activity envelope with a stable, robust scale and a stronger
-one-second display smoother over the raw trace. This smoother affects only the graphic. Vertical
-velocity follows the package convention: positive descent is warm-coloured and plotted below zero;
-negative ascent is cool-coloured and plotted above zero. A visible zero line separates them.
+Orientation modules display values already present in \code{data}; they do not estimate orientation or
+verify that the inertial axes are expressed in the animal's body frame. Apply \code{\link[=applyAxisMapping]{applyAxisMapping()}} and
+\code{\link[=processTagData]{processTagData()}} before interpreting the model as animal posture. The three-dimensional model is a
+visual representation of pitch and roll, not an independent orientation estimate.
 
-The pseudo-trajectory is projected once into a local east/north metre plane. Its camera and bounds stay
-fixed throughout the clip; past path is solid, future context is dashed, and the current point is tied
-to its surface projection. Sensor gaps are not bridged. Horizontal scale is metric. Vertical
-exaggeration is chosen once for
-legibility and stated on the panel; the display is therefore a local pseudo-trajectory, not a map or an
-independent position estimate.
+Plot limits are calculated once from the sensor subset used for the render, including context-window
+padding, so they do not expand and contract between frames. For series with more than 20 observations,
+scalar limits use the 0.5th and 99.5th percentiles with padding; VeDBA uses zero and its 99.5th
+percentile; vertical velocity uses a symmetric 99.5th-percentile absolute limit. Extreme traces
+outside those robust limits can therefore be clipped visually, while the displayed current numeric
+value remains unchanged.
+
+VeDBA is shown as the raw trace plus a centred one-second moving mean used only for display. The
+smoother does not modify \code{data} or any saved sensor values. Vertical velocity follows the package sign
+convention: negative ascent is shown above zero in blue, and positive descent below zero in orange.
+A zero line separates the two directions.
+
+The pseudo-trajectory is projected once into a local east/north plane in metres. Plot bounds, camera
+angle and vertical exaggeration remain fixed for the sensor subset used for the render. Past movement
+is solid, future context is dashed, and the current point is linked to its surface projection. Sensor
+gaps are not bridged. The stated depth exaggeration is chosen for legibility; the display is a local
+representation of an existing pseudo-track, not a geographic map or a new position estimate.
 }
 
-\subsection{Rendering and performance}{
+\subsection{Composition, encoding and temporary files}{
 
-Dashboard frames are drawn at \code{overlay.fps}, independently of the source frame rate, and fed to one
-final FFmpeg composition/encoding pass. The default opaque dashboard uses a compact intermediate video
-rather than thousands of files; transparent mode uses PNG frames so their alpha is not flattened by an
-intermediate codec. Temporary files are removed unless \code{keep.temp = TRUE}.
+Beside mode retains the source height and adds \code{panel.width} to its width. Overlay mode preserves both
+source dimensions. The source video frame rate is retained, while dashboard graphics are updated at
+\code{overlay.fps}. Source audio is included in the rendered interval where present.
+
+Rendering requires the \pkg{av} package and an FFmpeg executable on the system path. Beside mode stores
+the dashboard temporarily as a compact video. Overlay mode stores transparent PNG frames so their
+alpha channel is preserved until the final FFmpeg composition. Temporary material is removed after a
+successful or failed render unless \code{keep.temp = TRUE}.
 }
 }
 \examples{
 \dontrun{
-tag  <- processTagData(imported)[["PIN_CAM_01"]]
-meta <- getVideoMetadata("./videos/PIN_CAM_01")
+tag <- processed[["PIN_CAM_01"]]
+video_metadata <- getVideoMetadata("./videos/PIN_CAM_01")
 
-# Default: 3-D orientation + depth/VeDBA/vertical velocity beside the footage.
-renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01.mp4",
-                   dashboard = "general", video.start = meta$start[1])
+# Render the default presentation dashboard beside the footage.
+renderOverlayVideo(video = video_metadata$file[1],
+                   data = tag,
+                   output = "./overlay/PIN_CAM_01.mp4",
+                   video.start = video_metadata$start[1])
 
-# A compact transparent overlay containing only selected modules.
-renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01_compact.mp4",
-                   dashboard = "compact", metrics = c("depth", "vedba", "pitch"),
-                   composition = "overlay", side = "right", video.start = meta$start[1])
+# Place a selected set of modules directly over the video.
+renderOverlayVideo(video = video_metadata$file[1],
+                   data = tag,
+                   output = "./overlay/PIN_CAM_01_compact.mp4",
+                   dashboard = "compact",
+                   metrics = c("orientation", "depth", "vedba"),
+                   composition = "overlay",
+                   side = "right",
+                   video.start = video_metadata$start[1])
 
-# Retain the traditional three independent orientation dials.
-renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01_dials.mp4",
-                   orientation = "dials", video.start = meta$start[1])
+# Replace the combined orientation model with separate gauges.
+renderOverlayVideo(video = video_metadata$file[1],
+                   data = tag,
+                   output = "./overlay/PIN_CAM_01_dials.mp4",
+                   orientation = "dials",
+                   video.start = video_metadata$start[1])
 
-# Expanded 3-D pseudo-trajectory after reconstructTrack().
-renderOverlayVideo(meta$file[1], track[["PIN_CAM_01"]], "./overlay/PIN_CAM_01_track.mp4",
-                   dashboard = "expanded", composition = "beside",
-                   video.start = meta$start[1])
+# Give the reconstructed pseudo-trajectory priority in an expanded dashboard.
+tracked <- reconstructTrack(list(PIN_CAM_01 = tag))
+renderOverlayVideo(video = video_metadata$file[1],
+                   data = tracked[["PIN_CAM_01"]],
+                   output = "./overlay/PIN_CAM_01_track.mp4",
+                   dashboard = "expanded",
+                   video.start = video_metadata$start[1])
 }
 }
 \seealso{
-\code{\link[=reviewTagMapping]{reviewTagMapping()}}, which uses this to render its review clips;
-\code{\link[=findValidationSegments]{findValidationSegments()}} for choosing the segment to render; \code{\link[=getVideoMetadata]{getVideoMetadata()}} for the
-\code{video.start} anchor; \code{\link[=processTagData]{processTagData()}} for the sensor series.
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} and \code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} for video timing;
+\code{\link[=processTagData]{processTagData()}} for deriving the displayed sensor metrics; \code{\link[=reconstructTrack]{reconstructTrack()}} for producing the
+pseudo-trajectory columns; \code{\link[=reviewTagMapping]{reviewTagMapping()}} and \code{\link[=findValidationSegments]{findValidationSegments()}} for sensor-axis
+validation.
 }

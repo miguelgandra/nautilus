@@ -2,167 +2,229 @@
 # Render a sensor-overlay video #######################################################################
 #######################################################################################################
 
-#' Composite a sensor dashboard with camera-tag video
+#' Render a time-synchronised sensor dashboard with camera-tag video
 #'
 #' @description
-#' Sensor data and footage answer each other's questions. The sensors say the animal rolled thirty
-#' degrees to its left; the video says whether it did. But comparing them means holding a plot in one
-#' window and a video in another and matching timestamps by eye, which is slow enough that most records
-#' never get checked.
+#' Renders sensor measurements from one archival-tag deployment together with its corresponding video.
+#' The result provides a common visual timeline for checking inferred movement against observed
+#' behaviour, reviewing sensor-axis mappings, and preparing annotated material for presentation.
 #'
-#' This function renders the two together as one synchronised video. The dashboard can sit beside the
-#' footage on an opaque panel or over it on a transparent canvas without changing the source dimensions.
-#' Presentation dashboards are assembled from reusable metric modules; the axis-validation dashboards
-#' retain their fixed scientific purpose.
+#' The dashboard can be placed beside the footage on an opaque panel or composited directly over the
+#' footage with a transparent background. Presentation dashboards are assembled from selectable metric
+#' modules, while the validation dashboards retain fixed layouts designed for assessing sensor-axis
+#' orientation.
 #'
-#' @param video Path to the source video file.
-#' @param data A tag object, or a single table, holding the time-synchronised sensor series. Which
-#'   columns are required depends on `dashboard`; see the Details.
-#' @param output Path of the video file to create. Its directory must already exist.
-#' @param dashboard Dashboard layout. `"general"` (default) is the full presentation dashboard;
-#'   `"compact"` is a narrow stack; `"expanded"` gives the pseudo-trajectory priority; `"ribbon"`
-#'   is a lower-third overlay; and `"focus"` enlarges the first selected metric. `"validation"` and
-#'   `"validation-compare"` are fixed layouts used by [reviewTagMapping()].
-#' @param metrics Character vector of presentation modules to draw, in display order, or `NULL`
-#'   (default) for the selected dashboard's preset. Supported modules are `"orientation"`, `"heading"`,
+#' Synchronisation is determined by `video.start`, which identifies the sensor-clock time represented by
+#' the first frame of `video`. The function does not estimate or correct clock offsets. Video timestamps
+#' should therefore be checked with [getVideoMetadata()] and, where necessary, corrected before
+#' rendering. Sensor values and metadata are not modified.
+#'
+#' @param video Path to one source video file.
+#' @param data A `nautilus_tag`, data frame or data table containing the sensor data for one deployment;
+#'   alternatively, a list containing exactly one such dataset. A finite `POSIXct` column named
+#'   `datetime` is required. Additional required columns depend on `dashboard` and `metrics`; see
+#'   Details. Processed output from [processTagData()] is recommended.
+#' @param output Path of the video file to create. The parent directory must already exist. An existing
+#'   file at this path is overwritten. An `.mp4` output is recommended for the supported codecs.
+#' @param dashboard Dashboard layout. `"general"` (default), `"compact"`, `"expanded"`, `"ribbon"`
+#'   and `"focus"` are configurable presentation layouts. `"validation"` and
+#'   `"validation-compare"` are fixed sensor-axis review layouts used by [reviewTagMapping()]. See
+#'   Details.
+#' @param metrics Character vector naming presentation modules in display order, or `NULL` (default) to
+#'   use the preset associated with `dashboard`. Supported values are `"orientation"`, `"heading"`,
 #'   `"pitch"`, `"roll"`, `"depth"`, `"vedba"`, `"vertical_velocity"`, `"paddle_speed"`,
-#'   `"paddle_freq"`, `"tbf_hz_peaks"`, `"tbf_hz_wavelet"`, and `"pseudo_trajectory"`. The composite
-#'   `"orientation"` module combines a three-dimensional attitude model, compass heading, and exact
-#'   heading/pitch/roll values. `metrics` is not used by the validation dashboards.
-#' @param composition How to combine dashboard and footage. `"beside"` (default) preserves the existing
-#'   opaque black panel and increases output width. `"overlay"` composites a transparent dashboard over
-#'   the footage and preserves its width and height. The `"ribbon"` dashboard requires `"overlay"`.
-#' @param orientation How the `"orientation"` module is drawn: `"model"` (default) uses one 3-D attitude
-#'   complication with a compass and numeric values; `"dials"` expands it into separate heading, pitch,
-#'   and roll dials. The model is the presentation default; dials remain useful when independent scales
-#'   matter more than an immediate impression of posture.
-#' @param video.start The sensor-clock time of the video's first frame - the anchor the whole
-#'   synchronisation rests on. `NULL` looks for a `YYYYMMDD-HHMMSS` or `YYMMDD-HHMMSS` timestamp
-#'   anywhere in the file name and errors if it finds neither. For frame-accurate work take it from
-#'   [getVideoMetadata()].
-#' @param start,end Optional bounds, in sensor time, clipping the output to a segment of interest - a
-#'   validation window from [findValidationSegments()], for instance. The default is the full overlap of
-#'   video and sensor coverage, which for a whole deployment is a very long render.
-#' @param side Which side to place the dashboard: `"right"` (default) or `"left"`. In beside mode this
-#'   controls stacking order; in overlay mode it anchors the transparent panel. The ribbon spans the
-#'   lower edge and therefore ignores `side`.
-#' @param overlay.fps How many times a second to redraw the dashboard (default `5`). See the note on
-#'   speed below. Lower is faster; the source video keeps its own frame rate regardless.
-#' @param panel.width Dashboard width in pixels. `NULL` (default) scales it to the video and layout.
-#'   It is ignored by the full-width ribbon.
-#' @param depth.window,activity.window Seconds shown on either side of the current time for depth and
-#'   other scrolling metrics (defaults `300` and `30`). These remain convenient global defaults.
-#' @param metric.windows Optional named numeric vector overriding the context window for individual
-#'   modules, for example `c(depth = 600, vedba = 20, pseudo_trajectory = 120)`. Values are seconds on
-#'   either side of the current time.
-#' @param background.alpha Opacity of local module backplates in overlay mode, from zero to one
-#'   (default `0.72`). The surrounding canvas remains fully transparent. Ignored in beside mode.
-#' @param caption An optional one-line caption for the validation dashboards, such as the mapping under
-#'   test and the reason it was flagged.
-#' @param candidates For `"validation-compare"` only: a table describing the attitude indicators to draw,
-#'   with columns `label`, `pitch` and `roll`, the last two naming the per-candidate pitch and roll
-#'   columns in `data`.
-#' @param crf The constant rate factor for the software encoders, where lower means higher quality and a
-#'   larger file. Default `23`. Ignored by the macOS hardware encoders, which use a fixed quality
-#'   setting.
-#' @param codec The output codec family: `"hevc"` (default) or `"h264"`. HEVC gives much smaller files
-#'   and is tagged for QuickTime compatibility; H.264 is larger but plays essentially everywhere,
-#'   including older devices and every browser. Choose H.264 for anything you intend to circulate. Each
-#'   prefers the macOS hardware encoder where present and falls back to software.
-#' @param keep.temp Whether to keep the temporary dashboard video or frame directory for diagnosis.
-#'   Default `FALSE`.
+#'   `"paddle_freq"`, `"tbf_hz_peaks"`, `"tbf_hz_wavelet"` and `"pseudo_trajectory"`. Module names
+#'   must be unique after resolving `orientation`. This argument cannot be supplied for the fixed
+#'   validation dashboards.
+#' @param composition Method used to combine the dashboard and footage. `"beside"` (default) adds an
+#'   opaque panel to the left or right of the video, increasing the output width. `"overlay"` places a
+#'   transparent dashboard over the video and preserves the source width and height. The `"ribbon"`
+#'   dashboard requires `"overlay"`.
+#' @param orientation Representation used when `metrics` contains `"orientation"`. `"model"` (default)
+#'   draws a single three-dimensional attitude model with a heading compass and numeric heading, pitch
+#'   and roll. `"dials"` replaces it with three separate gauges. This argument does not change the fixed
+#'   validation dashboards.
+#' @param video.start One finite `POSIXct` value giving the sensor-clock time represented by the first
+#'   frame of `video`. `NULL` (default) attempts to read a UTC timestamp in `YYYYMMDD-HHMMSS` or
+#'   `YYMMDD-HHMMSS` form from the file name. A value returned by [getVideoMetadata()] is recommended.
+#' @param start,end Optional finite `POSIXct` bounds, expressed on the same clock as `video.start` and
+#'   `data$datetime`. `NULL` (default) uses the full temporal overlap between the sensor record and video.
+#'   These arguments can restrict the render to a validation or behavioural interval.
+#' @param side Position of the dashboard: `"right"` (default) or `"left"`. In beside mode it determines
+#'   panel order; in overlay mode it anchors the dashboard to that edge. It is ignored by the full-width
+#'   `"ribbon"` layout.
+#' @param overlay.fps Positive dashboard update rate in frames per second (default `5`). It is independent
+#'   of the source video frame rate, which is retained in the output. Lower values reduce rendering time
+#'   but update sensor indicators less frequently.
+#' @param panel.width Dashboard width in pixels, or `NULL` (default) to calculate it from the source video
+#'   and selected layout. In overlay mode the automatically calculated width is limited to part of the
+#'   source frame. Ignored by the full-width `"ribbon"` layout.
+#' @param depth.window,activity.window Positive context windows in seconds on each side of the current
+#'   frame. `depth.window` controls `"depth"` (default `300`); `activity.window` controls the other
+#'   scrolling scalar modules (default `30`). Module-specific values in `metric.windows` take precedence.
+#' @param metric.windows Optional named numeric vector giving context windows, in seconds on each side of
+#'   the current frame, for selected scrolling modules. For example,
+#'   `c(depth = 600, vedba = 20, pseudo_trajectory = 120)`. Names must identify modules selected for the
+#'   current dashboard; non-scrolling modules cannot be assigned a window. Default `NULL`.
+#' @param background.alpha Opacity of the local module backplates in overlay mode, between `0` and `1`
+#'   (default `0.72`). Text, traces and indicators remain opaque, and areas outside the modules remain
+#'   transparent. Ignored in beside mode.
+#' @param caption Optional one-line caption for `"validation"` or `"validation-compare"`, such as the
+#'   candidate mapping and reason for review. Default `NULL`.
+#' @param candidates For `"validation-compare"`, a data frame with columns `label`, `pitch` and `roll`.
+#'   Each row defines one candidate: `label` supplies its displayed name, while `pitch` and `roll` contain
+#'   the names of the corresponding columns in `data`. Required for `"validation-compare"` and otherwise
+#'   ignored.
+#' @param crf Non-negative constant-rate-factor value used by software encoders (default `23`). Lower
+#'   values generally increase output quality and file size. Ignored when a macOS VideoToolbox hardware
+#'   encoder is used.
+#' @param codec Output codec family: `"hevc"` (default) or `"h264"`. HEVC generally produces smaller
+#'   files and is written with the `hvc1` tag for QuickTime compatibility. H.264 has broader playback
+#'   support and is preferable for distribution. The function uses a macOS hardware encoder when
+#'   available and retries with the corresponding software encoder if the hardware session fails.
+#' @param keep.temp Logical; whether to retain the intermediate dashboard video or transparent PNG frame
+#'   directory for diagnosis (default `FALSE`).
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
 #'   (default).
 #'
 #' @details
-#' ## Dashboard presets
+#' ## Time alignment and rendered interval
+#'
+#' `video.start` is the only synchronisation anchor: it must give the time, on the sensor clock, of the
+#' first source-video frame. If it is omitted, the file-name timestamp is interpreted as UTC. No
+#' time-zone conversion, device-clock correction or cross-correlation is performed during rendering.
+#' Where video and sensor clocks differ, resolve that discrepancy through [getVideoMetadata()] and
+#' [getVideoClockCorrections()] before calling this function.
+#'
+#' The rendered interval is the intersection of the video coverage, the sensor coverage, and any
+#' `start`/`end` bounds. The function stops if that intersection is empty. At each dashboard update, the
+#' displayed state is taken from the most recent sensor observation at or before the frame time. The
+#' timestamp printed on the dashboard is displayed in UTC.
+#'
+#' ## Dashboard layouts
 #'
 #' \describe{
-#'   \item{`"general"`}{The composite orientation model plus depth, VeDBA and signed vertical velocity.
-#'     This remains the default and works in either composition mode.}
-#'   \item{`"compact"`}{A narrow presentation stack, by default orientation, depth and VeDBA.}
-#'   \item{`"expanded"`}{A wide presentation panel led by the 3-D pseudo-trajectory, followed by
-#'     orientation and scrolling context.}
-#'   \item{`"ribbon"`}{Depth, VeDBA and vertical velocity arranged as a lower-third overlay.}
-#'   \item{`"focus"`}{The first selected module occupies most of the panel; the remaining modules are
-#'     compact current-value tiles.}
-#'   \item{`"validation"`}{One large attitude indicator - a low-poly three-dimensional body model, seen
-#'     from behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace
-#'     and depth. Tuned for judging an axis mapping by eye. Heading is deliberately omitted: how the body
-#'     banks is the cue that decides the mapping, and an uncalibrated heading is not reliable enough to
-#'     put on screen beside it.}
-#'   \item{`"validation-compare"`}{Two or more labelled attitude indicators side by side, one per
-#'     candidate mapping, beneath a one-line guidance header. The correct mapping is then read off a
-#'     single clip by keeping the model that banks the way the animal does. This is what
-#'     [reviewTagMapping()] renders.}
+#'   \item{`"general"`}{Full presentation dashboard. Its preset contains `"orientation"`, `"depth"`,
+#'     `"vedba"` and `"vertical_velocity"`. It supports both composition modes.}
+#'   \item{`"compact"`}{Narrow stacked dashboard. Its preset contains `"orientation"`, `"depth"` and
+#'     `"vedba"`.}
+#'   \item{`"expanded"`}{Wide dashboard led by `"pseudo_trajectory"`, followed by orientation and
+#'     scrolling depth and activity context. The input must normally be the output of
+#'     [reconstructTrack()].}
+#'   \item{`"ribbon"`}{Full-width lower-third overlay. Its preset contains `"depth"`, `"vedba"` and
+#'     `"vertical_velocity"`; at most four modules can be selected.}
+#'   \item{`"focus"`}{Emphasises the first selected module and presents the remaining modules as compact
+#'     current-value tiles.}
+#'   \item{`"validation"`}{Fixed sensor-axis review dashboard containing one large pitch/roll attitude
+#'     model, a three-axis gyroscope trace where those channels are available, and depth. Heading is
+#'     intentionally omitted because roll handedness, rather than compass direction, is the relevant
+#'     validation cue.}
+#'   \item{`"validation-compare"`}{Fixed comparison dashboard containing one pitch/roll attitude model
+#'     for each row of `candidates`, together with depth and the optional review caption.}
 #' }
 #'
-#' ## Metric modules and required columns
+#' ## Metric modules and input columns
 #'
-#' All alongside the timestamp column:
+#' Every input requires `datetime`. Presentation modules have the following additional contracts:
 #'
-#' - `"orientation"`: `heading`, `pitch`, and `roll`; the dial alternative uses the same columns.
-#' - Scalar modules use their identically named data column.
-#' - `"pseudo_trajectory"`: `pseudo_lon`, `pseudo_lat`, and `pseudo_depth`, normally from
-#'   [reconstructTrack()]. Heading is used for its current-direction arrow when present but is optional.
-#' - `"validation"`: `depth`, `pitch` and `roll`; the gyroscope panel draws whichever of `gx`, `gy`
-#'   and `gz` are present, and is labelled unavailable where none is.
-#' - `"validation-compare"`: `depth`, plus the per-candidate pitch and roll columns named in
-#'   `candidates`.
+#' \describe{
+#'   \item{`"orientation"`}{`heading`, `pitch` and `roll`, in degrees. The model represents pitch and
+#'     roll; heading is shown on the accompanying compass. `orientation = "dials"` uses the same columns.}
+#'   \item{`"heading"`, `"pitch"`, `"roll"`}{The identically named angular column, in degrees.}
+#'   \item{`"depth"`}{`depth`, in metres.}
+#'   \item{`"vedba"`}{`vedba`, in g.}
+#'   \item{`"vertical_velocity"`}{`vertical_velocity`, in m/s, positive during descent and negative
+#'     during ascent.}
+#'   \item{`"paddle_speed"`}{`paddle_speed`, in m/s.}
+#'   \item{`"paddle_freq"`}{`paddle_freq`, in Hz.}
+#'   \item{`"tbf_hz_peaks"`, `"tbf_hz_wavelet"`}{The identically named tail-beat frequency estimate,
+#'     in Hz.}
+#'   \item{`"pseudo_trajectory"`}{`pseudo_lon` and `pseudo_lat`, in decimal degrees, and `pseudo_depth`,
+#'     in metres. `heading` is optional and, where present, supplies the current-direction arrow.}
+#' }
 #'
-#' Missing columns are errors when their module was requested; an unavailable module is never silently
-#' removed. This makes a custom dashboard auditable and prevents two deployments from producing
-#' superficially identical videos with different contents.
+#' The `"validation"` dashboard requires `depth`, `pitch` and `roll`; `gx`, `gy` and `gz` are optional.
+#' `"validation-compare"` requires `depth` plus every pitch and roll column named by `candidates`.
+#' A requested module with missing required columns causes an error rather than being silently omitted.
 #'
-#' ## Visual conventions
+#' ## Scientific and visual conventions
 #'
-#' VeDBA is drawn from zero as a translucent activity envelope with a stable, robust scale and a stronger
-#' one-second display smoother over the raw trace. This smoother affects only the graphic. Vertical
-#' velocity follows the package convention: positive descent is warm-coloured and plotted below zero;
-#' negative ascent is cool-coloured and plotted above zero. A visible zero line separates them.
+#' Orientation modules display values already present in `data`; they do not estimate orientation or
+#' verify that the inertial axes are expressed in the animal's body frame. Apply [applyAxisMapping()] and
+#' [processTagData()] before interpreting the model as animal posture. The three-dimensional model is a
+#' visual representation of pitch and roll, not an independent orientation estimate.
 #'
-#' The pseudo-trajectory is projected once into a local east/north metre plane. Its camera and bounds stay
-#' fixed throughout the clip; past path is solid, future context is dashed, and the current point is tied
-#' to its surface projection. Sensor gaps are not bridged. Horizontal scale is metric. Vertical
-#' exaggeration is chosen once for
-#' legibility and stated on the panel; the display is therefore a local pseudo-trajectory, not a map or an
-#' independent position estimate.
+#' Plot limits are calculated once from the sensor subset used for the render, including context-window
+#' padding, so they do not expand and contract between frames. For series with more than 20 observations,
+#' scalar limits use the 0.5th and 99.5th percentiles with padding; VeDBA uses zero and its 99.5th
+#' percentile; vertical velocity uses a symmetric 99.5th-percentile absolute limit. Extreme traces
+#' outside those robust limits can therefore be clipped visually, while the displayed current numeric
+#' value remains unchanged.
 #'
-#' ## Rendering and performance
+#' VeDBA is shown as the raw trace plus a centred one-second moving mean used only for display. The
+#' smoother does not modify `data` or any saved sensor values. Vertical velocity follows the package sign
+#' convention: negative ascent is shown above zero in blue, and positive descent below zero in orange.
+#' A zero line separates the two directions.
 #'
-#' Dashboard frames are drawn at `overlay.fps`, independently of the source frame rate, and fed to one
-#' final FFmpeg composition/encoding pass. The default opaque dashboard uses a compact intermediate video
-#' rather than thousands of files; transparent mode uses PNG frames so their alpha is not flattened by an
-#' intermediate codec. Temporary files are removed unless `keep.temp = TRUE`.
+#' The pseudo-trajectory is projected once into a local east/north plane in metres. Plot bounds, camera
+#' angle and vertical exaggeration remain fixed for the sensor subset used for the render. Past movement
+#' is solid, future context is dashed, and the current point is linked to its surface projection. Sensor
+#' gaps are not bridged. The stated depth exaggeration is chosen for legibility; the display is a local
+#' representation of an existing pseudo-track, not a geographic map or a new position estimate.
 #'
-#' @return The output file path, invisibly.
+#' ## Composition, encoding and temporary files
 #'
-#' @seealso [reviewTagMapping()], which uses this to render its review clips;
-#'   [findValidationSegments()] for choosing the segment to render; [getVideoMetadata()] for the
-#'   `video.start` anchor; [processTagData()] for the sensor series.
+#' Beside mode retains the source height and adds `panel.width` to its width. Overlay mode preserves both
+#' source dimensions. The source video frame rate is retained, while dashboard graphics are updated at
+#' `overlay.fps`. Source audio is included in the rendered interval where present.
+#'
+#' Rendering requires the \pkg{av} package and an FFmpeg executable on the system path. Beside mode stores
+#' the dashboard temporarily as a compact video. Overlay mode stores transparent PNG frames so their
+#' alpha channel is preserved until the final FFmpeg composition. Temporary material is removed after a
+#' successful or failed render unless `keep.temp = TRUE`.
+#'
+#' @return The `output` path, returned invisibly after the video has been written.
+#'
+#' @seealso [getVideoMetadata()] and [getVideoClockCorrections()] for video timing;
+#'   [processTagData()] for deriving the displayed sensor metrics; [reconstructTrack()] for producing the
+#'   pseudo-trajectory columns; [reviewTagMapping()] and [findValidationSegments()] for sensor-axis
+#'   validation.
 #'
 #' @examples
 #' \dontrun{
-#' tag  <- processTagData(imported)[["PIN_CAM_01"]]
-#' meta <- getVideoMetadata("./videos/PIN_CAM_01")
+#' tag <- processed[["PIN_CAM_01"]]
+#' video_metadata <- getVideoMetadata("./videos/PIN_CAM_01")
 #'
-#' # Default: 3-D orientation + depth/VeDBA/vertical velocity beside the footage.
-#' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01.mp4",
-#'                    dashboard = "general", video.start = meta$start[1])
+#' # Render the default presentation dashboard beside the footage.
+#' renderOverlayVideo(video = video_metadata$file[1],
+#'                    data = tag,
+#'                    output = "./overlay/PIN_CAM_01.mp4",
+#'                    video.start = video_metadata$start[1])
 #'
-#' # A compact transparent overlay containing only selected modules.
-#' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01_compact.mp4",
-#'                    dashboard = "compact", metrics = c("depth", "vedba", "pitch"),
-#'                    composition = "overlay", side = "right", video.start = meta$start[1])
+#' # Place a selected set of modules directly over the video.
+#' renderOverlayVideo(video = video_metadata$file[1],
+#'                    data = tag,
+#'                    output = "./overlay/PIN_CAM_01_compact.mp4",
+#'                    dashboard = "compact",
+#'                    metrics = c("orientation", "depth", "vedba"),
+#'                    composition = "overlay",
+#'                    side = "right",
+#'                    video.start = video_metadata$start[1])
 #'
-#' # Retain the traditional three independent orientation dials.
-#' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01_dials.mp4",
-#'                    orientation = "dials", video.start = meta$start[1])
+#' # Replace the combined orientation model with separate gauges.
+#' renderOverlayVideo(video = video_metadata$file[1],
+#'                    data = tag,
+#'                    output = "./overlay/PIN_CAM_01_dials.mp4",
+#'                    orientation = "dials",
+#'                    video.start = video_metadata$start[1])
 #'
-#' # Expanded 3-D pseudo-trajectory after reconstructTrack().
-#' renderOverlayVideo(meta$file[1], track[["PIN_CAM_01"]], "./overlay/PIN_CAM_01_track.mp4",
-#'                    dashboard = "expanded", composition = "beside",
-#'                    video.start = meta$start[1])
+#' # Give the reconstructed pseudo-trajectory priority in an expanded dashboard.
+#' tracked <- reconstructTrack(list(PIN_CAM_01 = tag))
+#' renderOverlayVideo(video = video_metadata$file[1],
+#'                    data = tracked[["PIN_CAM_01"]],
+#'                    output = "./overlay/PIN_CAM_01_track.mp4",
+#'                    dashboard = "expanded",
+#'                    video.start = video_metadata$start[1])
 #' }
 #' @export
 
