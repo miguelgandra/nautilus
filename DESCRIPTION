@@ -45,7 +45,6 @@ Suggests:
 	prettymapr,
 	marmap,
 	leaflet,
-	plot3D,
 	av,
 	testthat (>= 3.0.0),
 	withr,

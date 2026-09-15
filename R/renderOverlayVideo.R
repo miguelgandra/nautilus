@@ -2,7 +2,7 @@
 # Render a sensor-overlay video #######################################################################
 #######################################################################################################
 
-#' Composite a sensor dashboard alongside camera-tag video
+#' Composite a sensor dashboard with camera-tag video
 #'
 #' @description
 #' Sensor data and footage answer each other's questions. The sensors say the animal rolled thirty
@@ -10,16 +10,32 @@
 #' window and a video in another and matching timestamps by eye, which is slow enough that most records
 #' never get checked.
 #'
-#' This function renders the two together: a live sensor dashboard beside the footage, sharing one clock,
-#' as a single video file you can scrub through. It is the workhorse for confirming an inferred axis
-#' mapping against an observed manoeuvre, and for presenting results.
+#' This function renders the two together as one synchronised video. The dashboard can sit beside the
+#' footage on an opaque panel or over it on a transparent canvas without changing the source dimensions.
+#' Presentation dashboards are assembled from reusable metric modules; the axis-validation dashboards
+#' retain their fixed scientific purpose.
 #'
 #' @param video Path to the source video file.
 #' @param data A tag object, or a single table, holding the time-synchronised sensor series. Which
 #'   columns are required depends on `dashboard`; see the Details.
 #' @param output Path of the video file to create. Its directory must already exist.
-#' @param dashboard Which dashboard to draw: `"general"` (default), `"validation"` or
-#'   `"validation-compare"`. They are described below.
+#' @param dashboard Dashboard layout. `"general"` (default) is the full presentation dashboard;
+#'   `"compact"` is a narrow stack; `"expanded"` gives the pseudo-trajectory priority; `"ribbon"`
+#'   is a lower-third overlay; and `"focus"` enlarges the first selected metric. `"validation"` and
+#'   `"validation-compare"` are fixed layouts used by [reviewTagMapping()].
+#' @param metrics Character vector of presentation modules to draw, in display order, or `NULL`
+#'   (default) for the selected dashboard's preset. Supported modules are `"orientation"`, `"heading"`,
+#'   `"pitch"`, `"roll"`, `"depth"`, `"vedba"`, `"vertical_velocity"`, `"paddle_speed"`,
+#'   `"paddle_freq"`, `"tbf_hz_peaks"`, `"tbf_hz_wavelet"`, and `"pseudo_trajectory"`. The composite
+#'   `"orientation"` module combines a three-dimensional attitude model, compass heading, and exact
+#'   heading/pitch/roll values. `metrics` is not used by the validation dashboards.
+#' @param composition How to combine dashboard and footage. `"beside"` (default) preserves the existing
+#'   opaque black panel and increases output width. `"overlay"` composites a transparent dashboard over
+#'   the footage and preserves its width and height. The `"ribbon"` dashboard requires `"overlay"`.
+#' @param orientation How the `"orientation"` module is drawn: `"model"` (default) uses one 3-D attitude
+#'   complication with a compass and numeric values; `"dials"` expands it into separate heading, pitch,
+#'   and roll dials. The model is the presentation default; dials remain useful when independent scales
+#'   matter more than an immediate impression of posture.
 #' @param video.start The sensor-clock time of the video's first frame - the anchor the whole
 #'   synchronisation rests on. `NULL` looks for a `YYYYMMDD-HHMMSS` or `YYMMDD-HHMMSS` timestamp
 #'   anywhere in the file name and errors if it finds neither. For frame-accurate work take it from
@@ -27,13 +43,20 @@
 #' @param start,end Optional bounds, in sensor time, clipping the output to a segment of interest - a
 #'   validation window from [findValidationSegments()], for instance. The default is the full overlap of
 #'   video and sensor coverage, which for a whole deployment is a very long render.
-#' @param side Which side to put the dashboard panel on: `"right"` (default) or `"left"`.
+#' @param side Which side to place the dashboard: `"right"` (default) or `"left"`. In beside mode this
+#'   controls stacking order; in overlay mode it anchors the transparent panel. The ribbon spans the
+#'   lower edge and therefore ignores `side`.
 #' @param overlay.fps How many times a second to redraw the dashboard (default `5`). See the note on
 #'   speed below. Lower is faster; the source video keeps its own frame rate regardless.
-#' @param panel.width The panel width in pixels. `NULL` (default) scales it to the video height.
-#' @param depth.window,activity.window How many seconds of history the scrolling depth panel and the
-#'   activity and vertical-speed panels show. Defaults `300` and `30`. Widen the depth window to put a
-#'   moment in the context of a whole dive.
+#' @param panel.width Dashboard width in pixels. `NULL` (default) scales it to the video and layout.
+#'   It is ignored by the full-width ribbon.
+#' @param depth.window,activity.window Seconds shown on either side of the current time for depth and
+#'   other scrolling metrics (defaults `300` and `30`). These remain convenient global defaults.
+#' @param metric.windows Optional named numeric vector overriding the context window for individual
+#'   modules, for example `c(depth = 600, vedba = 20, pseudo_trajectory = 120)`. Values are seconds on
+#'   either side of the current time.
+#' @param background.alpha Opacity of local module backplates in overlay mode, from zero to one
+#'   (default `0.72`). The surrounding canvas remains fully transparent. Ignored in beside mode.
 #' @param caption An optional one-line caption for the validation dashboards, such as the mapping under
 #'   test and the reason it was flagged.
 #' @param candidates For `"validation-compare"` only: a table describing the attitude indicators to draw,
@@ -46,16 +69,23 @@
 #'   and is tagged for QuickTime compatibility; H.264 is larger but plays essentially everywhere,
 #'   including older devices and every browser. Choose H.264 for anything you intend to circulate. Each
 #'   prefers the macOS hardware encoder where present and falls back to software.
-#' @param keep.temp Whether to keep the intermediate dashboard video. Default `FALSE`.
+#' @param keep.temp Whether to keep the temporary dashboard video or frame directory for diagnosis.
+#'   Default `FALSE`.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
 #'   (default).
 #'
 #' @details
-#' ## The three dashboards
+#' ## Dashboard presets
 #'
 #' \describe{
-#'   \item{`"general"`}{Orientation dials for heading, pitch and roll, plus scrolling depth, activity
-#'     and vertical-speed traces. The presentation default.}
+#'   \item{`"general"`}{The composite orientation model plus depth, VeDBA and signed vertical velocity.
+#'     This remains the default and works in either composition mode.}
+#'   \item{`"compact"`}{A narrow presentation stack, by default orientation, depth and VeDBA.}
+#'   \item{`"expanded"`}{A wide presentation panel led by the 3-D pseudo-trajectory, followed by
+#'     orientation and scrolling context.}
+#'   \item{`"ribbon"`}{Depth, VeDBA and vertical velocity arranged as a lower-third overlay.}
+#'   \item{`"focus"`}{The first selected module occupies most of the panel; the remaining modules are
+#'     compact current-value tiles.}
 #'   \item{`"validation"`}{One large attitude indicator - a low-poly three-dimensional body model, seen
 #'     from behind and above, that banks and pitches with the animal - over a scrolling gyroscope trace
 #'     and depth. Tuned for judging an axis mapping by eye. Heading is deliberately omitted: how the body
@@ -67,24 +97,43 @@
 #'     [reviewTagMapping()] renders.}
 #' }
 #'
-#' ## Required columns
+#' ## Metric modules and required columns
 #'
 #' All alongside the timestamp column:
 #'
-#' - `"general"`: `depth`, `heading`, `pitch`, `roll`, `vedba` and `vertical_velocity`.
+#' - `"orientation"`: `heading`, `pitch`, and `roll`; the dial alternative uses the same columns.
+#' - Scalar modules use their identically named data column.
+#' - `"pseudo_trajectory"`: `pseudo_lon`, `pseudo_lat`, and `pseudo_depth`, normally from
+#'   [reconstructTrack()]. Heading is used for its current-direction arrow when present but is optional.
 #' - `"validation"`: `depth`, `pitch` and `roll`; the gyroscope panel draws whichever of `gx`, `gy`
 #'   and `gz` are present, and is labelled unavailable where none is.
 #' - `"validation-compare"`: `depth`, plus the per-candidate pitch and roll columns named in
 #'   `candidates`.
 #'
-#' ## Why this is fast
+#' Missing columns are errors when their module was requested; an unavailable module is never silently
+#' removed. This makes a custom dashboard auditable and prevents two deployments from producing
+#' superficially identical videos with different contents.
 #'
-#' The dashboard is drawn straight to a video stream rather than to thousands of intermediate image
-#' files, and at a frame rate decoupled from the video's. The sensor state changes slowly, so redrawing
-#' it five times a second loses nothing visible while doing a fraction of the work of matching a 30 fps
-#' source frame for frame. A single FFmpeg pass then stacks the panel beside the trimmed footage.
-#' Together these make the render one to two orders of magnitude faster than drawing one image per video
-#' frame.
+#' ## Visual conventions
+#'
+#' VeDBA is drawn from zero as a translucent activity envelope with a stable, robust scale and a stronger
+#' one-second display smoother over the raw trace. This smoother affects only the graphic. Vertical
+#' velocity follows the package convention: positive descent is warm-coloured and plotted below zero;
+#' negative ascent is cool-coloured and plotted above zero. A visible zero line separates them.
+#'
+#' The pseudo-trajectory is projected once into a local east/north metre plane. Its camera and bounds stay
+#' fixed throughout the clip; past path is solid, future context is dashed, and the current point is tied
+#' to its surface projection. Sensor gaps are not bridged. Horizontal scale is metric. Vertical
+#' exaggeration is chosen once for
+#' legibility and stated on the panel; the display is therefore a local pseudo-trajectory, not a map or an
+#' independent position estimate.
+#'
+#' ## Rendering and performance
+#'
+#' Dashboard frames are drawn at `overlay.fps`, independently of the source frame rate, and fed to one
+#' final FFmpeg composition/encoding pass. The default opaque dashboard uses a compact intermediate video
+#' rather than thousands of files; transparent mode uses PNG frames so their alpha is not flattened by an
+#' intermediate codec. Temporary files are removed unless `keep.temp = TRUE`.
 #'
 #' @return The output file path, invisibly.
 #'
@@ -97,16 +146,34 @@
 #' tag  <- processTagData(imported)[["PIN_CAM_01"]]
 #' meta <- getVideoMetadata("./videos/PIN_CAM_01")
 #'
-#' # composite the sensor dashboard beside the footage, synced to the first frame
+#' # Default: 3-D orientation + depth/VeDBA/vertical velocity beside the footage.
 #' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01.mp4",
 #'                    dashboard = "general", video.start = meta$start[1])
+#'
+#' # A compact transparent overlay containing only selected modules.
+#' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01_compact.mp4",
+#'                    dashboard = "compact", metrics = c("depth", "vedba", "pitch"),
+#'                    composition = "overlay", side = "right", video.start = meta$start[1])
+#'
+#' # Retain the traditional three independent orientation dials.
+#' renderOverlayVideo(meta$file[1], tag, "./overlay/PIN_CAM_01_dials.mp4",
+#'                    orientation = "dials", video.start = meta$start[1])
+#'
+#' # Expanded 3-D pseudo-trajectory after reconstructTrack().
+#' renderOverlayVideo(meta$file[1], track[["PIN_CAM_01"]], "./overlay/PIN_CAM_01_track.mp4",
+#'                    dashboard = "expanded", composition = "beside",
+#'                    video.start = meta$start[1])
 #' }
 #' @export
 
 renderOverlayVideo <- function(video,
                                data,
                                output,
-                               dashboard = c("general", "validation", "validation-compare"),
+                               dashboard = c("general", "compact", "expanded", "ribbon", "focus",
+                                             "validation", "validation-compare"),
+                               metrics = NULL,
+                               composition = c("beside", "overlay"),
+                               orientation = c("model", "dials"),
                                video.start = NULL,
                                start = NULL,
                                end = NULL,
@@ -115,6 +182,8 @@ renderOverlayVideo <- function(video,
                                panel.width = NULL,
                                depth.window = 300,
                                activity.window = 30,
+                               metric.windows = NULL,
+                               background.alpha = 0.72,
                                caption = NULL,
                                candidates = NULL,
                                crf = 23,
@@ -125,24 +194,44 @@ renderOverlayVideo <- function(video,
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
   dashboard <- match.arg(dashboard)
+  composition <- match.arg(composition)
+  orientation <- match.arg(orientation)
   side <- match.arg(side)
   codec <- match.arg(codec)
   .assert_number(overlay.fps, "overlay.fps", min = 0.1)
   .assert_number(crf, "crf", min = 0)
+  .assert_number(depth.window, "depth.window", min = 0.1)
+  .assert_number(activity.window, "activity.window", min = 0.1)
+  .assert_number(background.alpha, "background.alpha", min = 0)
+  if (background.alpha > 1) .abort("{.arg background.alpha} must lie between zero and one.")
+  if (!is.null(panel.width)) .assert_number(panel.width, "panel.width", min = 1)
+  if (identical(dashboard, "ribbon") && !identical(composition, "overlay"))
+    .abort("The {.val ribbon} dashboard requires {.code composition = \"overlay\"}.")
   if (dashboard == "validation-compare" &&
       (is.null(candidates) || !all(c("label", "pitch", "roll") %in% names(candidates)) || !nrow(candidates)))
     .abort("{.arg candidates} (a data.frame with {.field label}/{.field pitch}/{.field roll}) is required for the compare dashboard.")
+  if (dashboard %in% c("validation", "validation-compare") && !is.null(metrics))
+    .abort("{.arg metrics} cannot be supplied for the fixed {.val {dashboard}} dashboard.")
   if (!file.exists(video)) .abort("Video file not found: {.file {video}}.")
   if (!dir.exists(dirname(normalizePath(output, mustWork = FALSE)))) .abort("Output directory does not exist: {.file {dirname(output)}}.")
 
   # resolve the sensor data to a single data.table with the columns this dashboard needs
-  if (is.list(data) && !inherits(data, "data.frame")) data <- data[[1]]
-  data <- data.table::as.data.table(data)
-  need <- .dashboardColumns(dashboard, candidates)
+  if (is.list(data) && !inherits(data, "data.frame")) {
+    if (length(data) != 1L)
+      .abort("{.arg data} must contain exactly one deployment for video rendering.")
+    data <- data[[1]]
+  }
+  data <- data.table::copy(data.table::as.data.table(data))
+  plan <- .resolveDashboardPlan(dashboard, metrics, orientation, candidates,
+                                depth.window, activity.window, metric.windows)
+  need <- .dashboardColumns(dashboard, candidates, plan$metrics, orientation)
   miss <- setdiff(need, names(data))
   if (length(miss)) .abort(c("{.arg data} is missing {cli::qty(miss)}column{?s} required by the {.val {dashboard}} dashboard: {.val {miss}}.",
                              "i" = "Pass the output of {.fn processTagData} (general) or use {.fn reviewTagMapping} (validation)."))
   data.table::setorder(data, datetime)
+  if (!inherits(data$datetime, "POSIXct")) .abort("{.field datetime} in {.arg data} must be POSIXct.")
+  if (!nrow(data) || !any(is.finite(as.numeric(data$datetime))))
+    .abort("{.arg data} contains no finite timestamps to align with the video.")
 
   # heavy dependencies (checked only once the inputs are known good)
   if (!requireNamespace("av", quietly = TRUE)) .abort("The {.pkg av} package is required: {.code install.packages('av')}.")
@@ -151,7 +240,10 @@ renderOverlayVideo <- function(video,
   # probe the source video (dimensions, frame rate, duration)
   info <- av::av_video_info(video)
   v_fps <- info$video$framerate; v_w <- info$video$width; v_h <- info$video$height; v_dur <- info$duration
-  if (!is.finite(v_h) || v_h < 360)
+  if (!is.finite(v_h) || !is.finite(v_w) || !is.finite(v_fps) || !is.finite(v_dur) ||
+      v_w <= 0 || v_h <= 0 || v_fps <= 0 || v_dur <= 0)
+    .abort("Could not read valid dimensions, frame rate, and duration from the source video.")
+  if (v_h < 360)
     .abort(c("The source video is too short (height {v_h}px) for the dashboard panel.",
              "i" = "{.fn renderOverlayVideo} needs a video at least 360px tall."))
 
@@ -161,7 +253,12 @@ renderOverlayVideo <- function(video,
     if (is.null(video.start)) .abort(c("Could not determine {.arg video.start} from the file name.",
                                        "i" = "Pass {.arg video.start} (POSIXct of the first video frame) explicitly."))
   }
-  if (!inherits(video.start, "POSIXct")) .abort("{.arg video.start} must be POSIXct.")
+  if (!inherits(video.start, "POSIXct") || length(video.start) != 1L || !is.finite(as.numeric(video.start)))
+    .abort("{.arg video.start} must be one finite POSIXct value.")
+  if (!is.null(start) && (!inherits(start, "POSIXct") || length(start) != 1L || !is.finite(as.numeric(start))))
+    .abort("{.arg start} must be one finite POSIXct value or NULL.")
+  if (!is.null(end) && (!inherits(end, "POSIXct") || length(end) != 1L || !is.finite(as.numeric(end))))
+    .abort("{.arg end} must be one finite POSIXct value or NULL.")
 
   # the renderable window = overlap of (video coverage) and (sensor coverage), clipped to start/end
   v_lo <- video.start; v_hi <- video.start + v_dur
@@ -176,12 +273,15 @@ renderOverlayVideo <- function(video,
   .log_header(lvl, "renderOverlayVideo", "Compositing the sensor dashboard onto the video",
               bullets = c(sprintf("Source: %s (%dx%d, %g fps)", basename(video), v_w, v_h, v_fps),
                           sprintf("Clip: %s for %s", format(clip_lo, "%H:%M:%S"), .fmt_duration(clip_dur))),
-              arrow = sprintf("Dashboard: %s \u00b7 %g fps panel on the %s \u00b7 av render + 1 ffmpeg pass",
-                              dashboard, overlay.fps, side))
+              arrow = sprintf("Dashboard: %s \u00b7 %s \u00b7 %g fps \u00b7 %s",
+                              dashboard, composition, overlay.fps,
+                              if (dashboard == "ribbon") "lower edge" else side))
 
   # subset sensor data to the clip plus window padding (so per-frame lookups stay cheap)
-  pad <- max(depth.window, activity.window)
+  pad <- max(c(depth.window, activity.window, unname(plan$windows)), na.rm = TRUE)
   clip <- data[datetime >= clip_lo - pad & datetime <= clip_hi + pad]
+  context <- .prepareOverlayContext(clip, plan)
+  clip <- context$clip
 
   # one dashboard frame per overlay step; map each to its nearest sensor row (precomputed, vectorised)
   n_frames <- max(1L, as.integer(ceiling(clip_dur * overlay.fps)))
@@ -189,27 +289,66 @@ renderOverlayVideo <- function(video,
   idx <- findInterval(as.numeric(frame_times), as.numeric(clip$datetime))
   idx <- pmin(pmax(idx, 1L), nrow(clip))
 
-  panel_w <- if (is.null(panel.width)) as.integer(round(v_h * if (dashboard == "validation-compare") 0.85 else 0.55)) else as.integer(panel.width)
-  if (panel_w %% 2L != 0L) panel_w <- panel_w + 1L                          # H.26x requires even dimensions
-  theme <- list(bg = "grey12", text = "grey92", value = "#ff453a")
+  if (identical(dashboard, "ribbon")) {
+    panel_w <- as.integer(v_w)
+    panel_h <- .evenDimension(round(v_h * 0.30))
+  } else {
+    factor <- switch(dashboard, expanded = 0.72, `validation-compare` = 0.85, compact = 0.45,
+                     focus = 0.50, 0.55)
+    panel_w <- if (is.null(panel.width)) as.integer(round(v_h * factor)) else as.integer(panel.width)
+    if (composition == "overlay") panel_w <- min(panel_w, as.integer(round(v_w * 0.48)))
+    panel_w <- .evenDimension(panel_w)
+    panel_h <- as.integer(v_h)
+  }
+  if (panel_w < 180L || panel_h < 120L)
+    .abort("The resolved dashboard dimensions are too small to render legibly.")
+  if (composition == "overlay" && panel_w > v_w)
+    .abort("{.arg panel.width} cannot exceed the source width in overlay mode.")
+  theme <- .overlayTheme(composition, background.alpha)
   # font size scaled to the panel so the dashboard stays legible when the whole composite is viewed at a
   # normal (down-scaled) resolution - the main readability lever
-  ps <- max(16L, as.integer(round(panel_w / 30)))
+  ps <- max(14L, as.integer(round(min(panel_w, panel_h) / 30)))
 
-  # ---- render the dashboard straight to a video via av (no intermediate PNGs) ----
-  dash_video <- tempfile(fileext = ".mp4")
-  if (!keep.temp) on.exit(unlink(dash_video), add = TRUE)
   if (lvl >= 1L) .log_detail(lvl, sprintf("rendering %s dashboard frame%s at %g fps", .formatLargeNumber(n_frames),
                                           if (n_frames != 1) "s" else "", overlay.fps))
-  av::av_capture_graphics(
-    expr = {
+  if (composition == "beside") {
+    # Preserve the established disk-efficient route for the default: one compact dashboard video rather
+    # than thousands of images. Alpha is unnecessary because this panel is opaque.
+    dashboard_artifact <- tempfile("nautilus-dashboard-", fileext = ".mp4")
+    if (!keep.temp) on.exit(unlink(dashboard_artifact), add = TRUE)
+    av::av_capture_graphics(
+      expr = {
+        for (i in seq_len(n_frames))
+          .drawDashboard(dashboard, clip[idx[i]], clip, frame_times[i], depth.window, activity.window,
+                         theme, caption, candidates, plan = plan, context = context)
+      },
+      output = dashboard_artifact, width = panel_w, height = panel_h,
+      framerate = overlay.fps, verbose = FALSE, pointsize = ps)
+    dashboard_input <- c("-i", dashboard_artifact)
+  } else {
+    # PNG frames are used only where their alpha channel is needed. FFmpeg consumes the sequence directly
+    # in the final composition pass, so the transparent dashboard is never flattened by an intermediate
+    # video codec.
+    dashboard_artifact <- tempfile("nautilus-overlay-")
+    dir.create(dashboard_artifact)
+    if (!keep.temp) on.exit(unlink(dashboard_artifact, recursive = TRUE), add = TRUE)
+    frame_pattern <- file.path(dashboard_artifact, "dashboard_%06d.png")
+    png_args <- list(filename = frame_pattern, width = panel_w, height = panel_h,
+                     bg = theme$canvas, pointsize = ps)
+    if (capabilities("cairo")) png_args$type <- "cairo"
+    do.call(grDevices::png, png_args)
+    device_open <- TRUE
+    tryCatch({
       for (i in seq_len(n_frames))
         .drawDashboard(dashboard, clip[idx[i]], clip, frame_times[i], depth.window, activity.window,
-                       theme, caption, candidates)
-    },
-    output = dash_video, width = panel_w, height = v_h, framerate = overlay.fps, verbose = FALSE, pointsize = ps)
+                       theme, caption, candidates, plan = plan, context = context)
+    }, finally = {
+      if (device_open) grDevices::dev.off()
+    })
+    dashboard_input <- c("-framerate", sprintf("%g", overlay.fps), "-start_number", "1", "-i", frame_pattern)
+  }
 
-  # ---- single FFmpeg pass: trim the source, stack the panel beside it ----
+  # ---- one FFmpeg pass: trim, composite, map audio and encode the final output ----
   # Resolve the codec FAMILY to a concrete encoder (prefer the macOS hardware VideoToolbox encoder),
   # its rate-control flag, and the container tag. HEVC must be tagged `hvc1` (ffmpeg muxes it as `hev1`
   # by default, which QuickTime refuses to open); H.264's default `avc1` is already universal.
@@ -218,20 +357,45 @@ renderOverlayVideo <- function(video,
                 h264 = if (.hasEncoder("h264_videotoolbox")) "h264_videotoolbox" else "libx264")
   tag_arg <- if (codec == "hevc") c("-tag:v", "hvc1")
   q_arg   <- if (grepl("videotoolbox", enc)) c("-q:v", "60") else c("-crf", as.character(crf))
-  stack <- if (side == "right") "[0:v][ov]hstack=inputs=2[vout]" else "[ov][0:v]hstack=inputs=2[vout]"
-  filt  <- sprintf("[1:v]fps=%g,scale=-2:%d,setsar=1[ov];%s", v_fps, v_h, stack)
+  if (composition == "beside") {
+    stack <- if (side == "right") "[base][ov]hstack=inputs=2[vout]" else "[ov][base]hstack=inputs=2[vout]"
+    filt <- sprintf("[0:v]setsar=1[base];[1:v]fps=%g,scale=%d:%d:flags=lanczos,format=rgba,setsar=1[ov];%s",
+                    v_fps, panel_w, v_h, stack)
+  } else {
+    xy <- if (dashboard == "ribbon") c("0", "main_h-overlay_h") else
+      if (side == "right") c("main_w-overlay_w", "0") else c("0", "0")
+    filt <- sprintf("[0:v]setsar=1[base];[1:v]fps=%g,format=rgba,setsar=1[ov];[base][ov]overlay=x=%s:y=%s:shortest=1:format=auto[vout]",
+                    v_fps, xy[1], xy[2])
+  }
   args <- c("-y", "-ss", sprintf("%.3f", seek_secs), "-t", sprintf("%.3f", clip_dur), "-i", video,
-            "-i", dash_video, "-filter_complex", filt, "-map", "[vout]", "-map", "0:a?",
+            dashboard_input,
+            "-filter_complex", filt, "-map", "[vout]", "-map", "0:a?", "-t", sprintf("%.3f", clip_dur),
             "-c:v", enc, q_arg, tag_arg, "-pix_fmt", "yuv420p", "-movflags", "+faststart",
             normalizePath(output, mustWork = FALSE))
   if (lvl >= 1L) .log_detail(lvl, "compositing with ffmpeg")
   status <- suppressWarnings(system2(ffmpeg, shQuote(args), stdout = FALSE, stderr = FALSE))
+  # Listing a VideoToolbox encoder does not guarantee that macOS can open a hardware compression
+  # session at this moment. Fall back once to the corresponding software encoder instead of leaving
+  # behind an empty output file when the hardware is busy or rejects the resolved dimensions.
+  if (status != 0 && grepl("videotoolbox", enc)) {
+    fallback <- if (codec == "hevc") "libx265" else "libx264"
+    if (.hasEncoder(fallback)) {
+      if (lvl >= 1L) .log_detail(lvl, sprintf("hardware encoder unavailable; retrying with %s", fallback))
+      encoder_at <- match("-c:v", args) + 1L
+      quality_at <- match("-q:v", args)
+      args[encoder_at] <- fallback
+      args[quality_at] <- "-crf"
+      args[quality_at + 1L] <- as.character(crf)
+      status <- suppressWarnings(system2(ffmpeg, shQuote(args), stdout = FALSE, stderr = FALSE))
+    }
+  }
   if (status != 0 || !file.exists(output)) .abort("FFmpeg failed to create the output video (exit status {status}).")
 
   if (lvl >= 1L) {
     .log_summary(lvl)
     .log_done(lvl, "overlay video written")
     .log_arrow(lvl, "output: ", output)
+    if (keep.temp) .log_arrow(lvl, "dashboard temporary files: ", dashboard_artifact)
     .log_runtime(lvl, start.time)
   }
   invisible(output)
@@ -242,44 +406,265 @@ renderOverlayVideo <- function(video,
 # Dashboards (internal) ########################################################
 ################################################################################
 
+#' Registry of presentation modules and their data contracts.
+#' @keywords internal
+#' @noRd
+.overlayMetricRegistry <- function() {
+  list(
+    orientation       = list(columns = c("heading", "pitch", "roll"), type = "orientation",
+                             label = "Orientation", unit = "", colour = "#ff453a", window = NA_real_),
+    heading           = list(columns = "heading", type = "dial", label = "Heading", unit = "\u00b0",
+                             colour = "#ff453a", window = NA_real_),
+    pitch             = list(columns = "pitch", type = "dial", label = "Pitch", unit = "\u00b0",
+                             colour = "#34c8c8", window = NA_real_),
+    roll              = list(columns = "roll", type = "dial", label = "Roll", unit = "\u00b0",
+                             colour = "#34c8c8", window = NA_real_),
+    depth             = list(columns = "depth", type = "depth", label = "Depth", unit = "m",
+                             colour = "#0a84ff", window = "depth"),
+    vedba             = list(columns = "vedba", type = "vedba", label = "VeDBA", unit = "g",
+                             colour = "#ffd60a", window = "activity"),
+    vertical_velocity = list(columns = "vertical_velocity", type = "vertical_velocity",
+                             label = "Vertical velocity", unit = "m/s", colour = "#ff9f0a",
+                             window = "activity"),
+    paddle_speed      = list(columns = "paddle_speed", type = "series", label = "Paddle speed",
+                             unit = "m/s", colour = "#30d158", window = "activity"),
+    paddle_freq       = list(columns = "paddle_freq", type = "series", label = "Paddle frequency",
+                             unit = "Hz", colour = "#64d2ff", window = "activity"),
+    tbf_hz_peaks      = list(columns = "tbf_hz_peaks", type = "series", label = "Tailbeat frequency",
+                             unit = "Hz", colour = "#bf5af2", window = "activity"),
+    tbf_hz_wavelet    = list(columns = "tbf_hz_wavelet", type = "series", label = "Wavelet tailbeat",
+                             unit = "Hz", colour = "#af52de", window = "activity"),
+    pseudo_trajectory = list(columns = c("pseudo_lon", "pseudo_lat", "pseudo_depth"),
+                             type = "trajectory", label = "Pseudo-trajectory", unit = "m",
+                             colour = "#30d158", window = 120)
+  )
+}
+
+#' Resolve a dashboard preset, orientation representation and per-module windows.
+#' @keywords internal
+#' @noRd
+.resolveDashboardPlan <- function(dashboard, metrics = NULL, orientation = "model", candidates = NULL,
+                                  depth.window = 300, activity.window = 30, metric.windows = NULL) {
+  if (dashboard %in% c("validation", "validation-compare"))
+    return(list(dashboard = dashboard, metrics = character(), windows = numeric(), orientation = orientation))
+
+  presets <- list(
+    general  = c("orientation", "depth", "vedba", "vertical_velocity"),
+    compact  = c("orientation", "depth", "vedba"),
+    expanded = c("pseudo_trajectory", "orientation", "depth", "vedba", "vertical_velocity"),
+    ribbon   = c("depth", "vedba", "vertical_velocity"),
+    focus    = c("depth", "orientation", "vedba", "vertical_velocity")
+  )
+  if (is.null(metrics)) metrics <- presets[[dashboard]]
+  if (!is.character(metrics) || !length(metrics) || anyNA(metrics) || any(!nzchar(metrics)))
+    .abort("{.arg metrics} must be a non-empty character vector of module names.")
+
+  registry <- .overlayMetricRegistry()
+  unknown <- setdiff(metrics, names(registry))
+  if (length(unknown))
+    .abort(c("Unknown dashboard {cli::qty(unknown)}module{?s}: {.val {unknown}}.",
+             "i" = "Choose from {.val {names(registry)}}."))
+  if (orientation == "dials")
+    metrics <- unlist(lapply(metrics, function(x) if (x == "orientation") c("heading", "pitch", "roll") else x),
+                      use.names = FALSE)
+  if (anyDuplicated(metrics))
+    .abort("{.arg metrics} resolves to duplicated modules: {.val {unique(metrics[duplicated(metrics)])}}.")
+  if (dashboard == "ribbon" && length(metrics) > 4L)
+    .abort("The {.val ribbon} dashboard supports at most four modules.")
+
+  windows <- vapply(metrics, function(metric) {
+    value <- registry[[metric]]$window
+    if (is.character(value) && value == "depth") depth.window else
+      if (is.character(value) && value == "activity") activity.window else
+        if (is.numeric(value)) value else NA_real_
+  }, numeric(1))
+  names(windows) <- metrics
+
+  if (!is.null(metric.windows)) {
+    if (!is.numeric(metric.windows) || is.null(names(metric.windows)) ||
+        anyNA(names(metric.windows)) || any(!nzchar(names(metric.windows))) || anyDuplicated(names(metric.windows)) ||
+        any(!is.finite(metric.windows)) || any(metric.windows <= 0))
+      .abort("{.arg metric.windows} must be a named numeric vector of positive finite seconds.")
+    bad <- setdiff(names(metric.windows), names(windows)[is.finite(windows)])
+    if (length(bad))
+      .abort("{.arg metric.windows} names must identify selected scrolling modules: {.val {bad}} does not.")
+    windows[names(metric.windows)] <- metric.windows
+  }
+  list(dashboard = dashboard, metrics = metrics, windows = windows, orientation = orientation)
+}
+
 #' Columns a given dashboard requires (alongside `datetime`).
 #' @keywords internal
 #' @noRd
-.dashboardColumns <- function(dashboard, candidates = NULL) {
-  switch(dashboard,
-         "general"            = c("datetime", "depth", "heading", "pitch", "roll", "vedba", "vertical_velocity"),
-         "validation"         = c("datetime", "depth", "pitch", "roll"),
-         "validation-compare" = c("datetime", "depth", unique(c(candidates$pitch, candidates$roll))))
+.dashboardColumns <- function(dashboard, candidates = NULL, metrics = NULL, orientation = "model") {
+  if (dashboard == "validation") return(c("datetime", "depth", "pitch", "roll"))
+  if (dashboard == "validation-compare")
+    return(c("datetime", "depth", unique(c(candidates$pitch, candidates$roll))))
+  if (is.null(metrics))
+    metrics <- .resolveDashboardPlan(dashboard, orientation = orientation)$metrics
+  registry <- .overlayMetricRegistry()
+  unique(c("datetime", unlist(lapply(metrics, function(x) registry[[x]]$columns), use.names = FALSE)))
+}
+
+#' Prepare display-only smoothers, stable scales and projected trajectory geometry once per clip.
+#' @keywords internal
+#' @noRd
+.prepareOverlayContext <- function(clip, plan) {
+  clip <- data.table::copy(clip)
+  if ("vedba" %in% plan$metrics) {
+    hz <- tryCatch(.estimateHz(clip$datetime), error = function(e) NA_real_)
+    n <- if (is.finite(hz)) max(1L, as.integer(round(hz))) else 1L
+    n <- min(n, nrow(clip))
+    smooth <- data.table::frollmean(clip$vedba, n = n, align = "center", fill = NA_real_, na.rm = TRUE)
+    smooth[!is.finite(smooth)] <- clip$vedba[!is.finite(smooth)]
+    clip[, (".overlay_vedba") := smooth]
+  }
+
+  scalar <- intersect(plan$metrics, c("depth", "vedba", "vertical_velocity", "paddle_speed",
+                                      "paddle_freq", "tbf_hz_peaks", "tbf_hz_wavelet"))
+  ranges <- setNames(vector("list", length(scalar)), scalar)
+  for (metric in scalar) {
+    values <- if (metric == "vedba" && ".overlay_vedba" %in% names(clip)) clip$.overlay_vedba else clip[[metric]]
+    ranges[[metric]] <- .overlayRange(values, metric)
+  }
+  trajectory <- if ("pseudo_trajectory" %in% plan$metrics) .preparePseudoTrajectory(clip) else NULL
+  list(clip = clip, ranges = ranges, trajectory = trajectory)
 }
 
 #' Dispatch one dashboard frame to its drawer.
 #' @keywords internal
 #' @noRd
-.drawDashboard <- function(dashboard, fd, clip, current_time, depth.window, activity.window, theme, caption, candidates) {
+.drawDashboard <- function(dashboard, fd, clip, current_time, depth.window, activity.window, theme,
+                           caption, candidates, plan = NULL, context = NULL) {
+  theme <- .completeOverlayTheme(theme)
   fd <- as.list(fd)
-  switch(dashboard,
-         "general"            = .drawDashboardGeneral(fd, clip, current_time, depth.window, activity.window, theme),
-         "validation"         = .drawDashboardValidation(fd, clip, current_time, depth.window, activity.window, theme, caption),
-         "validation-compare" = .drawDashboardCompare(fd, clip, current_time, depth.window, theme, candidates, caption))
+  if (dashboard == "validation")
+    return(.drawDashboardValidation(fd, clip, current_time, depth.window, activity.window, theme, caption))
+  if (dashboard == "validation-compare")
+    return(.drawDashboardCompare(fd, clip, current_time, depth.window, theme, candidates, caption))
+  if (is.null(plan))
+    plan <- .resolveDashboardPlan(dashboard, depth.window = depth.window, activity.window = activity.window)
+  if (is.null(context)) context <- .prepareOverlayContext(clip, plan)
+  .drawPresentationDashboard(fd, context$clip, current_time, theme, plan, context)
 }
 
-#' General presentation dashboard: 3 dials + depth/VeDBA/vertical-speed traces + timestamp.
+#' Draw a presentation dashboard from its resolved module plan.
 #' @keywords internal
 #' @noRd
-.drawDashboardGeneral <- function(fd, clip, current_time, depth.window, activity.window, theme) {
-  graphics::layout(matrix(c(1,2,3, 4,4,4, 5,5,5, 6,6,6, 7,7,7), nrow = 5, byrow = TRUE),
-                   heights = c(2.2, 1.5, 1.2, 1.2, 0.35))
-  op <- graphics::par(bg = theme$bg, mar = c(1, 1, 1.6, 1), oma = c(0, 0, 0.4, 0))
+.drawPresentationDashboard <- function(fd, clip, current_time, theme, plan, context) {
+  metrics <- plan$metrics
+  if (plan$dashboard == "ribbon") {
+    n <- length(metrics)
+    graphics::layout(rbind(seq_len(n), rep(n + 1L, n)), heights = c(1, 0.22))
+    op <- graphics::par(bg = theme$canvas, oma = c(0, 0, 0, 0))
+    on.exit(graphics::par(op), add = TRUE)
+    for (metric in metrics) .drawMetricModule(metric, fd, clip, current_time, theme, plan, context)
+    graphics::par(mar = c(0, 0, 0, 0)); .drawTimestamp(fd$datetime, theme)
+    return(invisible())
+  }
+
+  groups <- .presentationGroups(metrics, plan$dashboard)
+  mats <- list(); heights <- numeric(); next_id <- 1L
+  for (i in seq_along(groups$metrics)) {
+    group <- groups$metrics[[i]]
+    ids <- next_id + seq_along(group) - 1L
+    next_id <- next_id + length(group)
+    mats[[i]] <- rep(ids, each = 6L / length(ids))
+    heights[i] <- if (groups$tiles[i]) 0.72 else max(vapply(group, .moduleHeight, numeric(1)))
+  }
+  mats[[length(mats) + 1L]] <- rep(next_id, 6L)
+  heights <- c(heights, 0.34)
+  graphics::layout(do.call(rbind, mats), heights = heights)
+  op <- graphics::par(bg = theme$canvas, oma = c(0, 0, 0, 0))
   on.exit(graphics::par(op), add = TRUE)
-  .drawDial("heading", fd$heading, theme)
-  .drawDial("pitch",   fd$pitch,   theme)
-  .drawDial("roll",    fd$roll,    theme)
-  graphics::par(mar = c(1.6, 3, 2.2, 1))
-  .drawSeriesPanel(clip, current_time, depth.window,    "depth",             "Depth",          "m",   fd$depth,             theme, invert = TRUE,  fill = "#1f4e8c")
-  .drawSeriesPanel(clip, current_time, activity.window, "vedba",             "VeDBA",          "g",   fd$vedba,             theme, invert = FALSE, fill = "#9a9a9a")
-  .drawSeriesPanel(clip, current_time, activity.window, "vertical_velocity", "Vertical Speed", "m/s", fd$vertical_velocity, theme, invert = FALSE, fill = "#c97b7b")
-  graphics::par(mar = c(0, 0, 0, 0))
-  .drawTimestamp(fd$datetime, theme)
+  for (i in seq_along(groups$metrics)) {
+    for (metric in groups$metrics[[i]]) {
+      if (groups$tiles[i]) .drawMetricTile(metric, fd, theme) else
+        .drawMetricModule(metric, fd, clip, current_time, theme, plan, context)
+    }
+  }
+  graphics::par(mar = c(0, 0, 0, 0)); .drawTimestamp(fd$datetime, theme)
+  invisible()
+}
+
+#' Arrange modules into rows; dial trios share a row and focus support modules become tiles.
+#' @keywords internal
+#' @noRd
+.presentationGroups <- function(metrics, dashboard) {
+  if (dashboard == "focus") {
+    rest <- if (length(metrics) > 1L) split(metrics[-1L], ceiling(seq_along(metrics[-1L]) / 3)) else list()
+    return(list(metrics = c(list(metrics[1L]), unname(rest)),
+                tiles = c(FALSE, rep(TRUE, length(rest)))))
+  }
+  groups <- list(); i <- 1L
+  while (i <= length(metrics)) {
+    if (metrics[i] %in% c("heading", "pitch", "roll")) {
+      j <- i
+      while (j < length(metrics) && metrics[j + 1L] %in% c("heading", "pitch", "roll")) j <- j + 1L
+      groups[[length(groups) + 1L]] <- metrics[i:j]
+      i <- j + 1L
+    } else {
+      groups[[length(groups) + 1L]] <- metrics[i]
+      i <- i + 1L
+    }
+  }
+  list(metrics = groups, tiles = rep(FALSE, length(groups)))
+}
+
+#' Relative row height for a full module.
+#' @keywords internal
+#' @noRd
+.moduleHeight <- function(metric) {
+  type <- .overlayMetricRegistry()[[metric]]$type
+  switch(type, trajectory = 3.1, orientation = 2.5, dial = 2.1, 1.15)
+}
+
+#' Draw one registered module.
+#' @keywords internal
+#' @noRd
+.drawMetricModule <- function(metric, fd, clip, current_time, theme, plan, context) {
+  spec <- .overlayMetricRegistry()[[metric]]
+  if (spec$type %in% c("orientation", "dial", "trajectory")) graphics::par(mar = c(0.5, 0.5, 1.3, 0.5)) else
+    graphics::par(mar = c(1.2, 3.1, 1.9, 0.8))
+  if (spec$type == "orientation")
+    return(.drawAttitudeModel3D(.scalarValue(fd, "pitch"), .scalarValue(fd, "roll"), theme,
+                                heading = .scalarValue(fd, "heading"), show.heading = TRUE,
+                                label = spec$label))
+  if (spec$type == "dial") return(.drawDial(metric, .scalarValue(fd, metric), theme))
+  if (spec$type == "trajectory")
+    return(.drawPseudoTrajectory(context$trajectory, current_time, plan$windows[[metric]],
+                                 .scalarValue(fd, "heading"), theme))
+  if (spec$type == "vedba")
+    return(.drawVedbaPanel(clip, current_time, plan$windows[[metric]], .scalarValue(fd, metric),
+                           theme, context$ranges[[metric]]))
+  if (spec$type == "vertical_velocity")
+    return(.drawVerticalVelocityPanel(clip, current_time, plan$windows[[metric]], .scalarValue(fd, metric),
+                                      theme, context$ranges[[metric]]))
+  .drawSeriesPanel(clip, current_time, plan$windows[[metric]], metric, spec$label, spec$unit,
+                   .scalarValue(fd, metric), theme, invert = spec$type == "depth", fill = spec$colour,
+                   fixed.range = context$ranges[[metric]])
+}
+
+#' Draw a compact current-value tile for a focus-dashboard support metric.
+#' @keywords internal
+#' @noRd
+.drawMetricTile <- function(metric, fd, theme) {
+  spec <- .overlayMetricRegistry()[[metric]]
+  graphics::par(mar = c(0.4, 0.4, 0.4, 0.4))
+  plot(0, 0, type = "n", ann = FALSE, axes = FALSE, xlim = c(0, 1), ylim = c(0, 1))
+  .drawPanelBackground(theme)
+  if (metric == "orientation") {
+    value <- sprintf("H %s\u00b0  P %s\u00b0  R %s\u00b0", .formatOverlayValue(.scalarValue(fd, "heading"), 0),
+                     .formatOverlayValue(.scalarValue(fd, "pitch"), 0),
+                     .formatOverlayValue(.scalarValue(fd, "roll"), 0))
+  } else if (metric == "pseudo_trajectory") {
+    value <- "3-D local track"
+  } else {
+    value <- paste(.formatOverlayValue(.scalarValue(fd, metric), 2), spec$unit)
+  }
+  graphics::text(0.06, 0.70, spec$label, adj = 0, col = theme$muted, cex = 0.75, font = 2)
+  graphics::text(0.06, 0.35, value, adj = 0, col = theme$value, cex = 1.05, font = 2)
+  invisible()
 }
 
 #' Axis-validation dashboard: a large attitude indicator (the handedness cue) + the roll-rate gyro trace
@@ -290,7 +675,7 @@ renderOverlayVideo <- function(video,
 #' @noRd
 .drawDashboardValidation <- function(fd, clip, current_time, depth.window, activity.window, theme, caption) {
   graphics::layout(matrix(c(1, 2, 3, 4), ncol = 1), heights = c(2.8, 1.3, 1.2, 0.5))
-  op <- graphics::par(bg = theme$bg, mar = c(1, 1, 2.2, 1), oma = c(0, 0, 0.3, 0))
+  op <- graphics::par(bg = theme$canvas, mar = c(1, 1, 2.2, 1), oma = c(0, 0, 0.3, 0))
   on.exit(graphics::par(op), add = TRUE)
   .drawAttitudeModel3D(fd$pitch, fd$roll, theme)
   graphics::par(mar = c(1.6, 3.2, 2.0, 1))
@@ -310,7 +695,7 @@ renderOverlayVideo <- function(video,
   # a prominent guidance HEADER spanning the top, then the N attitude indicators, depth, and timestamp
   m <- rbind(rep(1L, N), 1L + seq_len(N), rep(N + 2L, N), rep(N + 3L, N))
   graphics::layout(m, heights = c(0.55, 2.7, 1.0, 0.32))
-  op <- graphics::par(bg = theme$bg, oma = c(0, 0, 0.3, 0)); on.exit(graphics::par(op), add = TRUE)
+  op <- graphics::par(bg = theme$canvas, oma = c(0, 0, 0.3, 0)); on.exit(graphics::par(op), add = TRUE)
   graphics::par(mar = c(0, 1, 0, 1)); .drawHeader(caption, theme)
   graphics::par(mar = c(1, 1, 2.4, 1))
   for (k in seq_len(N))
@@ -326,6 +711,7 @@ renderOverlayVideo <- function(video,
 #' @noRd
 .drawHeader <- function(caption, theme) {
   plot(0, 0, type = "n", ann = FALSE, axes = FALSE, xlim = c(0, 1), ylim = c(0, 1))
+  .drawPanelBackground(theme)
   if (is.null(caption) || !nzchar(caption)) return(invisible())
   w <- graphics::strwidth(caption, units = "inches", cex = 1)
   cex <- if (w > 0) min(1.3, 0.97 * graphics::par("pin")[1] / w) else 1.1
@@ -382,10 +768,9 @@ renderOverlayVideo <- function(video,
 }
 
 #' Attitude indicator: a low-poly 3-D body model, viewed from behind and above (a chase-cam), banking
-#' and pitching with the animal. Roll rolls the body (right side down for a positive roll); pitch lifts
-#' or drops the nose. The way the body banks is the at-a-glance handedness cue - confirm its direction
-#' against the video, since a mirrored mapping banks it the wrong way. Heading is not shown (it is not
-#' needed for the handedness call and the lightweight review orientation cannot estimate it reliably).
+#' and pitching with the animal. In presentation mode a small heading compass completes the orientation
+#' complication. Validation mode deliberately omits it because its lightweight orientation is not
+#' magnetometer-calibrated and roll handedness is the cue under review.
 #'
 #' Conventions (validated): body frame x forward, y right, z down; body -> world rotation is
 #' \eqn{R = R_y(\text{pitch}) R_x(\text{roll})} (yaw omitted); the camera looks forward and ~24 deg down
@@ -393,11 +778,13 @@ renderOverlayVideo <- function(video,
 #' matches the underlying tilt convention (roll > 0 = right side down, pitch > 0 = nose up).
 #' @keywords internal
 #' @noRd
-.drawAttitudeModel3D <- function(pitch, roll, theme, label = NULL, body.col = "#ff453a") {
-  plot(0, 0, type = "n", xlim = c(-1.25, 1.25), ylim = c(-1.5, 1.5), axes = FALSE, ann = FALSE, asp = 1)
-  graphics::symbols(0, 0, circles = 1.12, inches = FALSE, add = TRUE,
-                    bg = grDevices::adjustcolor("black", 0.82), fg = "grey60")
-  graphics::segments(-0.98, 0, 0.98, 0, col = grDevices::adjustcolor("#5fa8d3", 0.3), lwd = 1)  # level reference
+.drawAttitudeModel3D <- function(pitch, roll, theme, label = NULL, body.col = "#ff453a",
+                                 heading = NA_real_, show.heading = FALSE) {
+  plot(0, 0, type = "n", xlim = c(-1.35, 1.35), ylim = c(-1.55, 1.55), axes = FALSE, ann = FALSE, asp = 1)
+  .drawPanelBackground(theme)
+  graphics::symbols(0, 0, circles = 1.05, inches = FALSE, add = TRUE,
+                    bg = grDevices::adjustcolor("black", 0.58), fg = theme$border)
+  graphics::segments(-0.94, 0, 0.94, 0, col = grDevices::adjustcolor("#64d2ff", 0.35), lwd = 1)  # level reference
 
   th <- (if (is.finite(pitch)) pitch else 0) * pi / 180
   ro <- (if (is.finite(roll))  roll  else 0) * pi / 180
@@ -419,7 +806,7 @@ renderOverlayVideo <- function(video,
   })
   depth <- vapply(polys, function(p) p$depth, numeric(1))
   dn    <- if (diff(range(depth)) > 0) (depth - min(depth)) / diff(range(depth)) else depth * 0    # 0 near, 1 far
-  scl   <- 0.9
+  scl   <- 0.84
   for (k in order(depth, decreasing = TRUE)) {                # painter's: far -> near
     p <- polys[[k]]
     col  <- .shadeColor(body.col, p$light * (0.72 + 0.28 * (1 - dn[k])))   # + gentle far-dimming for depth
@@ -427,11 +814,26 @@ renderOverlayVideo <- function(video,
     graphics::polygon(p$xs * scl, p$ys * scl, col = col, border = bord, lwd = 0.6)
   }
 
-  if (!is.null(label)) graphics::text(0, 1.37, label, cex = 1.45, font = 2, col = body.col, xpd = NA)
-  graphics::text(0, -1.37, sprintf("Roll %s\u00b0  Pitch %s\u00b0",
-                                   if (is.finite(roll)) sprintf("%+.0f", roll) else "NA",
-                                   if (is.finite(pitch)) sprintf("%+.0f", pitch) else "NA"),
-                 cex = 1.15, col = theme$text, xpd = NA)
+  if (isTRUE(show.heading)) {
+    cx <- 0.91; cy <- 0.93; radius <- 0.25
+    graphics::symbols(cx, cy, circles = radius, inches = FALSE, add = TRUE,
+                      bg = grDevices::adjustcolor("black", 0.72), fg = theme$muted)
+    graphics::text(cx, cy + radius + 0.08, "N", cex = 0.55, font = 2, col = theme$text)
+    if (is.finite(heading)) {
+      rad <- (90 - heading) * pi / 180
+      graphics::arrows(cx, cy, cx + cos(rad) * radius * 0.72, cy + sin(rad) * radius * 0.72,
+                       length = 0.08, lwd = 2, col = "#ff453a")
+    }
+  }
+
+  if (!is.null(label)) graphics::text(0, 1.38, label, cex = 1.35, font = 2, col = theme$text, xpd = NA)
+  values <- if (isTRUE(show.heading))
+    sprintf("H %s\u00b0   P %s\u00b0   R %s\u00b0",
+            .formatOverlayValue(heading, 0), .formatOverlayValue(pitch, 0), .formatOverlayValue(roll, 0)) else
+    sprintf("Roll %s\u00b0  Pitch %s\u00b0",
+            .formatOverlayValue(roll, 0, signed = TRUE), .formatOverlayValue(pitch, 0, signed = TRUE))
+  graphics::text(0, -1.38, values, cex = 1.05, col = theme$value, xpd = NA, font = 2)
+  invisible()
 }
 
 #' Circular orientation gauge for heading / pitch / roll.
@@ -439,7 +841,9 @@ renderOverlayVideo <- function(video,
 #' @noRd
 .drawDial <- function(metric, value, theme) {
   plot(0, 0, type = "n", xlim = c(-1.15, 1.15), ylim = c(-1.15, 1.15), axes = FALSE, ann = FALSE, asp = 1)
-  graphics::symbols(0, 0, circles = 1, inches = FALSE, add = TRUE, bg = grDevices::adjustcolor("black", 0.82), fg = "grey80")
+  .drawPanelBackground(theme)
+  graphics::symbols(0, 0, circles = 1, inches = FALSE, add = TRUE,
+                    bg = grDevices::adjustcolor("black", 0.62), fg = theme$muted)
   if (identical(metric, "heading")) {
     ang <- c(0, pi/2, pi, -pi/2) - pi/2
     graphics::text(-1.34 * cos(ang), -1.34 * sin(ang), c("N","W","S","E"), cex = 0.72, col = theme$text)
@@ -462,23 +866,196 @@ renderOverlayVideo <- function(video,
   graphics::text(0, 1.46, if (is.finite(value)) sprintf("%.0f\u00b0", value) else "NA", cex = 0.95, xpd = NA, col = theme$value)
 }
 
-#' Scrolling time-series panel with the current value marked.
+#' Scrolling time-series panel with a clip-stable scale and the current value marked.
 #' @keywords internal
 #' @noRd
-.drawSeriesPanel <- function(clip, current_time, win, col, label, unit, cur_val, theme, invert, fill) {
+.drawSeriesPanel <- function(clip, current_time, win, col, label, unit, cur_val, theme, invert, fill,
+                             fixed.range = NULL) {
   wd <- clip[abs(as.numeric(difftime(clip$datetime, current_time, units = "secs"))) <= win, ]
-  y <- wd[[col]]; rng <- range(y, na.rm = TRUE)
-  if (!all(is.finite(rng))) rng <- c(0, 1)
+  y <- wd[[col]]
+  rng <- if (is.null(fixed.range)) .overlayRange(y, if (col == "depth") "depth" else "series") else fixed.range
   ylim <- if (invert) c(rng[2], rng[1]) else rng
-  plot(wd$datetime, y, type = "n", xlab = "", ylab = "", xaxs = "i", axes = FALSE, ylim = ylim)
+  xlim <- current_time + c(-win, win)
+  plot(wd$datetime, y, type = "n", xlab = "", ylab = "", xaxs = "i", yaxs = "i",
+       axes = FALSE, ylim = ylim, xlim = xlim)
+  .drawPanelBackground(theme)
   usr <- graphics::par("usr"); base <- if (invert) usr[4] else usr[3]
   graphics::polygon(c(wd$datetime, rev(wd$datetime)), c(y, rep(base, nrow(wd))), col = grDevices::adjustcolor(fill, 0.35), border = NA)
-  graphics::lines(wd$datetime, y, col = "grey15", lwd = 1)
+  graphics::lines(wd$datetime, y, col = fill, lwd = 1.25)
+  graphics::abline(v = current_time, col = grDevices::adjustcolor(theme$text, 0.35), lwd = 0.7)
   if (is.finite(cur_val)) graphics::points(current_time, cur_val, col = "#ff3b30", pch = 16, cex = 1.5)
-  graphics::title(main = label, line = 1.5, cex.main = 1.15, col.main = theme$text, xpd = NA)
-  graphics::title(main = if (is.finite(cur_val)) sprintf("%.1f %s", cur_val, unit) else "NA",
-                  font.main = 1, line = 0.5, cex.main = 1.0, col.main = theme$value, xpd = NA)
+  current_label <- if (is.finite(cur_val)) sprintf("%s %s", .formatOverlayValue(cur_val, 2), unit) else "NA"
+  graphics::title(main = sprintf("%s  \u00b7  %s", label, current_label), line = 0.65,
+                  cex.main = 1.02, col.main = theme$text, xpd = NA)
   graphics::axis(2, at = pretty(rng), las = 1, cex.axis = 0.65, col = "grey60", col.axis = theme$text)
+  invisible()
+}
+
+#' VeDBA activity envelope: raw trace plus a one-second display-only smoother.
+#' @keywords internal
+#' @noRd
+.drawVedbaPanel <- function(clip, current_time, win, cur_val, theme, fixed.range) {
+  wd <- clip[abs(as.numeric(difftime(clip$datetime, current_time, units = "secs"))) <= win, ]
+  smooth <- if (".overlay_vedba" %in% names(wd)) wd$.overlay_vedba else wd$vedba
+  xlim <- current_time + c(-win, win)
+  plot(wd$datetime, smooth, type = "n", xlab = "", ylab = "", xaxs = "i", yaxs = "i",
+       axes = FALSE, ylim = fixed.range, xlim = xlim)
+  .drawPanelBackground(theme)
+  graphics::polygon(c(wd$datetime, rev(wd$datetime)), c(smooth, rep(0, nrow(wd))),
+                    col = grDevices::adjustcolor("#ffd60a", 0.24), border = NA)
+  graphics::lines(wd$datetime, wd$vedba, col = grDevices::adjustcolor(theme$muted, 0.48), lwd = 0.65)
+  graphics::lines(wd$datetime, smooth, col = "#ffd60a", lwd = 1.8)
+  graphics::abline(v = current_time, col = grDevices::adjustcolor(theme$text, 0.35), lwd = 0.7)
+  if (is.finite(cur_val)) graphics::points(current_time, cur_val, col = "#ffffff", bg = "#ffd60a",
+                                           pch = 21, cex = 1.3, lwd = 1.2)
+  current_label <- if (is.finite(cur_val)) sprintf("%s g", .formatOverlayValue(cur_val, 3)) else "NA"
+  graphics::title(main = sprintf("VeDBA activity  \u00b7  %s", current_label), line = 0.65,
+                  cex.main = 1.02, col.main = theme$text, xpd = NA)
+  graphics::axis(2, at = pretty(fixed.range), las = 1, cex.axis = 0.65,
+                 col = theme$muted, col.axis = theme$text)
+  invisible()
+}
+
+#' Signed vertical velocity: ascent above, descent below, with a stable symmetric scale and zero line.
+#' @keywords internal
+#' @noRd
+.drawVerticalVelocityPanel <- function(clip, current_time, win, cur_val, theme, fixed.range) {
+  wd <- clip[abs(as.numeric(difftime(clip$datetime, current_time, units = "secs"))) <= win, ]
+  displayed <- -wd$vertical_velocity
+  ylim <- c(-fixed.range[2], -fixed.range[1])
+  xlim <- current_time + c(-win, win)
+  plot(wd$datetime, displayed, type = "n", xlab = "", ylab = "", xaxs = "i", yaxs = "i",
+       axes = FALSE, ylim = ylim, xlim = xlim)
+  .drawPanelBackground(theme)
+  ascent <- pmax(displayed, 0)
+  descent <- pmin(displayed, 0)
+  graphics::polygon(c(wd$datetime, rev(wd$datetime)), c(ascent, rep(0, nrow(wd))),
+                    col = grDevices::adjustcolor("#64d2ff", 0.38), border = NA)
+  graphics::polygon(c(wd$datetime, rev(wd$datetime)), c(descent, rep(0, nrow(wd))),
+                    col = grDevices::adjustcolor("#ff9f0a", 0.42), border = NA)
+  ascent_line <- displayed; ascent_line[ascent_line < 0] <- NA_real_
+  descent_line <- displayed; descent_line[descent_line > 0] <- NA_real_
+  graphics::lines(wd$datetime, ascent_line, col = "#64d2ff", lwd = 1.5)
+  graphics::lines(wd$datetime, descent_line, col = "#ff9f0a", lwd = 1.5)
+  graphics::abline(h = 0, col = theme$text, lwd = 1.0)
+  graphics::abline(v = current_time, col = grDevices::adjustcolor(theme$text, 0.35), lwd = 0.7)
+  if (is.finite(cur_val)) graphics::points(current_time, -cur_val, col = "#ffffff",
+                                           bg = if (cur_val >= 0) "#ff9f0a" else "#64d2ff",
+                                           pch = 21, cex = 1.3, lwd = 1.2)
+  direction <- if (!is.finite(cur_val) || abs(cur_val) < 1e-9) "" else if (cur_val > 0) " \u00b7 descent" else " \u00b7 ascent"
+  current_label <- if (is.finite(cur_val))
+    sprintf("%s m/s%s", .formatOverlayValue(cur_val, 2, signed = TRUE), direction) else "NA"
+  graphics::title(main = sprintf("Vertical velocity  \u00b7  %s", current_label), line = 0.65,
+                  cex.main = 0.98, col.main = theme$text, xpd = NA)
+  ticks <- pretty(ylim)
+  graphics::axis(2, at = ticks, labels = .formatOverlayValue(-ticks, 1, signed = TRUE), las = 1,
+                 cex.axis = 0.62, col = theme$muted, col.axis = theme$text)
+  graphics::text(graphics::par("usr")[1], ylim[2] * 0.82, "ASCENT", adj = 0,
+                 col = "#64d2ff", font = 2, cex = 0.62)
+  graphics::text(graphics::par("usr")[1], ylim[1] * 0.82, "DESCENT", adj = 0,
+                 col = "#ff9f0a", font = 2, cex = 0.62)
+  invisible()
+}
+
+#' Project the whole pseudo-track once into a fixed local 3-D display coordinate system.
+#' @keywords internal
+#' @noRd
+.preparePseudoTrajectory <- function(clip) {
+  ok <- is.finite(clip$pseudo_lon) & is.finite(clip$pseudo_lat) & is.finite(clip$pseudo_depth)
+  if (sum(ok) < 2L) return(list(available = FALSE))
+  lon0 <- stats::median(clip$pseudo_lon[ok]); lat0 <- stats::median(clip$pseudo_lat[ok])
+  xy <- .projLocal(clip$pseudo_lon, clip$pseudo_lat, lon0, lat0, 6371000)
+  east <- xy$e; north <- xy$n; depth <- clip$pseudo_depth
+  horizontal_span <- max(diff(range(east[ok])), diff(range(north[ok])), 1)
+  depth_span <- diff(range(depth[ok]))
+  vertical_exaggeration <- if (is.finite(depth_span) && depth_span > 0)
+    min(8, max(1, 0.38 * horizontal_span / depth_span)) else 1
+
+  # Fixed oblique camera: east runs mostly right, north recedes up-right, depth points down.
+  screen_x <- 0.866 * east - 0.5 * north
+  surface_y <- 0.25 * east + 0.433 * north
+  screen_y <- surface_y - vertical_exaggeration * depth
+  ok_screen <- ok & is.finite(screen_x) & is.finite(screen_y)
+  time_step <- diff(as.numeric(clip$datetime))
+  typical_step <- stats::median(time_step[is.finite(time_step) & time_step > 0], na.rm = TRUE)
+  if (!is.finite(typical_step)) typical_step <- 1
+  discontinuity <- c(TRUE, !head(ok_screen, -1L) | !tail(ok_screen, -1L) |
+                       !is.finite(time_step) | time_step > max(2, 5 * typical_step))
+  segment <- cumsum(discontinuity)
+  xlim <- .paddedRange(c(screen_x[ok_screen], 0), 0.10)
+  ylim <- .paddedRange(c(screen_y[ok_screen], surface_y[ok_screen], 0), 0.10)
+  scale_m <- .niceScale(horizontal_span / 4)
+  list(available = TRUE, datetime = clip$datetime, east = east, north = north, depth = depth,
+       x = screen_x, y = screen_y, surface_y = surface_y, ok = ok_screen, xlim = xlim, ylim = ylim,
+       segment = segment, vertical_exaggeration = vertical_exaggeration, scale_m = scale_m)
+}
+
+#' Draw a stable pseudo-trajectory with past/future context, current point and a surface tie-line.
+#' @keywords internal
+#' @noRd
+.drawPseudoTrajectory <- function(track, current_time, win, heading, theme) {
+  if (is.null(track) || !isTRUE(track$available)) {
+    plot(0, 0, type = "n", axes = FALSE, ann = FALSE, xlim = c(0, 1), ylim = c(0, 1))
+    .drawPanelBackground(theme)
+    graphics::text(0.5, 0.5, "Pseudo-trajectory unavailable", col = theme$muted, cex = 0.9)
+    return(invisible())
+  }
+  plot(0, 0, type = "n", axes = FALSE, ann = FALSE, xlim = track$xlim, ylim = track$ylim,
+       xaxs = "i", yaxs = "i", asp = 1)
+  .drawPanelBackground(theme)
+  delta <- as.numeric(difftime(track$datetime, current_time, units = "secs"))
+  past <- which(track$ok & delta >= -win & delta <= 0)
+  future <- which(track$ok & delta > 0 & delta <= win)
+  visible <- c(past, future)
+  .drawSegmentedTrack(track$x, track$surface_y, visible, track$segment,
+                      col = grDevices::adjustcolor("#64d2ff", 0.28), lwd = 0.8, lty = 2)
+  .drawSegmentedTrack(track$x, track$y, future, track$segment, col = theme$muted, lwd = 1.2, lty = 3)
+  .drawSegmentedTrack(track$x, track$y, past, track$segment, col = "#30d158", lwd = 2.6, lty = 1)
+  current <- which.min(abs(delta))
+  if (length(current) && track$ok[current]) {
+    graphics::segments(track$x[current], track$surface_y[current], track$x[current], track$y[current],
+                       col = grDevices::adjustcolor("#64d2ff", 0.55), lty = 2, lwd = 1)
+    graphics::points(track$x[current], track$surface_y[current], pch = 1, cex = 0.7, col = "#64d2ff")
+    graphics::points(track$x[current], track$y[current], pch = 21, cex = 1.45,
+                     col = "white", bg = "#ff453a", lwd = 1.2)
+    if (is.finite(heading)) {
+      arrow_m <- max(track$scale_m * 0.6, 1)
+      de <- sin(heading * pi / 180) * arrow_m
+      dn <- cos(heading * pi / 180) * arrow_m
+      graphics::arrows(track$x[current], track$y[current],
+                       track$x[current] + 0.866 * de - 0.5 * dn,
+                       track$y[current] + 0.25 * de + 0.433 * dn,
+                       col = "#ffd60a", lwd = 1.8, length = 0.09)
+    }
+  }
+  usr <- graphics::par("usr")
+  sx <- usr[1] + diff(usr[1:2]) * 0.07; sy <- usr[3] + diff(usr[3:4]) * 0.09
+  dx <- 0.866 * track$scale_m; dy <- 0.25 * track$scale_m
+  graphics::segments(sx, sy, sx + dx, sy + dy, col = theme$text, lwd = 2)
+  graphics::text(sx + dx / 2, sy + dy + diff(usr[3:4]) * 0.035,
+                 sprintf("%s m", format(track$scale_m, trim = TRUE, scientific = FALSE)),
+                 col = theme$text, cex = 0.62)
+  graphics::text(usr[2] - diff(usr[1:2]) * 0.03, usr[4] - diff(usr[3:4]) * 0.06,
+                 sprintf("Depth \u00d7%.1f", track$vertical_exaggeration), adj = 1,
+                 col = theme$muted, cex = 0.65)
+  graphics::legend("bottomright", legend = c("past", "future", "surface"),
+                   col = c("#30d158", theme$muted, grDevices::adjustcolor("#64d2ff", 0.55)),
+                   lty = c(1, 3, 2), lwd = c(2.2, 1.2, 0.8), bty = "n",
+                   text.col = theme$text, cex = 0.54, horiz = TRUE, inset = 0.015)
+  graphics::title(main = "3-D pseudo-trajectory", line = 0.5, cex.main = 1.15,
+                  col.main = theme$text, xpd = NA)
+  invisible()
+}
+
+#' Draw only within contiguous valid pseudo-track segments, never across a sensor gap.
+#' @keywords internal
+#' @noRd
+.drawSegmentedTrack <- function(x, y, index, segment, col, lwd, lty) {
+  if (length(index) < 2L) return(invisible())
+  groups <- split(index, segment[index])
+  for (group in groups)
+    if (length(group) > 1L) graphics::lines(x[group], y[group], col = col, lwd = lwd, lty = lty)
+  invisible()
 }
 
 #' Scrolling three-axis trace (e.g. body gyroscope or acceleration) with a now-marker and legend.
@@ -491,6 +1068,7 @@ renderOverlayVideo <- function(video,
   wd <- clip[abs(as.numeric(difftime(clip$datetime, current_time, units = "secs"))) <= win, ]
   if (!any(present) || !nrow(wd)) {
     plot(0, 0, type = "n", axes = FALSE, ann = FALSE, xlim = c(0, 1), ylim = c(0, 1))
+    .drawPanelBackground(theme)
     graphics::title(main = title, line = 1.5, cex.main = 1.15, col.main = theme$text, xpd = NA)
     graphics::text(0.5, 0.5, "unavailable", col = "grey55", cex = 0.95)
     return(invisible())
@@ -498,6 +1076,7 @@ renderOverlayVideo <- function(video,
   ys <- lapply(cols[present], function(c) wd[[c]])
   rng <- range(unlist(ys), na.rm = TRUE); if (!all(is.finite(rng))) rng <- c(-1, 1)
   plot(wd$datetime, ys[[1]], type = "n", xlab = "", ylab = "", xaxs = "i", axes = FALSE, ylim = rng)
+  .drawPanelBackground(theme)
   graphics::abline(h = 0, col = "grey35", lwd = 0.6)
   cl <- line.cols[present]
   for (j in seq_along(ys)) graphics::lines(wd$datetime, ys[[j]], col = cl[j], lwd = 1.1)
@@ -516,6 +1095,7 @@ renderOverlayVideo <- function(video,
 #' @noRd
 .drawTimestamp <- function(datetime, theme) {
   plot(0, 0, type = "n", ann = FALSE, axes = FALSE, xlim = c(0, 1), ylim = c(0, 1))
+  .drawPanelBackground(theme)
   graphics::text(0.5, 0.6, format(datetime, "%Y-%m-%d %H:%M:%OS1", tz = "UTC"), col = theme$text, cex = 1.05, font = 2)
 }
 
@@ -524,6 +1104,7 @@ renderOverlayVideo <- function(video,
 #' @noRd
 .drawCaption <- function(datetime, caption, theme) {
   plot(0, 0, type = "n", ann = FALSE, axes = FALSE, xlim = c(0, 1), ylim = c(0, 1))
+  .drawPanelBackground(theme)
   graphics::text(0.5, 0.72, format(datetime, "%Y-%m-%d %H:%M:%OS1", tz = "UTC"), col = theme$text, cex = 1.0, font = 2)
   if (!is.null(caption) && nzchar(caption))
     graphics::text(0.5, 0.26, caption, col = "grey70", cex = 0.72, xpd = NA)
@@ -533,6 +1114,111 @@ renderOverlayVideo <- function(video,
 ################################################################################
 # Small helpers (internal) #####################################################
 ################################################################################
+
+#' Complete a caller-supplied theme, preserving compatibility with older internal tests.
+#' @keywords internal
+#' @noRd
+.completeOverlayTheme <- function(theme) {
+  if (is.null(theme$bg)) theme$bg <- "#080b0e"
+  if (is.null(theme$canvas)) theme$canvas <- theme$bg
+  if (is.null(theme$module)) theme$module <- grDevices::adjustcolor(theme$bg, 0.96)
+  if (is.null(theme$border)) theme$border <- grDevices::adjustcolor("white", 0.25)
+  if (is.null(theme$text)) theme$text <- "grey92"
+  if (is.null(theme$muted)) theme$muted <- "grey65"
+  if (is.null(theme$value)) theme$value <- "#ff453a"
+  theme
+}
+
+#' Theme for opaque beside panels or transparent on-video modules.
+#' @keywords internal
+#' @noRd
+.overlayTheme <- function(composition = "beside", background.alpha = 0.72) {
+  if (composition == "overlay") {
+    .completeOverlayTheme(list(canvas = "transparent", bg = "transparent",
+                               module = grDevices::adjustcolor("#071017", background.alpha),
+                               border = grDevices::adjustcolor("white", min(0.42, background.alpha)),
+                               text = "#f5f7fa", muted = "#aab4bd", value = "#ffffff"))
+  } else {
+    .completeOverlayTheme(list(canvas = "#070b0f", bg = "#070b0f", module = "#101820",
+                               border = "#293744", text = "#f5f7fa", muted = "#9aa6b2",
+                               value = "#ffffff"))
+  }
+}
+
+#' Paint the current panel's local backplate.
+#' @keywords internal
+#' @noRd
+.drawPanelBackground <- function(theme) {
+  usr <- graphics::par("usr")
+  graphics::rect(usr[1], usr[3], usr[2], usr[4], col = theme$module,
+                 border = theme$border, lwd = 0.7, xpd = FALSE)
+  invisible()
+}
+
+#' A robust clip-stable y range for a dashboard metric.
+#' @keywords internal
+#' @noRd
+.overlayRange <- function(x, metric = "series") {
+  x <- x[is.finite(x)]
+  if (!length(x)) return(if (metric == "vertical_velocity") c(-1, 1) else c(0, 1))
+  if (metric == "vedba") return(c(0, max(0.05, unname(stats::quantile(x, 0.995, na.rm = TRUE)))))
+  if (metric == "vertical_velocity") {
+    lim <- max(0.05, unname(stats::quantile(abs(x), 0.995, na.rm = TRUE)))
+    return(c(-lim, lim))
+  }
+  probs <- if (length(x) > 20L) c(0.005, 0.995) else c(0, 1)
+  rng <- as.numeric(stats::quantile(x, probs, na.rm = TRUE, names = FALSE))
+  if (metric != "depth" && rng[1] >= 0) rng[1] <- 0
+  .paddedRange(rng, 0.06)
+}
+
+#' Pad a numeric range and safely expand constant inputs.
+#' @keywords internal
+#' @noRd
+.paddedRange <- function(x, fraction = 0.08) {
+  rng <- range(x[is.finite(x)], na.rm = TRUE)
+  if (!all(is.finite(rng))) return(c(0, 1))
+  span <- diff(rng)
+  if (!is.finite(span) || span <= 0) span <- max(abs(rng), 1) * 0.1
+  rng + c(-1, 1) * span * fraction
+}
+
+#' Select a readable metric scale length no larger than the requested target.
+#' @keywords internal
+#' @noRd
+.niceScale <- function(target) {
+  if (!is.finite(target) || target <= 0) return(1)
+  power <- 10^floor(log10(target))
+  choices <- c(1, 2, 5, 10) * power
+  max(choices[choices <= target])
+}
+
+#' Return one finite scalar from a dashboard row, otherwise NA.
+#' @keywords internal
+#' @noRd
+.scalarValue <- function(fd, name) {
+  value <- fd[[name]]
+  if (is.null(value) || !length(value) || !is.finite(value[1])) NA_real_ else as.numeric(value[1])
+}
+
+#' Format a numeric dashboard value without leaking NaN/Inf.
+#' @keywords internal
+#' @noRd
+.formatOverlayValue <- function(x, digits = 1, signed = FALSE) {
+  ans <- rep("NA", length(x))
+  ok <- is.finite(x)
+  fmt <- if (signed) paste0("%+.", digits, "f") else paste0("%.", digits, "f")
+  ans[ok] <- sprintf(fmt, x[ok])
+  ans
+}
+
+#' Return an even positive dimension for codecs that require chroma-aligned frames.
+#' @keywords internal
+#' @noRd
+.evenDimension <- function(x) {
+  x <- max(2L, as.integer(round(x)))
+  x - (x %% 2L)
+}
 
 #' Distinct body-glyph colours for up to several candidate mappings.
 #' @keywords internal

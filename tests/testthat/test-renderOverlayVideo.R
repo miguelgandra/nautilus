@@ -7,8 +7,13 @@
     depth = 5 + 4 * sin(seq_len(n) / n * pi), heading = (seq_len(n) * 6) %% 360,
     pitch = rnorm(n, 0, 5), roll = rnorm(n, 0, 5),
     vedba = runif(n, 0, 0.4), vertical_velocity = rnorm(n, 0, 0.3),
+    paddle_speed = runif(n, 0.5, 2), paddle_freq = runif(n, 5, 20),
+    tbf_hz_peaks = runif(n, 0.1, 0.8), tbf_hz_wavelet = runif(n, 0.1, 0.8),
     ax = rnorm(n, 0, 0.1), ay = rnorm(n, 0, 0.3), az = rnorm(n, 1, 0.1),
     gx = rnorm(n, 0, 0.2), gy = rnorm(n, 0, 0.2), gz = rnorm(n, 0, 0.2))
+  d[, `:=`(pseudo_lon = -16 + cumsum(cos(heading * pi / 180)) * 1e-5,
+           pseudo_lat = 28 + cumsum(sin(heading * pi / 180)) * 1e-5,
+           pseudo_depth = depth)]
   d
 }
 .theme <- list(bg = "grey12", text = "grey90", value = "#ff453a")
@@ -51,11 +56,33 @@ test_that("input validation aborts clearly (before touching av/ffmpeg)", {
 
 test_that(".dashboardColumns lists the right required columns per dashboard", {
   expect_true(all(c("vedba", "heading") %in% nautilus:::.dashboardColumns("general")))
+  expect_setequal(nautilus:::.dashboardColumns("compact", metrics = c("depth", "pitch")),
+                  c("datetime", "depth", "pitch"))
+  expect_true(all(c("pseudo_lon", "pseudo_lat", "pseudo_depth") %in%
+                    nautilus:::.dashboardColumns("expanded")))
   # validation needs only depth + attitude (heading + accel traces were dropped in the redesign;
   # gyro gx/gy/gz are optional, used only when present)
   expect_setequal(nautilus:::.dashboardColumns("validation"), c("datetime", "depth", "pitch", "roll"))
   cand <- data.frame(label = "c1", pitch = "pitch.c1", roll = "roll.c1", stringsAsFactors = FALSE)
   expect_true(all(c("pitch.c1", "roll.c1") %in% nautilus:::.dashboardColumns("validation-compare", cand)))
+})
+
+test_that("dashboard plans resolve presets, orientation alternatives, and metric windows", {
+  model <- nautilus:::.resolveDashboardPlan("general")
+  expect_equal(model$metrics, c("orientation", "depth", "vedba", "vertical_velocity"))
+
+  dials <- nautilus:::.resolveDashboardPlan("general", orientation = "dials")
+  expect_equal(dials$metrics[1:3], c("heading", "pitch", "roll"))
+  expect_false("orientation" %in% dials$metrics)
+
+  custom <- nautilus:::.resolveDashboardPlan(
+    "compact", metrics = c("depth", "paddle_speed"), depth.window = 300,
+    activity.window = 30, metric.windows = c(depth = 120, paddle_speed = 15))
+  expect_equal(custom$windows, c(depth = 120, paddle_speed = 15))
+  expect_error(nautilus:::.resolveDashboardPlan("general", metrics = "not_a_metric"),
+               "Unknown dashboard")
+  expect_error(nautilus:::.resolveDashboardPlan("general", metric.windows = c(orientation = 10)),
+               "scrolling modules")
 })
 
 test_that("the compare dashboard requires a candidates spec", {
@@ -64,11 +91,22 @@ test_that("the compare dashboard requires a candidates spec", {
                "candidates", ignore.case = TRUE)
 })
 
-test_that("all three dashboards render a frame without error (incl. NA-tolerant)", {
+test_that("all dashboards render a frame without error (including NA-tolerant modules)", {
   clip <- .mk_sensor()
   clip$heading[1] <- NA_real_; clip$roll[2] <- NA_real_         # NAs must not break any panel
   pdf(NULL); on.exit(grDevices::dev.off())
-  expect_no_error(nautilus:::.drawDashboard("general", clip[30], clip, clip$datetime[30], 300, 30, .theme, NULL, NULL))
+  for (dashboard in c("general", "compact", "expanded", "ribbon", "focus")) {
+    plan <- nautilus:::.resolveDashboardPlan(dashboard)
+    context <- nautilus:::.prepareOverlayContext(clip, plan)
+    expect_no_error(nautilus:::.drawDashboard(dashboard, context$clip[30], context$clip,
+                                               clip$datetime[30], 300, 30, .theme, NULL, NULL,
+                                               plan = plan, context = context))
+  }
+  dial_plan <- nautilus:::.resolveDashboardPlan("general", orientation = "dials")
+  dial_context <- nautilus:::.prepareOverlayContext(clip, dial_plan)
+  expect_no_error(nautilus:::.drawDashboard("general", dial_context$clip[30], dial_context$clip,
+                                             clip$datetime[30], 300, 30, .theme, NULL, NULL,
+                                             plan = dial_plan, context = dial_context))
   expect_no_error(nautilus:::.drawDashboard("validation", clip[30], clip, clip$datetime[30], 300, 30, .theme, "cap", NULL))
   # gyro panel must degrade gracefully when the channels are absent
   expect_no_error(nautilus:::.drawDashboard("validation", clip[, !c("gx", "gy", "gz")][30],
@@ -82,6 +120,26 @@ test_that(".drawAttitudeModel3D is NA-tolerant and draws", {
   pdf(NULL); on.exit(grDevices::dev.off())
   expect_no_error(nautilus:::.drawAttitudeModel3D(NA_real_, NA_real_, .theme, label = "x"))
   expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme))
+  expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, heading = 270, show.heading = TRUE))
+})
+
+test_that("pseudo-trajectory preparation fixes projection, bounds, and exaggeration for the clip", {
+  sensor <- .mk_sensor(n = 120)
+  sensor$datetime[61:120] <- sensor$datetime[61:120] + 1000
+  track <- nautilus:::.preparePseudoTrajectory(sensor)
+  expect_true(track$available)
+  expect_length(track$xlim, 2)
+  expect_length(track$ylim, 2)
+  expect_true(is.finite(track$vertical_exaggeration))
+  expect_gte(track$vertical_exaggeration, 1)
+  expect_lte(track$vertical_exaggeration, 8)
+  expect_gt(length(unique(track$segment)), 1)                 # paths never bridge a sensor-data gap
+})
+
+test_that("metric ranges are robust and vertical velocity is symmetric", {
+  expect_equal(nautilus:::.overlayRange(c(-0.2, 0.5, 100), "vertical_velocity")[1],
+               -nautilus:::.overlayRange(c(-0.2, 0.5, 100), "vertical_velocity")[2])
+  expect_equal(nautilus:::.overlayRange(c(0.1, 0.2), "vedba")[1], 0)
 })
 
 test_that(".tagModel3D is a valid low-poly mesh", {
@@ -131,6 +189,16 @@ test_that("end-to-end: composites a dashboard panel beside a synthetic source vi
   expect_gt(info$video$width, 480)                              # source + dashboard panel
   tag <- .vtag(out)                                             # h264 muxes as avc1 (QuickTime-universal)
   if (!is.na(tag)) expect_equal(tag, "avc1")
+
+  overlay <- tempfile(fileext = ".mp4"); on.exit(unlink(overlay), add = TRUE)
+  expect_no_error(suppressWarnings(suppressMessages(
+    renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), overlay,
+                       dashboard = "compact", metrics = c("depth", "vedba", "pitch"),
+                       composition = "overlay", side = "left", video.start = t0,
+                       overlay.fps = 5, codec = "h264", crf = 30, verbose = FALSE))))
+  overlay_info <- av::av_video_info(overlay)
+  expect_equal(overlay_info$video$width, 480)                  # transparent composition preserves source dimensions
+  expect_equal(overlay_info$video$height, 720)
 })
 
 test_that("codec = 'hevc' tags the stream hvc1 for QuickTime compatibility", {

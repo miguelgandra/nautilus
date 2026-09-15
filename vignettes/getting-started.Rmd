@@ -292,7 +292,13 @@ overlays.
 vmeta <- getVideoMetadata("video/")
 tags  <- filterVideoPeriod(tags, vmeta)
 tags  <- annotateData(tags, annotations)   # `annotations`: your scored event windows
-renderOverlayVideo(tags, vmeta)
+id <- vmeta$ID[1]
+renderOverlayVideo(
+  video       = vmeta$file[1],
+  data        = tags[[id]],
+  output      = file.path("overlay", paste0(id, ".mp4")),
+  video.start = vmeta$start[1]
+)
 ```
 
 ## Working at scale

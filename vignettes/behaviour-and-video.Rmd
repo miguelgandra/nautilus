@@ -208,22 +208,42 @@ launchVideo("PIN_CAM_01", as.POSIXct("2023-08-31 17:40:00", tz = "UTC"), vmeta)
 ```
 
 And to see the sensors and the footage together, `renderOverlayVideo()` composites a live,
-time-synchronised sensor dashboard beside the video:
+time-synchronised sensor dashboard beside the video. The default orientation module combines a
+three-dimensional attitude model, a heading compass, and numeric heading/pitch/roll values:
 
 ```{r overlay}
 renderOverlayVideo(
   vmeta$file[1], tag1, "./overlay/PIN_CAM_01.mp4",
-  dashboard   = "general",       # heading/pitch/roll dials + scrolling depth/VeDBA traces
+  dashboard   = "general",       # 3-D orientation + depth, VeDBA and vertical velocity
   video.start = vmeta$start[1]   # the sync anchor, from getVideoMetadata
 )
 ```
 
-The `"general"` dashboard is for presentation; `"validation"` draws a large 3-D attitude
-indicator (heading deliberately omitted, since roll -- not heading -- is the cue for a
-handedness check) to judge an axis mapping by eye; and `"validation-compare"` shows competing
-mappings side by side. `renderOverlayVideo()` needs FFmpeg on the PATH and the **av** package,
-and takes a **single** deployment's data -- pass one element (`tags[[1]]`), not the whole
-list.
+For a less intrusive result, put selected modules directly over the source footage. This keeps the
+source dimensions and uses local translucent backplates rather than a full opaque panel:
+
+```{r overlay-custom}
+renderOverlayVideo(
+  vmeta$file[1], tag1, "./overlay/PIN_CAM_01_compact.mp4",
+  dashboard   = "compact",
+  metrics     = c("orientation", "depth", "vedba"),
+  composition = "overlay",
+  side        = "right",
+  video.start = vmeta$start[1]
+)
+```
+
+Set `orientation = "dials"` to replace the combined model with separate heading, pitch, and roll
+dials. The `"ribbon"` preset places time-series modules across the lower third, while `"focus"`
+enlarges the first selected metric. After `reconstructTrack()`, `dashboard = "expanded"` adds a
+fixed-camera 3-D pseudo-trajectory whose past path, future context, surface projection, metric scale,
+and vertical exaggeration are explicit; gaps in the sensor record are not joined by false straight-line
+segments.
+
+The fixed `"validation"` dashboard draws a large 3-D attitude indicator with heading deliberately
+omitted (roll, not heading, is the cue for a handedness check); `"validation-compare"` shows competing
+mappings side by side. `renderOverlayVideo()` needs FFmpeg on the PATH and the **av** package, and takes
+a **single** deployment's data -- pass one element (`tags[[1]]`), not the whole list.
 
 # Part 3 -- Where the two branches meet
 

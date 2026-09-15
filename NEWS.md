@@ -105,7 +105,12 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
   comparisons now retain a one-second numerical tolerance while correctly detecting half-hour offsets.
 * `filterVideoPeriod()` restricts sensor data to filmed intervals, and `annotateData()` joins behavioural
   annotations. `launchVideo()`, `reencodeVideos()` and `renderOverlayVideo()` support review and
-  sensor-overlay rendering.
+  sensor-overlay rendering. `renderOverlayVideo()` now builds presentation dashboards from reusable
+  metric modules, with a combined 3-D orientation/compass complication by default and separate dials as
+  an alternative. It supports opaque beside-video panels and transparent left/right overlays that retain
+  the source dimensions, plus compact, expanded pseudo-trajectory, lower-ribbon and focus layouts. VeDBA
+  and signed vertical velocity have dedicated displays with clip-stable scales; the pseudo-trajectory is
+  projected and bounded once per clip rather than recomputed with a moving camera every frame.
 
 ## Notes
 
