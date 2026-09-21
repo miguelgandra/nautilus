@@ -236,7 +236,8 @@ renderOverlayVideo(
 Set `orientation = "dials"` to replace the combined model with separate heading, pitch, and roll
 dials. When the combined model is used, `orientation.model` selects a schematic `"shark"`,
 `"cetacean"`, `"turtle"`, `"fish"`, or `"manta"` silhouette without changing the sensor values or
-body-axis convention.
+body-axis convention. The cetacean is dolphin-like, the turtle is a hard-shelled sea turtle, and the
+fish is a generic ray-finned fish; none of the models is a species-specific reconstruction.
 The `"ribbon"` preset places time-series modules across the lower third, while `"focus"`
 enlarges the first selected metric. After `reconstructTrack()`, `dashboard = "expanded"` adds a
 fixed-camera 3-D pseudo-trajectory whose past path, future context, surface projection, metric scale,

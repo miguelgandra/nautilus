@@ -48,7 +48,9 @@
 #'   `"shark"` (default), `"cetacean"`, `"turtle"`, `"fish"` or `"manta"`. The choice changes only the
 #'   displayed silhouette; it does not alter the underlying orientation values or coordinate
 #'   conventions. Presentation dashboards ignore it when `orientation = "dials"`; fixed validation
-#'   dashboards always use the selected model.
+#'   dashboards always use the selected model. `"cetacean"` depicts a dolphin-like odontocete,
+#'   `"turtle"` a hard-shelled sea turtle, and `"fish"` a generic ray-finned fish; these are not
+#'   species-specific anatomical reconstructions.
 #' @param video.start One finite `POSIXct` value giving the sensor-clock time represented by the first
 #'   frame of `video`. `NULL` (default) attempts to read a UTC timestamp in `YYYYMMDD-HHMMSS` or
 #'   `YYMMDD-HHMMSS` form from the file name. A value returned by [getVideoMetadata()] is recommended.
@@ -828,9 +830,9 @@ renderOverlayVideo <- function(video,
 
 #' Configuration registry for the schematic orientation models.
 #'
-#' Each entry defines the longitudinal body envelope and a list of appendage polygons in the common
-#' animal frame (x forward, y right, z down). Adding a model is therefore a data-only change; neither the
-#' dashboard dispatcher nor the projection/shading code needs a new branch.
+#' Each entry defines the longitudinal body envelope, appendage polygons and optional surface-detail
+#' lines in the common animal frame (x forward, y right, z down). The shark entry is deliberately kept
+#' unchanged; the other entries are recognizable, generic representatives rather than species models.
 #' @keywords internal
 #' @noRd
 .orientationModelRegistry <- local({
@@ -848,59 +850,118 @@ renderOverlayVideo <- function(video,
         cbind(c(-0.90, 0, 0.03), c(-1.30, 0, 0.26), c(-1.10, 0, 0.01))
       )),
     cetacean = list(
-      stations = c(-1.08, -0.72, -0.30, 0.18, 0.58, 0.88, 1.04),
-      width = c(0.012, 0.09, 0.23, 0.29, 0.25, 0.14, 0.018),
-      height = c(0.012, 0.08, 0.17, 0.22, 0.20, 0.12, 0.018),
+      # Dolphin-like odontocete: distinct melon and beak, swept dorsal/pectoral fins, horizontal flukes.
+      sections = 12L,
+      stations = c(-1.09, -0.88, -0.55, -0.14, 0.30, 0.67, 0.91, 1.06, 1.29),
+      width = c(0.025, 0.07, 0.15, 0.27, 0.29, 0.23, 0.15, 0.065, 0.012),
+      height = c(0.025, 0.06, 0.12, 0.21, 0.22, 0.18, 0.12, 0.055, 0.010),
       appendages = appendage(
-        cbind(c(0.18, 0, -0.20), c(-0.16, 0, -0.16), c(-0.02, 0, -0.48)),
-        cbind(c(0.36, 0.23, 0.06), c(0.05, 0.21, 0.09), c(0.24, 0.61, 0.16)),
-        cbind(c(0.36, -0.23, 0.06), c(0.05, -0.21, 0.09), c(0.24, -0.61, 0.16)),
-        cbind(c(-0.96, 0.01, 0), c(-1.28, 0.52, 0), c(-1.16, 0.02, 0.03)),
-        cbind(c(-0.96, -0.01, 0), c(-1.28, -0.52, 0), c(-1.16, -0.02, 0.03))
-      )),
+        cbind(c(0.08, 0, -0.21), c(-0.26, 0, -0.18), c(-0.12, 0, -0.48), c(-0.02, 0, -0.43)),
+        cbind(c(0.22, 0.26, 0.03), c(-0.16, 0.25, 0.04), c(-0.36, 0.64, 0.07),
+              c(-0.08, 0.57, 0.04), c(0.15, 0.36, 0.02)),
+        cbind(c(0.22, -0.26, 0.03), c(-0.16, -0.25, 0.04), c(-0.36, -0.64, 0.07),
+              c(-0.08, -0.57, 0.04), c(0.15, -0.36, 0.02)),
+        cbind(c(-1.07, 0.00, 0.00), c(-1.20, 0.30, 0.00), c(-1.38, 0.72, 0.01),
+              c(-1.51, 0.40, 0.02), c(-1.38, 0.08, 0.02)),
+        cbind(c(-1.07, 0.00, 0.00), c(-1.20, -0.30, 0.00), c(-1.38, -0.72, 0.01),
+              c(-1.51, -0.40, 0.02), c(-1.38, -0.08, 0.02))
+      ),
+      details = appendage(
+        rbind(c(0.89, 0.96, 1.05), c(-0.10, 0, 0.10), c(-0.105, -0.115, -0.07))
+      ),
+      eyes = rbind(c(0.87, 0.87), c(0.14, -0.14), c(-0.08, -0.08))),
     turtle = list(
-      stations = c(-0.82, -0.60, -0.25, 0.20, 0.58, 0.82, 1.02),
-      width = c(0.015, 0.32, 0.50, 0.53, 0.39, 0.13, 0.018),
-      height = c(0.012, 0.12, 0.19, 0.20, 0.15, 0.09, 0.015),
+      # Hard-shelled sea turtle: domed oval carapace, short neck/head, long foreflippers, small hind pair.
+      sections = 12L,
+      stations = c(-0.79, -0.66, -0.43, -0.08, 0.28, 0.52, 0.67, 0.80, 0.98, 1.10, 1.25),
+      width = c(0.018, 0.23, 0.40, 0.48, 0.44, 0.31, 0.11, 0.13, 0.18, 0.16, 0.025),
+      height = c(0.012, 0.10, 0.19, 0.26, 0.25, 0.16, 0.07, 0.07, 0.10, 0.09, 0.015),
       appendages = appendage(
-        cbind(c(0.52, 0.31, 0.04), c(0.12, 0.46, 0.07), c(0.38, 0.86, 0.13), c(0.67, 0.51, 0.08)),
-        cbind(c(0.52, -0.31, 0.04), c(0.12, -0.46, 0.07), c(0.38, -0.86, 0.13), c(0.67, -0.51, 0.08)),
-        cbind(c(-0.42, 0.37, 0.04), c(-0.67, 0.27, 0.05), c(-0.63, 0.55, 0.10)),
-        cbind(c(-0.42, -0.37, 0.04), c(-0.67, -0.27, 0.05), c(-0.63, -0.55, 0.10)),
-        cbind(c(-0.79, 0, 0), c(-1.02, 0, 0.02), c(-0.82, 0, 0.08))
-      )),
+        cbind(c(0.52, 0.30, 0.02), c(0.20, 0.46, 0.04), c(-0.06, 0.77, 0.05),
+              c(-0.33, 1.04, 0.06), c(-0.08, 0.99, 0.07), c(0.27, 0.66, 0.03)),
+        cbind(c(0.52, -0.30, 0.02), c(0.20, -0.46, 0.04), c(-0.06, -0.77, 0.05),
+              c(-0.33, -1.04, 0.06), c(-0.08, -0.99, 0.07), c(0.27, -0.66, 0.03)),
+        cbind(c(-0.49, 0.35, 0.04), c(-0.72, 0.27, 0.05), c(-0.90, 0.62, 0.05),
+              c(-0.62, 0.55, 0.05)),
+        cbind(c(-0.49, -0.35, 0.04), c(-0.72, -0.27, 0.05), c(-0.90, -0.62, 0.05),
+              c(-0.62, -0.55, 0.05)),
+        cbind(c(-0.76, 0, 0.02), c(-0.98, 0, 0.03), c(-0.79, 0, 0.08))
+      ),
+      details = appendage(
+        # Midline vertebral scutes and paired costal sutures on the dorsal carapace.
+        rbind(c(-0.65, -0.42, -0.10, 0.22, 0.49, 0.62),
+              c(0, 0, 0, 0, 0, 0), c(-0.12, -0.205, -0.265, -0.255, -0.18, -0.10)),
+        rbind(c(-0.44, -0.35, -0.22, -0.10), c(0, 0.14, 0.29, 0.39),
+              c(-0.205, -0.19, -0.14, -0.07)),
+        rbind(c(-0.44, -0.35, -0.22, -0.10), c(0, -0.14, -0.29, -0.39),
+              c(-0.205, -0.19, -0.14, -0.07)),
+        rbind(c(-0.08, -0.03, 0.01, 0.04), c(0, 0.17, 0.34, 0.46),
+              c(-0.265, -0.24, -0.14, -0.05)),
+        rbind(c(-0.08, -0.03, 0.01, 0.04), c(0, -0.17, -0.34, -0.46),
+              c(-0.265, -0.24, -0.14, -0.05)),
+        rbind(c(0.27, 0.29, 0.29, 0.29), c(0, 0.16, 0.31, 0.42),
+              c(-0.255, -0.23, -0.14, -0.06)),
+        rbind(c(0.27, 0.29, 0.29, 0.29), c(0, -0.16, -0.31, -0.42),
+              c(-0.255, -0.23, -0.14, -0.06))
+      ),
+      eyes = rbind(c(1.07, 1.07), c(0.14, -0.14), c(-0.09, -0.09))),
     fish = list(
-      stations = c(-0.95, -0.62, -0.28, 0.18, 0.56, 0.84, 1.00),
-      width = c(0.012, 0.10, 0.22, 0.26, 0.22, 0.12, 0.015),
-      height = c(0.012, 0.15, 0.27, 0.31, 0.25, 0.13, 0.015),
+      # Generic ray-finned fish, not one species: deeper trunk, rounded head/operculum, symmetric tail.
+      sections = 12L,
+      stations = c(-1.02, -0.86, -0.60, -0.24, 0.18, 0.53, 0.80, 1.03, 1.15),
+      width = c(0.020, 0.075, 0.14, 0.23, 0.28, 0.25, 0.18, 0.10, 0.025),
+      height = c(0.020, 0.07, 0.19, 0.33, 0.36, 0.33, 0.25, 0.13, 0.025),
       appendages = appendage(
-        cbind(c(0.34, 0, -0.27), c(-0.10, 0, -0.25), c(0.08, 0, -0.55)),
-        cbind(c(-0.08, 0, 0.27), c(-0.42, 0, 0.18), c(-0.24, 0, 0.48)),
-        cbind(c(0.40, 0.20, 0.04), c(0.08, 0.20, 0.08), c(0.25, 0.49, 0.16)),
-        cbind(c(0.40, -0.20, 0.04), c(0.08, -0.20, 0.08), c(0.25, -0.49, 0.16)),
-        cbind(c(-0.88, 0, -0.02), c(-1.30, 0, -0.42), c(-1.12, 0, 0)),
-        cbind(c(-0.88, 0, 0.02), c(-1.30, 0, 0.42), c(-1.12, 0, 0))
-      )),
+        cbind(c(0.33, 0, -0.34), c(-0.19, 0, -0.32), c(-0.52, 0, -0.22),
+              c(-0.31, 0, -0.51), c(0.10, 0, -0.57)),
+        cbind(c(-0.24, 0, 0.32), c(-0.69, 0, 0.16), c(-0.54, 0, 0.38), c(-0.38, 0, 0.45)),
+        cbind(c(0.55, 0.22, 0.07), c(0.23, 0.26, 0.08), c(0.12, 0.54, 0.11),
+              c(0.43, 0.46, 0.06)),
+        cbind(c(0.55, -0.22, 0.07), c(0.23, -0.26, 0.08), c(0.12, -0.54, 0.11),
+              c(0.43, -0.46, 0.06)),
+        cbind(c(-0.22, 0.20, 0.24), c(-0.42, 0.18, 0.26), c(-0.35, 0.39, 0.31)),
+        cbind(c(-0.22, -0.20, 0.24), c(-0.42, -0.18, 0.26), c(-0.35, -0.39, 0.31)),
+        cbind(c(-1.01, 0, -0.01), c(-1.24, 0, -0.42), c(-1.52, 0, -0.53),
+              c(-1.39, 0, 0), c(-1.52, 0, 0.53), c(-1.24, 0, 0.42), c(-1.01, 0, 0.01))
+      ),
+      details = appendage(
+        rbind(c(0.58, 0.64, 0.62, 0.54), c(0.21, 0.22, 0.20, 0.17),
+              c(-0.18, -0.11, -0.04, 0.02)),
+        rbind(c(0.58, 0.64, 0.62, 0.54), c(-0.21, -0.22, -0.20, -0.17),
+              c(-0.18, -0.11, -0.04, 0.02))
+      ),
+      eyes = rbind(c(0.92, 0.92), c(0.14, -0.14), c(-0.10, -0.10))),
     manta = list(
-      stations = c(-1.30, -0.58, -0.22, 0.18, 0.55, 0.82, 1.00),
-      width = c(0.008, 0.06, 0.31, 0.48, 0.40, 0.20, 0.025),
-      height = c(0.008, 0.025, 0.065, 0.085, 0.075, 0.055, 0.018),
+      # Mobulid disc: wing-like pectorals form the wide diamond; two cephalic lobes and a whip tail.
+      sections = 12L,
+      stations = c(-1.45, -0.77, -0.49, -0.17, 0.23, 0.57, 0.79, 0.88),
+      width = c(0.005, 0.018, 0.15, 0.29, 0.38, 0.33, 0.19, 0.075),
+      height = c(0.004, 0.014, 0.035, 0.06, 0.08, 0.07, 0.045, 0.012),
       appendages = appendage(
-        cbind(c(0.62, 0.24, 0.02), c(0.12, 0.46, 0.04), c(-0.18, 0.98, 0.08),
-              c(0.45, 0.68, 0.04), c(0.82, 0.34, 0.02)),
-        cbind(c(0.62, -0.24, 0.02), c(0.12, -0.46, 0.04), c(-0.18, -0.98, 0.08),
-              c(0.45, -0.68, 0.04), c(0.82, -0.34, 0.02)),
-        cbind(c(0.77, 0.10, -0.02), c(1.13, 0.10, -0.02), c(0.94, 0.24, 0.01)),
-        cbind(c(0.77, -0.10, -0.02), c(1.13, -0.10, -0.02), c(0.94, -0.24, 0.01))
-      ))
+        cbind(c(0.75, 0.19, 0.015), c(0.49, 0.40, 0.02), c(0.14, 0.86, 0.03),
+              c(-0.12, 1.29, 0.04), c(-0.22, 1.34, 0.04), c(-0.41, 0.79, 0.02),
+              c(-0.53, 0.29, 0.01)),
+        cbind(c(0.75, -0.19, 0.015), c(0.49, -0.40, 0.02), c(0.14, -0.86, 0.03),
+              c(-0.12, -1.29, 0.04), c(-0.22, -1.34, 0.04), c(-0.41, -0.79, 0.02),
+              c(-0.53, -0.29, 0.01)),
+        cbind(c(0.78, 0.12, -0.015), c(1.15, 0.11, -0.005), c(1.13, 0.24, 0.005),
+              c(0.85, 0.25, 0.01)),
+        cbind(c(0.78, -0.12, -0.015), c(1.15, -0.11, -0.005), c(1.13, -0.24, 0.005),
+              c(0.85, -0.25, 0.01)),
+        cbind(c(-0.52, 0, -0.025), c(-0.73, 0, -0.025), c(-0.61, 0, -0.10))
+      ),
+      details = appendage(
+        rbind(c(0.78, 0.86), c(-0.11, 0.11), c(-0.048, -0.048))
+      ),
+      eyes = rbind(c(0.75, 0.75), c(0.27, -0.27), c(-0.03, -0.03)))
   )
   function() models
 })
 
 #' Build a low-poly 3-D body model from the orientation-model registry.
 #'
-#' Returned as a list of faces (each a 3 x k matrix of vertex coordinates) and a matching part label
-#' (`"body"` or `"fin"`) for styling.
+#' Returned as a list of faces (each a 3 x k matrix of vertex coordinates), matching part labels
+#' (`"body"` or `"fin"`) for styling, optional surface-detail polylines and eye positions.
 #' @keywords internal
 #' @noRd
 .tagModel3D <- function(model = "shark") {
@@ -909,7 +970,7 @@ renderOverlayVideo <- function(video,
   stn <- spec$stations
   ry <- spec$width
   rz <- spec$height
-  nt  <- 8L
+  nt  <- if (is.null(spec$sections)) 8L else spec$sections
   ang <- utils::head(seq(0, 2 * pi, length.out = nt + 1L), nt)
   rings <- lapply(seq_along(stn), function(i) rbind(rep(stn[i], nt), ry[i] * cos(ang), rz[i] * sin(ang)))
   faces <- list(); part <- character(0)
@@ -919,7 +980,7 @@ renderOverlayVideo <- function(video,
     for (j in seq_len(nt)) { k <- if (j == nt) 1L else j + 1L; add(cbind(A[, j], A[, k], B[, k], B[, j]), "body") }
   }
   for (fin in spec$appendages) add(fin, "fin")
-  list(faces = faces, part = part)
+  list(faces = faces, part = part, details = spec$details, eyes = spec$eyes)
 }
 
 #' Outward-ish unit normal of a face (first three vertices), for flat shading.
@@ -984,6 +1045,21 @@ renderOverlayVideo <- function(video,
     col  <- .shadeColor(body.col, p$light * (0.72 + 0.28 * (1 - dn[k])))   # + gentle far-dimming for depth
     bord <- if (identical(m$part[k], "fin")) grDevices::adjustcolor("grey10", 0.85) else grDevices::adjustcolor(col, 0.5)
     graphics::polygon(p$xs * scl, p$ys * scl, col = col, border = bord, lwd = 0.6)
+  }
+  # The simple painter has no z-buffer. Do not paint dorsal scutes/eyes across the underside when an
+  # animal rolls over; the underlying body and fin faces remain visible from either side.
+  dorsal_visible <- as.numeric(dd %*% R %*% c(0, 0, -1)) < 0
+  if (dorsal_visible) {
+    if (length(m$details)) for (line in m$details) {
+      w <- R %*% line
+      graphics::lines(as.numeric(rr %*% w) * scl, as.numeric(uu %*% w) * scl,
+                      col = .shadeColor(body.col, 0.42), lwd = 1.1)
+    }
+    if (!is.null(m$eyes)) {
+      w <- R %*% m$eyes
+      graphics::points(as.numeric(rr %*% w) * scl, as.numeric(uu %*% w) * scl,
+                       pch = 21, cex = 0.62, bg = "#11161a", col = .shadeColor(body.col, 0.48), lwd = 0.7)
+    }
   }
 
   if (isTRUE(show.heading)) {

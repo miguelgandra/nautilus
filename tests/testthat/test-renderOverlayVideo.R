@@ -127,8 +127,10 @@ test_that(".drawAttitudeModel3D is NA-tolerant and draws", {
   expect_no_error(nautilus:::.drawAttitudeModel3D(NA_real_, NA_real_, .theme, label = "x"))
   expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme))
   expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, heading = 270, show.heading = TRUE))
-  for (model in c("shark", "cetacean", "turtle", "fish", "manta"))
+  for (model in c("shark", "cetacean", "turtle", "fish", "manta")) {
     expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, model = model))
+    expect_no_error(nautilus:::.drawAttitudeModel3D(0, 180, .theme, model = model))
+  }
 })
 
 test_that("pseudo-trajectory preparation fixes projection, bounds, and exaggeration for the clip", {
@@ -159,8 +161,29 @@ test_that("all configured orientation models are valid low-poly meshes", {
     expect_equal(length(m$faces), length(m$part))
     expect_true(all(vapply(m$faces, function(f) is.matrix(f) && nrow(f) == 3L && ncol(f) >= 3L, logical(1))))
     expect_setequal(unique(m$part), c("body", "fin"))
+    if (!is.null(m$details))
+      expect_true(all(vapply(m$details, function(line) is.matrix(line) && nrow(line) == 3L &&
+                               ncol(line) >= 2L && all(is.finite(line)), logical(1))))
+    if (!is.null(m$eyes)) {
+      expect_equal(nrow(m$eyes), 3L)
+      expect_true(all(is.finite(m$eyes)))
+    }
   }
+  expect_length(nautilus:::.tagModel3D("shark")$faces, 53L) # shark geometry is unchanged
+  expect_null(nautilus:::.tagModel3D("shark")$details)
+  expect_null(nautilus:::.tagModel3D("shark")$eyes)
   expect_error(nautilus:::.tagModel3D("penguin"), "Unknown orientation model")
+})
+
+test_that("refined animal meshes preserve distinguishing anatomical proportions", {
+  specs <- nautilus:::.orientationModelRegistry()
+  expect_gt(abs(specs$cetacean$appendages[[4]][2, 3]), 0.6)  # horizontal fluke span
+  expect_gt(max(specs$turtle$appendages[[1]][2, ]),
+            max(specs$turtle$appendages[[3]][2, ]))           # foreflipper exceeds hindflipper
+  expect_gt(length(specs$turtle$details), 4L)                # carapace scute sutures
+  expect_gt(max(specs$fish$height), max(specs$fish$width))    # laterally compressed bony fish
+  expect_gt(max(specs$manta$appendages[[1]][2, ]), 1.2)      # wide pectoral disc
+  expect_lt(min(specs$manta$height), 0.02)                   # flattened body/tail
 })
 
 test_that("presentation geometry shortens the orientation and timestamp rows", {
@@ -222,6 +245,15 @@ test_that("end-to-end: composites a dashboard panel beside a synthetic source vi
   overlay_info <- av::av_video_info(overlay)
   expect_equal(overlay_info$video$width, 480)                  # transparent composition preserves source dimensions
   expect_equal(overlay_info$video$height, 720)
+
+  manta_out <- tempfile(fileext = ".mp4"); on.exit(unlink(manta_out), add = TRUE)
+  expect_no_error(suppressWarnings(suppressMessages(
+    renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), manta_out,
+                       dashboard = "general", composition = "overlay", orientation.model = "manta",
+                       video.start = t0, start = t0, end = t0 + 1,
+                       overlay.fps = 2, codec = "h264", crf = 30, verbose = FALSE))))
+  expect_true(file.exists(manta_out))
+  expect_equal(av::av_video_info(manta_out)$video$width, 480)
 })
 
 test_that("codec = 'hevc' tags the stream hvc1 for QuickTime compatibility", {

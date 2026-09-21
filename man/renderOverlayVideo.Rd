@@ -69,7 +69,9 @@ validation dashboards.}
 \code{"shark"} (default), \code{"cetacean"}, \code{"turtle"}, \code{"fish"} or \code{"manta"}. The choice changes only the
 displayed silhouette; it does not alter the underlying orientation values or coordinate
 conventions. Presentation dashboards ignore it when \code{orientation = "dials"}; fixed validation
-dashboards always use the selected model.}
+dashboards always use the selected model. \code{"cetacean"} depicts a dolphin-like odontocete,
+\code{"turtle"} a hard-shelled sea turtle, and \code{"fish"} a generic ray-finned fish; these are not
+species-specific anatomical reconstructions.}
 
 \item{video.start}{One finite \code{POSIXct} value giving the sensor-clock time represented by the first
 frame of \code{video}. \code{NULL} (default) attempts to read a UTC timestamp in \code{YYYYMMDD-HHMMSS} or
