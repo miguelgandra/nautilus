@@ -176,6 +176,59 @@ test_that("naming both backends runs both and cross-checks them", {
   step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
   expect_equal(step$method, "peaks + wavelet")
   expect_true(all(c("pct_edge", "pct_agree") %in% names(step)))
+  expect_equal(step$agreement_rel_tol, 0.1)
+  expect_equal(step$agreement_abs_tol_hz, 0.03)
+  expect_equal(step$pct_paired, round(100 * mean(!is.na(out$tbf_agree)), 1))
+})
+
+test_that("hybrid agreement accepts small low-frequency gaps without admitting harmonics", {
+  agree <- nautilus:::.tbAgreement
+  expect_identical(agree(c(0.2, 2, 0.2, NA_real_),
+                         c(0.225, 2.025, 0.4, 0.2)), c(TRUE, TRUE, FALSE, NA))
+  expect_identical(agree(0.2, 0.225, abs.tol.Hz = 0), FALSE)
+  expect_identical(agree(0.2, 0.225, abs.tol.Hz = 0.02), FALSE)
+  expect_identical(agree(0.2, 0.225, rel.tol = 0.15, abs.tol.Hz = 0), TRUE)
+  expect_identical(agree(0.25, 0.28125, rel.tol = 0, abs.tol.Hz = 0.03125), TRUE)
+  expect_identical(agree(Inf, 0.2), NA)
+})
+
+test_that("public agreement tolerances reach the per-row comparison and audit trail", {
+  skip_if_not_installed("signal")
+  out <- run_tb(list(A01 = .sway(freq = 0.5, fs = 20, dur = 180)),
+                agreement.rel.tol = 0.07, agreement.abs.tol.Hz = 0.02)$A01
+  expect_identical(out$tbf_agree,
+                   nautilus:::.tbAgreement(out$tbf_hz_peaks, out$tbf_hz_wavelet,
+                                          rel.tol = 0.07, abs.tol.Hz = 0.02))
+  step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
+  expect_equal(step$agreement_rel_tol, 0.07)
+  expect_equal(step$agreement_abs_tol_hz, 0.02)
+  expect_equal(step$pct_paired, round(100 * mean(!is.na(out$tbf_agree)), 1))
+})
+
+test_that("agreement tolerances are validated before processing", {
+  d <- list(A01 = .sway())
+  for (x in list(-0.1, NA_real_, Inf, 1)) {
+    expect_error(calculateTailBeats(d, agreement.rel.tol = x, bandpass.filter = FALSE,
+                                    verbose = FALSE), "agreement.rel.tol")
+  }
+  for (x in list(-0.01, NA_real_, Inf)) {
+    expect_error(calculateTailBeats(d, agreement.abs.tol.Hz = x, bandpass.filter = FALSE,
+                                    verbose = FALSE), "agreement.abs.tol.Hz")
+  }
+})
+
+test_that("a deployment without motion keeps a typed missing agreement and provenance", {
+  d <- .sway()
+  d[, sway := NULL]
+  out <- run_tb(list(A01 = d), bandpass.filter = FALSE,
+                agreement.rel.tol = 0.08, agreement.abs.tol.Hz = 0.025)$A01
+  expect_type(out$tbf_agree, "logical")
+  expect_true(all(is.na(out$tbf_agree)))
+  step <- Filter(function(p) identical(p$step, "calculateTailBeats"), nautilus:::.getMeta(out)$processing)[[1]]
+  expect_identical(step$pct_paired, 0)
+  expect_true(is.na(step$pct_agree))
+  expect_equal(step$agreement_rel_tol, 0.08)
+  expect_equal(step$agreement_abs_tol_hz, 0.025)
 })
 
 .tone_tag <- function(f0, fs = 40, dur = 300, seed = 1) {

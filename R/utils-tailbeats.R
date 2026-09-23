@@ -406,16 +406,19 @@
 #' The two backends fail in opposite directions -- peak detection can lock onto a harmonic and report a
 #' multiple of the true frequency, while a spectral method can be captured by a strong low-frequency
 #' component that peak detection ignores -- so their bias is largely independent and agreement is
-#' evidence. Agreement is the certificate, not disagreement the error flag: where they agree they are
-#' almost never both wrong, but where they differ neither the flag nor anything else says which one to
-#' believe, so it means "unresolved" rather than "bad".
-#' @param a,b Frequency estimates. @param tol Relative tolerance.
-#' @return Logical vector; NA where either estimate is missing.
+#' supporting evidence, not proof: both can also agree on a harmonic or shared artefact. Where they
+#' differ, the flag does not say which one to believe, so it means "unresolved" rather than "bad".
+#' @param a,b Frequency estimates in Hz.
+#' @param rel.tol Maximum relative difference, measured against the larger estimate.
+#' @param abs.tol.Hz Absolute tolerance floor in Hz. Set to zero for relative-only agreement.
+#' @return Logical vector; NA where either estimate is missing or non-finite.
 #' @keywords internal
 #' @noRd
-.tbAgreement <- function(a, b, tol = 0.1) {
-  out <- abs(a - b) / pmax(a, b) < tol
-  out[is.na(a) | is.na(b)] <- NA
+.tbAgreement <- function(a, b, rel.tol = 0.1, abs.tol.Hz = 0.03) {
+  out <- rep(NA, length(a))
+  valid <- is.finite(a) & is.finite(b) & a > 0 & b > 0
+  out[valid] <- abs(a[valid] - b[valid]) <=
+    pmax(abs.tol.Hz, rel.tol * pmax(a[valid], b[valid]))
   out
 }
 

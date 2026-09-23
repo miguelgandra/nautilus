@@ -21,6 +21,8 @@ calculateTailBeats(
   max.interp.gap = 10,
   ridge.prominence = 2,
   min.periodicity = 0.15,
+  agreement.rel.tol = 0.1,
+  agreement.abs.tol.Hz = 0.03,
   plot = FALSE,
   plot.file = NULL,
   plot.wavelet = TRUE,
@@ -78,6 +80,13 @@ spectral background (default \code{2}). Estimates with less support are returned
 \item{min.periodicity}{Minimum autocorrelation-based periodicity required before an estimate is
 reported (default \code{0.15}). Estimates below it are returned as \code{NA}. Used only by \code{"peaks"}.}
 
+\item{agreement.rel.tol}{Maximum relative difference between the two frequency estimates that
+counts as agreement (default \code{0.1}, or 10\%). The difference is divided by the larger estimate.}
+
+\item{agreement.abs.tol.Hz}{Absolute tolerance floor, in Hz (default \code{0.03}). Agreement uses the
+larger of this and the relative tolerance at each sample. Set to \code{0}
+for a relative-only comparison. These parameters apply only when both methods are requested.}
+
 \item{plot}{Whether to draw diagnostic plots to the active graphics device (default \code{FALSE}).}
 
 \item{plot.file}{Path to a multi-page PDF holding the diagnostic plots, or \code{NULL} (default).}
@@ -115,15 +124,17 @@ excursion, in the units of the selected motion channel.}
 \item{\code{tbf_swimming}}{Whether the animal was actively swimming, where \code{min.amplitude} was
 supplied, and \code{NA} otherwise. Unsuffixed: it derives from the band-passed signal both methods
 share.}
-\item{\code{tbf_agree}}{Whether the two methods agree within 10\%, where both ran. Also unsuffixed,
-being a property of the pair rather than of either one.}
+\item{\code{tbf_agree}}{Whether the two methods agree under the specified hybrid tolerance, where
+both produced an estimate. Also unsuffixed, being a property of the pair rather than of either
+one.}
 }
 
 There is deliberately no method-agnostic \code{tbf_hz}, so a value's provenance always travels with it;
 use \code{\link[=tailBeatColumn]{tailBeatColumn()}} to resolve which column to read without hard-coding a method.
 
-The channel selected, the methods used, median frequency and amplitude, and the percentage of time
-classified as swimming are recorded in the deployment's processing history. When
+The channel selected, the methods used, median frequency and amplitude, the agreement tolerances,
+the percentage of samples with paired estimates (\code{pct_paired}), and the agreement percentage among
+those paired samples (\code{pct_agree}) are recorded in the deployment's processing history. When
 \code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
 }
 \description{
@@ -152,13 +163,14 @@ is often steadier on noisy or non-stationary signals.}
 }
 
 Both can be requested at once. Their frequencies are stored in separate columns, and \code{tbf_agree}
-records whether the two fall within 10\% of each other at a given sample.
+records whether their difference is at most the larger of \code{agreement.abs.tol.Hz} and
+\code{agreement.rel.tol} times the larger frequency at a given sample. It is \code{NA} when either method
+has no estimate. The absolute tolerance accommodates small differences at low frequencies but is a
+quality-control convention, not a measure of estimator uncertainty; review it for the study species.
 
-Read agreement as a certificate rather than an error flag. Where the two methods concur they are
-rarely both wrong; where they differ, nothing identifies which to distrust, so \code{FALSE} means
-unresolved rather than bad. The certificate has one known blind spot: both methods establish a
-dominant periodicity before anything else, so neither can vouch for the other against a harmonic
-error, and both may settle on the same harmonic of the true locomotor frequency.
+Read agreement as supporting evidence, not proof of the true locomotor frequency. Where they
+differ, nothing identifies which estimate to distrust, so \code{FALSE} means unresolved rather than bad.
+Both methods can settle on the same harmonic of the true frequency or share another artefact.
 }
 
 \subsection{Selecting the motion channel}{

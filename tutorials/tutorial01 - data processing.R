@@ -678,19 +678,24 @@ paddle_history[paddle_history$step == "calculatePaddleSpeed", ]
 # clearest on the lateral "sway" axis. Other taxa may require the vertical
 # "heave" axis. The sampling rate should exceed twice the maximum frequency
 # being estimated (Nyquist), with at least 4x recommended.
+# When both methods run, tbf_agree uses the larger of a 10% relative difference
+# and 0.03 Hz. The latter accommodates small gaps at whale-shark beat rates;
+# inspect pct_agree and pct_paired in processingHistory() before interpreting it.
 
-calculateTailBeats(data            = list.files("./data interim/05_processed", full.names = TRUE),
-                   method          = c("peaks", "wavelet"),
-                   motion.col      = c("surge"),
-                   min.freq.Hz     = 0.1,
-                   max.freq.Hz     = 2.5,
-                   bandpass.filter = TRUE,
-                   smooth.window   = 5,
-                   plot            = TRUE,
-                   plot.file       = "./plots/tail_beats.pdf",
-                   return.data     = FALSE,
-                   output.dir      =  "./data interim/06_tailbeats",
-                   verbose         = "detailed")
+calculateTailBeats(data                 = list.files("./data interim/05_processed", full.names = TRUE),
+                   method               = c("peaks", "wavelet"),
+                   motion.col           = c("surge"),
+                   min.freq.Hz          = 0.1,
+                   max.freq.Hz          = 2.5,
+                   bandpass.filter      = TRUE,
+                   smooth.window        = 5,
+                   agreement.rel.tol    = 0.1,
+                   agreement.abs.tol.Hz = 0.03,
+                   plot                 = TRUE,
+                   plot.file            = "./plots/tail_beats.pdf",
+                   return.data          = FALSE,
+                   output.dir           = "./data interim/06_tailbeats",
+                   verbose              = "detailed")
 
 
 

@@ -48,6 +48,11 @@
 #'   `"wavelet"`.
 #' @param min.periodicity Minimum autocorrelation-based periodicity required before an estimate is
 #'   reported (default `0.15`). Estimates below it are returned as `NA`. Used only by `"peaks"`.
+#' @param agreement.rel.tol Maximum relative difference between the two frequency estimates that
+#'   counts as agreement (default `0.1`, or 10%). The difference is divided by the larger estimate.
+#' @param agreement.abs.tol.Hz Absolute tolerance floor, in Hz (default `0.03`). Agreement uses the
+#'   larger of this and the relative tolerance at each sample. Set to `0`
+#'   for a relative-only comparison. These parameters apply only when both methods are requested.
 #' @param plot Whether to draw diagnostic plots to the active graphics device (default `FALSE`).
 #' @param plot.file Path to a multi-page PDF holding the diagnostic plots, or `NULL` (default).
 #' @param plot.wavelet Whether the wavelet power spectrum is included in the diagnostic plots (default
@@ -78,13 +83,14 @@
 #' }
 #'
 #' Both can be requested at once. Their frequencies are stored in separate columns, and `tbf_agree`
-#' records whether the two fall within 10% of each other at a given sample.
+#' records whether their difference is at most the larger of `agreement.abs.tol.Hz` and
+#' `agreement.rel.tol` times the larger frequency at a given sample. It is `NA` when either method
+#' has no estimate. The absolute tolerance accommodates small differences at low frequencies but is a
+#' quality-control convention, not a measure of estimator uncertainty; review it for the study species.
 #'
-#' Read agreement as a certificate rather than an error flag. Where the two methods concur they are
-#' rarely both wrong; where they differ, nothing identifies which to distrust, so `FALSE` means
-#' unresolved rather than bad. The certificate has one known blind spot: both methods establish a
-#' dominant periodicity before anything else, so neither can vouch for the other against a harmonic
-#' error, and both may settle on the same harmonic of the true locomotor frequency.
+#' Read agreement as supporting evidence, not proof of the true locomotor frequency. Where they
+#' differ, nothing identifies which estimate to distrust, so `FALSE` means unresolved rather than bad.
+#' Both methods can settle on the same harmonic of the true frequency or share another artefact.
 #'
 #' ## Selecting the motion channel
 #'
@@ -180,15 +186,17 @@
 #'     \item{`tbf_swimming`}{Whether the animal was actively swimming, where `min.amplitude` was
 #'       supplied, and `NA` otherwise. Unsuffixed: it derives from the band-passed signal both methods
 #'       share.}
-#'     \item{`tbf_agree`}{Whether the two methods agree within 10%, where both ran. Also unsuffixed,
-#'       being a property of the pair rather than of either one.}
+#'     \item{`tbf_agree`}{Whether the two methods agree under the specified hybrid tolerance, where
+#'       both produced an estimate. Also unsuffixed, being a property of the pair rather than of either
+#'       one.}
 #'   }
 #'
 #'   There is deliberately no method-agnostic `tbf_hz`, so a value's provenance always travels with it;
 #'   use [tailBeatColumn()] to resolve which column to read without hard-coding a method.
 #'
-#'   The channel selected, the methods used, median frequency and amplitude, and the percentage of time
-#'   classified as swimming are recorded in the deployment's processing history. When
+#'   The channel selected, the methods used, median frequency and amplitude, the agreement tolerances,
+#'   the percentage of samples with paired estimates (`pct_paired`), and the agreement percentage among
+#'   those paired samples (`pct_agree`) are recorded in the deployment's processing history. When
 #'   `return.data = FALSE`, a character vector of the written `.rds` file paths.
 #'
 #' @note Band-pass filtering requires the \pkg{signal} package; set `bandpass.filter = FALSE` to analyse
@@ -236,6 +244,8 @@ calculateTailBeats <- function(data,
                                max.interp.gap = 10,
                                ridge.prominence = 2,
                                min.periodicity = 0.15,
+                               agreement.rel.tol = 0.1,
+                               agreement.abs.tol.Hz = 0.03,
                                plot = FALSE,
                                plot.file = NULL,
                                plot.wavelet = TRUE,
@@ -345,6 +355,9 @@ calculateTailBeats <- function(data,
   # an autocorrelation is bounded by 1, so a floor at or above it would withhold every estimate
   .assert_number(min.periodicity, "min.periodicity", min = 0)
   if (min.periodicity >= 1) .abort("{.arg min.periodicity} must be below 1 (it is an autocorrelation, which cannot exceed 1).")
+  .assert_number(agreement.rel.tol, "agreement.rel.tol", min = 0)
+  if (agreement.rel.tol >= 1) .abort("{.arg agreement.rel.tol} must be below 1.")
+  .assert_number(agreement.abs.tol.Hz, "agreement.abs.tol.Hz", min = 0)
 
   # default band edges (also used for axis selection even when bandpass.filter = FALSE)
   if (is.null(filter.low.freq))  filter.low.freq  <- min.freq.Hz * 0.9
@@ -595,7 +608,7 @@ calculateTailBeats <- function(data,
       for (m in methods) for (q in c("tbf_hz_", "tbf_amplitude_"))
         data.table::set(individual_data, j = paste0(q, m), value = NA_real_)
       data.table::set(individual_data, j = "tbf_swimming", value = NA_real_)
-      if (length(methods) > 1L) data.table::set(individual_data, j = "tbf_agree", value = NA_real_)
+      if (length(methods) > 1L) data.table::set(individual_data, j = "tbf_agree", value = NA)
       res_i <- .ensureMeta(individual_data)
       meta <- .getMeta(res_i)
       if (!is.null(meta)) {
@@ -604,6 +617,9 @@ calculateTailBeats <- function(data,
                                   axis_harmonic_alt = sel$harmonic_alt %||% NA_character_,
                                   median_tbf_hz = NA_real_, median_amplitude = NA_real_,
                                   pct_swimming = NA_real_, pct_edge = NA_real_, pct_agree = NA_real_,
+                                  pct_paired = if (length(methods) > 1L) 0 else NA_real_,
+                                  agreement_rel_tol = agreement.rel.tol,
+                                  agreement_abs_tol_hz = agreement.abs.tol.Hz,
                                   note = "no valid motion data")
         res_i <- .restoreMeta(res_i, meta)
       }
@@ -734,7 +750,9 @@ calculateTailBeats <- function(data,
       data.table::set(data_list[[i]], j = alt_hz,  value = alt[[alt_hz]])
       data.table::set(data_list[[i]], j = alt_amp, value = alt[[alt_amp]])
       data.table::set(data_list[[i]], j = "tbf_agree",
-                      value = .tbAgreement(data_list[[i]][[col_hz]], alt[[alt_hz]]))
+                      value = .tbAgreement(data_list[[i]][[col_hz]], alt[[alt_hz]],
+                                           rel.tol = agreement.rel.tol,
+                                           abs.tol.Hz = agreement.abs.tol.Hz))
     }
     names(data_list)[i] <- id
 
@@ -765,6 +783,7 @@ calculateTailBeats <- function(data,
     edges <- edges[is.finite(edges)]                  # neither track estimated anything: nothing to judge
     edge_occ <- if (length(edges)) max(edges) else NA_real_
     agree <- if (!is.null(res_i$tbf_agree)) mean(res_i$tbf_agree, na.rm = TRUE) else NA_real_
+    paired <- if (!is.null(res_i$tbf_agree)) mean(!is.na(res_i$tbf_agree)) else NA_real_
     # NOTE: edge occupancy is only RECORDED here. The diagnosis and the fix are identical for every
     # affected deployment, so they are raised once after the loop (see below) instead of once per tag.
 
@@ -808,7 +827,10 @@ calculateTailBeats <- function(data,
                                 pct_swimming = round(100 * swim, 1),
                                 pct_edge = round(100 * edge_occ, 1),
                                 pct_unresolved = if (is.na(co_unres[i])) NA_real_ else round(100 * co_unres[i], 1),
-                                pct_agree = if (is.na(agree)) NA_real_ else round(100 * agree, 1))
+                                pct_agree = if (is.na(agree)) NA_real_ else round(100 * agree, 1),
+                                pct_paired = if (is.na(paired)) NA_real_ else round(100 * paired, 1),
+                                agreement_rel_tol = agreement.rel.tol,
+                                agreement_abs_tol_hz = agreement.abs.tol.Hz)
       res_i <- .restoreMeta(res_i, meta)
     }
     data_list[[i]] <- res_i
@@ -977,7 +999,7 @@ calculateTailBeats <- function(data,
     for (r in rows) .log_subdetail_aligned(lvl, r)
   }
 
-  # the comparison itself, subordinate to neither backend: how often the two concur (samples within 10%)
+  # the comparison itself, subordinate to neither backend: how often the two concur under the selected tolerance
   # and, beneath it, the typical per-sample gap
   if (isTRUE(is.finite(agree))) {
     .log_detail(lvl, sprintf("agreement: %.0f%%", 100 * agree))
