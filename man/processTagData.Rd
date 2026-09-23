@@ -30,9 +30,9 @@ processTagData(
 identified by an \code{ID} column, or a character vector of \code{.rds} file paths. The output of
 \code{\link[=importTagData]{importTagData()}} is recommended. When file paths are supplied, deployments are processed
 sequentially, allowing large datasets to be processed without loading everything into memory. The
-inertial axes must already be in the animal's body frame; a deployment whose axis mapping has not
-been applied is processed but raises a warning, since its orientation metrics will be wrong without
-appearing so.}
+inertial axes must already be in the animal's body frame when acceleration is available; an
+accelerometer-bearing deployment whose axis mapping has not been applied raises a warning, since
+its orientation metrics may otherwise be wrong without appearing so.}
 
 \item{downsample.to}{Sampling frequency in Hz to which the processed data are downsampled (default
 \code{1}); \code{NULL} retains the original frequency. Movement metrics are calculated at the original
@@ -146,6 +146,16 @@ by tag attachment;
 \item estimates paddle-wheel rotation frequency, where applicable; and
 \item optionally downsamples the processed dataset to the requested sampling frequency.
 }
+
+A deployment with valid timestamps and depth is retained when its accelerometer or the gyroscope
+required by the selected orientation method is unavailable. Independent depth, temperature and
+magnetometer-derived outputs are processed where supported. Unavailable acceleration and orientation
+metrics, including burst flags, are \code{NA}, never zero. The processing-history record reports
+\code{status = "partial"}, the unavailable stream and its reason; \code{meta$sensors$excluded} retains the
+channels removed by earlier QC. Such a deployment is not entered in \code{exclusions.csv}, which records
+whole-deployment exclusions. \code{status = "complete"} means the available accelerometer and selected
+orientation method could run; it does not imply that optional magnetometer or paddle measurements
+existed. A missing or entirely unusable depth record is still skipped.
 
 The original sampling frequency is retained in \code{meta$sensors$sampling_hz_original}, and that of the
 processed dataset in \code{meta$sensors$sampling_hz_processed}. Processing parameters and outcomes are
@@ -308,9 +318,11 @@ aliased during recording, so the sensor sampling rate must still cover the expec
 downsampling are not repeated, but derived metrics are recalculated from the already-downsampled
 columns and will not reproduce the first run, since jerk and the separation of gravity from
 motion both depend on sampling rate. Re-process from the imported data instead.}
-\item{skipped deployment}{A deployment lacking required input variables is excluded from the
-returned dataset and is not written to \code{output.dir}. Channels removed by \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}
-are recorded in \code{meta$sensors$excluded}.}
+\item{partially processed deployment}{An unavailable accelerometer or a gyroscope required by the
+selected orientation method prevents only the dependent metrics; valid independent streams are
+retained. The processing metadata records the partial status and reason.}
+\item{skipped deployment}{A deployment lacking usable depth, a valid time axis or other core input
+is excluded from the returned dataset and is not written to \code{output.dir}.}
 }
 }
 }

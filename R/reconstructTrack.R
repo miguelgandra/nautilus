@@ -26,6 +26,8 @@
 #'   fleet too large for memory can be processed without ever holding it all. Each deployment needs
 #'   `datetime`, `heading` and `pitch`, plus whatever the chosen `speed.method` reads
 #'   (`vertical_velocity`, `paddle_speed` or `vedba`), and `depth` for the three-dimensional output.
+#'   A deployment with no usable paired heading and pitch observations is skipped, not converted into
+#'   a stationary pseudo-track.
 #' @param control A control object from [reconstructTrackControl()] governing where speed comes from and
 #'   how the track is corrected onto the known fixes. Pass `reconstructTrackControl(...)` to change it.
 #' @param id.col Which column identifies the animal (default `"ID"`).
@@ -118,6 +120,7 @@
 #'   `speed_dr` (the speed that was used) and `pseudo_error` (the per-sample one-sigma positional
 #'   uncertainty in metres) added, plus `pseudo_depth` where `control$include.depth` is set and a depth
 #'   channel is present. If `return.data = FALSE`, a character vector of the written `.rds` file paths.
+#'   Deployments without usable orientation are absent from either output and named in a warning.
 #'
 #' @references
 #' Wilson RP, Liebsch N, Davies IM, *et al.* (2007) All at sea with animal tracks; methodological and
@@ -192,6 +195,7 @@ reconstructTrack <- function(data,
   n_ok <- 0L
   untrusted_ids <- character(0); partial_ids <- character(0)   # heading-calibration trust of the input (see below)
   magnetic_ids  <- character(0)   # heading referenced to MAGNETIC north (an axis independent of calibration)
+  no_orientation_ids <- character(0)
   pb <- .log_progress_start(lvl, r$n, "Reconstructing", min.level = 1L, max.level = 1L)   # NORMAL only (detailed streams)
   for (i in seq_len(r$n)) {
     .log_progress_step(pb)
@@ -200,6 +204,18 @@ reconstructTrack <- function(data,
     who <- tryCatch(as.character(unique(x[[id.col]])[1]), error = function(e) NA_character_)
     if (length(who) != 1L || is.na(who) || !nzchar(who)) who <- r$ids[i]
     .log_h2(lvl, sprintf("%s (%d/%d)", who, i, r$n))
+
+    # A column of NA is a schema placeholder, not a heading estimate. Without this guard the
+    # integrator turns every non-finite displacement into zero and writes a plausible-looking,
+    # perfectly stationary track for a deployment whose accelerometer was excluded by QC.
+    if (all(c("heading", "pitch") %in% names(x)) &&
+        sum(is.finite(x$heading) & is.finite(x$pitch)) < 2L) {
+      no_orientation_ids <- c(no_orientation_ids, who)
+      .log_skip(lvl, "no usable heading and pitch; track skipped")
+      .log_gap(lvl)
+      rm(x)
+      next
+    }
 
     # heading-calibration trust: the track is only as good as the heading it integrates. A raw (uncalibrated)
     # field carries a hard-iron offset that biases every heading and compounds into drift, so surface it.
@@ -243,10 +259,13 @@ reconstructTrack <- function(data,
   }
   .log_progress_done(pb)
 
+  .warn_grouped("{length(no_orientation_ids)} deployment{?s} {?was/were} skipped: no usable orientation for track reconstruction.",
+                items = no_orientation_ids, style = "inline")
+
   # Asking for paddle speed and getting none from any deployment is a missing step, not a run with
   # nothing to show: a track scaled by an absent speed would be built entirely from the fallback and
   # would look like a result.
-  if (identical(control$speed.method, "paddle") && n_ok == 0L && r$n > 0L)
+  if (identical(control$speed.method, "paddle") && n_ok == 0L && r$n > length(no_orientation_ids))
     .abort(c("No deployment carries {.field paddle_speed}, which {.code speed.method = \"paddle\"} needs.",
              "i" = "{.fn processTagData} records the paddle rotation as {.field paddle_freq};
                     {.fn calculatePaddleSpeed} turns it into a speed."))
@@ -306,6 +325,8 @@ reconstructTrack <- function(data,
     hint <- if ("paddle_speed" %in% missing_cols) " - run calculatePaddleSpeed() first" else ""
     stop("missing column(s): ", paste(missing_cols, collapse = ", "), hint)
   }
+  if (sum(is.finite(dt$heading) & is.finite(dt$pitch)) < 2L)
+    stop("no usable heading and pitch; track reconstruction is unavailable")
 
   deploy_lat <- meta$deployment$lat; deploy_lon <- meta$deployment$lon
   if (is.null(deploy_lat) || is.null(deploy_lon) || is.na(deploy_lat) || is.na(deploy_lon))

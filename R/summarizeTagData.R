@@ -30,8 +30,10 @@
 #' @param deployments Optional `nautilus_deployments` object from [checkDeploymentMetadata()]. When
 #'   supplied, the summary is completed into the full study roster: every deployment gets a row, and
 #'   `status` marks each `"included"` (processed data present) or `"excluded"` (in the roster but absent
-#'   from `data`). Supply it when reporting a study, so the table accounts for every animal tagged
-#'   rather than only those whose data survived. Default `NULL`.
+#'   from `data`). `processing_status` separately identifies a retained deployment whose processing
+#'   was partial; it does not change its inclusion status. Supply the roster when reporting a study,
+#'   so the table accounts for every animal tagged rather than only those whose data survived.
+#'   Default `NULL`.
 #' @param metadata Which deployment metadata to include, as a keyword or a vector of names.
 #'   `"standard"` (default) adds every biometric trait the cohort carries plus the tagging date and
 #'   coordinates; `"none"` reproduces the bare table; `"all"` adds the pop-up date and coordinates, the
@@ -81,9 +83,9 @@
 #'     \item **tag** - `tag_model`, `tag_type`, `attachment_site`, `paddle_wheel`.
 #'     \item **deployment** - the metadata fields `metadata` asked for, in the package's canonical
 #'       order.
-#'     \item **record** - `record_start`, `record_end`, `record_duration_h`, then `status` and
-#'       `status_reason`, which close the block because the reason usually explains a short or absent
-#'       record.
+#'     \item **record** - `record_start`, `record_end`, `record_duration_h`, then `status`,
+#'       `status_reason` and `processing_status`. A partial processing status means the deployment
+#'       was retained but an expected stream could not support its derived metrics.
 #'     \item **coverage** - `n_samples`, `sampling_hz`, `n_positions`, `video_duration_h`.
 #'     \item **habitat** - `depth_mean`, `depth_max`, `temp_mean`, `temp_min`, `temp_max`.
 #'     \item **movement** - `vedba_mean`, `odba_mean`, `tbf_mean`, `tbf_method`, `pct_swimming`,
@@ -404,6 +406,8 @@ summarizeTagData <- function(data,
   }
 
   meta <- .getMeta(.ensureMeta(dt))
+  process_steps <- Filter(function(p) identical(p$step, "processTagData"), meta$processing %||% list())
+  process_status <- if (length(process_steps)) tail(process_steps, 1L)[[1L]]$status else NA_character_
 
   # scalar coercions tolerant of NULL / NA / wrong-length metadata fields
   s_chr <- function(v) { v <- v %||% NA_character_; if (length(v) != 1) NA_character_ else as.character(v) }
@@ -456,6 +460,7 @@ summarizeTagData <- function(data,
     record_start          = record_start,
     record_end            = record_end,
     record_duration_h     = hrs(record_start, record_end),
+    processing_status     = s_chr(process_status),
     n_samples             = nrow(dt),
     sampling_hz           = s_num(meta$sensors$sampling_hz_original),
     depth_mean            = cstat("depth", mean),
@@ -651,7 +656,8 @@ summarizeTagData <- function(data,
 .summaryTemplate <- function() {
   ps <- as.POSIXct(character(0), tz = "UTC")
   data.frame(id = character(0), animal_id = character(0), tag_model = character(0), tag_type = character(0), attachment_site = character(0),
-             record_start = ps, record_end = ps, record_duration_h = numeric(0), n_samples = integer(0),
+             record_start = ps, record_end = ps, record_duration_h = numeric(0),
+             processing_status = character(0), n_samples = integer(0),
              sampling_hz = numeric(0), depth_mean = numeric(0), depth_max = numeric(0), temp_mean = numeric(0),
              temp_min = numeric(0), temp_max = numeric(0), vedba_mean = numeric(0), odba_mean = numeric(0),
              tbf_mean = numeric(0), tbf_method = character(0), pct_swimming = numeric(0),
@@ -1182,7 +1188,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   report <- c(
     id = "ID", animal_id = "Animal ID",
     tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attachment site",
-    status = "Status", status_reason = "Exclusion reason",
+    status = "Status", status_reason = "Exclusion reason", processing_status = "Processing status",
     deploy_datetime = "Tagging date", deploy_site = "Tagging site",
     deploy_lon = "Tagging longitude (\u00b0)",
     deploy_lat = "Tagging latitude (\u00b0)", popup_datetime = "Pop-up date",
@@ -1205,7 +1211,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   concise <- c(
     id = "ID", animal_id = "Animal",
     tag_model = "Tag model", tag_type = "Tag type", attachment_site = "Attach. site",
-    status = "Status", status_reason = "Reason",
+    status = "Status", status_reason = "Reason", processing_status = "Processing",
     deploy_datetime = "Tagged", deploy_site = "Site",
     deploy_lon = "Lon (\u00b0)", deploy_lat = "Lat (\u00b0)",
     popup_datetime = "Pop-up", popup_lon = "Pop-up lon (\u00b0)", popup_lat = "Pop-up lat (\u00b0)",
@@ -1312,7 +1318,7 @@ print.nautilus_summary <- function(x, ...) {
   animal   = character(0),                    # declared traits + extra.metadata covariates, filled in
   tag      = c("tag_model", "tag_type", "attachment_site", "paddle_wheel"),
   deploy   = character(0),                    # the requested metadata fields, in vocabulary order
-  record   = c("record_start", "record_end", "record_duration_h", "status", "status_reason"),
+  record   = c("record_start", "record_end", "record_duration_h", "status", "status_reason", "processing_status"),
   coverage = c("n_samples", "sampling_hz", "n_positions", "video_duration_h"),
   habitat  = c("depth_mean", "depth_max", "temp_mean", "temp_min", "temp_max"),
   movement = c("vedba_mean", "odba_mean", "tbf_mean", "tbf_method", "pct_swimming",

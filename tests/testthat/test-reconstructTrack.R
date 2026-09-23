@@ -74,6 +74,25 @@ test_that("a tag missing required columns or deployment coordinates is skipped, 
   expect_equal(length(.rt(bad, verbose = FALSE)), 0L)                       # no deployment coords -> skipped
 })
 
+test_that("all-NA orientation cannot produce a stationary pseudo-track", {
+  good <- .mk_track_tag("GOOD")
+  bad <- data.table::copy(.mk_track_tag("NOACC"))
+  bad[, `:=`(heading = NA_real_, pitch = NA_real_)]
+  warnings <- character(0)
+  out <- withCallingHandlers(
+    suppressMessages(reconstructTrack(list(GOOD = good, NOACC = bad), verbose = FALSE)),
+    warning = function(w) {
+      warnings <<- c(warnings, conditionMessage(w))
+      invokeRestart("muffleWarning")
+    })
+  expect_named(out, "GOOD")
+  expect_true(any(grepl("no usable orientation.*NOACC|NOACC.*no usable orientation", warnings)))
+  expect_length(suppressWarnings(reconstructTrack(list(NOACC = bad), verbose = FALSE,
+                                                  control = reconstructTrackControl(speed.method = "paddle"))), 0L)
+  expect_error(nautilus:::.reconstructTrackOne(bad, reconstructTrackControl(), "datetime", 0L),
+               "no usable heading and pitch")
+})
+
 test_that("reconstructTrackControl validates its fields", {
   expect_error(reconstructTrackControl(speed.method = "bogus"))
   expect_error(reconstructTrackControl(max.speed = 0.1, constant.speed = 0.5), "between")   # max < constant

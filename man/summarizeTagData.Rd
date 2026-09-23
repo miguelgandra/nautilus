@@ -32,8 +32,10 @@ totals the per-file table for you. Default \code{NULL}.}
 \item{deployments}{Optional \code{nautilus_deployments} object from \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}. When
 supplied, the summary is completed into the full study roster: every deployment gets a row, and
 \code{status} marks each \code{"included"} (processed data present) or \code{"excluded"} (in the roster but absent
-from \code{data}). Supply it when reporting a study, so the table accounts for every animal tagged
-rather than only those whose data survived. Default \code{NULL}.}
+from \code{data}). \code{processing_status} separately identifies a retained deployment whose processing
+was partial; it does not change its inclusion status. Supply the roster when reporting a study,
+so the table accounts for every animal tagged rather than only those whose data survived.
+Default \code{NULL}.}
 
 \item{metadata}{Which deployment metadata to include, as a keyword or a vector of names.
 \code{"standard"} (default) adds every biometric trait the cohort carries plus the tagging date and
@@ -90,9 +92,9 @@ covariates. Both describe the animal, so they sit together.
 \item \strong{tag} - \code{tag_model}, \code{tag_type}, \code{attachment_site}, \code{paddle_wheel}.
 \item \strong{deployment} - the metadata fields \code{metadata} asked for, in the package's canonical
 order.
-\item \strong{record} - \code{record_start}, \code{record_end}, \code{record_duration_h}, then \code{status} and
-\code{status_reason}, which close the block because the reason usually explains a short or absent
-record.
+\item \strong{record} - \code{record_start}, \code{record_end}, \code{record_duration_h}, then \code{status},
+\code{status_reason} and \code{processing_status}. A partial processing status means the deployment
+was retained but an expected stream could not support its derived metrics.
 \item \strong{coverage} - \code{n_samples}, \code{sampling_hz}, \code{n_positions}, \code{video_duration_h}.
 \item \strong{habitat} - \code{depth_mean}, \code{depth_max}, \code{temp_mean}, \code{temp_min}, \code{temp_max}.
 \item \strong{movement} - \code{vedba_mean}, \code{odba_mean}, \code{tbf_mean}, \code{tbf_method}, \code{pct_swimming},

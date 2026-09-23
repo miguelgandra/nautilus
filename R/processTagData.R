@@ -25,9 +25,9 @@
 #'   identified by an `ID` column, or a character vector of `.rds` file paths. The output of
 #'   [importTagData()] is recommended. When file paths are supplied, deployments are processed
 #'   sequentially, allowing large datasets to be processed without loading everything into memory. The
-#'   inertial axes must already be in the animal's body frame; a deployment whose axis mapping has not
-#'   been applied is processed but raises a warning, since its orientation metrics will be wrong without
-#'   appearing so.
+#'   inertial axes must already be in the animal's body frame when acceleration is available; an
+#'   accelerometer-bearing deployment whose axis mapping has not been applied raises a warning, since
+#'   its orientation metrics may otherwise be wrong without appearing so.
 #' @param downsample.to Sampling frequency in Hz to which the processed data are downsampled (default
 #'   `1`); `NULL` retains the original frequency. Movement metrics are calculated at the original
 #'   sampling frequency before downsampling, so accuracy is unaffected, but short transient events are
@@ -101,6 +101,16 @@
 #'   \item estimates paddle-wheel rotation frequency, where applicable; and
 #'   \item optionally downsamples the processed dataset to the requested sampling frequency.
 #' }
+#'
+#' A deployment with valid timestamps and depth is retained when its accelerometer or the gyroscope
+#' required by the selected orientation method is unavailable. Independent depth, temperature and
+#' magnetometer-derived outputs are processed where supported. Unavailable acceleration and orientation
+#' metrics, including burst flags, are `NA`, never zero. The processing-history record reports
+#' `status = "partial"`, the unavailable stream and its reason; `meta$sensors$excluded` retains the
+#' channels removed by earlier QC. Such a deployment is not entered in `exclusions.csv`, which records
+#' whole-deployment exclusions. `status = "complete"` means the available accelerometer and selected
+#' orientation method could run; it does not imply that optional magnetometer or paddle measurements
+#' existed. A missing or entirely unusable depth record is still skipped.
 #'
 #' The original sampling frequency is retained in `meta$sensors$sampling_hz_original`, and that of the
 #' processed dataset in `meta$sensors$sampling_hz_processed`. Processing parameters and outcomes are
@@ -256,9 +266,11 @@
 #'     downsampling are not repeated, but derived metrics are recalculated from the already-downsampled
 #'     columns and will not reproduce the first run, since jerk and the separation of gravity from
 #'     motion both depend on sampling rate. Re-process from the imported data instead.}
-#'   \item{skipped deployment}{A deployment lacking required input variables is excluded from the
-#'     returned dataset and is not written to `output.dir`. Channels removed by [checkSensorIntegrity()]
-#'     are recorded in `meta$sensors$excluded`.}
+#'   \item{partially processed deployment}{An unavailable accelerometer or a gyroscope required by the
+#'     selected orientation method prevents only the dependent metrics; valid independent streams are
+#'     retained. The processing metadata records the partial status and reason.}
+#'   \item{skipped deployment}{A deployment lacking usable depth, a valid time axis or other core input
+#'     is excluded from the returned dataset and is not written to `output.dir`.}
 #' }
 #'
 #' @return If `return.data = TRUE`, a named list containing one processed dataset per successfully
@@ -388,13 +400,9 @@ processTagData <- function(data,
     data <- split(data, data$ID)
   }
 
-  # define required columns based on the chosen orientation algorithm:
-  #  - always: ID, datetime, tri-axial accelerometer, depth
-  #  - madgwick additionally requires the gyroscope
-  # The magnetometer (needed only for heading) and temperature are optional; any
-  # absent recognized channels are simply skipped downstream.
-  required_cols <- c("ID", "datetime", "ax", "ay", "az", "depth")
-  if (orientation.algorithm == "madgwick") required_cols <- c(required_cols, "gx", "gy", "gz")
+  # Depth and time are the core of this stage. An absent or QC-excluded IMU must not discard
+  # independently usable pressure/temperature observations; its dependent metrics remain NA.
+  required_cols <- c("ID", "datetime", "depth")
 
   # if data is already in memory (not file paths), validate each dataset up front
   if (!is_filepaths) {
@@ -466,6 +474,7 @@ processTagData <- function(data,
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
+  partial_items <- character(0) # retained deployments lacking a stream needed for requested metrics
   scope_ids <- character(0)     # every deployment evaluated, including successful partial runs
   # every skip also records WHY, for the shared exclusions log: the reason is already computed for the
   # console line, and discarding it is what left a dropped deployment unexplained in the summary
@@ -507,6 +516,7 @@ processTagData <- function(data,
         .explainMissingColumns(missing_cols, tryCatch(attr(individual_data, "nautilus", exact = TRUE),
                                                       error = function(e) NULL))
       else if (!inherits(individual_data$datetime, "POSIXct")) "the datetime column is not POSIXct"
+      else if (!any(is.finite(individual_data$depth))) "no usable depth observations"
       if (!is.null(skip_reason)) {
         lab <- .deploymentLabel(individual_data, file_path, i)
         # a skipped deployment gets its own delimited block, like every other one: the reason must be
@@ -539,6 +549,7 @@ processTagData <- function(data,
           .explainMissingColumns(missing_cols, tryCatch(attr(individual_data, "nautilus", exact = TRUE),
                                                         error = function(e) NULL))
         else if (!inherits(individual_data$datetime, "POSIXct")) "the datetime column is not POSIXct"
+        else if (!any(is.finite(individual_data$depth))) "no usable depth observations"
         if (!is.null(skip_reason)) {
           lab <- .deploymentLabel(individual_data, names(data)[i], i)
           .log_h2(lvl, sprintf("%s (%d/%d)", lab, i, n_animals), min_level = 1L)
@@ -577,16 +588,31 @@ processTagData <- function(data,
     individual_data <- .ensureMeta(individual_data)
     imeta <- .getMeta(individual_data)   # input metadata (deployment, tag, etc.)
 
+    accel_cols <- c("ax", "ay", "az")
+    gyro_cols <- c("gx", "gy", "gz")
+    n_accel <- if (all(accel_cols %in% names(individual_data)))
+      sum(is.finite(individual_data$ax) & is.finite(individual_data$ay) &
+            is.finite(individual_data$az)) else 0L
+    has_accel <- n_accel >= 2L
+    has_gyro <- all(gyro_cols %in% names(individual_data)) &&
+      any(is.finite(individual_data$gx) & is.finite(individual_data$gy) &
+            is.finite(individual_data$gz))
+    unavailable_streams <- c(if (!has_accel) "accel",
+                             if (orientation.algorithm == "madgwick" && !has_gyro) "gyro")
+    processing_status <- if (length(unavailable_streams)) "partial" else "complete"
+    partial_reason <- if (!has_accel) {
+      missing_accel <- setdiff(accel_cols, names(individual_data))
+      if (length(missing_accel)) .explainMissingColumns(missing_accel, imeta)
+      else "insufficient finite tri-axial acceleration observations"
+    } else if (orientation.algorithm == "madgwick" && !has_gyro) {
+      "gyroscope unavailable for requested Madgwick orientation"
+    } else NA_character_
     # RE-PROCESSING GUARD: the input already carries a processTagData step in its audit trail, so this is
     # an accidental re-run. Re-running is idempotent (calibration/downsample skip, metrics recomputed),
     # but almost always unintended, so flag it per deployment and once at the end for batch runs.
     already_processed <- any(vapply(imeta$processing %||% list(),
                                     function(p) identical(p$step, "processTagData"), logical(1)))
     if (already_processed) reprocessed_ids <- c(reprocessed_ids, as.character(id))
-
-    # ORDERING GUARD: orientation (pitch/roll/heading) assumes the IMU axes are already in the animal
-    # body frame. If applyAxisMapping() was not run, that assumption is silently violated - flag it.
-    if (!isTRUE(imeta$axis_mapping$applied)) unoriented_ids <- c(unoriented_ids, as.character(id))
 
     # ensure data is ordered by datetime
     data.table::setorder(individual_data, datetime)
@@ -867,6 +893,7 @@ processTagData <- function(data,
     # Calculate acceleration metrics ###########################################
     ############################################################################
 
+    if (has_accel) {
     # calculate total acceleration
     individual_data[, accel := sqrt(ax^2 + ay^2 + az^2)]
 
@@ -921,9 +948,11 @@ processTagData <- function(data,
     if(!is.null(burst.quantiles)){
       vedba_inst <- sqrt(dynamicX^2 + dynamicY^2 + dynamicZ^2)
       for(q in burst.quantiles){
-        vedba_threshold <- stats::quantile(vedba_inst, probs = q, na.rm = TRUE)
         burst_col <- paste0("burst", q*100)
-        individual_data[, (burst_col) := as.integer(vedba_inst >= vedba_threshold)]
+        if (any(is.finite(vedba_inst))) {
+          vedba_threshold <- stats::quantile(vedba_inst, probs = q, na.rm = TRUE)
+          individual_data[, (burst_col) := as.integer(vedba_inst >= vedba_threshold)]
+        } else individual_data[, (burst_col) := NA_integer_]
       }
     }
 
@@ -960,6 +989,41 @@ processTagData <- function(data,
     individual_data[, surge := dynamicX]   # longitudinal (X): forward/backward
     individual_data[, sway  := dynamicY]   # lateral (Y): side-to-side
     individual_data[, heave := dynamicZ]   # vertical (Z): up/down (diving, wave action)
+    } else {
+      # Keep a stable, typed metric schema. Missing acceleration is not inactivity: in particular,
+      # burst flags must be NA, never zero, including after downsampling.
+      individual_data[, `:=`(accel = NA_real_, odba = NA_real_, vedba = NA_real_,
+                             jerk = NA_real_, surge = NA_real_, sway = NA_real_,
+                             heave = NA_real_)]
+      if (!is.null(burst.quantiles))
+        for (q in burst.quantiles) individual_data[, (paste0("burst", q * 100)) := NA_integer_]
+      if (lvl >= 2L) diag["motion"] <- "motion: unavailable (no usable accelerometer)"
+    }
+
+    # A triplet may exist but have no contiguous run long enough for the motion filter. In that
+    # case its derived metrics are unavailable just as if the QC step had removed the channels.
+    if (has_accel && !any(is.finite(individual_data$vedba))) {
+      has_accel <- FALSE
+      unavailable_streams <- union(unavailable_streams, "accel")
+      processing_status <- "partial"
+      partial_reason <- "no usable contiguous acceleration segment"
+      individual_data[, `:=`(accel = NA_real_, odba = NA_real_, vedba = NA_real_,
+                             jerk = NA_real_, surge = NA_real_, sway = NA_real_,
+                             heave = NA_real_)]
+      if (!is.null(burst.quantiles))
+        for (q in burst.quantiles) individual_data[, (paste0("burst", q * 100)) := NA_integer_]
+      if (lvl >= 2L) diag["motion"] <- "motion: unavailable (no usable accelerometer)"
+    }
+    if (identical(processing_status, "partial")) {
+      partial_items <- c(partial_items, sprintf("%s (%s)", id, partial_reason))
+      .log_skip(lvl, partial_reason, "; available streams retained")
+    }
+
+    # Orientation assumes the IMU axes are in the animal's body frame. A depth-only deployment
+    # has no orientation to misinterpret, so the ordering warning applies only when acceleration
+    # actually supports the computation.
+    if (has_accel && !isTRUE(imeta$axis_mapping$applied))
+      unoriented_ids <- c(unoriented_ids, as.character(id))
 
     ############################################################################
     # Depth zero-offset drift correction (before vertical velocity) ############
@@ -985,8 +1049,10 @@ processTagData <- function(data,
 
     # diagnostic: dynamic-acceleration and depth ranges (the headline motion outputs)
     if (lvl >= 2L) {
-      vedba_r <- range(individual_data$vedba, na.rm = TRUE)             # VeDBA: rotation-invariant, robust for towed tags
-      diag["motion"] <- sprintf("motion: VeDBA %.2f \u2013 %.2f g", vedba_r[1], vedba_r[2])
+      if (has_accel && any(is.finite(individual_data$vedba))) {
+        vedba_r <- range(individual_data$vedba, na.rm = TRUE)           # VeDBA: rotation-invariant
+        diag["motion"] <- sprintf("motion: VeDBA %.2f \u2013 %.2f g", vedba_r[1], vedba_r[2])
+      }
       if ("depth" %in% names(individual_data)) {
         # .noNegZero: a residual few-cm-below-surface min otherwise prints as "-0" at 0 dp
         dep_r <- .noNegZero(range(individual_data$depth, na.rm = TRUE), 0)
@@ -1024,13 +1090,8 @@ processTagData <- function(data,
     ############################################################################
 
     # first, check sensor data validity
-    valid_accel_data <- !all(is.na(individual_data$ax)) &
-      !all(is.na(individual_data$ay)) &
-      !all(is.na(individual_data$az))
-
-    valid_gyro_data <- !all(is.na(individual_data$gx)) &
-      !all(is.na(individual_data$gy)) &
-      !all(is.na(individual_data$gz))
+    valid_accel_data <- has_accel
+    valid_gyro_data <- has_gyro
 
     # determine feasible orientation methods
     use_madgwick <- orientation.algorithm == "madgwick" && valid_accel_data && valid_gyro_data
@@ -1562,7 +1623,9 @@ processTagData <- function(data,
         # sum burst swimming events (based on specified percentiles)
         if(!is.null(burst.quantiles)){
           burst_cols <- paste0("burst", burst.quantiles * 100)
-          processed_bursts <- individual_data[, lapply(.SD, function(x) as.integer(sum(as.numeric(x), na.rm = TRUE) > 0)), by = datetime, .SDcols = burst_cols]
+          processed_bursts <- individual_data[, lapply(.SD, function(x)
+            if (all(is.na(x))) NA_integer_ else as.integer(any(x > 0, na.rm = TRUE))),
+            by = datetime, .SDcols = burst_cols]
           # combine the two aggregated datasets
           processed_data <- merge(processed_data, processed_bursts, by = "datetime", all.x = TRUE)
         }
@@ -1669,6 +1732,9 @@ processTagData <- function(data,
       meta$deployment$heading_reference     <- heading_ref
       meta$mag_calibration <- mag_state                                      # the single source of truth for calibration state
       meta <- .appendProcessing(meta, "processTagData",
+                                status                  = processing_status,
+                                unavailable_streams     = paste(unavailable_streams, collapse = ","),
+                                partial_reason          = partial_reason,
                                 orientation_algorithm   = orientation.algorithm,
                                 madgwick_beta           = if (orientation.algorithm == "madgwick") madgwick.beta else NA_real_,
                                 hard_iron               = hard.iron.calibration,
@@ -1848,6 +1914,9 @@ processTagData <- function(data,
   # large batch is how a cohort quietly shrinks between pipeline steps.
   .warn_grouped("{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
                 items = skipped_ids, style = "inline")
+
+  .warn_grouped("{length(partial_items)} deployment{?s} {?was/were} processed with unavailable sensor streams.",
+                items = partial_items, style = "inline")
 
   # Refresh only this stage's rows for deployments evaluated by the current call.
   excl <- .exclusionsBind(skipped_rows)

@@ -24,7 +24,9 @@ reconstructTrack(
 \code{.rds} paths - the output of \code{\link[=processTagData]{processTagData()}}. Paths are read one deployment at a time, so a
 fleet too large for memory can be processed without ever holding it all. Each deployment needs
 \code{datetime}, \code{heading} and \code{pitch}, plus whatever the chosen \code{speed.method} reads
-(\code{vertical_velocity}, \code{paddle_speed} or \code{vedba}), and \code{depth} for the three-dimensional output.}
+(\code{vertical_velocity}, \code{paddle_speed} or \code{vedba}), and \code{depth} for the three-dimensional output.
+A deployment with no usable paired heading and pitch observations is skipped, not converted into
+a stationary pseudo-track.}
 
 \item{control}{A control object from \code{\link[=reconstructTrackControl]{reconstructTrackControl()}} governing where speed comes from and
 how the track is corrected onto the known fixes. Pass \code{reconstructTrackControl(...)} to change it.}
@@ -68,6 +70,7 @@ If \code{return.data = TRUE}, a named list of the input objects with \code{pseud
 \code{speed_dr} (the speed that was used) and \code{pseudo_error} (the per-sample one-sigma positional
 uncertainty in metres) added, plus \code{pseudo_depth} where \code{control$include.depth} is set and a depth
 channel is present. If \code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
+Deployments without usable orientation are absent from either output and named in a warning.
 }
 \description{
 Satellite fixes locate a marine animal only when the tag breaks the surface, which for a diving

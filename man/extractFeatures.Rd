@@ -17,6 +17,7 @@ extractFeatures(
   downsample.to = NULL,
   response.col = NULL,
   response.aggregation = c("majority", "any"),
+  missing.features = c("omit", "keep"),
   circular.variables = c("heading", "roll"),
   return.data = TRUE,
   output.dir = NULL,
@@ -67,6 +68,12 @@ averaged within each output bin.}
 
 \item{response.aggregation}{Method to aggregate \code{response.col}: "majority" or "any".}
 
+\item{missing.features}{How to handle feature rows containing \code{NA}. \code{"omit"} (default) removes
+incomplete rows, producing a complete-case feature matrix; a deployment with an entirely
+unavailable requested stream consequently contributes zero rows. \code{"keep"} retains the rows and
+their \code{NA} values for inspection or a downstream model that explicitly supports missing inputs.
+Neither option imputes unavailable measurements.}
+
 \item{circular.variables}{Character vector specifying variables that should be treated as circular.}
 
 \item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
@@ -91,8 +98,9 @@ bar over the feature grid and per-deployment diagnostics). Defaults to \code{"no
 }
 \value{
 If \code{return.data = TRUE}, a named list with one \code{data.table} per deployment: the identifier
-and datetime columns followed by one \verb{<variable>_<metric>} column per grid row, with rows carrying
-any \code{NA} removed (see \emph{Rows} in Details). Each table carries an \code{extractFeatures} entry in its
+and datetime columns followed by one \verb{<variable>_<metric>} column per grid row. Rows carrying
+\code{NA} are omitted by default or retained with \code{missing.features = "keep"} (see \emph{Which rows survive}).
+Each table carries an \code{extractFeatures} entry in its
 processing history recording the grid, window and row count. If \code{return.data = FALSE}, a character
 vector of the written \code{.rds} file paths instead.
 }
@@ -118,7 +126,7 @@ records sampled at different rates - but the number of samples per window, and h
 of every metric, differs between them.
 
 Sliding windows are centred, so roughly half a window at each end of a record has no complete span
-and yields \code{NA}. Those rows are then removed, described below, which means the leading and trailing
+and yields \code{NA}. By default those rows are removed, as described below, so the leading and trailing
 half-window of every deployment is systematically absent from the output. With \code{aggregate = TRUE}
 the record is tiled instead, and each output row is timestamped at the start of its window.
 }
@@ -155,11 +163,13 @@ explicitly - so build expected column names from that rule rather than from the 
 
 \subsection{Which rows survive}{
 
-Any row still carrying an \code{NA} in any feature column is dropped before the table is returned. That
-keeps the matrix usable by learners which cannot accept missing values, but it is not a neutral
-operation: the loss is concentrated at the record edges, as above, and at any gap in the input, so
-it is systematic rather than random. The number of rows lost is reported per deployment and
-summarised in a warning. A deployment shorter than the widest requested window loses every row.
+By default, any row still carrying an \code{NA} in a feature or response column is dropped. This keeps
+the matrix complete for learners that reject missing inputs, but the loss is concentrated at record
+edges and data gaps rather than random. \code{missing.features = "keep"} retains those rows instead; this
+does not make them suitable for every learner. In either mode, an unavailable input stream produces
+\code{NA} features, never zero-valued activity. The number of affected rows is reported per deployment
+and summarised in a warning. Under \code{"omit"}, a deployment shorter than the widest requested window
+has zero rows in its output table.
 }
 
 \subsection{Surface substitution}{
@@ -260,6 +270,9 @@ df <- data.frame(
 # 5 s sliding-window mean and SD of VeDBA
 extractFeatures(list(shark01 = df), variables = "vedba",
                 metrics = c("mean", "sd"), window.size = 5)
+# Retain incomplete edge windows for inspection or a missing-aware learner.
+extractFeatures(list(shark01 = df), variables = "vedba", metrics = "mean",
+                window.size = 5, missing.features = "keep")
 }
 \seealso{
 \code{\link[=processTagData]{processTagData()}} for the derived channels most of these features summarise,

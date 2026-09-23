@@ -79,15 +79,31 @@ test_that("pipeline stages skip a channel-less deployment and process the rest",
   expect_no_error(suppressWarnings(suppressMessages(
     filterDeploymentData(files, verbose = 0, return.data = TRUE))))
 
-  # the accelerometer-dependent stages skip the curated tag and keep the other two
+  # Axis mapping needs acceleration and skips it, but processing must preserve its independent
+  # depth/temperature record with unavailable motion metrics represented as NA.
   map <- suppressWarnings(suppressMessages(checkTagMapping(files, verbose = 0)))
   expect_setequal(names(map), c("A_OK", "C_OK"))
   proc <- suppressWarnings(suppressMessages(processTagData(files, verbose = 0, return.data = TRUE)))
-  # EXACT length, and no NULL holes: ">= 2" would pass on a 3-element list carrying a NULL for the
-  # skipped tag, which is precisely the corrupt shape this work exists to prevent
-  expect_length(proc, 2L)
+  expect_length(proc, 3L)
   expect_false(any(vapply(proc, is.null, logical(1))))
-  expect_setequal(names(proc), c("A_OK", "C_OK"))
+  expect_setequal(names(proc), c("A_OK", "B_NOACC", "C_OK"))
+  expect_true(all(is.na(proc$B_NOACC$vedba)))
+  expect_true(any(is.finite(proc$B_NOACC$depth)))
+  expect_true(any(is.finite(proc$B_NOACC$vertical_velocity)))
+  p <- Filter(function(z) identical(z$step, "processTagData"),
+              nautilus:::.getMeta(proc$B_NOACC)$processing)[[1L]]
+  expect_identical(p$status, "partial")
+  expect_identical(p$unavailable_streams, "accel")
+  roster <- data.frame(id = c("A_OK", "B_NOACC", "C_OK"), stringsAsFactors = FALSE)
+  class(roster) <- c("nautilus_deployments", "data.frame")
+  summary <- suppressWarnings(suppressMessages(summarizeTagData(proc, deployments = roster,
+                                                                  verbose = 0)))
+  part <- summary[summary$id == "B_NOACC", , drop = FALSE]
+  expect_identical(part$status, "included")
+  expect_identical(part$processing_status, "partial")
+  expect_true(is.finite(part$depth_max))
+  expect_true(is.finite(part$temp_mean))
+  expect_true(is.na(part$vedba_mean))
 
   # calculateTailBeats keeps the deployment but writes the full NA schema, so a skipped tag is not
   # silently missing columns downstream - a deliberately different contract, locked here so it stays so

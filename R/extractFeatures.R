@@ -46,6 +46,11 @@
 #' @param response.col (Optional) A character string specifying the column containing response labels.
 #' @param circular.variables Character vector specifying variables that should be treated as circular.
 #' @param response.aggregation Method to aggregate `response.col`: "majority" or "any".
+#' @param missing.features How to handle feature rows containing `NA`. `"omit"` (default) removes
+#'   incomplete rows, producing a complete-case feature matrix; a deployment with an entirely
+#'   unavailable requested stream consequently contributes zero rows. `"keep"` retains the rows and
+#'   their `NA` values for inspection or a downstream model that explicitly supports missing inputs.
+#'   Neither option imputes unavailable measurements.
 #' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
 #'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
 #'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
@@ -70,7 +75,7 @@
 #' of every metric, differs between them.
 #'
 #' Sliding windows are centred, so roughly half a window at each end of a record has no complete span
-#' and yields `NA`. Those rows are then removed, described below, which means the leading and trailing
+#' and yields `NA`. By default those rows are removed, as described below, so the leading and trailing
 #' half-window of every deployment is systematically absent from the output. With `aggregate = TRUE`
 #' the record is tiled instead, and each output row is timestamped at the start of its window.
 #'
@@ -104,11 +109,13 @@
 #'
 #' ## Which rows survive
 #'
-#' Any row still carrying an `NA` in any feature column is dropped before the table is returned. That
-#' keeps the matrix usable by learners which cannot accept missing values, but it is not a neutral
-#' operation: the loss is concentrated at the record edges, as above, and at any gap in the input, so
-#' it is systematic rather than random. The number of rows lost is reported per deployment and
-#' summarised in a warning. A deployment shorter than the widest requested window loses every row.
+#' By default, any row still carrying an `NA` in a feature or response column is dropped. This keeps
+#' the matrix complete for learners that reject missing inputs, but the loss is concentrated at record
+#' edges and data gaps rather than random. `missing.features = "keep"` retains those rows instead; this
+#' does not make them suitable for every learner. In either mode, an unavailable input stream produces
+#' `NA` features, never zero-valued activity. The number of affected rows is reported per deployment
+#' and summarised in a warning. Under `"omit"`, a deployment shorter than the widest requested window
+#' has zero rows in its output table.
 #'
 #' ## Surface substitution
 #'
@@ -196,8 +203,9 @@
 #' measure; they are kept for compatibility and the sense is stated above rather than silently assumed.
 #'
 #' @return If `return.data = TRUE`, a named list with one `data.table` per deployment: the identifier
-#'   and datetime columns followed by one `<variable>_<metric>` column per grid row, with rows carrying
-#'   any `NA` removed (see *Rows* in Details). Each table carries an `extractFeatures` entry in its
+#'   and datetime columns followed by one `<variable>_<metric>` column per grid row. Rows carrying
+#'   `NA` are omitted by default or retained with `missing.features = "keep"` (see *Which rows survive*).
+#'   Each table carries an `extractFeatures` entry in its
 #'   processing history recording the grid, window and row count. If `return.data = FALSE`, a character
 #'   vector of the written `.rds` file paths instead.
 #' @seealso [processTagData()] for the derived channels most of these features summarise,
@@ -213,6 +221,9 @@
 #' # 5 s sliding-window mean and SD of VeDBA
 #' extractFeatures(list(shark01 = df), variables = "vedba",
 #'                 metrics = c("mean", "sd"), window.size = 5)
+#' # Retain incomplete edge windows for inspection or a missing-aware learner.
+#' extractFeatures(list(shark01 = df), variables = "vedba", metrics = "mean",
+#'                 window.size = 5, missing.features = "keep")
 #' @export
 
 extractFeatures <- function(data,
@@ -227,6 +238,7 @@ extractFeatures <- function(data,
                             downsample.to = NULL,
                             response.col = NULL,
                             response.aggregation = c("majority", "any"),
+                            missing.features = c("omit", "keep"),
                             circular.variables = c("heading", "roll"),
                             return.data = TRUE,
                             output.dir = NULL,
@@ -284,6 +296,7 @@ extractFeatures <- function(data,
   # `n.cores = 0` took the parallel branch with no backend registered ("could not find function
   # %dopar%"). An argument error should name the argument.
   response.aggregation <- match.arg(response.aggregation, c("majority", "any"))
+  missing.features <- match.arg(missing.features)
   .assert_number(window.size, "window.size", min = 0)
   # strictly positive, checked separately: `min = 0` would accept 0, which used to be ACCEPTED and
   # silently returned zero rows. Expressing it as an epsilon bound would print
@@ -297,6 +310,7 @@ extractFeatures <- function(data,
     .abort("{.arg circular.variables} must be a character vector of variable names, or {.code NULL}.")
   n_rows_out <- 0L                 # feature rows actually delivered, across the cohort
   dropped_items <- character(0)    # per-deployment NA-row losses (reported once, at the end)
+  retained_missing_items <- character(0)
   lowfs_items   <- character(0)    # deployments whose sampling rate could only be estimated
 
   # Define valid metrics
@@ -739,23 +753,25 @@ extractFeatures <- function(data,
       feature_data[, depth_zero := NULL]
     }
 
-    # remove rows with any (remaining) missing values (NA) in any column
-    # Rows carrying any NA are dropped. That is deliberate - a feature matrix with holes is unusable for
-    # most learners - but it is NOT free: the leading and trailing half-window of every deployment is
-    # always NA, so the loss is systematic rather than random, and it used to happen with no count and
-    # no explanation. Record it and report it.
+    # Complete-case output remains the default, but a caller may retain NA rows for diagnostics or a
+    # missing-aware learner. Do not conflate a missing stream with zero activity, and do not make a
+    # deployment-level exclusion out of a few incomplete windows.
     n_before <- nrow(feature_data)
-    feature_data <- stats::na.omit(feature_data)
-    n_lost <- n_before - nrow(feature_data)
-    if (n_lost > 0) {
-      .log_subdetail(lvl, sprintf("%s rows dropped (incomplete windows): %s of %s",
-                                  "", .formatNumber(n_lost), .formatNumber(n_before)))
-      dropped_items <- c(dropped_items,
-                         sprintf("%s: %s of %s rows (%.1f%%)", id, .formatNumber(n_lost),
-                                 .formatNumber(n_before), 100 * n_lost / max(n_before, 1L)))
+    if (identical(missing.features, "omit")) {
+      feature_data <- stats::na.omit(feature_data)
+      n_missing <- n_before - nrow(feature_data)
+    } else n_missing <- sum(!stats::complete.cases(feature_data))
+    if (n_missing > 0L) {
+      action <- if (identical(missing.features, "omit")) "dropped" else "retained"
+      .log_subdetail(lvl, sprintf("rows with missing features %s: %s of %s",
+                                  action, .formatNumber(n_missing), .formatNumber(n_before)))
+      item <- sprintf("%s: %s of %s rows (%.1f%%)", id, .formatNumber(n_missing),
+                      .formatNumber(n_before), 100 * n_missing / max(n_before, 1L))
+      if (identical(missing.features, "omit")) dropped_items <- c(dropped_items, item)
+      else retained_missing_items <- c(retained_missing_items, item)
     }
     if (nrow(feature_data) == 0L)
-      .log_skip(lvl, id, "  no complete windows - the record is shorter than the widest window")
+      .log_skip(lvl, id, "  no complete feature rows (short window or unavailable requested stream)")
 
 
     ############################################################################
@@ -763,7 +779,7 @@ extractFeatures <- function(data,
     ############################################################################
 
     # if a downsampling rate is specified, aggregate the data to the defined frequency (in Hz)
-    if(!is.null(downsample.to)){
+    if(!is.null(downsample.to) && nrow(feature_data) > 0L){
 
       # check if the specified downsampling frequency matches the dataset's sampling frequency
       if (downsample.to == sampling_freq) {
@@ -821,6 +837,16 @@ extractFeatures <- function(data,
       final_data <- feature_data
     }
 
+    # Means of all-NA bins are NaN in R. Only the NA-retaining path can carry them past the
+    # complete-case filter; avoid a needless full feature-table scan in the default path.
+    if (identical(missing.features, "keep")) {
+      numeric_feature_cols <- names(final_data)[vapply(final_data, is.numeric, logical(1))]
+      for (cc in numeric_feature_cols) {
+        bad <- is.nan(final_data[[cc]])
+        if (any(bad)) data.table::set(final_data, which(bad), cc, NA_real_)
+      }
+    }
+
     # reorder columns
     feature_cols <- setdiff(colnames(final_data), c(id.col, datetime.col, response.col))
     data.table::setcolorder(final_data, c(id.col, datetime.col, if(!is.null(response.col)) response.col, feature_cols))
@@ -859,6 +885,8 @@ extractFeatures <- function(data,
                                  window_size  = window.size,
                                  aggregate    = aggregate,
                                  enhanced     = enhanced.features,
+                                 missing_features = missing.features,
+                                 rows_missing = n_missing,
                                  downsample_to = downsample.to %||% NA_real_,
                                  rows_out     = nrow(final_data))
       final_data <- .restoreMeta(final_data, fmeta)
@@ -900,10 +928,15 @@ extractFeatures <- function(data,
   # and R keeps only the first 50 warnings of a call, so a per-deployment warning in a large cohort is
   # both noisy and unreliable.
   .warn_grouped(
-    "{length(dropped_items)} deployment{?s} lost feature rows to incomplete windows.",
+    "{length(dropped_items)} deployment{?s} lost feature rows to missing values.",
     items = dropped_items,
-    hints = c("Rows are dropped when any requested feature is NA - always the leading and trailing half-window, so the loss is systematic, not random.",
-              "Shorten {.arg window.size} to retain more of each record."))
+    hints = c("Rows are dropped when any requested feature or response is NA; a missing stream can remove every row.",
+              "Use {.code missing.features = \"keep\"} to retain NA rows, or request only available features."))
+
+  .warn_grouped(
+    "{length(retained_missing_items)} deployment{?s} retained feature rows with missing values.",
+    items = retained_missing_items,
+    hints = "Check your model's missing-value policy before fitting; no imputation was applied.")
 
   # Silent unless BOTH conditions hold: a deployment whose heading is magnetic, and a directional
   # statistic of that heading actually among the requested metrics.
@@ -938,6 +971,19 @@ extractFeatures <- function(data,
 
   window_steps <- round(window_seconds * sampling_freq)
   x <- data[[var]]
+
+  # A stream can be absent from one deployment or retained as an all-NA typed column after QC.
+  # `sum(..., na.rm = TRUE)` and `energy` would otherwise turn that absence into a false zero.
+  # Composite posture/activity metrics use sentinel variables; inspect their real dependencies.
+  n_result <- if (aggregate) length(seq(1L, nrow(data), by = window_steps)) else nrow(data)
+  deps <- switch(metric, posture_stability = c("pitch", "roll"),
+                 activity_index = c("pitch", "roll", "heading"), var)
+  unavailable <- !all(deps %in% names(data)) ||
+    any(vapply(deps, function(v) {
+      z <- data[[v]]
+      all(is.na(z)) || (is.numeric(z) && !any(is.finite(z)))
+    }, logical(1)))
+  if (unavailable) return(rep(NA_real_, n_result))
 
   # Enhanced features
   if (enhanced && metric %in% c("net_heading_change", "cumulative_heading_change",

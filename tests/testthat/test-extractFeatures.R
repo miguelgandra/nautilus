@@ -56,6 +56,34 @@ test_that("multiple deployments are processed independently and keep their own i
   expect_equal(unique(res$B02$ID), "B02")
 })
 
+test_that("missing.features separates complete-case ML output from an NA-preserving feature timeline", {
+  good <- .ef_tag("GOOD")
+  bad <- data.table::copy(.ef_tag("NOACC"))
+  bad[, vedba := NA_real_]
+  tags <- list(GOOD = good, NOACC = bad)
+
+  strict <- .ef(tags, variables = c("depth", "vedba"), metrics = "mean",
+                window.size = 30, missing.features = "omit", downsample.to = 0.5)
+  expect_gt(nrow(strict$GOOD), 0L)
+  expect_equal(nrow(strict$NOACC), 0L)
+
+  kept <- .ef(tags, variables = c("depth", "vedba"), metrics = "mean",
+              window.size = 30, missing.features = "keep", downsample.to = 0.5)
+  expect_gt(nrow(kept$NOACC), 0L)
+  expect_true(all(is.na(kept$NOACC$vedba_mean)))
+  expect_true(any(is.finite(kept$NOACC$depth_mean)))
+  pr <- tail(nautilus:::.getMeta(kept$NOACC)$processing, 1L)[[1L]]
+  expect_identical(pr$missing_features, "keep")
+  expect_gt(pr$rows_missing, 0L)
+
+  # A QC step may remove the column entirely. Sum and energy must not turn missing motion into 0.
+  absent <- data.table::copy(bad); absent[, vedba := NULL]
+  one <- .ef(list(NOACC = absent, GOOD = good), variables = "vedba",
+             metrics = c("sum", "energy"), window.size = 30, missing.features = "keep")
+  expect_true(all(is.na(one$NOACC$vedba_sum)))
+  expect_true(all(is.na(one$NOACC$vedba_energy)))
+})
+
 
 # ---- audited defects: each fails before the stage-1 fix and passes after ----------------------------
 

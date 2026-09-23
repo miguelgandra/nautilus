@@ -331,18 +331,88 @@ test_that("PIN_10 regression: a 45.04-degree mount is now corrected, not flagged
   nautilus:::new_nautilus_tag(d, m)
 }
 
-test_that("a deployment skipped for a curated-away channel gets its own delimited block", {
-  # the skip line used to print BEFORE the header, so it floated between the neighbouring blocks and
-  # which tag it referred to had to be inferred from its position on screen
+test_that("a deployment with QC-excluded acceleration is retained and labelled partial", {
   ok  <- .mk_tagged("OK1")
   bad <- .mk_tagged("NOACC", excluded = c("ax", "ay", "az"),
                     mutate = function(d) { d[, c("ax", "ay", "az") := NULL]; d })
 
-  txt <- .console(processTagData(list(OK1 = ok, NOACC = bad), downsample.to = NULL, verbose = 1))
-  expect_match(txt, "NOACC \\(2/2\\)")                     # its own header, numbered like the rest
-  expect_match(txt, "excluded by an earlier QC step")      # the reason, inside that block
-  # the reason must come AFTER its header, not before it
+  txt <- .console(processTagData(list(OK1 = ok, NOACC = bad), downsample.to = NULL, verbose = 2))
+  expect_match(txt, "NOACC \\(2/2\\)")
+  expect_match(txt, "excluded by an earlier QC step")
   expect_lt(regexpr("NOACC \\(2/2\\)", txt), regexpr("excluded by an earlier QC step", txt))
+  out <- .run(list(OK1 = ok, NOACC = bad), downsample.to = NULL)
+  expect_setequal(names(out), c("OK1", "NOACC"))
+  expect_identical(.proc_rec(out$NOACC)$status, "partial")
+  expect_true(any(is.finite(out$NOACC$depth)))
+  expect_true(any(is.finite(out$NOACC$temp)))
+  expect_true(any(is.finite(out$NOACC$vertical_velocity)))
+  for (nm in c("accel", "odba", "vedba", "jerk", "surge", "sway", "heave",
+               "pitch", "roll", "heading", "turning_angle")) {
+    expect_type(out$NOACC[[nm]], "double")
+    expect_true(all(is.na(out$NOACC[[nm]])))
+  }
+  for (nm in c("burst95", "burst99")) {
+    expect_type(out$NOACC[[nm]], "integer")
+    expect_true(all(is.na(out$NOACC[[nm]])))
+  }
+  expect_identical(.proc_rec(out$OK1)$status, "complete")
+})
+
+test_that("partial acceleration status and NA burst flags survive downsampling and exclusions refresh", {
+  bad <- .mk_tagged("NOACC", excluded = c("ax", "ay", "az"),
+                    mutate = function(d) { d[, c("ax", "ay", "az") := NULL]; d })
+  file <- tempfile(fileext = ".csv"); on.exit(unlink(file), add = TRUE)
+  old <- nautilus:::.exclusionsRow("NOACC", "processTagData", "old accel exclusion")
+  nautilus:::.exclusionsWrite(old, file, "processTagData", scope.ids = "NOACC")
+  out <- .run(list(NOACC = bad), exclusions.file = file)
+  expect_true(nrow(out$NOACC) < nrow(bad))
+  expect_true(all(is.na(out$NOACC$burst95)))
+  expect_true(all(is.na(out$NOACC$burst99)))
+  expect_false("NOACC" %in% nautilus:::.exclusionsRead(file)$id)
+})
+
+test_that("a deployment without usable depth is still skipped", {
+  bad <- .mk_tagged("NODEPTH", mutate = function(d) { d[, depth := NA_real_]; d })
+  expect_length(.run(list(NODEPTH = bad)), 0L)
+})
+
+test_that("requested Madgwick orientation can be unavailable without losing acceleration or depth", {
+  x <- .mk_tagged("NOGYRO", mutate = function(d) { d[, c("gx", "gy", "gz") := NULL]; d })
+  out <- .run(list(NOGYRO = x), orientation.algorithm = "madgwick", downsample.to = NULL)$NOGYRO
+  expect_identical(.proc_rec(out)$status, "partial")
+  expect_identical(.proc_rec(out)$unavailable_streams, "gyro")
+  expect_true(any(is.finite(out$vedba)))
+  expect_true(any(is.finite(out$vertical_velocity)))
+  expect_true(all(is.na(out$pitch)))
+  expect_true(all(is.na(out$heading)))
+})
+
+test_that("an accelerometer without a filterable segment is partial, not complete", {
+  x <- .mk_tagged("SPARSE", mutate = function(d) {
+    d[, `:=`(ax = NA_real_, ay = NA_real_, az = NA_real_)]
+    d[1:2, `:=`(ax = 0, ay = 0, az = 1)]
+    d
+  })
+  out <- .run(list(SPARSE = x), downsample.to = NULL)$SPARSE
+  expect_identical(.proc_rec(out)$status, "partial")
+  expect_true(all(is.na(out$vedba)))
+  expect_true(all(is.na(out$accel)))
+  expect_true(all(is.na(out$pitch)))
+  expect_true(any(is.finite(out$depth)))
+})
+
+test_that("magnetometer paddle frequency remains available without acceleration", {
+  x <- .mk_tagged("PADDLE", excluded = c("ax", "ay", "az"), mutate = function(d) {
+    d[, c("ax", "ay", "az") := NULL]
+    d[, mz := 40 + 3 * sin(2 * pi * 2 * as.numeric(datetime - datetime[1], units = "secs"))]
+    d
+  })
+  m <- nautilus:::.getMeta(x); m$tag$paddle_wheel <- TRUE
+  x <- nautilus:::.restoreMeta(x, m)
+  out <- .run(list(PADDLE = x), downsample.to = NULL)$PADDLE
+  expect_true(all(is.na(out$vedba)))
+  expect_gt(sum(is.finite(out$paddle_freq)), 100L)
+  expect_equal(stats::median(out$paddle_freq, na.rm = TRUE), 2, tolerance = 0.05)
 })
 
 test_that("an empty slot is reported instead of vanishing silently", {
