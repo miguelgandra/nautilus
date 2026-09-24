@@ -567,6 +567,49 @@ test_that("a deployment with no tail-beat columns reports NA for both value and 
   expect_true(is.na(out$tbf_mean)); expect_true(is.na(out$tbf_method))
 })
 
+test_that("forced wavelet retains deployments with no estimates from either backend", {
+  estimated <- .mk("A", withtbf = TRUE)
+  estimated[, tbf_hz_wavelet := rep(0.21, .N)]
+  no_motion <- .mk("B", withkin = FALSE)
+  no_motion[, `:=`(tbf_hz_peaks = NA_real_, tbf_hz_wavelet = NA_real_)]
+  meta <- nautilus:::.getMeta(no_motion)
+  meta <- nautilus:::.appendProcessing(meta, "processTagData", status = "partial",
+                                       unavailable_streams = "accel")
+  no_motion <- nautilus:::.restoreMeta(no_motion, meta)
+
+  dir <- tempfile(); dir.create(dir); on.exit(unlink(dir, recursive = TRUE), add = TRUE)
+  paths <- file.path(dir, c("A.rds", "B.rds"))
+  saveRDS(estimated, paths[1]); saveRDS(no_motion, paths[2])
+  roster <- data.frame(id = c("A", "B"))
+  class(roster) <- c("nautilus_deployments", "data.frame")
+  out <- .run(paths, deployments = roster, tbf.method = "wavelet")
+
+  expect_equal(out$id, c("A", "B"))
+  expect_identical(out$status, c("included", "included"))
+  expect_identical(out$processing_status[2], "partial")
+  expect_equal(out$tbf_mean[1], 0.21)
+  expect_identical(out$tbf_method[1], "wavelet")
+  expect_true(is.na(out$tbf_mean[2]))
+  expect_true(is.na(out$tbf_method[2]))
+  expect_equal(out$depth_max[2], 50)
+  expect_equal(out$temp_mean[2], 20)
+
+  # No tail-beat columns at all is equivalent to an all-NA tail-beat schema.
+  absent <- .run(list(B = .mk("B", withkin = FALSE)), tbf.method = "wavelet")
+  expect_true(is.na(absent$tbf_mean) && is.na(absent$tbf_method))
+})
+
+test_that("forced wavelet still rejects a peaks-only deployment", {
+  peaks_only <- .mk("A", withtbf = TRUE)
+  peaks_only[, tbf_hz_wavelet := NA_real_]
+  expect_error(summarizeTagData(list(A = peaks_only),
+                                tbf.method = "wavelet", verbose = FALSE),
+               "Available:.*tbf_hz_peaks")
+  expect_error(summarizeTagData(list(A = .mk("A")),
+                                tbf.method = "invalid", verbose = FALSE),
+               "tbf.method")
+})
+
 
 # ---------------------------------------------------------------------------
 # the metadata block, and what a deployment with no data still reports

@@ -58,6 +58,8 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 * Tail-beat cross-check agreement now uses the larger of a 10% relative tolerance and a 0.03 Hz
   absolute tolerance. `agreement.rel.tol` and `agreement.abs.tol.Hz` make the QC convention explicit
   and configurable; the processing history records both tolerances and paired-estimate coverage.
+* `summarizeTagData(tbf.method = ...)` now retains deployments where neither tail-beat backend produced
+  an estimate, reporting `NA` tail-beat metrics without losing valid depth or temperature summaries.
 
 ## Dive analysis
 

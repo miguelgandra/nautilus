@@ -71,8 +71,10 @@ of a cohort table wants.}
 \item{tbf.method}{Which tail-beat method to summarise, \code{"peaks"} or \code{"wavelet"}. \code{NULL} (default)
 resolves it per deployment from whichever \verb{tbf_hz_*} columns carry values, with the package's
 documented order breaking a tie. The method actually used is reported in \code{tbf_method}, so a cohort
-pooled from deployments that ran different methods stays visible rather than silently blended. See
-\code{\link[=tailBeatColumn]{tailBeatColumn()}}.}
+pooled from deployments that ran different methods stays visible rather than silently blended.
+Even when a method is specified, a deployment with no estimates from either method retains its
+other metrics and reports \code{NA} for \code{tbf_mean} and \code{tbf_method}. A deployment with estimates only
+from the other method raises an error. See \code{\link[=tailBeatColumn]{tailBeatColumn()}}.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header and summary), or
 \code{2}/\code{"detailed"} (default), which adds per-metric coverage across the processed deployments and a

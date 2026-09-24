@@ -64,8 +64,10 @@
 #' @param tbf.method Which tail-beat method to summarise, `"peaks"` or `"wavelet"`. `NULL` (default)
 #'   resolves it per deployment from whichever `tbf_hz_*` columns carry values, with the package's
 #'   documented order breaking a tie. The method actually used is reported in `tbf_method`, so a cohort
-#'   pooled from deployments that ran different methods stays visible rather than silently blended. See
-#'   [tailBeatColumn()].
+#'   pooled from deployments that ran different methods stays visible rather than silently blended.
+#'   Even when a method is specified, a deployment with no estimates from either method retains its
+#'   other metrics and reports `NA` for `tbf_mean` and `tbf_method`. A deployment with estimates only
+#'   from the other method raises an error. See [tailBeatColumn()].
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (header and summary), or
 #'   `2`/`"detailed"` (default), which adds per-metric coverage across the processed deployments and a
 #'   progress bar while the tags are read.
@@ -174,6 +176,7 @@ summarizeTagData <- function(data,
   error.stat <- tolower(error.stat)
   .assert_choice(error.stat, "error.stat", c("sd", "se"))
   .assert_string(tbf.method, "tbf.method", null_ok = TRUE)
+  if (!is.null(tbf.method)) .assert_choice(tbf.method, "tbf.method", .tbBackends())
   if (!is.null(deployments)) {
     if (!inherits(deployments, "nautilus_deployments"))
       .abort("{.arg deployments} must be a {.cls nautilus_deployments} object from {.fn checkDeploymentMetadata}.")
@@ -444,7 +447,12 @@ summarizeTagData <- function(data,
   # actually carry values - and never from the metadata, which does not survive rbind, a CSV round trip
   # or dplyr::mutate. The resolved backend is reported alongside the value as `tbf_method`, so a cohort
   # pooled from deployments that used different backends is visible rather than silently blended.
-  tbf_col    <- .tbfResolve(dt, "hz", method = tbf.method)
+  # No detectable beat is not a missing processing stage: retain this deployment's valid depth,
+  # temperature and other metrics even when a backend was requested for the cohort. Keep the strict
+  # forced-method check for deployments where another backend DID produce an estimate.
+  tbf_col <- .tbfResolve(dt, "hz")
+  if (!is.null(tbf_col) && !is.null(tbf.method))
+    tbf_col <- .tbfResolve(dt, "hz", method = tbf.method)
   tbf_method <- .tbfMethodOf(tbf_col)
   pct_swimming <- if ("tbf_swimming" %in% names(dt)) {
     sw <- dt[["tbf_swimming"]]; sw <- sw[!is.na(sw)]
