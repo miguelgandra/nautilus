@@ -41,7 +41,7 @@ using the NOAA solar-geometry equations (no geospatial system libraries required
 library(nautilus)
 
 tag1  <- tags[[1]]                 # a single deployment from the processed list
-meta1 <- tagMetadata(tag1)
+meta1 <- getTagMetadata(tag1)
 coords <- matrix(c(meta1$deployment$lon, meta1$deployment$lat), ncol = 2)  # lon, lat
 
 tag1$diel <- getDielPhase(tag1$datetime, coords, phases = 3, solar.depth = 12)

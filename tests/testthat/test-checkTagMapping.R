@@ -95,7 +95,7 @@ test_that("a fully-resolved proposal is directly consumable by applyAxisMapping(
   out <- NULL
   expect_no_error(invisible(capture.output(suppressMessages(
     out <- applyAxisMapping(list(A01 = raw), r$proposal, verbose = FALSE)))))
-  expect_true(tagMetadata(out[["A01"]])$axis_mapping$applied)
+  expect_true(getTagMetadata(out[["A01"]])$axis_mapping$applied)
 })
 
 test_that("returns the structured per-individual shape", {

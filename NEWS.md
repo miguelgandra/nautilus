@@ -7,11 +7,14 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 ## Deployment metadata and import
 
 * `checkDeploymentMetadata()` validates and normalises the deployment table before import, with
-  `metadataColumns()` mapping arbitrary column names onto canonical roles and `updateBiometrics()`
-  attaching passive animal traits.
+  `metadataColumns()` mapping arbitrary column names onto canonical roles and selecting passive traits.
+* `getTagMetadata()` replaces `tagMetadata()` and returns an independent metadata list with a compact
+  print method. It accepts objects, `.rds` paths, and collections. `updateTagMetadata()` replaces
+  `updateBiometrics()`, merging safe descriptive edits or matching a corrections table by deployment ID.
+  Processing state and computational inputs remain protected; manual edits do not alter processing history.
 * `importTagData()` reads each animal's multi-sensor CSVs, standardises sensor names and units, folds
   in Wildlife Computers location files, and stores everything as a `nautilus_tag` object (a `data.table`
-  carrying a single consolidated metadata record; inspect it with `tagMetadata()` and
+  carrying a single consolidated metadata record; inspect it with `getTagMetadata()` and
   `processingHistory()`). Metadata deployments without a matching raw-data folder are now reported and
   recorded as exclusions by default; `missing.deployments = "ignore"` supports intentional partial runs.
 * Updates to the shared exclusions log are deployment-scoped. A partial rerun refreshes current-state

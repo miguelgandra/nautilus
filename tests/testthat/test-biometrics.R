@@ -1,5 +1,5 @@
 # Tests for the biological-traits feature: the metadataColumns `traits` passthrough, the meta$biometrics
-# slot, updateBiometrics() (the refresh utility), and grouping a plot by an imported trait.
+# slot, updateTagMetadata() (the refresh utility), and grouping a plot by an imported trait.
 
 .mk_tag <- function(id, bio = list()) {
   m <- nautilus:::.newNautilusMeta(); m$id <- id; m$biometrics <- bio
@@ -28,47 +28,47 @@ test_that("a plot groups by an imported trait read from meta$biometrics", {
   expect_setequal(unique(s$group), c("F", "M"))                  # grouping resolved from stored biometrics
 })
 
-test_that("updateBiometrics refreshes traits from a corrected table, preserving type", {
+test_that("updateTagMetadata refreshes traits from a corrected table, preserving type", {
   tags <- list(A01 = .mk_tag("A01", list(sex = "F")), B02 = .mk_tag("B02"))
   idm <- data.frame(ID = c("A01", "B02"), sex = c("M", "F"), length = c(9.9, 5.1), stringsAsFactors = FALSE)
-  out <- suppressMessages(updateBiometrics(tags, idm, columns = metadataColumns(traits = c("sex", "length")), verbose = FALSE))
-  expect_equal(tagMetadata(out$A01)$biometrics$sex, "M")         # corrected F -> M
-  expect_equal(tagMetadata(out$A01)$biometrics$length, 9.9)      # numeric preserved
-  expect_equal(tagMetadata(out$B02)$biometrics$sex, "F")         # newly set
-  expect_true("updateBiometrics" %in% processingHistory(out$A01)$step)
+  out <- suppressMessages(updateTagMetadata(tags, idm, columns = metadataColumns(traits = c("sex", "length")), verbose = FALSE))
+  expect_equal(getTagMetadata(out$A01)$biometrics$sex, "M")         # corrected F -> M
+  expect_equal(getTagMetadata(out$A01)$biometrics$length, 9.9)      # numeric preserved
+  expect_equal(getTagMetadata(out$B02)$biometrics$sex, "F")         # newly set
+  expect_equal(processingHistory(out$A01), processingHistory(tags$A01))
 })
 
-test_that("updateBiometrics resolves the id from meta$id when the data has no ID column", {
+test_that("updateTagMetadata resolves the id from meta$id when the data has no ID column", {
   m <- nautilus:::.newNautilusMeta(); m$id <- "A01"
   x <- nautilus:::new_nautilus_tag(data.table::data.table(depth = 1:3), m)   # id only in meta, no ID column
   idm <- data.frame(ID = "A01", sex = "M", stringsAsFactors = FALSE)
-  out <- suppressMessages(updateBiometrics(list(A01 = x), idm, columns = metadataColumns(traits = "sex"), verbose = FALSE))
-  expect_equal(tagMetadata(out$A01)$biometrics$sex, "M")       # regression: previously errored "length zero"
+  out <- suppressMessages(updateTagMetadata(list(A01 = x), idm, columns = metadataColumns(traits = "sex"), verbose = FALSE))
+  expect_equal(getTagMetadata(out$A01)$biometrics$sex, "M")       # regression: previously errored "length zero"
 })
 
 test_that("factor-valued traits are stored as character (no foreign levels leak in)", {
   idm <- data.frame(ID = "A01", species = factor("R. typus", levels = c("R. typus", "M. birostris")), stringsAsFactors = FALSE)
-  out <- suppressMessages(updateBiometrics(list(A01 = .mk_tag("A01")), idm,
+  out <- suppressMessages(updateTagMetadata(list(A01 = .mk_tag("A01")), idm,
                           columns = metadataColumns(traits = "species"), verbose = FALSE))
-  expect_type(tagMetadata(out$A01)$biometrics$species, "character")
-  expect_equal(tagMetadata(out$A01)$biometrics$species, "R. typus")
+  expect_type(getTagMetadata(out$A01)$biometrics$species, "character")
+  expect_equal(getTagMetadata(out$A01)$biometrics$species, "R. typus")
 })
 
-test_that("updateBiometrics warns on an unmatched id and leaves it untouched", {
+test_that("updateTagMetadata warns on an unmatched id and leaves it untouched", {
   tags <- list(A01 = .mk_tag("A01", list(sex = "F")), Z99 = .mk_tag("Z99"))
   idm <- data.frame(ID = "A01", sex = "M", stringsAsFactors = FALSE)
   out <- NULL   # capture inside the expectation: expect_warning() returns the condition, not the value
-  expect_warning(out <- suppressMessages(updateBiometrics(tags, idm, columns = metadataColumns(traits = "sex"), verbose = FALSE)),
+  expect_warning(out <- suppressMessages(updateTagMetadata(tags, idm, columns = metadataColumns(traits = "sex"), verbose = FALSE)),
                  "no matching", ignore.case = TRUE)
-  expect_length(tagMetadata(out$Z99)$biometrics, 0L)
+  expect_length(getTagMetadata(out$Z99)$biometrics, 0L)
 })
 
-test_that("updateBiometrics validates arguments", {
+test_that("updateTagMetadata validates arguments", {
   tags <- list(A01 = .mk_tag("A01"))
   idm <- data.frame(ID = "A01", sex = "M", stringsAsFactors = FALSE)
-  expect_error(updateBiometrics(tags, idm, verbose = FALSE), "traits", ignore.case = TRUE)          # no traits declared
-  expect_error(updateBiometrics(tags, idm, columns = metadataColumns(traits = "nope"), verbose = FALSE),
+  expect_error(updateTagMetadata(tags, idm, verbose = FALSE), "traits", ignore.case = TRUE)          # no traits declared
+  expect_error(updateTagMetadata(tags, idm, columns = metadataColumns(traits = "nope"), verbose = FALSE),
                "not found", ignore.case = TRUE)                                                     # trait col absent
-  expect_error(updateBiometrics(tags, idm, columns = metadataColumns(traits = "sex"),
+  expect_error(updateTagMetadata(tags, idm, columns = metadataColumns(traits = "sex"),
                return.data = FALSE, verbose = FALSE), "output.dir", ignore.case = TRUE)
 })

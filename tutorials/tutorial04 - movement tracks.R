@@ -44,7 +44,7 @@ processed_files <- list.files("./data interim/06_tailbeats", full.names = TRUE)
 # and a warning was raised. A magnetic heading is fine for turning angles and circular variance -
 # a constant offset cancels - but it ROTATES a dead-reckoned track, so it matters here.
 tag <- readRDS(processed_files[1])
-tagMetadata(tag)$deployment$heading_reference
+getTagMetadata(tag)$deployment$heading_reference
 
 ################################################################################
 # STEP 1. Screen the position fixes                                            #

@@ -27,7 +27,7 @@
 #'   `logging_utc_offset_h`. A deployment needing no correction is omitted.
 #'
 #' @seealso [getVideoMetadata()] for applying the returned corrections while extracting video timing;
-#'   [tagMetadata()] for inspecting the underlying sidecar provenance.
+#'   [getTagMetadata()] for inspecting the underlying sidecar provenance.
 #'
 #' @examples
 #' \dontrun{

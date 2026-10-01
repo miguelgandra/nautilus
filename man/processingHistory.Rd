@@ -7,7 +7,7 @@
 processingHistory(x)
 }
 \arguments{
-\item{x}{A \code{nautilus_tag} object (or a data.frame/data.table produced by an earlier version).}
+\item{x}{A single \code{nautilus_tag}, a legacy data.frame/data.table, or an \code{.rds} file path.}
 }
 \value{
 A data.frame with columns \code{step} (function name), \code{time} (when it ran),
@@ -25,5 +25,5 @@ processingHistory(tag)
 }
 }
 \seealso{
-\code{\link{tagMetadata}} for the full metadata record.
+\code{\link{getTagMetadata}} for the full metadata record.
 }

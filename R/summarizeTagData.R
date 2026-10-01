@@ -430,12 +430,12 @@ summarizeTagData <- function(data,
 
   # the deployment window is the data's own datetime range. After filterDeploymentData() this is the
   # TRUE on-animal recording period; the broad metadata deploy/popup window (which includes pre- and
-  # post-deployment drift) is intentionally NOT duplicated here - read it from tagMetadata() if needed.
+  # post-deployment drift) is intentionally NOT duplicated here - read it from getTagMetadata() if needed.
   record_start <- min(dt[["datetime"]], na.rm = TRUE)
   record_end   <- max(dt[["datetime"]], na.rm = TRUE)
   # position fixes: TOTAL count within the record span, from the canonical complete record
   # (meta$ancillary$positions); post-deployment drift fixes are excluded here (the full record is in
-  # tagMetadata()$ancillary$positions). NA when the tag carries no position stream at all.
+  # getTagMetadata()$ancillary$positions). NA when the tag carries no position stream at all.
   has_positions <- !is.null(.getMeta(dt)$ancillary$positions)
   pos <- .tagPositions(dt)
   if (nrow(pos))

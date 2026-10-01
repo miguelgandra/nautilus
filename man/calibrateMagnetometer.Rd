@@ -100,7 +100,7 @@ trusting the fleet to it.}
 \value{
 If \code{return.data = TRUE}, a named list of the input objects, each with its \code{mag_calibration}
 metadata populated. The estimate is written to the \code{proposed} block
-(\code{tagMetadata(x)$mag_calibration$proposed}), a list of \code{params} (\code{center}, \code{soft_iron}, \code{axis_net}),
+(\code{getTagMetadata(x)$mag_calibration$proposed}), a list of \code{params} (\code{center}, \code{soft_iron}, \code{axis_net}),
 \code{qc} (\code{confidence}, \code{coverage_ok}, \code{radcv}, \code{igrf_residual}, \code{axis_span}) and \code{provenance}
 (\code{method}, \code{source}, \code{group}, \code{n_deployments}, plus any external-source fields). The raw \code{mx/my/mz}
 are left untouched and \code{applied} stays \code{FALSE}. If \code{return.data = FALSE}, a character vector of the
@@ -120,7 +120,7 @@ sphere. This function therefore produces a best-effort estimate carrying an expl
 rather than a correction you are asked to take on trust. Run it after \code{\link[=applyAxisMapping]{applyAxisMapping()}}, so that
 the magnetometer and accelerometer share a body frame, and before \code{\link[=processTagData]{processTagData()}}.
 
-The estimate is stored in each deployment's metadata (\code{tagMetadata(x)$mag_calibration}) alongside its
+The estimate is stored in each deployment's metadata (\code{getTagMetadata(x)$mag_calibration}) alongside its
 quality-control metrics. The raw \code{mx/my/mz} are left untouched: \code{\link[=processTagData]{processTagData()}} applies the stored
 estimate later, and only if it clears the confidence gate (see \code{use.stored} in
 \code{\link[=calibrationControl]{calibrationControl()}}).
@@ -231,7 +231,7 @@ is explained rather than merely asserted.
 oriented <- applyAxisMapping(data = files, mapping = qc)
 cal <- calibrateMagnetometer(oriented, group.by = "package_id",
                              plot.file = "mag_cal.pdf")
-tagMetadata(cal[[1]])$mag_calibration$proposed$qc$confidence
+getTagMetadata(cal[[1]])$mag_calibration$proposed$qc$confidence
 
 # Fit from a dedicated rotation recording rather than the deployment cloud
 cal <- calibrateMagnetometer(oriented, calibration.data = "spin.rds",

@@ -229,7 +229,7 @@ video with sensor traces overlaid.<br/>
 ## Reproducibility
 
 Every nautilus object carries its own metadata and an append-only processing history. Each
-function that touches a deployment records what it did, when, with which version of the
+processing function records what it did, when, with which version of the
 package, and with which settings. A saved dataset therefore describes itself: you can
 recover the exact parameters that produced it months later, and write a methods section
 from the file rather than from memory.
@@ -239,9 +239,12 @@ Settings are grouped into named control objects (for example `orientationControl
 processing choices can be defined once, stored, and reused across every deployment.
 
 ```r
-tagMetadata(tag)          # what this deployment is: animal, tag, sensors, calibration
-processingHistory(tag)    # every step applied, in order, with its settings
+getTagMetadata(tag)       # compact metadata summary; $ gives the complete fields
+processingHistory(tag)   # every step applied, in order, with its settings
 processingSummary(tags)   # a cohort-level overview
+
+# Correct a passive descriptive trait without changing sensor data or processing history.
+tag <- updateTagMetadata(tag, list(biometrics = list(sex = "F")))
 ```
 
 <br/>

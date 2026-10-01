@@ -608,7 +608,7 @@
 #' rather than a correction you are asked to take on trust. Run it after [applyAxisMapping()], so that
 #' the magnetometer and accelerometer share a body frame, and before [processTagData()].
 #'
-#' The estimate is stored in each deployment's metadata (`tagMetadata(x)$mag_calibration`) alongside its
+#' The estimate is stored in each deployment's metadata (`getTagMetadata(x)$mag_calibration`) alongside its
 #' quality-control metrics. The raw `mx/my/mz` are left untouched: [processTagData()] applies the stored
 #' estimate later, and only if it clears the confidence gate (see `use.stored` in
 #' [calibrationControl()]).
@@ -763,7 +763,7 @@
 #'
 #' @return If `return.data = TRUE`, a named list of the input objects, each with its `mag_calibration`
 #'   metadata populated. The estimate is written to the `proposed` block
-#'   (`tagMetadata(x)$mag_calibration$proposed`), a list of `params` (`center`, `soft_iron`, `axis_net`),
+#'   (`getTagMetadata(x)$mag_calibration$proposed`), a list of `params` (`center`, `soft_iron`, `axis_net`),
 #'   `qc` (`confidence`, `coverage_ok`, `radcv`, `igrf_residual`, `axis_span`) and `provenance`
 #'   (`method`, `source`, `group`, `n_deployments`, plus any external-source fields). The raw `mx/my/mz`
 #'   are left untouched and `applied` stays `FALSE`. If `return.data = FALSE`, a character vector of the
@@ -778,7 +778,7 @@
 #' oriented <- applyAxisMapping(data = files, mapping = qc)
 #' cal <- calibrateMagnetometer(oriented, group.by = "package_id",
 #'                              plot.file = "mag_cal.pdf")
-#' tagMetadata(cal[[1]])$mag_calibration$proposed$qc$confidence
+#' getTagMetadata(cal[[1]])$mag_calibration$proposed$qc$confidence
 #'
 #' # Fit from a dedicated rotation recording rather than the deployment cloud
 #' cal <- calibrateMagnetometer(oriented, calibration.data = "spin.rds",

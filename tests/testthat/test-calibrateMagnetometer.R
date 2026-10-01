@@ -30,7 +30,7 @@
 # flattens that estimate's params/qc/provenance (+ the top-level applied/status/proposed) so the
 # assertions can read fields by name (center, confidence, source, radcv, ...).
 mcal <- function(x) {
-  mc <- tagMetadata(x)$mag_calibration
+  mc <- getTagMetadata(x)$mag_calibration
   c(mc$proposed$params, mc$proposed$qc, mc$proposed$provenance,
     list(applied = mc$applied, status = mc$status, proposed = mc$proposed))
 }
@@ -350,8 +350,8 @@ test_that("sphere coverage on the summary row and the detail page agree (single 
 
 test_that("calibration.data = NULL is byte-identical to omitting it (golden regression)", {
   tg <- .magTag("T", .magBandCloud(), pkg = "PKG1")
-  a  <- tagMetadata(calibrateMagnetometer(list(T = .magTag("T", .magBandCloud(), pkg = "PKG1")), verbose = FALSE)$T)$mag_calibration
-  b  <- tagMetadata(calibrateMagnetometer(list(T = .magTag("T", .magBandCloud(), pkg = "PKG1")), calibration.data = NULL, verbose = FALSE)$T)$mag_calibration
+  a  <- getTagMetadata(calibrateMagnetometer(list(T = .magTag("T", .magBandCloud(), pkg = "PKG1")), verbose = FALSE)$T)$mag_calibration
+  b  <- getTagMetadata(calibrateMagnetometer(list(T = .magTag("T", .magBandCloud(), pkg = "PKG1")), calibration.data = NULL, verbose = FALSE)$T)$mag_calibration
   expect_equal(a, b)                                              # full nested state identical (proposed only; unprocessed)
 })
 

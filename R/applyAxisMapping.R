@@ -26,7 +26,7 @@
 #' recorded in the record's history automatically, so there is nothing to declare by hand.
 #'
 #' @details
-#' The transform is tracked in the object's metadata (`tagMetadata(x)$axis_mapping`) as the *net* signed
+#' The transform is tracked in the object's metadata (`getTagMetadata(x)$axis_mapping`) as the *net* signed
 #' permutation currently applied, so re-mapping composes exactly and is idempotent:
 #' \itemize{
 #'   \item \strong{Absolute} (default, `relative = FALSE`): the mapping describes the raw (chip) ->
@@ -82,7 +82,7 @@
 #'   is preserved - a reflection alone never warns. When accelerometer and gyroscope are both present and
 #'   mapped, this also runs the frame-level **accel/gyro co-registration check** (Pearson correlation of
 #'   the gravity-direction rate `d(ghat)/dt` against the gyro-predicted `-omega x ghat`), records it in
-#'   `tagMetadata(x)$axis_mapping$coreg_corr`, and warns **only** on a decisive mismatch (correlation
+#'   `getTagMetadata(x)$axis_mapping$coreg_corr`, and warns **only** on a decisive mismatch (correlation
 #'   below 0.2 with enough rotation) - a genuine family mis-registration (e.g. an independent gyro die
 #'   whose convention the co-die default got wrong), never a mere reflection (which scores ~ +1). Set
 #'   `FALSE` to skip both the descriptive note and the co-registration check.
@@ -108,11 +108,11 @@
 #' @return If `return.data = TRUE`, a named list of remapped `nautilus_tag` objects (one per
 #'   individual); if `return.data = FALSE`, a character vector of the written `.rds` file paths. The net
 #'   mapping, its producer and the per-family origin are recorded in each object's
-#'   `tagMetadata(x)$axis_mapping` (`source`, `provenance`). Deployments a `nautilus_review` marks
+#'   `getTagMetadata(x)$axis_mapping` (`source`, `provenance`). Deployments a `nautilus_review` marks
 #'   `"Exclude"` are omitted entirely (no file written; absent from the returned list, which carries
 #'   their ids in `attr(., "excluded")`).
 #'
-#' @seealso [importTagData], [checkTagMapping], [consensusAxisMapping], [reviewTagMapping], [tagMetadata]
+#' @seealso [importTagData], [checkTagMapping], [consensusAxisMapping], [reviewTagMapping], [getTagMetadata]
 #' @examples
 #' \dontrun{
 #' files <- list.files("imported", pattern = "\\.rds$", full.names = TRUE)

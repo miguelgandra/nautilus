@@ -12,6 +12,7 @@ _archive/
 tutorials/legacy/
 Circling_Events_Detection.R
 DEVELOPER_GUIDE.md
+paddle_calibration_validation/
 
 # R build / check artefacts
 *.tar.gz

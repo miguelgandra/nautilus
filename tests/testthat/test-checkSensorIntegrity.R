@@ -272,7 +272,7 @@ test_that("apply drops a dead paddle channel, so processTagData never sees it", 
   out <- .run(list(x = tg), checks = "dead", apply = TRUE, return.data = TRUE)
   cd <- out$curated_data[[1]]
   expect_false("paddle_speed" %in% names(cd))
-  expect_true("paddle_speed" %in% tagMetadata(cd)$sensors$excluded)
+  expect_true("paddle_speed" %in% getTagMetadata(cd)$sensors$excluded)
 })
 
 # ---- mag.break -------------------------------------------------------------------------------
@@ -348,7 +348,7 @@ test_that("mag.break is opt-in, and apply never drops the magnetometer for it", 
               return.data = TRUE)
   cd <- out$curated_data[[1]]
   expect_true(all(c("mx", "my", "mz") %in% names(cd)))
-  expect_false(any(c("mx", "my", "mz") %in% tagMetadata(cd)$sensors$excluded))
+  expect_false(any(c("mx", "my", "mz") %in% getTagMetadata(cd)$sensors$excluded))
   expect_equal(nrow(out$issues[out$issues$check == "mag.break", ]), 1L)   # still reported
 
   # a genuine channel fault in the same run is still acted on - the exemption is per-check

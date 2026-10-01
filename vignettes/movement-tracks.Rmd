@@ -45,7 +45,7 @@ uncalibrated hard-iron offset is a roughly constant heading bias, and a constant
 bias compounds into ever-growing positional drift. `reconstructTrack()` will warn loudly if
 it sees an uncalibrated magnetometer, but the fix belongs upstream -- run
 `calibrateMagnetometer()` (ideally with a dedicated calibration recording) and confirm the
-status on a deployment (`tagMetadata(tags[[1]])$mag_calibration$status`) before reconstructing.
+status on a deployment (`getTagMetadata(tags[[1]])$mag_calibration$status`) before reconstructing.
 
 You also need **known positions** to anchor to. These live in the tag's canonical position
 record: the deployment origin, any FastGPS/Argos fixes recorded at the surface, and the

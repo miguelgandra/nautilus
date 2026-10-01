@@ -151,8 +151,20 @@ and processing history:
 
 ```{r inspect}
 tag1 <- tags[[1]]        # a single deployment (or tags[["PIN_01"]] by ID)
-tagMetadata(tag1)        # the consolidated metadata record
+getTagMetadata(tag1)      # the consolidated metadata record, printed compactly
 processingHistory(tag1)  # what has been done to the data so far
+```
+
+Descriptive corrections do not require a new import. `updateTagMetadata()` merges a partial
+update into a copy of the tag; assign the returned object to keep the change. It also accepts
+`.rds` paths, but never writes unless `output.dir` is supplied. Animal IDs, site names, passive
+traits, and scalar user annotations are editable; processing state and computational inputs are protected.
+
+```{r metadata-edit, eval=FALSE}
+tag1 <- updateTagMetadata(tag1, list(biometrics = list(sex = "F")))
+# For a fleet, match corrections by deployment ID.
+tags <- updateTagMetadata(tags, corrected_metadata,
+                          columns = metadataColumns(traits = c("sex", "length_cm")))
 ```
 
 ### If your data isn't a folder of CATS files

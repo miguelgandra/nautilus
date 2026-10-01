@@ -55,7 +55,7 @@ test_that("a fresh mapping remaps the columns and records provenance", {
   expect_equal(out$ay,  seq_len(3) * 1)
   expect_equal(out$az,  seq_len(3) * 100)
 
-  m <- tagMetadata(out)$axis_mapping
+  m <- getTagMetadata(out)$axis_mapping
   expect_true(m$applied)
   expect_equal(m$source, "manual")                     # a bare from/to df -> producer "manual"
   expect_equal(unname(m$provenance["accel"]), "manual")
@@ -71,8 +71,8 @@ test_that("a checkTagMapping-shaped object routes per-deployment and records 'se
   out <- run(data, qc)
   expect_equal(out$A01$ax, -(seq_len(3) * 10))          # A01 got Mz
   expect_equal(out$B02$ay, -(seq_len(3) * 100))         # B02 got Mx (new ay = -old az)
-  expect_equal(tagMetadata(out$A01)$axis_mapping$source, "checkTagMapping")
-  expect_equal(unname(tagMetadata(out$A01)$axis_mapping$provenance["accel"]), "self")
+  expect_equal(getTagMetadata(out$A01)$axis_mapping$source, "checkTagMapping")
+  expect_equal(unname(getTagMetadata(out$A01)$axis_mapping$provenance["accel"]), "self")
 })
 
 test_that("a consensusAxisMapping-shaped object routes per-deployment and records per-family origin", {
@@ -82,9 +82,9 @@ test_that("a consensusAxisMapping-shaped object routes per-deployment and record
                                      gyro = "none", mag = "none", stringsAsFactors = FALSE))
   out <- run(data, qc)
   expect_equal(out$A01$ax, -(seq_len(3) * 10))
-  expect_equal(tagMetadata(out$A01)$axis_mapping$source, "consensusAxisMapping")
-  expect_equal(unname(tagMetadata(out$A01)$axis_mapping$provenance["accel"]), "self")
-  expect_equal(unname(tagMetadata(out$B02)$axis_mapping$provenance["accel"]), "consensus")  # group-rescued
+  expect_equal(getTagMetadata(out$A01)$axis_mapping$source, "consensusAxisMapping")
+  expect_equal(unname(getTagMetadata(out$A01)$axis_mapping$provenance["accel"]), "self")
+  expect_equal(unname(getTagMetadata(out$B02)$axis_mapping$provenance["accel"]), "consensus")  # group-rescued
 })
 
 test_that("a named list of from/to tables routes per-deployment (manual origin)", {
@@ -92,7 +92,7 @@ test_that("a named list of from/to tables routes per-deployment (manual origin)"
   out <- run(data, list(A01 = .Mz, B02 = .Mx))
   expect_equal(out$A01$ax, -(seq_len(3) * 10))
   expect_equal(out$B02$ay, -(seq_len(3) * 100))
-  expect_equal(tagMetadata(out$B02)$axis_mapping$source, "manual")
+  expect_equal(getTagMetadata(out$B02)$axis_mapping$source, "manual")
 })
 
 test_that("empty / unmatched mappings are handled: skip-and-leave-unchanged, warn on no-dataset", {
@@ -103,7 +103,7 @@ test_that("empty / unmatched mappings are handled: skip-and-leave-unchanged, war
   expect_warning(res <- applyAxisMapping(data, qc, verbose = FALSE), "no matching dataset")
   expect_equal(res$A01$ax, -(seq_len(3) * 10))          # A01 remapped
   expect_equal(res$B02$ax,  seq_len(3) * 1)             # B02 left unchanged (empty mapping)
-  expect_false(tagMetadata(res$B02)$axis_mapping$applied)
+  expect_false(getTagMetadata(res$B02)$axis_mapping$applied)
 })
 
 test_that("zero id-overlap between mapping and data is an error", {
@@ -129,7 +129,7 @@ test_that("absolute re-map composes from raw (M1 then M2 == M2 from raw)", {
   expect_equal(d2$ax, dref$ax)
   expect_equal(d2$ay, dref$ay)
   expect_equal(d2$az, dref$az)
-  expect_equal(unname(tagMetadata(d2)$axis_mapping$net$accel), unname(tagMetadata(dref)$axis_mapping$net$accel))
+  expect_equal(unname(getTagMetadata(d2)$axis_mapping$net$accel), unname(getTagMetadata(dref)$axis_mapping$net$accel))
 })
 
 test_that("relative mode applies on top of the current state", {
@@ -146,7 +146,7 @@ test_that("faulty-axis 'NA' drops are applied and recorded", {
   drop <- data.frame(from = c("mx", "my", "mz"), to = c("NA", "NA", "NA"), stringsAsFactors = FALSE)
   out <- run(list(A01 = x), drop)[["A01"]]
   expect_true(all(is.na(out$mx))); expect_true(all(is.na(out$my))); expect_true(all(is.na(out$mz)))
-  expect_setequal(tagMetadata(out)$axis_mapping$dropped, c("mx", "my", "mz"))
+  expect_setequal(getTagMetadata(out)$axis_mapping$dropped, c("mx", "my", "mz"))
 })
 
 test_that("a reflection accel mapping applies without warning and co-registers the gyro", {
@@ -158,21 +158,21 @@ test_that("a reflection accel mapping applies without warning and co-registers t
   out <- res[["A01"]]
   # accel still applied (reflection), determinant recorded descriptively
   expect_equal(out$ax, -(seq_len(3) * 10))
-  expect_equal(unname(tagMetadata(out)$axis_mapping$determinant["accel"]), -1L)
+  expect_equal(unname(getTagMetadata(out)$axis_mapping$determinant["accel"]), -1L)
   # gyro was completed and co-registered: derived map gy->gx, gx->gy, gz->-gz (det(M)*M, det +1)
   expect_equal(out$gx,  seq_len(3) * 10)                  # new gx = old gy
   expect_equal(out$gy,  seq_len(3) * 1)                   # new gy = old gx
   expect_equal(out$gz, -(seq_len(3) * 100))               # new gz = -old gz
-  expect_equal(unname(tagMetadata(out)$axis_mapping$determinant["gyro"]), 1L)  # proper (co-registered)
+  expect_equal(unname(getTagMetadata(out)$axis_mapping$determinant["gyro"]), 1L)  # proper (co-registered)
   # magnetometer keeps its own strategy: not completed here, left in the raw frame
   expect_equal(out$mx,  seq_len(3) * 1)
-  expect_null(tagMetadata(out)$axis_mapping$net$mag)
+  expect_null(getTagMetadata(out)$axis_mapping$net$mag)
 })
 
 test_that("co-registration: warns only on a genuine accel/gyro mis-registration, never a reflection", {
   # co-registered raw gyro -> derived gyro stays co-registered -> no warning, coreg_corr ~ +1 recorded
   expect_no_warning(res <- applyAxisMapping(list(R1 = .rotating_tag(flip_gyro = FALSE)), .Mz, verbose = FALSE))
-  cc <- tagMetadata(res$R1)$axis_mapping$coreg_corr
+  cc <- getTagMetadata(res$R1)$axis_mapping$coreg_corr
   expect_gt(cc, 0.9)
   # raw gyro sign-flipped relative to accel -> decisive mismatch survives the mapping -> warns
   expect_warning(applyAxisMapping(list(R1 = .rotating_tag(flip_gyro = TRUE)), .Mz, verbose = FALSE),
@@ -181,13 +181,13 @@ test_that("co-registration: warns only on a genuine accel/gyro mis-registration,
 
 test_that("co-registration is a no-op on the tiny 3-row fixture (NA, no warning)", {
   expect_no_warning(res <- applyAxisMapping(list(A01 = .raw_tag()), .Mz, verbose = FALSE))
-  expect_true(is.na(tagMetadata(res$A01)$axis_mapping$coreg_corr))
+  expect_true(is.na(getTagMetadata(res$A01)$axis_mapping$coreg_corr))
 })
 
 test_that("check.handedness = FALSE skips the co-registration check entirely", {
   expect_no_warning(res <- applyAxisMapping(list(R1 = .rotating_tag(flip_gyro = TRUE)), .Mz,
                                             check.handedness = FALSE, verbose = FALSE))
-  expect_true(is.na(tagMetadata(res$R1)$axis_mapping$coreg_corr))
+  expect_true(is.na(getTagMetadata(res$R1)$axis_mapping$coreg_corr))
 })
 
 test_that("families without channels are skipped; multi-family mapping works", {
@@ -196,7 +196,7 @@ test_that("families without channels are skipped; multi-family mapping works", {
   out <- run(list(A01 = x), map)[["A01"]]
   expect_equal(out$ax, -(seq_len(3) * 10))                # accel remapped
   expect_false("gx" %in% names(out))                      # gyro absent -> skipped, not created
-  expect_null(tagMetadata(out)$axis_mapping$net$gyro)
+  expect_null(getTagMetadata(out)$axis_mapping$net$gyro)
 })
 
 test_that("file-path input round-trips and saves", {
@@ -207,7 +207,7 @@ test_that("file-path input round-trips and saves", {
                           output.dir = d, output.suffix = "-mapped", verbose = FALSE)
   expect_named(out, "Z9")
   saved <- readRDS(file.path(d, "Z9-mapped.rds"))
-  expect_true(tagMetadata(saved)$axis_mapping$applied)
+  expect_true(getTagMetadata(saved)$axis_mapping$applied)
 })
 
 test_that("input validation errors are clear", {
@@ -258,7 +258,7 @@ test_that("applyAxisMapping(configs=) looks up each tag's axis_config and applie
   out <- run(list(A01 = .tag_cfg("rot_z")), configs = configs)[["A01"]]
   expect_equal(out$ax, -(seq_len(3) * 10))       # new ax = -old ay
   expect_equal(out$ay,  seq_len(3) * 1)          # new ay =  old ax
-  m <- tagMetadata(out)$axis_mapping
+  m <- getTagMetadata(out)$axis_mapping
   expect_true(m$applied)
   expect_equal(m$source, "axis_config")
   expect_equal(unname(m$provenance["accel"]), "axis_config")
@@ -267,7 +267,7 @@ test_that("applyAxisMapping(configs=) looks up each tag's axis_config and applie
 test_that("a tag with blank/NA axis_config is left unchanged under configs", {
   out <- run(list(A01 = .tag_cfg(NA_character_)), configs = list("rot_z" = .Mz))[["A01"]]
   expect_equal(out$ax, seq_len(3) * 1)           # untouched
-  expect_false(tagMetadata(out)$axis_mapping$applied)
+  expect_false(getTagMetadata(out)$axis_mapping$applied)
 })
 
 test_that("a config name not in the dictionary is a clear error", {

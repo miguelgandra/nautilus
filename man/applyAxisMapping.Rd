@@ -57,7 +57,7 @@ co-registered automatically (its map carries the matching \code{det(M)} sign; se
 is preserved - a reflection alone never warns. When accelerometer and gyroscope are both present and
 mapped, this also runs the frame-level \strong{accel/gyro co-registration check} (Pearson correlation of
 the gravity-direction rate \code{d(ghat)/dt} against the gyro-predicted \verb{-omega x ghat}), records it in
-\code{tagMetadata(x)$axis_mapping$coreg_corr}, and warns \strong{only} on a decisive mismatch (correlation
+\code{getTagMetadata(x)$axis_mapping$coreg_corr}, and warns \strong{only} on a decisive mismatch (correlation
 below 0.2 with enough rotation) - a genuine family mis-registration (e.g. an independent gyro die
 whose convention the co-die default got wrong), never a mere reflection (which scores ~ +1). Set
 \code{FALSE} to skip both the descriptive note and the co-registration check.}
@@ -90,7 +90,7 @@ to tag a processing run or avoid clashes. Only used when \code{output.dir} is se
 If \code{return.data = TRUE}, a named list of remapped \code{nautilus_tag} objects (one per
 individual); if \code{return.data = FALSE}, a character vector of the written \code{.rds} file paths. The net
 mapping, its producer and the per-family origin are recorded in each object's
-\code{tagMetadata(x)$axis_mapping} (\code{source}, \code{provenance}). Deployments a \code{nautilus_review} marks
+\code{getTagMetadata(x)$axis_mapping} (\code{source}, \code{provenance}). Deployments a \code{nautilus_review} marks
 \code{"Exclude"} are omitted entirely (no file written; absent from the returned list, which carries
 their ids in \code{attr(., "excluded")}).
 }
@@ -116,7 +116,7 @@ every deployment, or a named list of them, one per deployment. Where each mappin
 recorded in the record's history automatically, so there is nothing to declare by hand.
 }
 \details{
-The transform is tracked in the object's metadata (\code{tagMetadata(x)$axis_mapping}) as the \emph{net} signed
+The transform is tracked in the object's metadata (\code{getTagMetadata(x)$axis_mapping}) as the \emph{net} signed
 permutation currently applied, so re-mapping composes exactly and is idempotent:
 \itemize{
 \item \strong{Absolute} (default, \code{relative = FALSE}): the mapping describes the raw (chip) ->
@@ -158,5 +158,5 @@ oriented <- applyAxisMapping(data = files, configs = configs)
 }
 }
 \seealso{
-\link{importTagData}, \link{checkTagMapping}, \link{consensusAxisMapping}, \link{reviewTagMapping}, \link{tagMetadata}
+\link{importTagData}, \link{checkTagMapping}, \link{consensusAxisMapping}, \link{reviewTagMapping}, \link{getTagMetadata}
 }

@@ -92,21 +92,21 @@ test_that(".saveOutput writes only when output.dir is set", {
   expect_true(file.exists(f))
 })
 
-test_that("tagMetadata returns the metadata record and migrates legacy objects", {
+test_that("getTagMetadata returns the metadata record and migrates legacy objects", {
   # new nautilus_tag
-  expect_equal(tagMetadata(.tag("A01"))$id, "A01")
+  expect_equal(getTagMetadata(.tag("A01"))$id, "A01")
   # exact lookup: must not be fooled by a nautilus.version marker
   x <- .tag("E05")
   data.table::setattr(x, "nautilus.version", "test")
-  expect_type(tagMetadata(x), "list")
-  expect_equal(tagMetadata(x)$id, "E05")
+  expect_type(getTagMetadata(x), "list")
+  expect_equal(getTagMetadata(x)$id, "E05")
   # legacy flat-attribute object is migrated on read
   dt <- data.table::data.table(ID = "F06", datetime = as.POSIXct("2021-01-01", tz = "UTC") + 0:4)
   data.table::setattr(dt, "id", "F06")
   data.table::setattr(dt, "tag.model", "CATS")
-  expect_equal(tagMetadata(dt)$id, "F06")
-  expect_equal(tagMetadata(dt)$tag$model, "CATS")
-  expect_error(tagMetadata(NULL), "NULL")
+  expect_equal(getTagMetadata(dt)$id, "F06")
+  expect_equal(getTagMetadata(dt)$tag$model, "CATS")
+  expect_error(getTagMetadata(NULL), "NULL")
 })
 
 test_that("processingHistory returns a tidy, ordered data.frame", {

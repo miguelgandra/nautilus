@@ -40,5 +40,5 @@ video_metadata <- getVideoMetadata("./videos", clock.corrections = corrections)
 }
 \seealso{
 \code{\link[=getVideoMetadata]{getVideoMetadata()}} for applying the returned corrections while extracting video timing;
-\code{\link[=tagMetadata]{tagMetadata()}} for inspecting the underlying sidecar provenance.
+\code{\link[=getTagMetadata]{getTagMetadata()}} for inspecting the underlying sidecar provenance.
 }

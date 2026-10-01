@@ -8,7 +8,8 @@
 # one-liner (.restoreMeta), and the object gains print/summary/plot methods.
 #
 # Metadata schema (attr(x, "nautilus")):
-#   $ id           character deployment/animal ID
+#   $ id           character deployment ID
+#   $ animal_id    character animal ID (optional; distinct from the deployment)
 #   $ deployment   list(lon, lat, datetime, popup_lon, popup_lat, popup_datetime,
 #                       magnetic_declination, attachment_site)
 #   $ tag          list(model, type, package_id, logger_id, paddle_wheel, axis_config)
@@ -24,6 +25,7 @@
 #   $ mag_calibration nested list (see .newMagCalibrationMeta): status, applied, applied_params
 #                  (center/soft_iron/axis_net), proposed estimate, qc (confidence + metrics), provenance
 #   $ processing   append-only list of step records (audit trail)
+#   $ user         optional named scalar annotations, added by updateTagMetadata()
 
 
 # Null-coalescing helper (base `%||%` only exists from R 4.4; define our own for older R)
@@ -412,52 +414,17 @@ is_nautilus_tag <- function(x) inherits(x, "nautilus_tag")
 # Public metadata accessors ###########################################################################
 #######################################################################################################
 
-#' Access the metadata of a nautilus tag object
-#'
-#' Returns the consolidated metadata record carried by a \code{nautilus_tag} (deployment details,
-#' tag model, sensors, time span, source sidecar, calibration state, ancillary streams, axis mapping,
-#' and the processing audit trail). This
-#' is the supported way to read metadata: user code should never reach into the underlying
-#' attribute directly, since a partial match would otherwise return the unrelated
-#' \code{nautilus.version} marker.
-#'
-#' Objects produced by older package versions (which stored metadata as many separate attributes)
-#' are migrated to the current schema on the fly, so this accessor works on both new and legacy data.
-#'
-#' @param x A \code{nautilus_tag} object (or a data.frame/data.table produced by an earlier version).
-#' @return A named list with the metadata schema: \code{id}, \code{animal_id}, \code{deployment},
-#'   \code{tag}, \code{biometrics}, \code{sensors}, \code{span}, \code{sidecar}, \code{ancillary},
-#'   \code{axis_mapping}, \code{mag_calibration}, and \code{processing}.
-#' @seealso \code{\link{processingHistory}} for a tabular view of the processing trail.
-#' @examples
-#' \dontrun{
-#' meta <- tagMetadata(tag)
-#' meta$id
-#' meta$deployment$lon
-#' meta$sensors$sampling_hz_processed
-#' }
-#' @export
-
-tagMetadata <- function(x) {
-  if (is.null(x)) .abort("{.arg x} is {.code NULL}; expected a nautilus_tag (or a data.frame produced by nautilus).")
-  m <- attr(x, "nautilus", exact = TRUE)
-  # migrate legacy flat-attribute objects on read (without mutating the caller's object)
-  if (is.null(m)) m <- .metaFromFlatAttrs(x)
-  m
-}
-
-
 #' Retrieve the processing history of a nautilus tag object
 #'
 #' Each nautilus pipeline function appends a record to the object's processing audit trail. This
 #' accessor returns that trail as a tidy data.frame, one row per processing step, in the order the
 #' steps were applied.
 #'
-#' @param x A \code{nautilus_tag} object (or a data.frame/data.table produced by an earlier version).
+#' @param x A single \code{nautilus_tag}, a legacy data.frame/data.table, or an \code{.rds} file path.
 #' @return A data.frame with columns \code{step} (function name), \code{time} (when it ran),
 #'   \code{nautilus_version}, and \code{details} (a compact summary of the parameters recorded for
 #'   that step). Returns a zero-row data.frame if no history is present.
-#' @seealso \code{\link{tagMetadata}} for the full metadata record.
+#' @seealso \code{\link{getTagMetadata}} for the full metadata record.
 #' @examples
 #' \dontrun{
 #' processingHistory(tag)
@@ -465,7 +432,9 @@ tagMetadata <- function(x) {
 #' @export
 
 processingHistory <- function(x) {
-  proc <- tagMetadata(x)$processing %||% list()
+  meta <- getTagMetadata(x)
+  if (!inherits(meta, "nautilus_metadata")) .abort("{.arg x} must be a single tag dataset or .rds file path.")
+  proc <- meta$processing %||% list()
 
   empty <- data.frame(step = character(0), time = as.POSIXct(character(0)),
                       nautilus_version = character(0), details = character(0),
@@ -490,90 +459,6 @@ processingHistory <- function(x) {
                stringsAsFactors = FALSE)
   })
   do.call(rbind, rows)
-}
-
-
-#' Refresh biological traits on already-processed data
-#'
-#' @description
-#' Re-stamps the biological traits (`tagMetadata(x)$biometrics`) of already-imported / processed data
-#' from a (corrected) deployment-metadata table, WITHOUT re-reading the raw sensor files. Traits are
-#' normally captured once at import (via `metadataColumns(traits = ...)`), but if a value is later fixed
-#' or a new trait added, this propagates it to the processed objects cheaply - so the self-contained
-#' objects stay the single source of truth while remaining correctable.
-#'
-#' @param data A `nautilus_tag` / data.frame, a (named) list of them, or a character vector of `.rds`
-#'   paths (the output of any processing step).
-#' @param metadata The deployment-metadata table (a data.frame or a `nautilus_deployments` object),
-#'   one row per deployment, holding the trait columns and the id column.
-#' @param columns A \code{\link{metadataColumns}} object naming the id column (`id`) and the trait
-#'   columns (`traits`). Traits not listed here are left untouched.
-#' @param id.col Character. Name of the ID column used to match each dataset to its metadata row.
-#'   Default `"ID"`.
-#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
-#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
-#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
-#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
-#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
-#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or `2`/"detailed" (default).
-#' @return If `return.data = TRUE`, a named list of updated objects; if `return.data = FALSE`, a character
-#'   vector of the written `.rds` file paths.
-#' @seealso \code{\link{metadataColumns}}, \code{\link{importTagData}}, \code{\link{tagMetadata}}
-#' @examples
-#' \dontrun{
-#' # correct a trait in the deployment table, then re-stamp it onto processed data
-#' metadata <- data.frame(ID = c("shark01", "shark02"),
-#'                           sex = c("F", "M"), length_cm = c(612, 548))
-#' cols <- metadataColumns(id = "ID", traits = c("sex", "length_cm"))
-#' tags <- updateBiometrics(processed, metadata, columns = cols, id.col = "ID")
-#' }
-#' @export
-updateBiometrics <- function(data, metadata, columns = metadataColumns(), id.col = "ID",
-                             return.data = TRUE, output.dir = NULL,
-                             output.suffix = NULL, compress = TRUE, verbose = "detailed") {
-  start.time <- Sys.time(); lvl <- .verbosity(verbose)
-  columns <- .as_metadata_columns(columns)
-  .assert_string(id.col, "id.col"); .assert_flag(return.data, "return.data")
-  .assert_dir(output.dir, "output.dir"); .assert_compress(compress)
-  .assert_output(return.data, output.dir)
-  if (is.data.frame(metadata)) metadata <- as.data.frame(metadata) else .abort("{.arg metadata} must be a data.frame.")
-  traits <- columns$traits
-  if (is.null(traits) || !length(traits)) .abort(c("{.arg columns} names no {.field traits}.",
-                                                   "i" = "Set {.code metadataColumns(traits = c(...))}."))
-  mid <- columns$id
-  miss <- setdiff(c(mid, traits), names(metadata))
-  if (length(miss)) .abort("Column{?s} {.val {miss}} not found in {.arg metadata}.")
-
-  r <- .resolveInput(data, id.col = id.col)
-  .log_header(lvl, "updateBiometrics", "Refreshing biological traits",
-              bullets = sprintf("Input: %d dataset%s \u00b7 traits: %s", r$n, if (r$n != 1) "s" else "", paste(traits, collapse = ", ")))
-  results <- if (return.data) vector("list", r$n) else NULL
-  saved <- vector("list", r$n)
-  n_updated <- 0L; unmatched <- character(0)
-  for (i in seq_len(r$n)) {
-    x <- r$get(i)
-    id <- tryCatch(as.character(unique(x[[id.col]])[1]), error = function(e) NA_character_)
-    if (!length(id) || is.na(id)) id <- as.character(.getMeta(x)$id %||% r$ids[i])   # id may live only in meta$id
-    row <- metadata[as.character(metadata[[mid]]) == id, , drop = FALSE]
-    if (!nrow(row)) { unmatched <- c(unmatched, id); if (return.data) results[[i]] <- x; next }
-    meta <- .getMeta(.ensureMeta(x))
-    for (tr in traits) { v <- row[[tr]][1]; meta$biometrics[[tr]] <- if (is.factor(v)) as.character(v) else v }
-    meta <- .appendProcessing(meta, "updateBiometrics", traits = paste(traits, collapse = ","))
-    x <- .restoreMeta(x, meta); n_updated <- n_updated + 1L
-    saved[i] <- list(.saveOutput(x, id, output.dir = output.dir, output.suffix = output.suffix, compress = compress))
-    if (return.data) results[[i]] <- x
-  }
-  if (length(unmatched)) cli::cli_warn("{length(unmatched)} dataset{?s} had no matching metadata row: {.val {utils::head(unmatched, 6)}}.")
-  if (lvl >= 1L) {
-    .log_summary(lvl); .log_done(lvl, n_updated, " of ", r$n, " dataset", if (r$n != 1) "s", " refreshed")
-    .log_runtime(lvl, start.time)
-  }
-  .collectOutput(results, saved, return.data, r$ids)
 }
 
 

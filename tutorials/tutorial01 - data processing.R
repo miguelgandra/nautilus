@@ -20,7 +20,7 @@
 #
 # Throughout the pipeline, data are stored as 'nautilus_tag' objects, which combine the sensor
 # time series with deployment metadata, sensor provenance and a processing history. Inspect any
-# object with print() or summary(); access its metadata with tagMetadata(x) and its processing
+# object with print() or summary(); access its metadata with getTagMetadata(x) and its processing
 # history with processingHistory(x).
 #
 # Notes:
@@ -147,7 +147,7 @@ deployments <- checkDeploymentMetadata(
     attachment_site   = "attachment_site",
     deployment_type   = "deployment_type",
     # Biological traits retained with each deployment for subsequent analyses
-    # A corrected value can be re-stamped later with updateBiometrics() - no re-import needed.
+    # A corrected value can be re-stamped later with updateTagMetadata() - no re-import needed.
     traits            = c("sex", "size_m")),
   verbose          = "detailed")
 
