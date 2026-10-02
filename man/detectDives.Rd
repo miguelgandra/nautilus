@@ -2,7 +2,7 @@
 % Please edit documentation in R/detectDives.R
 \name{detectDives}
 \alias{detectDives}
-\title{Detect dives in a depth record}
+\title{Detect vertical excursions in deployment depth records}
 \usage{
 detectDives(
   data,
@@ -20,135 +20,188 @@ detectDives(
 )
 }
 \arguments{
-\item{data}{Processed data: a tag object, a list of them, a single table with an \code{id.col}, or a
-character vector of \code{.rds} paths.}
+\item{data}{A \code{nautilus_tag} object, a list of deployment datasets, a data frame containing
+deployments identified by \code{id.col}, or a character vector of \code{.rds} file paths.
+Corrected, quality-checked depth data from \code{\link[=processTagData]{processTagData()}} are recommended. Each deployment
+must contain a timestamp column and numeric depth in metres, positive downwards. File inputs
+are read sequentially in each of the two processing passes.}
 
-\item{control}{A control object from \code{\link[=diveControl]{diveControl()}} governing what counts as a dive - the reference
-level, the excursion direction and the thresholds. Pass \code{diveControl(...)} to change it.}
+\item{control}{A control object from \code{\link[=diveControl]{diveControl()}} specifying the reference, excursion
+direction, detection criteria and phase method. A named list of constructor arguments or
+\code{NULL} can also be supplied; unspecified settings use the constructor defaults.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col}{Character. Name of the column identifying deployments, not animals.
+Default \code{"ID"}.}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+\item{datetime.col}{Character. Name of the timestamp column. Default \code{"datetime"}.
+Standard pipeline inputs use \code{POSIXct} timestamps in chronological order.}
 
-\item{depth.col}{Which column holds the depth record (default \code{"depth"}).}
+\item{depth.col}{Character. Name of the depth column in metres, positive downwards.
+Default \code{"depth"}.}
 
-\item{plot}{Whether to draw the diagnostics to the active graphics device. Default \code{FALSE}.}
+\item{plot}{Logical. Draw detection diagnostics on the active graphics device.
+Default \code{FALSE}; see Details.}
 
-\item{plot.file}{Path to a PDF holding one diagnostic panel per deployment, showing the depth trace
-with the detected dives, the reference level and the thresholds marked. Default \code{NULL}.}
+\item{plot.file}{Optional path to a diagnostic PDF. Includes depth profiles, threshold
+sensitivity and representative phase classifications for each deployment.
+Default \code{NULL}, which writes no diagnostic file.}
 
-\item{return.data}{Whether to return the annotated data (default \code{TRUE}) or the written file paths.}
+\item{return.data}{Whether to return the annotated datasets in memory (default \code{TRUE})
+or return saved \code{.rds} paths invisibly. Use \code{FALSE} with \code{output.dir};
+without an output directory, no datasets are saved and there are no saved paths to return.}
 
-\item{output.dir}{Directory in which to write one annotated \code{.rds} file per deployment. Providing a
-directory is what triggers saving; \code{NULL} (default) writes nothing.}
+\item{output.dir}{Character. Existing directory in which to write one \code{<id>.rds} file
+per deployment. Providing a directory triggers saving, including deployments on which
+detection abstained; \code{NULL} (default) writes nothing.}
 
-\item{output.suffix}{Optional suffix appended to each saved file name, before \code{.rds}. Only used when
-\code{output.dir} is set.}
+\item{output.suffix}{Optional string appended to each saved filename before \code{.rds}.
+Used only when \code{output.dir} is supplied. Default \code{NULL}.}
 
-\item{compress}{Compression for the saved \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
-\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
+\item{compress}{Compression passed to \code{\link[base:saveRDS]{base::saveRDS()}}: \code{TRUE} (default, gzip),
+\code{FALSE}, \code{"gzip"}, \code{"bzip2"} or \code{"xz"}.}
 
-\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
-(default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"},
+\code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Normal output reports
+resolved settings and batch outcomes; detailed output adds deployment-level diagnostics.
+Scientific diagnostic warnings are not suppressed by quiet verbosity.}
 }
 \value{
-The input with \code{dive_id}, \code{dive_phase} and \code{depth_baseline} added, or, when
-\code{return.data = FALSE}, the written file paths, invisibly.
+With \code{return.data = TRUE}, a named list of annotated deployment datasets,
+including for a single input. Original channels and metadata are retained, with a new
+processing-history entry and three added or replaced columns:
+\describe{
+\item{\code{dive_id}}{Integer. Sequential positive identifiers within each deployment;
+\code{0L} outside retained dives. Use \code{ID} and \code{dive_id} together to identify
+dives across deployments. Never \code{NA}.}
+\item{\code{dive_phase}}{Factor with levels \code{"descent"}, \code{"bottom"},
+\code{"ascent"} and \code{"inter_dive"}. Never \code{NA}.}
+\item{\code{depth_baseline}}{Numeric reference depth in metres: zero for a surface
+reference, the estimated running level for a baseline reference, or \code{NA_real_}
+when detection abstains.}
+}
+With \code{return.data = FALSE}, returns the saved file paths invisibly.
 }
 \description{
-A depth trace is a continuous series, but most questions asked of it are about discrete events: how
-deep, how long, how often, and what the animal was doing at the bottom. Turning one into the other
-requires a definition of a dive, and the definitions in the literature are mostly taxon-specific -
-built for animals that surface to breathe, and unusable for a fish that never comes shallow or a ray
-that rests on the bottom.
+Identifies discrete vertical excursions from a surface or running depth reference and annotates
+each sample with a dive identifier, phase and reference depth. Detection uses two-threshold
+hysteresis, duration and amplitude criteria, and optional splitting of multi-peaked excursions.
+\code{\link[=diveControl]{diveControl()}} defines the detection and phase-classification settings.
 
-This function uses one definition throughout, and makes the taxonomy a choice rather than an
-assumption. A dive is a vertical excursion away from a \emph{reference level}, detected by two-threshold
-hysteresis with a prominence criterion, and ended by a return to within a band of that reference. What
-changes between taxa is where the reference sits and which way the animal departs from it:
-\itemize{
-\item \strong{air-breathers} - seals, penguins, turtles, cetaceans: \code{reference = "surface"}, where the zero is
-anchored by the animal's own return to the surface.
-\item \strong{fish that never surface}: \code{reference = "baseline"}, a running level that excursions depart from.
-A fixed surface threshold would report a single dive spanning the whole record for an animal that
-never comes shallow.
-\item \strong{benthic resters} - nurse sharks, wobbegongs, rays, flatfish: \code{direction = "up"}, because their
-excursions leave the bottom rather than the surface.
-}
-
-Three columns are added, and always all three: \code{dive_id}, which is \code{0L} outside any dive, \code{dive_phase},
-which has an explicit \code{inter_dive} level, and \code{depth_baseline}. Their presence never depends on the
-settings, and \code{dive_id} and \code{dive_phase} are never NA. \code{depth_baseline} is NA only for a deployment
-the detector had to abstain on, which is reported.
+Use after \code{\link[=processTagData]{processTagData()}} to analyse the corrected depth record. Acceleration and orientation
+channels are not required, so deployments retained with depth-only processing can be analysed.
+The annotated datasets can be reduced to one row per dive with \code{\link[=diveMetrics]{diveMetrics()}}, inspected with
+\code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, or saved for subsequent analyses.
 }
 \details{
-\subsection{Why \code{dive_id} is \code{0L} between dives, and not NA}{
+\subsection{Depth reference and scientific interpretation}{
 
-An NA would propagate. It survives arithmetic silently, it makes \code{dive_id > 0} return NA rather than
-\code{FALSE}, and it is exactly what any \code{na.omit()} in your own pipeline deletes - so the inter-dive
-samples, which are half the behaviour of interest, would vanish without a message. \code{0L} keeps the
-column integer and makes "in a dive" a test that always answers, while the explicit \code{inter_dive}
-factor level keeps \code{table(dive_phase)} complete and \code{split()} well defined.
+A dive is defined here as an excursion relative to a specified reference, not as a
+taxon-independent behavioural state. A surface reference uses zero metres and requires a
+defensible depth zero. A running baseline describes departures from the local depth level,
+which can be more appropriate for animals that remain submerged. Downward, upward or both
+excursion directions can be selected. See \code{\link[=diveControl]{diveControl()}} for automatic reference selection,
+baseline estimation and the assumptions of each phase method.
+
+The function uses the supplied depth channel without correcting its zero, resampling it or
+overwriting it with a smoothed series. Input rows are not sorted: timestamps should already be
+chronological, and a regularly sampled record is recommended for baseline and phase estimation.
+Missing depth must remain missing rather than being treated as a surface observation.
 }
 
-\subsection{The labels do not travel into a feature table}{
+\subsection{Detection and interruptions}{
 
-\code{\link[=extractFeatures]{extractFeatures()}} returns the deployment identifier, the timestamp and the features it derived;
-\code{dive_id} and \code{dive_phase} are not among them, with or without \code{downsample.to}. To model something
-per dive or per phase, extract the features first and join the labels on the timestamp afterwards. Do
-that join with the intervals in mind: once features are binned, a bin can straddle a dive boundary,
-and which label it should then carry is a question about your analysis rather than one this package
-should answer for you.
+For each selected direction, the signed departure from the reference opens an excursion when
+it is strictly greater than \code{depth.threshold}. The excursion closes when that departure
+is strictly less than \code{surface.band}. The opening sample is included; the closing sample
+is not. This hysteresis reduces repeated crossings caused by fluctuations near a single threshold.
+
+Candidate excursions are split at timestamp jumps or runs of non-finite depth longer than
+\code{max.gap}; missing intervals are not interpolated. Short missing-depth runs carry the
+current detection state, so an annotated dive can contain samples without valid depth.
+Optional prominence splitting separates sufficiently distinct sub-peaks within an excursion.
+It is disabled by default. The resulting intervals must satisfy \code{min.amplitude} and
+\code{min.duration}, including fragments adjacent to interruptions or record boundaries.
+No maximum dive duration is imposed.
+
+Timing is sample-based: duration is the elapsed time between the first and last retained
+samples, not a reconstruction of the threshold-crossing times. Censoring, coverage and
+inter-dive interval diagnostics are reported by \code{\link[=diveMetrics]{diveMetrics()}}; truncated excursions are
+retained if they meet the detection criteria.
 }
 
-\subsection{The derived threshold is a floor, not an estimate}{
+\subsection{Shared settings and deployment-specific references}{
 
-When \code{depth.threshold} is left \code{NULL} the function derives the smallest excursion the \emph{record} can
-support, from the zero-offset residual and the noise of the stored series, and prints how it arrived
-at the value. That is a property of the instrument and the processing, not of the animal. Set the
-threshold from your study system, and choose it before looking at your response variable.
+Detection first scans all inputs, then derives unspecified numerical settings once from the
+usable deployments. These settings are shared across the batch. With \code{reference = "auto"},
+the reference is nevertheless selected separately for each deployment from depth-correction
+provenance and occupancy of the surface band.
+
+Changing the deployments in a call can change derived settings and therefore dive counts.
+Specify the relevant criteria explicitly when a fixed definition is required across separate
+batches, and report the resolved settings in scientific analyses. Derived defaults are
+processing heuristics, not estimates of a biologically meaningful dive threshold.
 }
 
-\subsection{Downsampling limits what is measurable}{
+\subsection{Phase labels}{
 
-Averaging samples into bins is a boxcar filter, and a boxcar attenuates any excursion short relative
-to its width. The only setting that reaches the stored depth channel this way is
-\code{processTagData(downsample.to = )}; \code{smoothingControl(depth = )} does not, because that window
-conditions only the series vertical velocity is differentiated from. \code{min.duration} therefore
-defaults to a floor derived from the downsampling bin rather than from any smoothing window, and the
-function prints which one it used. \code{\link[=diveMetrics]{diveMetrics()}} reports the surviving bound for each dive as
-\code{depth_attenuation}. To reach shorter dives, re-process at a finer \code{downsample.to}.
+The factor levels are \code{"descent"}, \code{"bottom"}, \code{"ascent"} and
+\code{"inter_dive"}. Descent denotes the opening limb away from the reference; ascent denotes
+the return limb. For upward excursions these labels therefore correspond to physical ascent
+and descent, respectively. Bottom denotes the region around the excursion extremum, not
+necessarily proximity to the seabed or a period of feeding or resting.
+
+The default vertical-rate method can retain a V-shaped excursion with descent and ascent but
+no bottom phase. Coarse sampling, depth quantisation or limited within-dive variation can
+leave transit limbs unresolved. Diagnostics report baseline risks and poorly resolved limbs;
+they do not automatically change the settings or manufacture a bottom phase.
 }
 
-\subsection{A dive with no bottom phase is a result, not a gap}{
+\subsection{Deployment status and provenance}{
 
-\code{dive_phase} splits each dive into \code{descent}, \code{bottom} and \code{ascent}, and any of the three may be
-empty. On a V-shaped profile the animal turns at the apex and starts back up, and an empty bottom is
-the correct description of that - so the reported structure is \code{DA}, and \code{\link[=diveMetrics]{diveMetrics()}} gives that
-dive \code{bottom_duration_s = 0} with \code{bottom_depth_mean_m = NA}. Two thirds of the dives in a
-52-deployment whale-shark cohort come out this way. The alternative rule,
-\code{diveControl(phase.method = "prop.depth")}, defines the bottom geometrically and therefore reports
-one on every dive whatever its shape; see \code{\link[=diveControl]{diveControl()}} for when that is what you want.
+The three annotation columns are added to every deployment, replacing existing columns with
+the same names. Resolved detection settings, reference, direction, phase method, dive count
+and status are appended to processing history:
 
-The realised structure is tallied in the summary, so what the rule actually produced is visible
-without going looking for it. A \strong{missing descent or ascent} is a different matter: every excursion
-the detector found must have gone away from the reference and come back, so a limb missing from more
-than half of a deployment's dives is warned about. Dives the record cut short are left out of that
-count, since a deployment that started or stopped mid-dive legitimately lacks a limb.
+\describe{
+\item{\code{"applied"}}{Detection completed and retained at least one dive.}
+\item{\code{"applied_no_dives"}}{Usable depth and timestamps were available, but no
+excursions met the criteria.}
+\item{\code{"abstained_no_depth"}}{The required depth or timestamp information was
+unavailable or unusable. Zero labels in this case are not evidence of an absence of dives.}
 }
 
-\subsection{Zero dives is a result, not a failure}{
+If no deployment has usable depth and timestamps, the call stops with an error.
+Otherwise, unusable deployments remain in the output with neutral annotations and an
+abstention status; they are not written to a deployment-exclusion log. Inspect outcomes with
+\code{\link[=processingHistory]{processingHistory()}} or \code{\link[=getTagMetadata]{getTagMetadata()}} before interpreting deployment-level dive counts.
+}
 
-It is reported together with the threshold that produced it, the observed depth range and the
-reference used. The threshold is never relaxed until dives appear.
+\subsection{Diagnostic plots}{
+
+Optional diagnostics show the depth trace and reference, a threshold-sensitivity sweep and
+phase labels for representative short, median-duration and long excursions. Full-record traces
+are decimated for display; detection itself uses the supplied samples. The sensitivity sweep
+is illustrative and uses the downward direction when \code{direction = "both"}, rather than
+reproducing the bidirectional dive count.
 }
 }
 \examples{
 \dontrun{
-tag <- detectDives(processed, control = diveControl(depth.threshold = 5))
+processed_files <- list.files("data/processed", pattern = "\\\\.rds$", full.names = TRUE)
 
-# A fish that never surfaces, or a benthic rester leaving the bottom
-tag <- detectDives(processed, control = diveControl(reference = "baseline", direction = "up"))
+# Explicit study criteria; automatic reference selection remains deployment-specific
+dives <- detectDives(
+  processed_files,
+  control = diveControl(depth.threshold = 5, surface.band = 1, min.duration = 20)
+)
+metrics <- diveMetrics(dives, variables = c("temp", "vedba"), by.phase = TRUE)
+plotDives(metrics, metrics = c("amplitude_m", "duration_s"))
+
+# Upward excursions from a running depth baseline
+upward_dives <- detectDives(
+  processed_files,
+  control = diveControl(reference = "baseline", direction = "up", depth.threshold = 10)
+)
 }
 }
 \references{
@@ -166,7 +219,7 @@ Wilson RP, Puetz K, Charrassin J-B, Lage J (1995) Artifacts arising from samplin
 depth studies of marine endotherms. \emph{Polar Biology} 15:575-581. \doi{10.1007/BF00239649}
 }
 \seealso{
-\code{\link[=diveControl]{diveControl()}} for what counts as a dive; \code{\link[=diveMetrics]{diveMetrics()}} for reducing the result to one
-row per dive; \code{\link[=plotDives]{plotDives()}} and \code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for looking at it; \code{\link[=processTagData]{processTagData()}} for the
-step that must come first.
+\code{\link[=diveControl]{diveControl()}} for detection and phase settings; \code{\link[=diveMetrics]{diveMetrics()}} for per-dive
+summaries; \code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for annotated depth traces; \code{\link[=plotDives]{plotDives()}} for per-dive
+distributions; \code{\link[=processTagData]{processTagData()}} for depth correction and preprocessing.
 }

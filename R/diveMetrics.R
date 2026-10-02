@@ -2,186 +2,236 @@
 # Per-dive metrics ####################################################################################
 #######################################################################################################
 
-#' Summarise each detected dive
+#' Summarise detected dives and assess record completeness
 #'
 #' @description
-#' Once dives have been labelled, most analyses work on dives rather than samples: a distribution of
-#' maximum depths, a model of duration against temperature, a comparison of bottom time between
-#' individuals. This function performs that reduction, turning the per-sample output of [detectDives()]
-#' into one row per dive.
+#' Reduces deployment datasets annotated by [detectDives()] to one row per retained dive.
+#' Summaries include timing, depth excursion, phase structure, vertical kinematics, detection
+#' settings and record-completeness diagnostics. Additional sensor or derived channels can be
+#' summarised over whole dives and, optionally, within phases.
 #'
-#' Each row carries the dive's timing, depth, phase structure and kinematics, the detection settings
-#' that produced it, and a quality block stating what that row can and cannot support - whether the
-#' whole dive was recorded, how much of its depth channel was present, and how much of its amplitude
-#' the processing could have removed.
+#' The function retains censored dives and unsupported phase structures with explicit indicators,
+#' rather than imposing an analysis-specific quality filter. Use these indicators to select
+#' observations appropriate to the scientific question, and [plotDives()] to inspect distributions
+#' and relationships between per-dive metrics.
 #'
-#' `variables` summarises any per-sample channel over each dive, with correct circular handling for
-#' angles. That one argument is what makes this a general reducer rather than a fixed list of depth
-#' statistics.
-#'
-#' @param data Data annotated by [detectDives()]: a tag object, a list of them, a single table with an
-#'   `id.col`, or a character vector of `.rds` paths.
-#' @param variables Per-sample columns to summarise for each dive, for example
-#'   `c("temp", "odba", "tbf_hz_peaks")`. `NULL` (default) adds none. Each costs two columns, or eight
-#'   with `by.phase = TRUE`, so a long list makes for a wide table.
-#' @param circular.variables Which of `variables` are angles in degrees, and so must be summarised as a
-#'   mean angle and a mean resultant length rather than averaged directly. Default `c("heading", "roll")`,
-#'   matching [extractFeatures()].
-#' @param statistics Which statistics to compute for `variables`: any of `"mean"` and `"sd"`.
-#' @param by.phase Whether to also summarise `variables` separately within descent, bottom and ascent
-#'   (default `FALSE`). Useful when a channel is expected to differ between phases, such as activity
-#'   during descent against activity on the bottom.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param depth.col Which column holds the depth record (default `"depth"`).
-#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default).
+#' @param data A \code{nautilus_tag} object, a list of deployment datasets, a data frame containing
+#'   deployments identified by \code{id.col}, or a character vector of \code{.rds} file paths.
+#'   The output of [detectDives()] is recommended. Required columns are \code{dive_id},
+#'   \code{dive_phase}, \code{datetime.col} and \code{depth.col}; \code{depth_baseline} and
+#'   detection processing history supply the reference and resolved settings.
+#'   File inputs are read sequentially.
+#' @param variables Optional character vector of numeric per-sample columns to summarise,
+#'   for example \code{c("temp", "vedba", "tbf_hz_wavelet")}. \code{NULL} (default) adds
+#'   no channel summaries. Absent channels receive the same summary columns filled with
+#'   \code{NA_real_}; see Details for naming and missing-value handling.
+#' @param circular.variables Character vector identifying which requested \code{variables}
+#'   are angles in degrees. Default \code{c("heading", "roll")}. These use circular mean
+#'   angles and mean resultant lengths rather than arithmetic summaries.
+#'   \code{NULL} treats all requested variables as linear. Listing a channel here does not
+#'   request its summary unless it is also in \code{variables}.
+#' @param statistics Character vector selecting \code{"mean"}, \code{"sd"} or both
+#'   (default) for linear \code{variables}. Does not change the fixed dive metrics or
+#'   the summaries of circular variables.
+#' @param by.phase Logical. Also summarise requested \code{variables} separately within
+#'   descent, bottom and ascent. Default \code{FALSE}. Whole-dive summaries are always
+#'   included when \code{variables} are supplied.
+#' @param id.col Character. Name of the column identifying deployments, not animals.
+#'   Default \code{"ID"}. Output deployment identifiers are stored in \code{ID}.
+#' @param datetime.col Character. Name of the timestamp column. Default \code{"datetime"}.
+#'   Standard pipeline inputs use \code{POSIXct} timestamps in chronological order.
+#' @param depth.col Character. Name of the depth column in metres, positive downwards.
+#'   Default \code{"depth"}.
+#' @param verbose How much detail to print: \code{0}/\code{"quiet"},
+#'   \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Detailed output
+#'   adds phase-support, censoring and unusually long-dive diagnostics.
 #'
 #' @details
-#' ## What an NA means, one rule per block
+#' ## Workflow and input assumptions
 #'
-#' An NA in a phase or kinematics column means the quantity is not supported for that dive, and
-#' `shape_supported` says so explicitly. An NA in `inter_dive_s` or `inter_dive_censored` means this is
-#' the last dive in the deployment, so there is no following dive to measure to; a deployment holding a
-#' single dive has both NA throughout. An NA in one of the `variables` columns means the source channel
-#' was absent, or entirely NA over that dive - except for a circular variable, whose mean angle is also
-#' NA when the directions over the dive cancel out, leaving a mean resultant length below 0.1 and so no
-#' meaningful average direction to report. Column presence never varies with anything except
-#' `variables` and `by.phase`, so binding tables from a mixed cohort always succeeds.
+#' Apply [processTagData()] to correct depth and derive any required channels, [detectDives()]
+#' to annotate excursions, and this function to construct a per-dive analysis table.
+#' Sampling resolution, depth reference and detection criteria affect the meaning of the
+#' resulting metrics; they should be considered before combining deployments or study systems.
 #'
-#' ## Every row says how much of its own dive was recorded
+#' Within each deployment, a positive \code{dive_id} should identify one contiguous interval
+#' in an ordered timestamp record. The identifier is only unique together with the deployment
+#' \code{ID}. Zero identifiers are not summarised. No missing intervals are interpolated, and
+#' no dives are removed on the basis of duration, completeness or phase support.
 #'
-#' `truncated_start` and `truncated_end` mark a dive that touches the beginning or the end of the
-#' record, meaning the tag started or stopped mid-dive. Such dives are kept and flagged, never dropped,
-#' because dropping them shortens the tail of the observed duration distribution.
+#' Deployments lacking required annotation, depth or timestamp columns are skipped with a warning.
+#' If no dives can be summarised, the result is a typed zero-row table with the requested schema.
+#' Manually annotated records are accepted, but missing \code{depth_baseline} uses zero as the
+#' reference. Missing detection history leaves setting columns as \code{NA} and uses fallback
+#' gap, slope-window and reversal criteria; it cannot reconstruct the original detection choices.
 #'
-#' `n_gaps` counts the interruptions bounding or interior to the dive, and `gap_s` is the seconds of
-#' record lost at them - for a depth dropout, the span of the dark run rather than the timestamp step
-#' across it. `censoring` names the cause and takes exactly one of five values: `"none"`, `"boundary"`
-#' for a record edge, `"time_gap"` for a jump in the timestamps, `"depth_gap"` where the depth channel
-#' went dark while sampling continued, or `"mixed"` for more than one of those. `complete` is `TRUE`
-#' when `censoring` is `"none"` and in no other case. Filter on it before fitting anything to
-#' `duration_s`, and report how many rows that removed.
+#' ## Timing, depth and vertical rates
 #'
-#' ## `inter_dive_censored` asks about the interval, not the dives around it
+#' Dive and phase durations are elapsed spans between their first and last timestamps, not sample
+#' counts multiplied by a nominal interval. Phase spans need not sum to the dive duration because
+#' intervals between adjacent phase endpoints are not assigned to either span. Threshold-crossing
+#' times are not reconstructed.
 #'
-#' `inter_dive_s` is the time from the end of one dive to the start of the next.
-#' `inter_dive_censored` is `TRUE` when the record failed *during* that interval: a jump in the
-#' timestamps longer than `max.gap`, or a run of non-finite depth whose span exceeds it, lying strictly
-#' between the two dives. A shorter dropout leaves the interval uncensored.
+#' Depth maxima describe the physical depth record, whereas amplitude describes the largest
+#' absolute departure from the reference. Despite its name, \code{max_depth_time} is the timestamp
+#' of that largest absolute reference-relative departure, not necessarily the timestamp of
+#' \code{max_depth_m}. These can differ for upward excursions or a changing baseline.
+#' \code{prominence_m} is the maximum absolute departure minus the larger of its first and last
+#' finite values; it is not the interior-saddle criterion used for optional dive splitting.
 #'
-#' Nothing about the bounding dives enters it, and that is deliberate. An interval has a dive on each
-#' side, so neither neighbour can be the dive a record boundary cut short. This is a different question
-#' from whether either bounding dive was censored, and the difference matters: two dives can each be
-#' `complete` and still be separated by a blackout lasting hours, which enters the table as a surface
-#' interval describing the sensor rather than the animal. Filter on `!inter_dive_censored` before
-#' reading `inter_dive_s` as a surface interval; filtering on the bounding dives' `complete` instead
-#' would keep exactly that row.
+#' Vertical rates are centred local least-squares slopes of physical depth against time, in
+#' metres per second. Mean rates retain their sign: positive indicates increasing depth and
+#' negative decreasing depth, irrespective of the excursion's phase labels. The
+#' \code{descent_rate_q90} and \code{ascent_rate_q90} columns are fixed 90th percentiles of
+#' absolute slope magnitude, not maximum rates.
 #'
-#' ## `depth_coverage` tells a foray from a dropout
+#' The slope window uses the nominal \code{phase_window_s} recorded by [detectDives()], limited
+#' by dive duration and the deployment sampling interval. Without usable window provenance,
+#' the default is the larger of five seconds and three sampling intervals. Per-dive adaptive
+#' widening during detection is not recorded, so metric and detection windows can differ.
+#' These rates are derived from depth, not from an existing \code{vertical_velocity} channel.
 #'
-#' It is the fraction of the dive's samples carrying a finite depth. A long dive with high coverage was
-#' measured throughout and may be real behaviour; a long dive with low coverage is mostly absent record,
-#' and its `duration_s` and `max_depth_m` then describe the dropout rather than the animal. Nothing is
-#' split on that basis, but the verbose summary flags unusually long dives with their median coverage,
-#' so the call stays with you.
+#' \code{vertical_distance_m} sums absolute differences between consecutive depth samples.
+#' It is sensitive to noise and quantisation, omits differences involving missing depth, and
+#' cannot recover movement during unobserved intervals. It is not a reconstructed travel distance.
 #'
-#' ## The long-dive flag needs at least five dives to exist
+#' ## Phase support and interpretation
 #'
-#' It marks every dive longer than the median duration plus five median absolute deviations of the
-#' *pooled* table - every deployment in the call taken together, not each one on its own - with a floor
-#' at two hours. The whole block is skipped when that pooled table holds fewer than five rows, because
-#' "unusually long" is only definable against a distribution: over four values, a median and a deviation
-#' are as likely to be inflated by the outlier as to expose it, so the flag would fire on nothing or on
-#' everything.
+#' Phase terminology follows [detectDives()]: descent is the opening limb away from the reference,
+#' ascent the return limb, and bottom the extremum region. For upward excursions the transit
+#' labels are opposite to physical vertical direction. Bottom does not establish seabed contact,
+#' feeding or resting.
 #'
-#' The consequence is about small cohorts rather than small deployments. Four dives summarised on their
-#' own, one of them a long dropout, print no warning at all; the same four dives inside a
-#' ten-deployment call are past the gate and their outlier is measured against the pooled distribution.
-#' The flag is also a detailed-verbosity line: it is computed whenever anything is printed, but shown
-#' only at `verbose = 2`, so at `verbose = 1` the check runs silently. On tables that small, or at that
-#' verbosity, read `duration_s`, `depth_coverage` and `censoring` yourself.
+#' \code{shape_supported} requires at least two phases with positive timestamp spans.
+#' A \code{"DA"} structure can therefore be supported with no bottom phase. In that case,
+#' \code{bottom_duration_s} is zero and bottom-depth summaries are \code{NA}.
+#' When shape is unsupported, the three phase durations, transit rates, bottom-depth summaries
+#' and reversal count are \code{NA}. Whole-dive depth and timing metrics, vertical distance
+#' and requested channel summaries are still computed. Requested phase-channel summaries
+#' use available labelled samples independently of \code{shape_supported}.
 #'
-#' ## `depth_attenuation` bounds what binning could have taken off a dive
+#' ## Censoring and coverage
 #'
-#' The only filter reaching the stored `depth` channel is [processTagData()]'s `downsample.to`, which
-#' mean-aggregates every numeric channel into bins - and bin-averaging is a boxcar.
-#' (`smoothingControl(depth = )` does not reach it: that window conditions only the series vertical
-#' velocity is differentiated from.) The bin width is read from the two recorded sampling rates, and
-#' only a processed rate below the original counts as evidence that aggregation ran, because
-#' downsampling is skipped when the requested rate meets or exceeds the native one. No downsampling, or
-#' no sampling provenance, reads exactly 1.
+#' Excursions reaching either deployment boundary or bounding or containing interruptions longer
+#' than the detection \code{max.gap} are retained and marked as censored. Causes distinguish
+#' record boundaries, timestamp jumps and missing-depth runs. \code{complete} means no such
+#' censoring was identified; it is not a general sensor-quality or behavioural-validity flag.
+#' Short dropouts can remain in a complete dive.
 #'
-#' Bin-averaging is phase-dependent in a way a centred filter is not: a dive whose apex falls mid-bin
-#' survives better than one whose apex lands on a bin boundary, and the difference between them is real.
-#' This column reports the bound, not the lucky case. For a triangular excursion of duration \eqn{T}
-#' under bins of width \eqn{L}, the worst-case peak retention is \eqn{1 - L/T} once \eqn{T \ge 2L}, and
-#' \eqn{T/(4L)} below that, where the bin holds only half the triangle; the two meet at \eqn{T = 2L},
-#' both giving 0.5. At a 1 Hz processed rate a 4 s dive keeps at least 0.75 of its amplitude, an 8 s
-#' dive 0.875 and a 42 s dive 0.976. At 20 Hz the same dives keep 0.9875, 0.994 and 0.9988 - which is
-#' the point of the column. It scales with the choice you made, so it says whether your downsampling
-#' mattered rather than asserting that downsampling in general does.
+#' \code{n_gaps} and \code{gap_s} report interruptions associated with each dive. A timestamp
+#' gap contributes its timestamp span; a depth dropout contributes the span from its first to
+#' last missing sample. Coincident time and depth interruptions at a bounding edge are counted
+#' once using the larger span. A gap can bound two retained fragments, so summing \code{gap_s}
+#' across dives does not measure unique deployment-level missing time.
 #'
-#' Reading it: 1 means nothing binned this dive; 0.6 means up to 40 per cent of `amplitude_m`,
-#' `prominence_m` and `max_depth_m` may be missing. Act on a low value by excluding those rows from any
-#' amplitude comparison, or by re-processing at a finer `downsample.to` and detecting again. Nothing is
-#' corrected here, because the retention holds for a triangle and a real dive is not one - a
-#' flat-bottomed dive loses less - so treat it as a bound on the loss rather than an estimate of it. The
-#' same bin width sets the derived `min.duration` floor in [detectDives()], so the two agree by
-#' construction.
+#' \code{depth_coverage} is the fraction of retained rows with finite depth, not the fraction
+#' of elapsed time observed. A timestamp gap can coexist with high depth coverage.
+#' \code{inter_dive_censored} independently assesses long interruptions between consecutive
+#' dives; completeness of the bounding dives does not guarantee an observed inter-dive interval.
+#' The last dive has no subsequent interval and receives \code{NA} for both inter-dive columns.
+#' An interval between baseline-relative excursions is not necessarily a surface recovery period.
 #'
-#' ## Rates are reported as `_q90`, not `_max`
+#' With at least five pooled dives, detailed console output identifies durations exceeding the
+#' larger of two hours and the pooled median plus five median absolute deviations. This is an
+#' advisory diagnostic, not a stored flag, duration cap or automatic exclusion.
 #'
-#' The maximum of a smoothed series is an artefact of the smoothing window, and its magnitude depends on
-#' how long the dive lasted, so maxima are not comparable between a short dive and a long one even
-#' within one animal.
+#' ## Model-based depth attenuation
 #'
-#' ## Over what span a rate is measured
+#' \code{depth_attenuation} describes worst-case peak retention for a symmetric triangular
+#' excursion under bin averaging, inferred from recorded original and processed sampling rates.
+#' For observed duration \eqn{T} and bin width \eqn{L}, it is \eqn{1 - L/T} when
+#' \eqn{T \ge 2L}, otherwise \eqn{T/(4L)}. Values are bounded between zero and one.
+#' This is a shape-specific diagnostic for reference-relative amplitude, not a general bound
+#' on absolute maximum depth or an empirical correction for arbitrary dive shapes.
 #'
-#' `descent_rate_*` and `ascent_rate_*` are least-squares slopes of depth against time over the window
-#' the phase rule was configured with - `diveControl(phase.window = )`, recorded per deployment and read
-#' back from the provenance, or re-derived from the sampling interval for a table annotated by hand.
-#' Where the phase rule widened that window adaptively for a particular dive, on a coarse or slow depth
-#' channel, the boundaries were cut over a wider span than the rates are measured over; that costs the
-#' rate some precision and leaves it unbiased. Not a
-#' one-sample difference: dividing one depth quantum by one sampling interval returns the pressure
-#' transducer rather than the animal, and on a 20 Hz record it put `descent_rate_q90` at 1.60 m/s where
-#' the animal's own rate was nearer 0.2. The signed means were never affected, because that noise is
-#' zero-mean; the quantiles were entirely instrument.
+#' A value of one is also the fallback when no applicable bin width or duration is available,
+#' including missing sampling provenance; it does not prove that a record is unfiltered.
+#' The depth smoothing window in [smoothingControl()] is not charged as stored-depth smoothing.
+#' No attenuation correction is applied. Reprocess at finer resolution when binning compromises
+#' the excursions required for the analysis.
 #'
-#' ## The thresholds travel with every row
+#' ## Additional channel summaries
 #'
-#' `reference`, `direction`, `depth_threshold_m` and `surface_band_m` are columns rather than metadata,
-#' so a bound cohort table documents itself and a published dive count is reproducible from the table
-#' alone. Where `detectDives(reference = "auto")` resolved differently across deployments, the
-#' `reference` column makes that mixture visible.
+#' Linear variables produce \code{<variable>_mean} and/or \code{<variable>_sd}, according to
+#' \code{statistics}. With \code{by.phase = TRUE}, the same statistics are added as
+#' \code{<variable>_<phase>_<statistic>} for descent, bottom and ascent. At the default
+#' statistics, this adds two columns per linear variable, or eight with phase summaries.
+#' Means are sample-weighted, not weighted by elapsed time.
 #'
-#' ## What is deliberately not computed
+#' Circular variables instead produce \code{<variable>_mean_angle} in degrees on
+#' \code{[0, 360)} and \code{<variable>_mrl}, the mean resultant length on \code{[0, 1]}.
+#' Phase summaries add only \code{<variable>_<phase>_mean_angle}, giving five columns per
+#' circular variable when \code{by.phase = TRUE}. Non-finite angles are omitted.
+#' Mean angles are \code{NA} when the mean resultant length is below 0.1; the whole-dive
+#' resultant length is still returned. Magnetic heading requires appropriate declination
+#' correction for geographic comparisons; resultant length is invariant to a constant rotation.
 #'
-#' Dive efficiency, aerobic dive limit and the dive-to-pause ratio are air-breather constructs that
-#' assume the surface interval is a recovery period. `bottom_duration_s` and `inter_dive_s` are
-#' provided; if those constructs are meaningful for your animal, form them yourself rather than have the
-#' package assert that they apply.
+#' Absent channels produce \code{NA} columns. For present linear channels, base-R missing-value
+#' handling is used: an empty or entirely missing subset can yield \code{NaN} for its mean,
+#' and fewer than two observations yield \code{NA} for its standard deviation. Use
+#' \code{is.na()} to recognise both \code{NA} and \code{NaN}. Infinite linear values are not
+#' automatically removed. Tables share the same columns when \code{variables},
+#' \code{circular.variables}, \code{statistics} and \code{by.phase} are identical.
 #'
-#' @return A data frame of class `nautilus_dive_metrics`, one row per dive, with a fixed schema:
-#'   identification, timing, the detection settings that produced the dive, depth, phase structure,
-#'   kinematics, a quality block, and last the requested `variables`. The quality block holds, in schema
-#'   order, `inter_dive_s` - a timing measure, kept at the head of the block because its censoring flag
-#'   belongs there - then `inter_dive_censored`, `complete`, `truncated_start`, `truncated_end`,
-#'   `n_gaps`, `gap_s`, `censoring`, `depth_attenuation`, `depth_coverage` and `shape_supported`. The
-#'   last is `TRUE` when at least two of descent, bottom and ascent were resolved, which is the
-#'   precondition for every phase and kinematics column being anything other than NA. All are defined
-#'   above.
+#' @return A data frame of class \code{nautilus_dive_metrics}, with one row per positive
+#'   dive identifier and a fixed core schema followed by requested channel summaries.
+#'   Output deployment identifiers are always named \code{ID}. Core columns are:
+#'   \describe{
+#'     \item{Identification and detection settings}{\code{ID}, \code{dive_id},
+#'       \code{reference}, \code{direction}, \code{depth_threshold_m},
+#'       \code{surface_band_m} and \code{phase_method}. The reference is resolved per deployment;
+#'       direction records the configured option, including \code{"both"} where applicable.}
+#'     \item{Timing}{\code{start}, \code{end}, \code{duration_s} and integer
+#'       \code{n_samples}. Standard pipeline timestamps are \code{POSIXct}.}
+#'     \item{Depth}{\code{max_depth_m}, \code{max_depth_time}, \code{baseline_depth_m},
+#'       \code{amplitude_m}, \code{prominence_m}, \code{mean_depth_m} and \code{sd_depth_m}.
+#'       Baseline depth is the reference at the first dive sample; see Details for the
+#'       distinction between maximum depth and the reported extremum time.}
+#'     \item{Phase timing and depth}{\code{descent_duration_s}, \code{bottom_duration_s},
+#'       \code{ascent_duration_s}, \code{bottom_depth_mean_m}, \code{bottom_depth_sd_m}
+#'       and \code{phase_structure}. Structure concatenates \code{D}, \code{B} and \code{A}
+#'       for phases with positive duration, or is \code{"X"} when none has positive duration.}
+#'     \item{Vertical kinematics}{\code{descent_rate_mean}, \code{descent_rate_q90},
+#'       \code{ascent_rate_mean}, \code{ascent_rate_q90}, \code{vertical_distance_m}
+#'       and integer \code{n_reversals}. Rates are in metres per second; distance is in metres.
+#'       Reversals count depth-direction changes meeting the recorded
+#'       \code{wiggle.amplitude}, not exclusively bottom-phase movements.}
+#'     \item{Inter-dive interval}{\code{inter_dive_s} measures the next dive's start minus
+#'       the current dive's end; logical \code{inter_dive_censored} identifies long time or
+#'       depth interruptions in that interval. Both are \code{NA} for the last dive.}
+#'     \item{Record completeness}{Logical \code{complete}, \code{truncated_start} and
+#'       \code{truncated_end}; integer \code{n_gaps}; \code{gap_s}; and \code{censoring},
+#'       one of \code{"none"}, \code{"boundary"}, \code{"time_gap"}, \code{"depth_gap"}
+#'       or \code{"mixed"}.}
+#'     \item{Analytical support}{Numeric \code{depth_attenuation} and \code{depth_coverage},
+#'       and logical \code{shape_supported}. See Details for their distinct interpretations.}
+#'   }
+#'   Dive durations and intervals are in seconds, depth quantities in metres, and phase/channel
+#'   means and standard deviations retain their source units. An empty result preserves the schema.
 #'
-#' @seealso [detectDives()] for producing the input; [diveControl()] for what counts as a dive;
-#'   [plotDives()] and [plotDistributions()] for looking at the result; [summarizeTagData()] for a
-#'   deployment-level overview.
+#' @seealso [detectDives()] for sample-level annotation; [diveControl()] for detection and
+#'   phase criteria; [plotDives()] for per-dive plots; [plotDepthProfiles()] for source profiles;
+#'   [summarizeTagData()] for deployment-level summaries.
 #'
 #' @examples
 #' \dontrun{
-#' tag <- detectDives(processed, control = diveControl(depth.threshold = 5))
-#' dt  <- diveMetrics(tag, variables = c("temp", "odba"), by.phase = TRUE)
-#' plotDistributions(dt, metrics = c("max_depth_m", "duration_s"))
+#' processed_files <- list.files("data/processed", pattern = "\\.rds$", full.names = TRUE)
+#' dives <- detectDives(
+#'   processed_files,
+#'   control = diveControl(depth.threshold = 5, surface.band = 1, min.duration = 20)
+#' )
+#' metrics <- diveMetrics(
+#'   dives, variables = c("temp", "vedba", "heading"), by.phase = TRUE
+#' )
+#'
+#' # Select uncensored observations; choose a coverage criterion for the study
+#' observed <- subset(metrics, complete & depth_coverage >= 0.95)
+#' plotDives(observed, metrics = c("amplitude_m", "duration_s"))
+#'
+#' # Assess interval completeness separately from dive completeness
+#' intervals <- subset(
+#'   metrics, !is.na(inter_dive_censored) & !inter_dive_censored
+#' )
 #' }
 #' @export
 

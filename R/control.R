@@ -1091,178 +1091,210 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 }
 
 
-#' What counts as a dive in detectDives()
+#' Configure dive detection and phase classification
 #'
 #' @description
-#' Bundles the settings for [detectDives()] into one validated object, so the main call stays
-#' uncluttered.
+#' Creates a validated control object for [detectDives()]. Settings define the depth reference,
+#' excursion direction, hysteresis thresholds, interruption handling and classification of
+#' descent, bottom and ascent phases. The same object also supplies criteria used by
+#' [diveMetrics()] through the detection settings recorded in deployment processing history.
 #'
-#' A dive is a vertical excursion of the depth trace away from a reference level, detected by
-#' two-threshold hysteresis with a prominence criterion and ended by a return to within a band of that
-#' reference. Three axes make that one definition serve every taxon, and they are the only concessions
-#' to taxonomy:
+#' Numerical settings left unspecified are resolved by [detectDives()] from its input batch,
+#' except \code{min.prominence}, for which \code{NULL} disables splitting. The constructor
+#' validates supplied values but does not inspect data or derive thresholds.
 #'
-#' - `reference` decides where "not diving" sits. `"surface"` suits air-breathers, whose zero is
-#'   anchored by surfacing; `"baseline"` tracks a running level and suits fish that never surface, or
-#'   benthic animals that rest at depth; `"auto"` chooses from the depth-drift provenance and reports
-#'   which it picked.
-#' - `direction` decides which way the animal departs from it: `"down"` for animals that excurse
-#'   downward from a shallow level, `"up"` for benthic resters leaving the bottom, `"both"` for either.
-#' - the hysteresis pair `depth.threshold` and `surface.band` set the scale of an excursion.
-#'
-#' Hysteresis is not optional. With a single threshold, sensor noise at the crossing splits one dive
-#' into many, and the dive count becomes a property of the pressure transducer rather than of the
-#' animal.
-#'
-#' @param reference Where "not diving" sits: `"auto"` (default), `"surface"` or `"baseline"`. See the
-#'   Details for how `"auto"` decides.
-#' @param direction Which direction an excursion runs: `"down"` (default), `"up"` or `"both"`.
-#' @param depth.threshold How far past the reference, in metres, an excursion must go to count as a
-#'   dive. `NULL` (default) derives a floor from the record and reports it - the smallest excursion the
-#'   data can support, which is not an estimate of what the animal treats as a dive. Set it from your
-#'   study system.
-#' @param surface.band How close to the reference, in metres, depth must return before a dive is
-#'   considered over. Must be less than `depth.threshold`, which is checked when you set both; if you
-#'   set only the band and let the threshold derive, a band that lands at or above the derived
-#'   threshold is replaced by half of it. `NULL` derives it as the largest of twice the
-#'   zero-offset residual, a tenth of `depth.threshold`, and 0.5 m, so that it scales with the dive and
-#'   not only with the uncertainty of the zero. The band answers "has the animal returned?" rather than
-#'   "how well do we know the zero?", and one derived from the residual alone can be too tight ever to
-#'   close - leaving a deep dive and the shallow oscillation that follows it merged into a single very
-#'   long dive.
-#' @param min.amplitude How far, in metres, a candidate must depart from the reference to count as a
-#'   dive at all. A run opened by hysteresis has already cleared `depth.threshold`, so this bites on the
-#'   fragments a split leaves behind: cut a 20 m dive with a depth dropout and the piece resuming at 4 m
-#'   is still one run, but it is not a 20 m dive. `NULL` derives `depth.threshold - surface.band`.
-#' @param min.prominence How far, in metres, a secondary peak must rise above the saddle separating it
-#'   from its neighbour before it is treated as a dive in its own right. This is topographic prominence:
-#'   an excursion to 50 m that returns only to 15 m and descends again to 48 m never re-enters the
-#'   surface band, so hysteresis alone reports one dive, but the second peak stands 33 m above the
-#'   saddle, and whether that is one dive or two is exactly what this argument decides.
-#'
-#'   `NULL` (the default) never splits: the excursion is reported whole, however many sub-peaks it
-#'   contains. That is deliberate. Splitting is an interpretive act, and a deep excursion with a partial
-#'   ascent in the middle may be precisely what the animal did - the same reasoning that stops this
-#'   package imposing a maximum dive duration. A derived default is a poor substitute here, because a
-#'   derived threshold is a record-resolution floor, and a re-ascent of half a metre inside a 50 m dive
-#'   is not a second dive. Set a number from your study system to opt in. Either way the prominence
-#'   itself is reported for every dive as `prominence_m` by [diveMetrics()], so you can see what
-#'   splitting would do before choosing to do it.
-#' @param min.duration The shortest measurable dive, in seconds. `NULL` derives a floor of four times
-#'   the coarser of the downsampling bin width and the median sampling interval, with a lower bound of
-#'   10 s.
-#'   Bin-averaging attenuates any excursion short relative to a bin, so this floor tracks the resolution
-#'   the record actually has - see the Details of [detectDives()].
-#' @param baseline.window The window, in hours, over which the running baseline is computed. Default
-#'   `3`. Shorten it if the baseline genuinely moves within a day; lengthen it if excursions are long
-#'   enough to drag the baseline after them.
-#' @param baseline.stat How the running baseline is estimated: `"median"` (default) or `"quantile"`.
-#'   These have complementary failure modes, described in the Details.
-#' @param baseline.quantile Which quantile to use when `baseline.stat = "quantile"`. `NULL` picks 0.10,
-#'   0.90 or 0.50 according to `direction`.
-#' @param phase.method How descent, bottom and ascent are separated: `"vertical.rate"` (default), which
-#'   ends a phase when the animal stops transiting, or `"prop.depth"`, which defines the bottom
-#'   geometrically as everything below a proportion of the dive's amplitude. They answer different
-#'   questions and only the first can report a dive with no bottom phase at all - see the Details.
-#' @param phase.window The span, in seconds, over which the vertical rate is measured for
-#'   `phase.method = "vertical.rate"`. The rate is a least-squares slope of depth against time over this
-#'   window, never a one-sample difference. `NULL` (default) derives the larger of 5 s and three sampling
-#'   intervals. Widen it on a noisy or coarsely quantised depth channel; narrow it to resolve sharper
-#'   transitions. It is capped per dive at an eighth of that dive's duration, because a window wider than
-#'   the profile measures the profile.
-#' @param min.phase.duration How long, in seconds, the animal must have stopped transiting before a
-#'   phase is treated as over - and therefore the shortest bottom phase that can be reported. `NULL`
-#'   (default) derives twice `phase.window`, the shortest span over which two windowed rate estimates are
-#'   independent. Raise it to ignore brief pauses within a descent; lower it to resolve short bottoms.
-#'   Capped per dive at a quarter of that dive's duration, since a longer hold could never be met.
-#' @param rate.crit,rate.quantile The vertical-rate criterion: a limb ends when its rate falls below
-#'   `rate.crit` times the `rate.quantile` quantile of *that limb's own* rate. Defaults `0.25` and
-#'   `0.90`. Per limb, not per dive: a dive's descent and ascent routinely differ several-fold in speed,
-#'   and a criterion pooled over both lets the faster one set the bar for the slower one. A quantile
-#'   rather than the maximum, because the maximum of a smoothed series is an artefact of the window.
-#' @param bottom.prop How near the deepest point counts as being at the bottom, as a proportion of the
-#'   dive's amplitude. Default `0.80`. Both phase rules use it, and it is the only thing they share.
-#'   For `"prop.depth"` it defines the bottom outright: every sample deeper than this proportion is
-#'   bottom, whatever the animal was doing. For `"vertical.rate"` it is an ARRIVAL test applied to the
-#'   pauses the rate rule finds - a pause only ends the descent if the animal had already reached this
-#'   proportion of its eventual depth by then. Without it a hesitation on the way down ends the descent
-#'   wherever it happens to occur: on a real 1414 m dive, 58 s in and 9.7 m down, leaving a continuous
-#'   0.76 m/s plunge labelled bottom. Lower it to demand the animal be nearer its deepest point before
-#'   a pause counts; raise it to accept a bottom that begins further up.
-#' @param max.gap The longest interruption of the record, in seconds, that a single dive may span. An
-#'   interruption is either a jump in time between consecutive samples or a run of samples carrying no
-#'   finite depth - both mean the record stopped saying where the animal was. A longer one splits the
-#'   dive and marks both parts censored; nothing is interpolated across it. `NULL` derives the larger of
-#'   60 s and ten median sampling intervals, once per cohort, so that gap handling stays comparable
-#'   between deployments.
-#' @param wiggle.amplitude The smallest reversal within a dive, in metres, that counts as a wiggle and
-#'   so contributes to the `n_reversals` [diveMetrics()] reports. `NULL` uses the larger of 0.5 m and
-#'   three times the noise of the stored series, so that sensor noise is not read as behaviour. Raise it
-#'   if you only want substantial within-dive excursions counted; lowering it below the noise floor
-#'   counts the instrument rather than the animal.
-#' @param min.surface.occupancy For `reference = "auto"`: the minimum fraction of samples that must fall
-#'   within the surface band before `"surface"` is chosen, even where the zero is anchored. Default
-#'   `0.005`. An anchored zero the animal never returns to cannot referee a surface threshold, and the
-#'   result would be one dive spanning the whole record. Raise it to demand more convincing evidence of
-#'   surfacing; set it to `0` to decide on the zero-offset provenance alone.
-#' @param require.zoc What to do when `reference = "surface"` is requested but the zero-offset
-#'   correction abstained, leaving the surface unanchored: `"warn"` (default), `"error"` or `"ignore"`.
+#' @param reference Character. Depth reference: \code{"auto"} (default), \code{"surface"} or
+#'   \code{"baseline"}. Surface uses zero metres; baseline uses a centred running depth level.
+#'   Automatic selection is deployment-specific; see Details.
+#' @param direction Character. Excursion direction relative to the reference: \code{"down"}
+#'   (default), \code{"up"} or \code{"both"}. Depth is assumed positive downwards.
+#' @param depth.threshold Positive numeric entry threshold in metres from the reference.
+#'   An excursion opens only when its signed departure exceeds this value.
+#'   \code{NULL} (default) derives a shared threshold from depth-correction residuals.
+#' @param surface.band Non-negative numeric return threshold in metres from the reference,
+#'   despite its name also used with a running baseline. An excursion closes when its signed
+#'   departure falls below this value. Must be smaller than \code{depth.threshold} when both
+#'   are supplied. \code{NULL} (default) derives a shared band; see Details.
+#' @param min.amplitude Non-negative numeric minimum peak departure from the reference, in
+#'   metres, for a retained interval. Applied after interruption and prominence splitting,
+#'   including to fragments that do not independently cross the entry threshold.
+#'   \code{NULL} (default) uses \code{depth.threshold - surface.band}.
+#' @param min.prominence Non-negative numeric threshold in metres for splitting sub-peaks
+#'   within a candidate excursion. A split requires the smaller of the two adjacent peak
+#'   heights to exceed their intervening saddle by at least this amount.
+#'   \code{NULL} (default) or \code{0} disables splitting; a positive value opts in.
+#'   This criterion differs from the endpoint-relative \code{prominence_m} returned by
+#'   [diveMetrics()].
+#' @param min.duration Non-negative numeric minimum retained duration in seconds, measured
+#'   between the first and last samples of an interval. \code{NULL} (default) derives a
+#'   shared duration floor from sampling intervals and known downsampling bin widths.
+#' @param baseline.window Positive numeric full window width in hours for a running baseline.
+#'   Default \code{3}. Used only when the resolved reference is \code{"baseline"}.
+#'   Choose a span appropriate to the duration of excursions and changes in the background depth.
+#' @param baseline.stat Character. Running baseline statistic: \code{"median"} (default) or
+#'   \code{"quantile"}. Neither is appropriate for all excursion patterns; see Details.
+#' @param baseline.quantile Numeric probability strictly between zero and one, used only with
+#'   \code{baseline.stat = "quantile"}. \code{NULL} (default) selects \code{0.10} for downward
+#'   excursions, \code{0.90} for upward excursions and \code{0.50} for both directions.
+#' @param phase.method Character. Phase classification: \code{"vertical.rate"} (default)
+#'   identifies transit limbs and sustained pauses using local depth slopes; \code{"prop.depth"}
+#'   partitions the profile geometrically around its maximum reference-relative excursion.
+#'   See Details for interpretation and limitations.
+#' @param phase.window Positive numeric local least-squares slope window in seconds for
+#'   \code{phase.method = "vertical.rate"}. \code{NULL} (default) derives the larger of
+#'   five seconds and three batch-level sampling intervals. Applied windows depend on each
+#'   dive's duration, deployment sampling interval and depth noise; see Details.
+#' @param min.phase.duration Positive numeric duration in seconds for which a qualifying pause
+#'   must persist before ending a transit limb. \code{NULL} (default) uses twice the resolved
+#'   \code{phase.window}. Applied holds are adjusted for each dive's duration and sampling
+#'   interval. Used only with \code{phase.method = "vertical.rate"}.
+#' @param rate.crit Numeric proportion strictly between zero and one. Multiplies the
+#'   limb-specific moving-rate quantile to define a transit criterion. Default \code{0.25}.
+#'   A depth-noise-based lower bound is also applied.
+#' @param rate.quantile Numeric probability in \code{(0, 1]} defining the moving-rate quantile
+#'   separately for each transit limb. Default \code{0.90}. Used only with
+#'   \code{phase.method = "vertical.rate"}; it does not change the fixed 90th-percentile
+#'   rate summaries reported by [diveMetrics()].
+#' @param bottom.prop Numeric proportion strictly between zero and one. Default \code{0.80}.
+#'   For \code{"prop.depth"}, the bottom spans the first to last samples at or above this
+#'   fraction of the maximum signed excursion. For \code{"vertical.rate"}, it defines the
+#'   proximity to the extremum required for a pause to end a transit limb, relative to that
+#'   limb's depth range. Increasing it requires closer approach to the extremum; decreasing
+#'   it permits a broader bottom region.
+#' @param max.gap Non-negative numeric maximum interruption in seconds that a dive may span.
+#'   Timestamp jumps and runs of non-finite depth longer than this value split candidate
+#'   intervals without interpolation. \code{NULL} (default) uses the larger of 60 seconds
+#'   and ten batch-level sampling intervals.
+#' @param wiggle.amplitude Non-negative numeric minimum depth reversal in metres counted by
+#'   [diveMetrics()] as \code{n_reversals}. Does not split dives or change phase labels.
+#'   A value of \code{0} disables reversal counting.
+#'   \code{NULL} (default) uses the larger of 0.5 metres and three times the batch median
+#'   depth-noise estimate.
+#' @param min.surface.occupancy Numeric proportion in \code{[0, 1)}. For automatic reference
+#'   selection, the minimum fraction of finite depth samples within \code{surface.band} of
+#'   zero required to choose \code{"surface"}. Default \code{0.005}.
+#'   Set to zero to use depth-correction provenance alone.
+#' @param require.zoc Character. Action when an explicit surface reference is requested but
+#'   no usable deployment has depth-correction provenance indicating an anchored zero:
+#'   \code{"warn"} (default), \code{"error"} or \code{"ignore"}. This check is batch-level,
+#'   not a per-deployment guarantee of an anchored zero; see Details.
 #'
 #' @details
-#' ## How `reference = "auto"` decides
+#' ## Reference selection and baseline assumptions
 #'
-#' It picks `"surface"` only when the depth-drift provenance record exists with a status of `applied`,
-#' `applied_with_gaps` or `constant_offset`, and the record spends at least `min.surface.occupancy` of
-#' its samples within the surface band. Otherwise it picks `"baseline"`. The decision and its reason are
-#' reported, and it is made per deployment, so a cohort can resolve to a mixture.
+#' With \code{reference = "auto"}, [detectDives()] chooses a surface reference for a deployment
+#' only when its latest depth-drift record has status \code{"applied"},
+#' \code{"applied_with_gaps"} or \code{"constant_offset"}, and at least
+#' \code{min.surface.occupancy} of its finite depth samples satisfy
+#' \code{abs(depth) <= surface.band}. Otherwise it uses a running baseline.
+#' Missing correction provenance therefore selects a baseline even if depths approach zero.
 #'
-#' ## Choosing `baseline.stat`
+#' Explicit \code{reference = "surface"} fixes the reference at zero; it does not perform a
+#' zero-offset correction. The \code{require.zoc} check acts only when none of the usable
+#' deployments has an anchored correction. In a mixed batch, it does not identify every
+#' unanchored deployment. Inspect correction histories before imposing a surface reference
+#' across such a batch, or use automatic deployment-specific selection.
 #'
-#' The two estimators fail in opposite regimes, and neither is universally correct. A running **median**
-#' tracks a baseline that drifts during the deployment - an animal moving from shelf to slope - but
-#' migrates into the excursions once they occupy more than about half the record. A low **quantile** is
-#' immune to that duty cycle, but on a trending baseline it tracks the trailing edge of its window
-#' rather than the local level. [detectDives()] measures both conditions and warns when the estimator
-#' you chose is in its failing regime.
+#' Running baselines use centred, finite-depth window statistics, evaluated on a grid and
+#' interpolated between grid points for efficiency. Window widths are converted to sample
+#' counts using the deployment's median sampling interval, so regularly sampled, chronologically
+#' ordered records are recommended. A median can shift into excursions occupying much of its
+#' window; a directional quantile can be displaced by a trending baseline. Diagnostic warnings
+#' flag these risks without automatically changing the estimator or window.
 #'
-#' ## Choosing `phase.method`
+#' ## Derived batch-level settings
 #'
-#' The two rules are not two settings of the same idea. `"vertical.rate"` **estimates a behavioural
-#' state** - is the animal still transiting? - and can therefore answer "there was no bottom phase".
-#' `"prop.depth"` **partitions the geometry** - is this sample near the deepest point? - and cannot.
+#' Unspecified numerical settings are derived once from usable deployments in the call.
+#' Let \eqn{r} be the largest available depth-correction residual in metres, \eqn{d} the
+#' median of deployment median sampling intervals in seconds, \eqn{L} the largest known
+#' downsampling bin width in seconds, and \eqn{n} the median deployment depth-noise estimate
+#' in metres. The derivations are:
 #'
-#' That difference is definitional, not a matter of tuning. `"prop.depth"` labels exactly
-#' `1 - bottom.prop` of *every* dive as bottom, whatever its shape: 20% at the default, on a V-shaped
-#' profile with no bottom at all, because the samples nearest the single deepest point always satisfy
-#' the criterion. Lowering `bottom.prop` shrinks that share but never removes it, and it always costs
-#' the terminal part of each transit, capping descent and ascent recall near 80% by construction.
+#' \describe{
+#'   \item{Entry threshold}{\eqn{\max(3r, 1)} metres; absent residual information uses
+#'     \eqn{r = 0.34}, giving 1.02 metres.}
+#'   \item{Return band}{The largest of \eqn{2r}, one tenth of the resolved entry threshold,
+#'     and 0.5 metres; absent residual information uses \eqn{r = 0.25} for this calculation.}
+#'   \item{Amplitude and duration}{Minimum amplitude is the entry threshold minus the return
+#'     band. Minimum duration is \eqn{\max(4L, 4d, 10)} seconds. Unknown bin widths contribute
+#'     zero, and an unavailable batch sampling interval uses one second.}
+#'   \item{Interruption and reversal criteria}{Maximum gap is \eqn{\max(60, 10d)} seconds.
+#'     Reversal amplitude is \eqn{\max(0.5, 3n)} metres, using \eqn{n = 0.1} when unavailable.}
+#'   \item{Phase timing}{The nominal slope window is \eqn{\max(5, 3d)} seconds; the nominal
+#'     pause duration is twice the resolved slope window.}
+#' }
 #'
-#' The two are nested rather than unrelated, and `bottom.prop` is what they share. The geometric rule
-#' asks only "is this sample near the deepest point?". The rate rule asks that AND "has the animal
-#' stopped transiting?" - a sustained pause ends the descent only once the animal has reached
-#' `bottom.prop` of its eventual depth, so a hesitation on the way down does not end it. That second
-#' condition is why a V-dive, which never pauses at depth, still gets no bottom at all.
+#' A return band at or above a derived entry threshold is replaced by half that threshold,
+#' including when only the band was explicitly supplied. Known depth-bin widths are inferred
+#' from recorded original and processed sampling rates when processing reduced the rate.
+#' The depth smoothing window in [smoothingControl()] conditions vertical-velocity estimation;
+#' it is not treated as smoothing of the stored depth channel.
 #'
-#' `"vertical.rate"` is the default because the profiles this package is usually pointed at - sharks,
-#' rays, fish that never surface - are frequently V-shaped or oscillatory rather than square, and
-#' reporting bottom-phase statistics for a state the animal never entered is a quieter error than
-#' reporting none. `"prop.depth"` is worth choosing when the depth channel is too coarse or too slow for
-#' a derivative to mean anything, or when you want the same geometric definition another package used;
-#' it is the convention in `tagtools::dive_stats()`, with `prop = 0.85`.
+#' These defaults are heuristic starting points, not guarantees of sensor resolution or
+#' biological validity. Changing batch membership can change derived values. Specify study
+#' criteria explicitly where reproducibility across separate batches is required, and inspect
+#' the resolved settings recorded by [detectDives()].
 #'
-#' Whichever rule is in force, [detectDives()] reports the realised phase structure per deployment and
-#' warns when a limb is missing from most dives, which is the signature of a rate criterion that is not
-#' working on that record rather than of an unusual dive shape.
+#' ## Vertical-rate phase classification
 #'
-#' @return A validated `nautilus_dive` object for the `control` argument of [detectDives()].
+#' The default method estimates centred local least-squares slopes of the signed
+#' reference-relative depth excursion. Opening and return limbs are assessed independently
+#' using their own moving-rate quantiles, with criteria bounded below by estimated slope noise.
+#' Depth quantisation contributes to the noise estimate. A pause ends a limb only after the
+#' profile reaches the region near its extremum defined by \code{bottom.prop}.
 #'
-#' @seealso [detectDives()] for the function that consumes it; [diveMetrics()] for the per-dive
-#'   summary; [smoothingControl()] for the processing windows it refers to.
+#' For an excursion of duration \eqn{T} and deployment sampling interval \eqn{d_i}, the initial
+#' slope window is \eqn{\max(\min(W, T/8), 3d_i)}, and the pause hold is
+#' \eqn{\max(\min(H, T/4), 2d_i)}, where \eqn{W} and \eqn{H} are the resolved nominal settings.
+#' Sampling floors can therefore exceed the duration-based caps for short, sparsely sampled dives.
+#' Noisy or coarsely quantised profiles can trigger adaptive window widening. This can lengthen
+#' a derived hold; when the hold was explicitly supplied, adaptive widening is limited by it.
+#'
+#' A V-shaped excursion can have no bottom phase. Limited sampling or insufficient vertical
+#' variation can prevent one or both transit limbs from being resolved. Phase labels describe
+#' depth-profile kinematics, not independently verified behavioural states.
+#'
+#' ## Geometric phase classification and terminology
+#'
+#' With \code{phase.method = "prop.depth"}, bottom is the contiguous interval between the first
+#' and last samples reaching \code{bottom.prop} times the maximum signed excursion. Samples
+#' between these endpoints remain bottom even if the profile crosses back below the criterion.
+#' This guarantees a non-empty labelled bottom for a retained profile, not a fixed proportion
+#' of its duration, and can label the apex of a V-shaped excursion as bottom without a pause.
+#' Transit phases can still be absent, for example when the entry threshold excludes much
+#' of a shallow excursion.
+#'
+#' With either method, descent labels the opening limb away from the reference and ascent the
+#' return limb. For \code{direction = "up"}, these are physical ascent and descent, respectively.
+#' Bottom denotes the excursion extremum rather than the seabed. Select the reference, direction
+#' and phase rule from the study's scientific question and depth-record limitations.
+#'
+#' @return A named list of class \code{nautilus_dive} containing the validated settings.
+#'   Pass it to the \code{control} argument of [detectDives()]. Unspecified settings remain
+#'   \code{NULL} until detection resolves them from the input batch.
+#'
+#' @seealso [detectDives()] for sample-level annotation; [diveMetrics()] for per-dive metrics
+#'   and quality diagnostics; [processTagData()] for depth correction and sampling provenance;
+#'   [depthDriftControl()] for depth-zero correction settings.
 #'
 #' @examples
-#' diveControl(depth.threshold = 5)                             # a 5 m dive, surface-referenced
-#' diveControl(reference = "baseline", depth.threshold = 20)    # a fish that never surfaces
-#' diveControl(reference = "baseline", direction = "up")        # a benthic rester leaving the bottom
+#' # Explicit surface-referenced study criteria (depth zero must already be established)
+#' diveControl(
+#'   reference = "surface", depth.threshold = 5,
+#'   surface.band = 1, min.duration = 20
+#' )
+#'
+#' # Downward excursions relative to a running depth level
+#' diveControl(reference = "baseline", direction = "down", depth.threshold = 10)
+#'
+#' # Upward excursions; use a high quantile to estimate the deeper reference level
+#' diveControl(
+#'   reference = "baseline", direction = "up",
+#'   baseline.stat = "quantile", depth.threshold = 10
+#' )
+#'
+#' # Opt in to splitting distinct sub-peaks within multi-peaked excursions
+#' diveControl(depth.threshold = 5, min.prominence = 10)
 #' @export
 
 diveControl <- function(reference             = c("auto", "surface", "baseline"),
