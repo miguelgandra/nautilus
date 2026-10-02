@@ -2,130 +2,202 @@
 # Apply an IMU axis mapping to already-imported data ##################################################
 #######################################################################################################
 
-#' Rotate a tag's sensor axes onto the animal
+#' Apply sensor-axis mappings to deployment data
 #'
 #' @description
-#' Sensor data are imported in the tag's own axis frame, because that is what the tag recorded.
-#' Interpreting them as the animal's motion requires knowing which recorded axis points forward, which
-#' to the side and which down - and applying that relationship to every channel.
+#' Applies explicit signed permutations to imported accelerometer, gyroscope and magnetometer
+#' channels, establishing the axis conventions needed for body-frame movement and orientation
+#' analysis. Mappings can be supplied manually, selected from documented configurations, inferred
+#' with [checkTagMapping()], reconciled with [consensusAxisMapping()] or selected through
+#' [reviewTagMapping()].
 #'
-#' `applyAxisMapping()` is where that happens. It is a deliberate, separate step rather than something
-#' the import does quietly, so that the rotation appears in the record's history and can be revisited if
-#' the mapping turns out to be wrong. It works on data already in memory or on saved files, without
-#' re-reading the original exports.
+#' Axis mapping is separate from import, sensor calibration and metric derivation. Each applied
+#' mapping and its provenance are recorded in deployment metadata and processing history.
+#' Use after deployment trimming and mapping assessment, before [processTagData()].
+#' Datasets can be returned in memory or saved individually for subsequent processing.
 #'
-#' Give it the reviewed output of [checkTagMapping()] and it routes each deployment's own mapping to the
-#' right record, so the workflow runs straight through:
-#' \preformatted{
-#' qc <- checkTagMapping(data_files)            # per-deployment proposals
-#' qc <- consensusAxisMapping(qc)               # rescue unresolved ones from group consensus
-#' applyAxisMapping(data = data_files, mapping = qc)
-#' }
-#' `mapping` also accepts a mapping you have written yourself: a single `from`/`to` table applied to
-#' every deployment, or a named list of them, one per deployment. Where each mapping came from is
-#' recorded in the record's history automatically, so there is nothing to declare by hand.
+#' @param data A \code{nautilus_tag} object, a list of deployment datasets, a data frame containing
+#'   deployments identified by \code{id.col}, or a character vector of \code{.rds} file paths.
+#'   Imported, trimmed and sensor-checked data are recommended. File inputs are read sequentially.
+#'   Canonical IMU column names are required for the sensor families being mapped.
+#' @param mapping Mapping object to apply; provide this or \code{configs}, but not both.
+#'   Accepts a \code{from}/\code{to} data frame for all deployments, a named list of such tables
+#'   keyed by deployment ID, results from [checkTagMapping()] or [consensusAxisMapping()], or
+#'   a completed \code{nautilus_review} from [reviewTagMapping()]. Default \code{NULL}.
+#'   See Details for mapping syntax, routing and review decisions.
+#' @param configs Named list of documented configurations, each a \code{from}/\code{to} data
+#'   frame. Used instead of \code{mapping}; each deployment's \code{tag$axis_config} metadata
+#'   selects its configuration. Missing or blank configuration metadata leave the dataset
+#'   unchanged; an unknown configuration name is an error. Default \code{NULL}.
+#' @param id.col Character. Name of the column identifying deployments, not animals. Default
+#'   \code{"ID"}. Used to route deployment-specific mappings.
+#' @param datetime.col Character. Name of the timestamp column, used to estimate the sampling
+#'   rate for accelerometer--gyroscope co-registration. Default \code{"datetime"}.
+#' @param relative Logical. Treat the mapping as an incremental transform of the current sensor
+#'   frame rather than an absolute raw-to-target transform. Default \code{FALSE}; see Details
+#'   for composition and reapplication.
+#' @param check.handedness Logical. Report reflected sensor conventions and assess
+#'   accelerometer--gyroscope co-registration when both families are mapped and available.
+#'   Default \code{TRUE}. Reflections alone do not generate a warning; a sufficiently supported
+#'   co-registration failure does. \code{FALSE} skips the reflection note and co-registration
+#'   diagnostic, but net transforms and their determinants are still recorded.
+#' @param return.data Whether to return the mapped datasets in memory (default \code{TRUE}).
+#'   When \code{FALSE}, return the saved \code{.rds} paths invisibly; requires \code{output.dir}.
+#' @param output.dir Character. Existing directory in which to write one \code{<id>.rds} file
+#'   per retained deployment. Providing a directory triggers saving, including unchanged
+#'   datasets; \code{NULL} (default) writes nothing.
+#' @param exclusions.file Optional path to the shared deployment-exclusion CSV. This stage records
+#'   explicit \code{"Exclude"} decisions from a review. Its rows are refreshed for deployments
+#'   evaluated in the current call without disturbing records outside that scope or other stages.
+#'   Pass the same path to subsequent stages and [summarizeTagData()]. Default \code{NULL},
+#'   which writes no exclusion log.
+#' @param output.suffix Optional string appended to each saved filename before \code{.rds}.
+#'   Used only when \code{output.dir} is supplied. Default \code{NULL}.
+#' @param compress Compression passed to [base::saveRDS()]: \code{TRUE} (default, gzip),
+#'   \code{FALSE}, \code{"gzip"}, \code{"bzip2"} or \code{"xz"}.
+#' @param verbose How much detail to print: \code{0}/\code{"quiet"},
+#'   \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Normal output reports
+#'   deployment-level outcomes; detailed output adds sensor-family transforms and diagnostics.
 #'
 #' @details
-#' The transform is tracked in the object's metadata (`getTagMetadata(x)$axis_mapping`) as the *net* signed
-#' permutation currently applied, so re-mapping composes exactly and is idempotent:
-#' \itemize{
-#'   \item \strong{Absolute} (default, `relative = FALSE`): the mapping describes the raw (chip) ->
-#'     canonical tag frame. If a mapping is already applied, only the difference is applied, so
-#'     re-applying the same mapping is a no-op and you never double-correct. This is the right mode for
-#'     a documented `configs` dictionary and for [checkTagMapping] / [consensusAxisMapping] output.
-#'   \item \strong{Relative} (`relative = TRUE`): the mapping is applied on top of the current state
-#'     (for manual incremental tweaks).
+#' ## Reference frames and workflow
+#'
+#' The target body-frame convention assigns X to longitudinal motion (surge), Y to lateral motion
+#' (sway) and Z to dorsoventral motion (heave). The function applies the mapping supplied by the
+#' caller; it does not infer anatomical direction or verify an animal's posture by itself.
+#' Signed permutations exchange and invert axes, preserving units and timestamps. They do not
+#' correct an arbitrary mounting angle, sensor bias, clock offset or magnetic declination.
+#'
+#' A typical workflow is:
+#'
+#' \enumerate{
+#'   \item Import data and trim them with [filterDeploymentData()], then inspect sensor quality.
+#'   \item Assess raw-axis records with [checkTagMapping()], optionally providing documented
+#'     configurations.
+#'   \item Reconcile compatible deployments with [consensusAxisMapping()] where a shared
+#'     configuration is justified.
+#'   \item Review selected cases with [reviewTagMapping()], using the original diagnostic
+#'     evidence and optionally the reconciled mappings as its base.
+#'   \item Apply the selected mappings here, then calibrate sensors and derive metrics with
+#'     [calibrateMagnetometer()] and [processTagData()] as appropriate.
 #' }
-#' Deployments that a structured object leaves unresolved (an empty mapping) are passed through
-#' unchanged with a notice; datasets with no matching mapping are likewise left untouched.
 #'
-#' \strong{Family completion (gyro/mag).} A mapping that specifies only the accelerometer axes (as the
-#' documented `configs` typically do) is completed automatically before it is applied: the gyroscope map
-#' is \emph{derived} from the accel map as `gyro = det(M) * M` (M = the accel signed-permutation matrix).
-#' The gyroscope measures an axial vector (a pseudovector), so under a reflected accel frame
-#' (`det(M) = -1`) it must carry the extra sign flip to stay co-registered with the accelerometer - a
-#' plain copy of the accel permutation would leave the gyro left-handed relative to it. The magnetometer
-#' is \strong{not} inferred from the accel map: vendor docs show its axis convention often differs from the
-#' accelerometer's, so with no explicit `mx/my/mz` rows it is left unchanged (identity), to be handled by
-#' its own documented map or a dedicated magnetometer calibration. Explicit `gx/gy/gz` (or `mx/my/mz`) rows in the
-#' mapping always override the derived gyro default (for hardware whose gyro sits on an independent die
-#' with its own convention). The co-die gyro default is a configurable convention, not a universal law:
-#' only `det(M)` (the pseudovector sign rule) is physics.
+#' Documented mappings can instead be supplied directly through \code{configs} when the axis
+#' configuration is independently established. Inference and video review are not mandatory
+#' prerequisites, but application alone is not evidence that a mapping is scientifically valid.
 #'
-#' @param data Input data: a `nautilus_tag` / data.frame, a (named) list of them, or a character
-#'   vector of paths to `.rds` files (loaded one at a time). The output of [importTagData] is expected.
-#' @param mapping The mapping(s) to apply (provide this **or** `configs`). One of: a `from`/`to`
-#'   data.frame (applied to every dataset); a named list of `from`/`to` data.frames (one per deployment
-#'   id); the result of [checkTagMapping]; the result of [consensusAxisMapping]; or a `nautilus_review`
-#'   from [reviewTagMapping] (its filled decisions are overlaid on the review's base mapping; a
-#'   deployment left undecided but reviewable is an error, and a decision of `"Exclude"` drops that
-#'   deployment from the output entirely). For the structured forms, each deployment's
-#'   mapping is routed to the dataset with the matching id. `from` is a raw axis (`ax`/`ay`/`az`,
-#'   `gx`/`gy`/`gz`, `mx`/`my`/`mz`); `to` is the destination axis, optionally sign-flipped (e.g.
-#'   `"-ay"`), or `"NA"` to set a faulty axis to `NA`. Default `NULL`.
-#' @param configs A named dictionary of documented configurations - config name -> `from`/`to`
-#'   data.frame - applied by looking up each tag's `axis_config` metadata (set at import from the
-#'   `axis_config` column of [metadataColumns()]). The apply-the-documented-config path: use it
-#'   instead of `mapping` when the orientation is known and you are not inferring it from the data. A tag
-#'   with a blank/absent `axis_config` is left unchanged; a config name not in the dictionary is an
-#'   error. Default `NULL`.
-#' @param id.col Character. Name of the ID column, used to match each dataset to its mapping. Default "ID".
-#' @param datetime.col Character. Name of the timestamp column, used only to estimate the sampling rate
-#'   for the accelerometer/gyroscope co-registration check (see `check.handedness`). Default "datetime".
-#' @param relative Logical. If `FALSE` (default), `mapping` is the absolute raw->frame transform and only
-#'   the difference from the currently-applied mapping is applied. If `TRUE`, it is applied on top of the
-#'   current state. Default `FALSE`.
-#' @param check.handedness Logical. If `TRUE` (default), a per-family reflection (determinant -1) is
-#'   noted descriptively in the per-dataset log and recorded in `am_new$determinant`. A reflection is a
-#'   benign device convention (some raw frames are genuinely left-handed), **not** an error: the gyro is
-#'   co-registered automatically (its map carries the matching `det(M)` sign; see Details), so handedness
-#'   is preserved - a reflection alone never warns. When accelerometer and gyroscope are both present and
-#'   mapped, this also runs the frame-level **accel/gyro co-registration check** (Pearson correlation of
-#'   the gravity-direction rate `d(ghat)/dt` against the gyro-predicted `-omega x ghat`), records it in
-#'   `getTagMetadata(x)$axis_mapping$coreg_corr`, and warns **only** on a decisive mismatch (correlation
-#'   below 0.2 with enough rotation) - a genuine family mis-registration (e.g. an independent gyro die
-#'   whose convention the co-die default got wrong), never a mere reflection (which scores ~ +1). Set
-#'   `FALSE` to skip both the descriptive note and the co-registration check.
-#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
-#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
-#' @param exclusions.file Optional path to the shared deployment-exclusion log, a CSV recording every
-#'   deployment this stage set aside and why. The log holds current state, not history: each stage
-#'   refreshes its own rows for the deployments in the current call, so a deployment that stops being
-#'   excluded loses its row without disturbing deployments outside a partial run. Pass the same path to
-#'   every stage, and to [summarizeTagData()], which uses it to report why each deployment is missing.
-#'   Default `NULL`, which writes nothing.
-#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
-#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
-#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
-#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
-#' @param verbose Verbosity level: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal", or
-#'   `2`/"detailed" (default). Defaults to `"detailed"`.
+#' ## Mapping tables and deployment routing
 #'
-#' @return If `return.data = TRUE`, a named list of remapped `nautilus_tag` objects (one per
-#'   individual); if `return.data = FALSE`, a character vector of the written `.rds` file paths. The net
-#'   mapping, its producer and the per-family origin are recorded in each object's
-#'   `getTagMetadata(x)$axis_mapping` (`source`, `provenance`). Deployments a `nautilus_review` marks
-#'   `"Exclude"` are omitted entirely (no file written; absent from the returned list, which carries
-#'   their ids in `attr(., "excluded")`).
+#' A mapping table has \code{from} and \code{to} columns. \code{from} identifies a source sensor
+#' axis: \code{ax/ay/az}, \code{gx/gy/gz} or \code{mx/my/mz}. \code{to} identifies a destination
+#' in the same family, optionally prefixed by \code{"-"} to invert its sign. For example,
+#' \code{from = "ay", to = "-ax"} assigns the negative of source \code{ay} to output \code{ax}.
+#' Exchanges are simultaneous, not sequential copies.
 #'
-#' @seealso [importTagData], [checkTagMapping], [consensusAxisMapping], [reviewTagMapping], [getTagMetadata]
+#' Unspecified destinations retain their identity assignment. With these defaults included,
+#' each mapped family must form a valid signed permutation: exactly one source per destination
+#' and no source reused across destinations. Complete triplets are the clearest specification.
+#'
+#' The literal string \code{"NA"} in \code{to} instead sets the source channel to numeric
+#' \code{NA} and records it as dropped. This is a non-invertible channel exclusion, not a rotation.
+#' A later mapping cannot recover discarded measurements; use the original data to revise such
+#' a decision. Do not use an R missing value in place of the literal \code{"NA"}.
+#'
+#' A single table applies to all deployments. Deployment-specific objects are routed by the
+#' dataset's own \code{id.col} value where it matches a mapping, otherwise by the resolved list
+#' name or file basename. An empty or unmatched mapping leaves that dataset unchanged. Non-empty
+#' mappings without matching data generate a warning; no identifier overlap in a deployment-specific
+#' mapping set is an error, except where review exclusions legitimately remove all supplied data.
+#' Keep list names and file basenames aligned with deployment IDs for consistent output names.
+#'
+#' ## Absolute and relative transforms
+#'
+#' With \code{relative = FALSE}, the supplied mapping describes the absolute raw-to-target
+#' transform. If a net mapping is already recorded, only the difference is applied. For current
+#' transform \code{C} and target \code{T}, the applied transform is \code{T %*% t(C)}.
+#' Reapplying the same invertible mapping therefore leaves sensor values unchanged; replacing it
+#' produces the same values as applying the new target to the original raw axes.
+#'
+#' With \code{relative = TRUE}, \code{T} is applied to the current values and the new net transform
+#' is \code{T %*% C}. Repeated relative applications accumulate and are not idempotent.
+#' Correct composition depends on preserved axis-mapping metadata and does not extend to dropped
+#' channels. A processing-history entry can still be added when sensor values need no change.
+#'
+#' ## Sensor-family completion and handedness
+#'
+#' An accelerometer mapping without explicit gyroscope rows derives a gyroscope map as
+#' \code{det(M) * M}, where \code{M} is the effective accelerometer signed permutation.
+#' Angular velocity is an axial vector, requiring the determinant factor for reflected frames.
+#' Derivation also assumes the native accelerometer and gyroscope frames are co-oriented;
+#' this is a hardware convention, not a universal property. Explicit gyroscope rows take precedence.
+#'
+#' Magnetometer mappings are never inferred from the accelerometer here. Without explicit
+#' magnetometer rows, those channels remain in their current frame. Establish their convention
+#' independently before interpreting heading; magnetic calibration is not a substitute for axis
+#' alignment. A partially present triplet is skipped with a warning; a completely absent family
+#' is not created.
+#'
+#' A determinant of -1 describes a reflected sensor convention and is not, by itself, a failure.
+#' With \code{check.handedness = TRUE}, mapped acceleration and angular velocity are compared
+#' through \code{d(ghat)/dt = -omega x ghat}. A pooled correlation below \code{0.2}, with at least
+#' 200 usable high-rotation samples, generates a co-registration warning. Insufficient rotation
+#' yields \code{NA}; neither the absence of a warning nor an unavailable diagnostic proves a
+#' correct mapping. The diagnostic reports a mismatch but does not automatically exclude data.
+#'
+#' ## Review decisions, exclusions and downstream data
+#'
+#' A \code{nautilus_review} embeds a base mapping and concrete candidate mappings. Selected
+#' decisions replace the deployment's base mapping and receive review provenance. A deployment
+#' with candidate choices and rendered clips must have a decision before application; invalid
+#' labels or an undecided rendered comparison stop the call. Single-indicator and unrendered
+#' cases retain the base mapping unless explicitly excluded.
+#'
+#' A decision of \code{"Exclude"} omits the entire deployment from returned and saved data and
+#' optionally records it in \code{exclusions.file}. This differs from a \code{"NA"} channel drop,
+#' which retains the record. Empty mappings, absent families and skipped partial triplets do not
+#' cause deployment exclusion.
+#'
+#' Only raw IMU channels are transformed. Previously derived pitch, roll, heading or movement
+#' columns are not recomputed. Re-run the appropriate calibration and processing steps after
+#' changing a frame, and check the recorded sensor-family state before using orientation-dependent
+#' metrics. A retained dataset is not necessarily a fully mapped dataset.
+#'
+#' @return When \code{return.data = TRUE}, a named list of retained deployment datasets,
+#'   normally \code{nautilus_tag} objects carrying sensor data and metadata. Mapped datasets record
+#'   the source, per-family provenance, mapping table, net transforms, determinants, dropped
+#'   channels and co-registration diagnostics under \code{getTagMetadata(x)$axis_mapping},
+#'   together with a processing-history entry. Unmapped datasets are retained unchanged.
+#'
+#'   When \code{return.data = FALSE}, a character vector of written \code{.rds} paths, returned
+#'   invisibly. Explicitly excluded deployments appear in neither output; where exclusions occur,
+#'   output attributes \code{excluded} and \code{nautilus.exclusions} contain their identifiers
+#'   and stage-specific exclusion rows, respectively.
+#'
+#' @seealso [importTagData()] for raw sensor data; [checkTagMapping()] for diagnostic inference;
+#'   [consensusAxisMapping()] for cross-deployment reconciliation; [reviewTagMapping()] for video
+#'   decisions; [calibrateMagnetometer()] and [processTagData()] for subsequent calibration and
+#'   metric derivation; [getTagMetadata()] and [processingHistory()] for recorded provenance.
+#'
 #' @examples
 #' \dontrun{
-#' files <- list.files("imported", pattern = "\\.rds$", full.names = TRUE)
+#' # Raw-axis records already trimmed and checked for sensor integrity.
+#' files <- list.files("./checked", pattern = "\\.rds$", full.names = TRUE)
+#' evidence <- checkTagMapping(files)
+#' reconciled <- consensusAxisMapping(evidence)
 #'
-#' # 1) route each deployment's inferred mapping straight through
-#' qc <- checkTagMapping(files)
-#' qc <- consensusAxisMapping(qc)          # rescue ambiguous ones from group consensus
-#' oriented <- applyAxisMapping(data = files, mapping = qc)
+#' # Apply after inspecting the diagnostics and any required video review.
+#' oriented <- applyAxisMapping(files, mapping = reconciled)
+#' getTagMetadata(oriented[[1]])$axis_mapping
 #'
-#' # 2) or apply a documented configuration via the tag's axis_config metadata
-#' configs <- list("CATS Camera" = data.frame(from = c("ax", "ay", "az"),
-#'                                             to   = c("ay", "-ax", "az")))
-#' oriented <- applyAxisMapping(data = files, configs = configs)
+#' # A documented configuration selected by each deployment's axis_config metadata.
+#' # Accelerometer-only configurations derive gyro mappings, not magnetometer mappings.
+#' configs <- list(camera_A = data.frame(from = c("ax", "ay", "az"),
+#'                                      to = c("ay", "-ax", "az")))
+#' oriented <- applyAxisMapping(files, configs = configs)
+#'
+#' # File-based workflow: the output directory must already exist.
+#' oriented_files <- applyAxisMapping(files, mapping = reconciled,
+#'                                    output.dir = "./oriented", return.data = FALSE)
 #' }
 #' @export
 

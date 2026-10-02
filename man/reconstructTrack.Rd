@@ -2,7 +2,7 @@
 % Please edit documentation in R/reconstructTrack.R
 \name{reconstructTrack}
 \alias{reconstructTrack}
-\title{Reconstruct a fine-scale movement path from orientation, speed and depth}
+\title{Reconstruct movement paths from orientation and swimming speed}
 \usage{
 reconstructTrack(
   data,
@@ -20,173 +20,251 @@ reconstructTrack(
 )
 }
 \arguments{
-\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
-\code{.rds} paths - the output of \code{\link[=processTagData]{processTagData()}}. Paths are read one deployment at a time, so a
-fleet too large for memory can be processed without ever holding it all. Each deployment needs
-\code{datetime}, \code{heading} and \code{pitch}, plus whatever the chosen \code{speed.method} reads
-(\code{vertical_velocity}, \code{paddle_speed} or \code{vedba}), and \code{depth} for the three-dimensional output.
-A deployment with no usable paired heading and pitch observations is skipped, not converted into
-a stationary pseudo-track.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing deployments identified
+by \code{id.col}, or a character vector of \code{.rds} file paths. The output of \code{\link[=processTagData]{processTagData()}}
+is recommended. Each deployment requires timestamps, \code{heading} and \code{pitch}, the
+channels needed by the selected speed method, and deployment coordinates in its metadata.
+File inputs are read sequentially, one deployment at a time.}
 
-\item{control}{A control object from \code{\link[=reconstructTrackControl]{reconstructTrackControl()}} governing where speed comes from and
-how the track is corrected onto the known fixes. Pass \code{reconstructTrackControl(...)} to change it.}
+\item{control}{A control object created by \code{\link[=reconstructTrackControl]{reconstructTrackControl()}}, specifying the speed
+method, position-correction method, drift model and diagnostic thresholds. By default, speed
+is constant at 0.5 m/s and position correction is \code{"error_weighted"}.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col}{Character. Name of the column identifying deployments, not animals. Default
+\code{"ID"}.}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+\item{datetime.col}{Character. Name of the \code{POSIXct} timestamp column. Default
+\code{"datetime"}. Observations must be in chronological order.}
 
-\item{return.data}{Whether to return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument - so a large fleet can be processed without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{return.data}{Logical. Return reconstructed datasets in memory (default \code{TRUE}).
+When \code{FALSE}, return the paths of the saved \code{.rds} files invisibly; requires
+\code{output.dir}.}
 
-\item{output.dir}{Directory in which to write one \verb{<id>.rds} file per deployment. Providing a
-directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already
-exist.}
+\item{output.dir}{Character. Existing directory in which to save one \code{<id>.rds} file per
+successfully reconstructed deployment. Providing a directory triggers saving;
+\code{NULL} (default) writes no datasets.}
 
-\item{output.suffix}{Optional suffix appended to each saved file name, before \code{.rds}, to tag a
-processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is set.}
+\item{output.suffix}{Character. Optional suffix appended to each saved filename before
+\code{.rds}. Used only when \code{output.dir} is supplied. Default \code{NULL}.}
 
-\item{compress}{Compression for the saved \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
-\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is set. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
+\item{compress}{Compression passed to \code{\link[base:saveRDS]{base::saveRDS()}}: \code{TRUE} (default, gzip),
+\code{FALSE}, \code{"gzip"}, \code{"bzip2"} or \code{"xz"}.}
 
-\item{plot, plot.file}{Whether to draw the diagnostic report to the active graphics device, and a path
-to a multi-page PDF for it. The report is a worst-first summary page - path length, net
-displacement, fixes and residual drift for each deployment - followed by a detail page for each
-flagged deployment: the corrected track against the raw reckoning and the position fixes, the drift
-the correction absorbed at each fix, the speed source, and the depth profile. A single-deployment
-run always gets its detail page, flagged or not. Defaults \code{FALSE} and \code{NULL}.}
+\item{plot}{Logical. Draw the diagnostic report on the active graphics device. Default
+\code{FALSE}.}
 
-\item{force.plots}{Whether to draw a detail page for every deployment rather than only the
-high-drift ones. Default \code{FALSE}. It makes no difference to a single-deployment run, which always
-draws its detail page.}
+\item{plot.file}{Character. Path to a diagnostic PDF, or \code{NULL} (default). Providing a
+path writes the report independently of \code{plot}; the parent directory must exist.}
 
-\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, which adds a progress bar
-across deployments, or \code{2}/\code{"detailed"} (default), which streams a per-deployment block of anchors
-and flags instead of the bar.}
+\item{force.plots}{Logical. Include a detail page for every successfully reconstructed
+deployment rather than only flagged deployments. Default \code{FALSE}. A single-input
+run always includes its detail page when reconstruction succeeds and plotting is requested.}
+
+\item{verbose}{Verbosity: \code{FALSE}/\code{0}/\code{"quiet"},
+\code{TRUE}/\code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default).
+Normal output uses a deployment-level progress bar; detailed output reports each deployment.}
 }
 \value{
-If \code{return.data = TRUE}, a named list of the input objects with \code{pseudo_lon}, \code{pseudo_lat},
-\code{speed_dr} (the speed that was used) and \code{pseudo_error} (the per-sample one-sigma positional
-uncertainty in metres) added, plus \code{pseudo_depth} where \code{control$include.depth} is set and a depth
-channel is present. If \code{return.data = FALSE}, a character vector of the written \code{.rds} file paths.
-Deployments without usable orientation are absent from either output and named in a warning.
+When \code{return.data = TRUE}, a named list of successfully reconstructed
+\code{nautilus_tag} datasets, including for a single input. Sensor data and metadata are retained,
+with the following columns added or updated:
+\describe{
+\item{\code{pseudo_lon}, \code{pseudo_lat}}{Estimated longitude and latitude, in decimal degrees.}
+\item{\code{speed_dr}}{Along-body speed used for integration, in m/s, after fallback, gating and
+clipping. It is not re-estimated from the corrected path.}
+\item{\code{pseudo_error}}{Model-based horizontal positional uncertainty scale, in metres.}
+\item{\code{pseudo_depth}}{Copy of measured depth, in metres, when depth inclusion is enabled
+and the channel is present.}
+}
+When \code{return.data = FALSE}, a character vector of the \code{.rds} paths written to
+\code{output.dir}, returned invisibly. Skipped deployments are absent from both output forms.
 }
 \description{
-Satellite fixes locate a marine animal only when the tag breaks the surface, which for a diving
-animal may be minutes or days apart. Between those points the record says nothing about where the
-animal went, which is precisely the scale most behavioural questions live at.
+Integrates body heading, pitch and swimming speed to reconstruct a fine-scale movement path by
+dead reckoning. The horizontal path can be corrected against deployment, pop-up and recorded
+position fixes, and measured depth can be retained as its vertical component.
 
-\emph{Dead reckoning}, a term inherited from marine navigation, fills the gaps from the tag's own motion
-sensors. At each sample the animal is taken to move \verb{speed x dt} in the direction it is heading, and
-these micro-steps are summed into a continuous path. This function does that integration, attaches
-the measured depth as a vertical axis, and then reconciles the accumulating drift with the positions
-that \emph{are} known - the deployment, any surface fixes, and the pop-up.
-
-The result is a \strong{pseudo-track}: a plausible reconstruction rather than a georeferenced observation,
-which is why its columns are named \code{pseudo_lon} and \code{pseudo_lat}. It is most reliable close to a fix
-and least reliable midway between two of them, since the correction pins the path at both ends of a
-segment. Run it after \code{\link[=processTagData]{processTagData()}}, which supplies the finished heading; this function is a
-pure integrator and is agnostic to how that heading was obtained.
+The function is applied after \code{\link[=processTagData]{processTagData()}}, using orientation expressed in the animal's
+body frame. Speed estimation and position correction are configured through
+\code{\link[=reconstructTrackControl]{reconstructTrackControl()}}. The result is a pseudo-track: an estimated path conditional on
+the sensor data, speed assumptions and available fixes, not a series of observed locations.
 }
 \details{
-\subsection{How the reconstruction proceeds}{
-\enumerate{
-\item \strong{Speed} in m/s is assigned to every sample from \code{control$speed.method} - a constant, an activity
-model driven by VeDBA, a paddle-wheel count, or the dive geometry. Speed sets the \emph{scale} of the
-track and heading sets its \emph{shape}, so an error in one does not look like an error in the other.
-\code{\link[=reconstructTrackControl]{reconstructTrackControl()}} covers the trade-offs.
-\item \strong{Integration} projects the horizontal speed, \verb{speed x cos(pitch)}, onto east and north by the
-heading and steps the position forward on a sphere: latitude advances along the meridian and
-longitude is scaled by the running latitude, so the track stays accurate across a wide latitude
-range. The correction below then works in a local metre plane about the deployment.
-\item \strong{Correction onto the known fixes} reconciles the reckoned path with the positions that were
-actually observed. The drift accumulated between two successive fixes is distributed back across
-that segment, so the corrected path stays continuous and is pulled onto each fix, following the
-running-correction scheme of Gunner et al. (2021).
-}
-}
+\subsection{Input preparation and reference frames}{
 
-\subsection{Choosing how the track is corrected}{
+Trim recordings to the deployment period with \code{\link[=filterDeploymentData]{filterDeploymentData()}} and establish a valid,
+chronologically ordered time series before reconstruction. The deployment coordinates are
+assigned to the first input observation; the function does not trim the recording or estimate
+an alternative starting position.
 
-With \code{vpc.method = "linear"} the track passes exactly through every fix. With \code{"error_weighted"}
-(default) each fix pulls only as hard as its quality warrants, through \code{anchor.error.radii}, so a
-noisy Argos point bends the track less than a precise Fastloc-GPS one. \code{"scale_rotate"} instead
-rescales and rotates each reckoned segment onto its bracketing fixes, which handles systematic drift
-better. \code{"none"} returns the uncorrected reckoning.
+\code{heading} and \code{pitch} are in degrees, with heading clockwise from north and pitch
+relative to the horizontal. Absolute reconstruction requires a geographic heading referenced
+to true north. A magnetic heading is not converted here: \code{\link[=processTagData]{processTagData()}} applies magnetic
+declination when deployment coordinates are available.
 
-For the two additive methods the drift is spread across a segment either by reckoned distance
-travelled (\code{vpc.weighting = "distance"}, the default) or by elapsed time. Distance is the better
-default because reckoning error accumulates with movement rather than with the clock.
-
-Every reconstructed position also carries a one-sigma uncertainty, \code{pseudo_error}, in metres. It is
-roughly the fix radius at each anchor and swells in between, following the reckoning-error model set
-by \code{drift.rate} and \code{drift.diffusion} and combined forwards and backwards between the bracketing
-fixes.
+The function warns when recorded metadata identifies a magnetic heading or an uncalibrated
+magnetometer, but does not automatically reject those tracks. A partial calibration is reported
+when verbosity permits. An unknown heading reference is not inferred. Inspect
+\code{getTagMetadata(x)$deployment$heading_reference} and
+\code{getTagMetadata(x)$mag_calibration} before interpreting absolute positions.
 }
 
-\subsection{The vertical axis}{
+\subsection{Swimming speed}{
 
-Because the tag also records depth, the reconstruction is genuinely three-dimensional. With
-\code{control$include.depth = TRUE} the measured depth is attached as \code{pseudo_depth}, so \code{pseudo_lon},
-\code{pseudo_lat} and \code{pseudo_depth} together describe where the animal was in the water column rather
-than only where it was on the map.
+Speed is resolved in m/s along the animal's longitudinal axis. The methods are:
+
+\describe{
+\item{\code{"constant"}}{Uses \code{control$constant.speed} throughout the deployment. This is
+the default and represents an assumed speed, not a sensor-derived estimate.}
+\item{\code{"paddle"}}{Uses \code{paddle_speed}, normally produced by \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.
+A \code{paddle_freq} column alone is insufficient. Interior missing values are linearly
+interpolated by sample index when at least two finite speeds are available; this interpolation
+has no maximum-gap limit.}
+\item{\code{"vedba"}}{Uses a linear VeDBA-to-speed model, requiring \code{vedba} in g.
+Coefficients may be supplied in \code{control$vedba.model}; otherwise they are fitted from
+sufficiently straight intervals between the deployment's position anchors. An unavailable or
+unsuitable automatic fit falls back to \code{control$constant.speed}.}
+\item{\code{"depth_rate"}}{Uses the absolute vertical velocity divided by the sine of absolute
+pitch, requiring \code{vertical_velocity} in m/s. Only samples meeting
+\code{control$depth.rate.min.pitch} are used; shallower samples fall back to the constant speed.}
 }
 
-\subsection{Tracks with no interior fixes}{
-
-Where a deployment has only its two endpoints - the deployment and the pop-up - nothing constrains a
-wandering interior, and two very different paths can end in the same place. A reconstructability gate
-(\code{reconstructability.min} in \code{\link[=reconstructTrackControl]{reconstructTrackControl()}}) measures how directed the reckoned path is
-and raises a warning, with a verdict in \code{meta$sensors$reconstructability}, when it is too low to
-support the interior geometry. Treat such an interior with great caution.
+Any remaining non-finite speed is replaced by \code{control$constant.speed}. Negative speeds are
+set to zero and speeds above \code{control$max.speed} are clipped. The default reconstruction cap
+is 2.5 m/s; it is independent of the optional threshold in \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}. Optional
+\code{control$rest.quantile} gating sets speed to zero below the specified VeDBA quantile when
+that channel is available. These assumptions affect path length and must be considered alongside
+the speed method.
 }
 
-\subsection{What to do with the result}{
+\subsection{Dead-reckoning integration}{
 
-A pseudo-track is a plausible reconstruction, not an observation, and its accuracy is highest at the
-fixes and worst midway between them. Where an analysis needs formal per-position uncertainty - a
-utilisation
-distribution, or a behavioural state model - hand the corrected track to a continuous-time movement
-model such as \pkg{aniMotum} (Jonsen et al. 2023) or \pkg{crawl} (Johnson et al. 2008);
-\code{\link[=exportForSSM]{exportForSSM()}} puts it in the form they expect. This function is designed to feed those tools
-rather than to replace them. For track-level summaries such as distance travelled and tortuosity,
-see \code{\link[=trackMetrics]{trackMetrics()}}, and to find out how accurate the reconstruction actually is on your own data,
-see \code{\link[=crossValidateTrack]{crossValidateTrack()}}.
+At each observation the horizontal speed is \eqn{v_h = v \cos(\theta)}, where \eqn{v} is the
+along-body speed and \eqn{\theta} is pitch. Heading resolves this speed into eastward and
+northward components, which are integrated over elapsed time on a spherical Earth. Position
+correction is subsequently performed in a local east-north displacement representation.
+
+Non-finite displacement increments are set to zero. Thus, isolated missing orientation values do
+not contribute movement to the uncorrected path; they are not evidence that the animal was
+stationary. Reconstruction does not recover unobserved motion across sensor gaps or explicitly
+model ocean currents.
+}
+
+\subsection{Position anchors and correction}{
+
+Anchors comprise the deployment origin, metadata pop-up coordinates where available, and recorded
+position fixes. Sparse position columns are used when already present; otherwise they are resolved
+from \code{meta$ancillary$positions}. Ancillary fixes within the sensor period are aligned to
+the nearest observation, and the metadata pop-up is aligned to its nearest timestamp. Only one
+anchor per sensor row is retained, with deployment and pop-up anchors taking precedence over
+recorded fixes. Screen implausible recorded locations with \code{\link[=filterLocations]{filterLocations()}} beforehand.
+Ancillary fix alignment uses the canonical \code{datetime} column; retain that column when
+fixes are supplied only through metadata, even if \code{datetime.col} names another time column.
+
+Verified Position Correction (VPC) is controlled by \code{control$vpc.method}:
+
+\describe{
+\item{\code{"error_weighted"}}{The default. Distributes the displacement residual between
+anchors using a gain based on the configured dead-reckoning error and the next fix's error
+radius. The corrected path need not pass exactly through each fix.}
+\item{\code{"linear"}}{Applies the full additive correction between anchors, forcing the path
+through their coordinates.}
+\item{\code{"scale_rotate"}}{Rescales and rotates each segment to match its bracketing anchors.
+Poorly conditioned segments, including near-closed paths and coincident anchors, use an
+additive fallback. Fix-quality weighting does not affect the corrected coordinates.}
+\item{\code{"none"}}{Returns the uncorrected dead-reckoned path. Available position anchors may
+still be used to fit an automatic VeDBA speed model.}
+}
+
+For additive correction, \code{control$vpc.weighting} distributes the residual by cumulative
+reckoned distance (default) or elapsed time. Distance weighting falls back to time weighting
+when a segment has no positive reckoned length. After the last anchor, the corrected path
+continues without another positional constraint.
+}
+
+\subsection{Positional uncertainty and interpretation}{
+
+\code{pseudo_error} is a model-based horizontal error scale in metres, expressed as a nominal
+one-standard-deviation uncertainty. Its magnitude depends on \code{control$anchor.error.radii},
+\code{control$drift.rate} and \code{control$drift.diffusion}, not on independently measured
+reconstruction error. Between correction anchors, forward and backward error estimates are combined
+by inverse variance. Beyond the final anchor the error grows forwards; with no position correction,
+it grows from the deployment origin.
+
+This uncertainty is an approximate diagnostic envelope, not a validated confidence region or a
+state-space posterior. Anchor radii remain assumptions about fix quality. Use
+\code{\link[=crossValidateTrack]{crossValidateTrack()}} to assess held-out horizontal errors where suitable fixes are available.
+Neither correction nor agreement at retained anchors demonstrates accuracy between them.
+
+With \code{control$include.depth = TRUE} (default), an available \code{depth} channel is copied
+to \code{pseudo_depth}, in metres below the surface. Depth is measured independently of the
+horizontal reconstruction and is not adjusted by VPC.
+}
+
+\subsection{Quality control and skipped deployments}{
+
+A deployment needs at least two observations with finite, paired heading and pitch values.
+When both columns are present but this requirement fails, the deployment is omitted from the
+outputs and named in an aggregated warning. Other per-deployment reconstruction failures,
+including missing required columns or deployment coordinates, are skipped and reported when
+verbosity permits. If a paddle-speed call produces no tracks and at least one deployment was not
+skipped for unavailable orientation, the function stops with a \code{paddle_speed} diagnostic.
+No shared exclusions file is written.
+
+For tracks without recorded interior fixes, \code{control$reconstructability.min} enables a
+heuristic assessment of endpoint constraints. Directedness is the deployment-to-pop-up distance
+divided by the uncorrected horizontal path length, capped at one. A low value raises a warning
+without rejecting the track; an origin-only track is flagged as unbounded. The result is stored in
+\code{meta$sensors$reconstructability}. This heuristic depends on the assumed speed and does not
+validate the reconstructed interior. Setting the threshold to zero disables it.
+}
+
+\subsection{Metadata and diagnostics}{
+
+Returned datasets retain their metadata and gain a \code{reconstructTrack} processing record
+describing the speed and correction methods, weighting, anchor count, drift parameters and output
+dimension. VeDBA model details are recorded when that speed method is used. Inspect these records
+with \code{\link[=getTagMetadata]{getTagMetadata()}} and \code{\link[=processingHistory]{processingHistory()}}.
+
+The diagnostic report contains a deployment summary followed by detail pages for flagged tracks.
+Flagging uses mean uncorrected displacement error at correction anchors above 5 km; this is not
+held-out validation error. Detail pages compare raw and corrected horizontal paths, position
+anchors, displacement residuals, swimming speed and depth where available. \code{force.plots}
+requests all detail pages.
 }
 }
 \examples{
 \dontrun{
-processed <- processTagData(imported)
+# Reconstruct processed deployments using an explicitly selected constant speed.
+control <- reconstructTrackControl(speed.method = "constant", constant.speed = 0.6)
+tracks <- reconstructTrack(processed, control = control)
+processingHistory(tracks[[1]])
 
-# Dead-reckon the pseudo-track, anchoring the accumulated drift to the known fixes
-tracks <- reconstructTrack(processed,
-                           control = reconstructTrackControl(speed.method = "paddle",
-                                                             vpc.method = "error_weighted"),
-                           plot = TRUE)
-trackMetrics(tracks)   # one path summary per animal
+# Calibrate paddle rotation before using it to scale a track.
+paddle_tags <- calculatePaddleSpeed(processed, calibration = paddle_calibration)
+tracks <- reconstructTrack(paddle_tags,
+                           control = reconstructTrackControl(speed.method = "paddle"))
+
+# Write a disk-backed result and diagnostic report; the output directory must exist.
+track_files <- reconstructTrack(processed_files, control = control,
+                                output.dir = "./tracks", return.data = FALSE,
+                                plot.file = "./track_diagnostics.pdf")
 }
 }
 \references{
-Wilson RP, Liebsch N, Davies IM, \emph{et al.} (2007) All at sea with animal tracks; methodological and
+Wilson RP, Liebsch N, Davies IM, et al. (2007) All at sea with animal tracks; methodological and
 analytical solutions for the resolution of movement. \emph{Deep Sea Research Part II} 54:193-210.
 \doi{10.1016/j.dsr2.2006.11.017}
 
-Bidder OR, Walker JS, Jones MW, \emph{et al.} (2015) Step by step: reconstruction of terrestrial animal
+Bidder OR, Walker JS, Jones MW, et al. (2015) Step by step: reconstruction of terrestrial animal
 movement paths by dead-reckoning. \emph{Movement Ecology} 3:23. \doi{10.1186/s40462-015-0055-4}
 
-Gunner RM, Holton MD, Scantlebury MD, \emph{et al.} (2021) Dead-reckoning animal movements in R: a
+Gunner RM, Holton MD, Scantlebury MD, et al. (2021) Dead-reckoning animal movements in R: a
 reappraisal using Gundog.Tracks. \emph{Animal Biotelemetry} 9:23. \doi{10.1186/s40317-021-00245-z}
-
-Johnson DS, London JM, Lea MA, Durban JW (2008) Continuous-time correlated random walk model for
-animal telemetry data. \emph{Ecology} 89:1208-1215. \doi{10.1890/07-1032.1}
-
-Jonsen ID, Grecian WJ, Phillips L, \emph{et al.} (2023) aniMotum, an R package for animal movement data:
-rapid quality control, behavioural estimation and simulation. \emph{Methods in Ecology and Evolution}
-14:806-816. \doi{10.1111/2041-210X.14060}
 }
 \seealso{
-\code{\link[=reconstructTrackControl]{reconstructTrackControl()}} for the speed and correction settings; \code{\link[=processTagData]{processTagData()}} for
-the step that must come first; \code{\link[=crossValidateTrack]{crossValidateTrack()}} for measuring the accuracy achieved;
-\code{\link[=trackMetrics]{trackMetrics()}} for path summaries; \code{\link[=exportForSSM]{exportForSSM()}} for handing the track to a state-space model.
+\code{\link[=reconstructTrackControl]{reconstructTrackControl()}} for reconstruction settings; \code{\link[=processTagData]{processTagData()}} for orientation
+and movement metrics; \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}} for paddle calibration; \code{\link[=filterLocations]{filterLocations()}} for
+location screening; \code{\link[=crossValidateTrack]{crossValidateTrack()}} for held-out validation; \code{\link[=trackMetrics]{trackMetrics()}} for path
+summaries; \code{\link[=exportForSSM]{exportForSSM()}} for state-space model input.
 }

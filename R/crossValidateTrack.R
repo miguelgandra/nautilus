@@ -2,86 +2,172 @@
 # Measure reconstructTrack accuracy by holding out real position fixes ################################
 #######################################################################################################
 
-#' Measure how accurate a reconstructed track actually is
+#' Assess reconstructed tracks using held-out position fixes
 #'
 #' @description
-#' A marine pseudo-track has no underwater ground truth. Between surfacings there is nothing to compare
-#' the reconstruction against, so its accuracy cannot be measured directly - which leaves the honest
-#' question of how far to trust it unanswered.
+#' Evaluates horizontal track reconstruction by leave-one-fix-out cross-validation. Each eligible
+#' recorded position or metadata pop-up is withheld in turn, the path is reconstructed from the
+#' remaining anchors, and the predicted position is compared with the withheld coordinates.
 #'
-#' One thing can be done. Withhold a fix the animal genuinely produced, reconstruct the track from the
-#' remaining anchors alone, and see how close the reconstruction lands to the point it never saw. That
-#' is what this function does, leave-one-out across every fix in the deployment: neither the position
-#' correction nor the speed calibration is allowed to see the withheld fix. The result is a per-fix
-#' table of held-out errors, and the error at a fix `t` seconds from the nearest retained one is a
-#' direct estimate of the track's accuracy over a `t`-second reckoning gap.
+#' The function uses the processed sensor datasets and the same [reconstructTrackControl()]
+#' settings as [reconstructTrack()]. It returns one diagnostic record per successful holdout.
+#' These errors quantify prediction at available fixes; they do not provide underwater ground
+#' truth or directly validate every position along the reconstructed path.
 #'
-#' Use it to decide which settings actually help on your own data, and to obtain the drift rate to feed
-#' back into [reconstructTrackControl()].
-#'
-#' @param data The output of [processTagData()]: a tag object, a list of them, a single table with an
-#'   `id.col`, or a character vector of `.rds` paths. Each deployment needs the columns
-#'   [reconstructTrack()] requires, and genuine position fixes beyond the deployment origin.
-#' @param control A control object from [reconstructTrackControl()] - the same settings whose accuracy
-#'   you want to assess. Pass `reconstructTrackControl(...)` to change it.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param plot,plot.file Whether to draw the diagnostic report - the error-against-gap scatter and the
-#'   error distribution - to the active graphics device, and a path to a PDF for it. Defaults `FALSE`
-#'   and `NULL`.
-#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, which adds a progress bar
-#'   across deployments, or `2`/`"detailed"` (default), which streams a per-deployment block of fixes
-#'   validated and median error instead of the bar.
+#' @param data A tag dataset, a list of tag datasets, a data frame containing deployments identified
+#'   by \code{id.col}, or a character vector of \code{.rds} file paths. Supply the processed inputs
+#'   used for [reconstructTrack()], with its required orientation and speed channels, deployment
+#'   coordinates, and at least one eligible position or pop-up beyond the origin. Files are read
+#'   one deployment at a time.
+#' @param control A control object created by [reconstructTrackControl()], specifying the
+#'   reconstruction settings to evaluate. Default settings use constant speed at 0.5 m/s and
+#'   \code{"error_weighted"} position correction. Use the same control for reconstruction and
+#'   validation when assessing a particular workflow.
+#' @param id.col Character. Name of the column identifying deployments, not animals. Default
+#'   \code{"ID"}.
+#' @param datetime.col Character. Name of the \code{POSIXct} timestamp column. Default
+#'   \code{"datetime"}. Observations must be in chronological order.
+#' @param plot Logical. Draw the diagnostic report on the active graphics device. Default
+#'   \code{FALSE}.
+#' @param plot.file Character. Path to a diagnostic PDF, or \code{NULL} (default). Providing a
+#'   path writes the report independently of \code{plot} when at least one holdout is scored;
+#'   the parent directory must exist.
+#' @param verbose Verbosity: \code{FALSE}/\code{0}/\code{"quiet"},
+#'   \code{TRUE}/\code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default).
+#'   Normal output uses a deployment-level progress bar; detailed output reports each deployment.
 #'
 #' @details
-#' ## Reading the result
+#' ## Validation procedure
 #'
-#' For each withheld fix the function records the great-circle `error_m` between the reconstructed and
-#' the true position, the `gap_h` to the nearest retained fix, whether the fix was *interpolated*, with
-#' retained anchors on both sides, or *extrapolated*, with anchors on one side only as at the pop-up,
-#' and the fix's own quality radius for context.
+#' Position anchors are prepared in the same way as for [reconstructTrack()]: the deployment
+#' coordinates define the first observation, recorded fixes are resolved onto the sensor time
+#' grid, and a metadata pop-up is aligned to its nearest timestamp. Only the retained anchor at
+#' each sensor row is eligible; the function does not validate every row of the original location
+#' archive. The deployment origin is never withheld.
+#' As in reconstruction, ancillary fix alignment requires the canonical \code{datetime} column.
 #'
-#' The key diagnostic is error against gap. Where the error grows roughly linearly with the gap, the
-#' slope is an empirical drift rate in metres per hour; divide by 3600 for the `drift.rate` in m/s that
-#' [reconstructTrackControl()] expects, which the summary line prints for you. Running the function with
-#' different `vpc.method` or `speed.method` settings and stacking the results shows which choices help
-#' on your data rather than in principle.
+#' For each holdout, the corresponding non-deployment anchor is removed before both position
+#' correction and automatic VeDBA speed calibration. If \code{control$speed.method = "vedba"} and
+#' no model is supplied, the model is fitted again using only the retained anchors, subject to the
+#' usual calibration and constant-speed fallback rules. A supplied \code{control$vedba.model} or an
+#' upstream paddle calibration is not refitted; such calibrations must be established independently
+#' of the held-out fixes if an independent performance assessment is required.
 #'
-#' The approach is the one used to validate dead-reckoned whale tracks against sparse Fastloc-GPS
-#' (Wensveen et al. 2015).
+#' Previously reconstructed coordinates are not scored directly: the path is rebuilt from heading,
+#' pitch and the selected speed channel in each fold. The endpoint reconstructability heuristic is
+#' disabled for holdouts because the reduced anchor set is artificial. No processing-history records
+#' from these temporary reconstructions are appended to the supplied datasets.
 #'
-#' ## What it cannot tell you
+#' A deployment with only an origin and pop-up can contribute one extrapolated endpoint error.
+#' A deployment with no eligible non-origin anchor contributes no rows. Fold reconstruction failures
+#' or non-finite predicted coordinates are omitted; the result therefore describes successful
+#' holdouts, not every attempted fold. Per-deployment errors are reported when verbosity permits.
 #'
-#' The held-out error conflates heading error, speed error and unmodelled current. It measures the
-#' pipeline's net accuracy, not which component failed. To probe the heading side separately, check the
-#' magnetometer against the geomagnetic model with [calibrateMagnetometer()], and the sensor frame
-#' itself with the accelerometer-against-gyroscope co-registration reported by [applyAxisMapping()].
+#' ## Error and temporal gap
 #'
-#' It can only be computed where a deployment surfaced often enough to produce fixes beyond the
-#' deployment origin. Sparse surfacing means few points per deployment, so pool across the fleet before
-#' reading a rate off the slope. Finally, a withheld fix carries its own measurement error - tens of
-#' metres for Fastloc-GPS, kilometres for coarse Argos - which sets a floor on the achievable `error_m`.
+#' \code{error_m} is the great-circle horizontal distance, in metres, between the predicted and
+#' withheld positions. It includes effects of orientation error, speed assumptions, unmodelled
+#' currents, position-measurement error and alignment to the sensor time grid. It does not identify
+#' the contribution of each component.
 #'
-#' @return A data frame with one row per withheld fix and columns `id`, `datetime`, `quality`,
-#'   `error_m`, `gap_h`, `interpolated`, `fix_radius_m`, `n_anchors_used`, `speed_method` and
-#'   `vpc_method`. Empty when no deployment has a fix to withhold.
+#' \code{gap_h} is the absolute time difference, in hours, to the nearest retained anchor, including
+#' the deployment origin. It is not the full duration between bracketing anchors. The
+#' \code{interpolated} indicator is \code{TRUE} when retained anchors occur both before and after
+#' the holdout, and \code{FALSE} otherwise. These labels describe anchor availability; they do not
+#' imply that a particular interpolation model was fitted.
+#'
+#' Gap and retained-anchor counts are reported even with \code{vpc.method = "none"}, when these
+#' anchors do not correct the path. In that case, \code{gap_h} need not equal the time over which
+#' uncorrected error has accumulated from the origin.
+#'
+#' ## Drift diagnostics
+#'
+#' Console and report summaries give median and 90th-percentile held-out error. Their descriptive
+#' drift statistic is the median of \code{error_m / gap_h} for positive, finite gaps, in metres per
+#' hour. Dividing by 3600 expresses this ratio in m/s, the units of \code{control$drift.rate}.
+#'
+#' The error-versus-gap plot also draws a least-squares line constrained through the origin when
+#' at least two positive, finite gaps are available. Its slope is a different statistic from the
+#' reported median ratio. Neither quantity is an automatic estimate of the physical drift process
+#' or a fitted uncertainty model. A non-zero fix-error floor, anchor geometry and correction method
+#' can all affect the apparent relationship.
+#'
+#' Use these diagnostics to inform comparisons of speed and correction settings, while inspecting
+#' error by deployment, gap, fix quality and extrapolation status. They may motivate a study-specific
+#' drift model, but do not validate the nominal \code{pseudo_error} scale returned by
+#' [reconstructTrack()].
+#'
+#' ## Scientific interpretation
+#'
+#' Held-out fixes sample locations where a position was obtained; they may not represent long
+#' submerged intervals or other unsampled behaviour. Closely spaced or temporally correlated fixes
+#' can make single-fix holdouts easier to predict than long gaps. The uncertainty of the withheld
+#' fix itself also contributes to \code{error_m}; \code{fix_radius_m} is its configured quality
+#' radius, not a measured error for that observation.
+#'
+#' This implementation uses individual-fix holdouts, rather than block or deployment-level
+#' validation. Wensveen et al. (2015) provide methodological context for held-out-position validation,
+#' but the procedure here is not a reproduction of their cross-validation design.
+#'
+#' Comparing settings on the same holdouts is useful for development, but performance reported after
+#' selecting settings on those errors is not an independent validation. Interpret results together
+#' with calibration provenance and sampling coverage; retain a separate assessment dataset where
+#' possible. A low held-out error does not establish the accuracy of the entire underwater path.
+#'
+#' ## Diagnostics and side effects
+#'
+#' The optional report contains an error-versus-gap scatter plot, coloured by interpolation or
+#' extrapolation status, and a pooled empirical cumulative distribution of held-out errors.
+#' The function does not save reconstructed datasets or a results table; save the returned data
+#' frame explicitly when required. Supplied sensor data and processing history are unchanged.
+#'
+#' @return A data frame with one row per successfully scored holdout and the following columns:
+#'   \describe{
+#'     \item{\code{id}}{Deployment identifier.}
+#'     \item{\code{datetime}}{Timestamp of the held-out anchor on the sensor time grid, as
+#'       \code{POSIXct}.}
+#'     \item{\code{quality}}{Anchor quality label, including \code{"Popup"} for metadata pop-ups.}
+#'     \item{\code{error_m}}{Great-circle horizontal prediction error, in metres.}
+#'     \item{\code{gap_h}}{Time to the nearest retained anchor, in hours.}
+#'     \item{\code{interpolated}}{Whether retained anchors bracket the held-out timestamp.}
+#'     \item{\code{fix_radius_m}}{Assumed error radius from \code{control$anchor.error.radii}, in
+#'       metres; unrecognised quality labels use the reconstruction fallback of 1500 m.}
+#'     \item{\code{n_anchors_used}}{Number of retained anchors available to the fold, including the
+#'       deployment origin. They are not necessarily all used for positional correction.}
+#'     \item{\code{speed_method}, \code{vpc_method}}{Speed and position-correction methods evaluated.}
+#'   }
+#'   Returns a zero-row data frame with these columns when no holdout can be scored.
 #'
 #' @references
 #' Wensveen PJ, Thomas L, Miller PJO (2015) A path reconstruction method integrating dead-reckoning and
-#' position fixes applied to humpback whales. *Movement Ecology* 3:31. \doi{10.1186/s40462-015-0061-6}
+#' position fixes applied to humpback whales. \emph{Movement Ecology} 3:31.
+#' \doi{10.1186/s40462-015-0061-6}
 #'
-#' @seealso [reconstructTrack()] for the reconstruction being assessed; [reconstructTrackControl()] for
-#'   the settings to compare.
+#' @seealso [reconstructTrack()] for path reconstruction and its assumptions;
+#'   [reconstructTrackControl()] for the settings evaluated; [filterLocations()] for location
+#'   screening; [calibrateMagnetometer()] and [applyAxisMapping()] for upstream orientation checks.
 #'
 #' @examples
 #' \dontrun{
-#' cv <- crossValidateTrack(processed, plot = TRUE)
+#' # Use the same settings for reconstruction and held-out validation.
+#' control <- reconstructTrackControl(speed.method = "constant", constant.speed = 0.6)
+#' tracks <- reconstructTrack(processed, control = control)
+#' cv <- crossValidateTrack(processed, control = control, plot.file = "./track_validation.pdf")
 #'
-#' # compare correction methods on your own data
+#' # Compare positional correction methods with other settings held fixed.
 #' methods <- c("none", "error_weighted", "scale_rotate")
-#' comp <- do.call(rbind, lapply(methods, function(m)
-#'   crossValidateTrack(processed, reconstructTrackControl(vpc.method = m), verbose = FALSE)))
-#' aggregate(error_m ~ vpc_method, comp, median)
+#' comparison <- do.call(rbind, lapply(methods, function(method) {
+#'   crossValidateTrack(processed,
+#'                      control = reconstructTrackControl(constant.speed = 0.6,
+#'                                                        vpc.method = method),
+#'                      verbose = FALSE)
+#' }))
+#' if (nrow(comparison)) {
+#'   aggregate(error_m ~ vpc_method, data = comparison, FUN = median)
+#' }
+#'
+#' # Save the diagnostics explicitly; the function does not persist the results table.
+#' write.csv(cv, "./track_validation.csv", row.names = FALSE)
 #' }
 #' @export
 crossValidateTrack <- function(data,
@@ -197,7 +283,7 @@ crossValidateTrack <- function(data,
 }
 
 #' Diagnostic page: held-out error vs the reckoning gap (with an empirical drift slope), plus the error
-#' distribution split by interpolated / extrapolated fixes.
+#' pooled empirical cumulative distribution of held-out errors.
 #' @keywords internal
 #' @noRd
 .drawCrossValidation <- function(res, control) {

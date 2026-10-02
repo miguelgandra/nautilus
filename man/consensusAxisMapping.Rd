@@ -2,7 +2,7 @@
 % Please edit documentation in R/consensusAxisMapping.R
 \name{consensusAxisMapping}
 \alias{consensusAxisMapping}
-\title{Reconcile axis-mapping solutions across deployments of the same tag unit}
+\title{Reconcile sensor-axis mappings across compatible deployments}
 \usage{
 consensusAxisMapping(
   results,
@@ -13,85 +13,144 @@ consensusAxisMapping(
 )
 }
 \arguments{
-\item{results}{The output of \code{\link[=checkTagMapping]{checkTagMapping()}} (a named list, one element per
-deployment), a list of such outputs, or any nested list whose leaves are \code{checkTagMapping}
-result elements (carrying \code{$proposal}). Each element should carry the grouping keys added by
-\code{checkTagMapping} (\code{$package_id}, \code{$tag}, \code{$type}); a leaf missing the chosen
-key is treated as its own standalone group.}
+\item{results}{A named list returned by \code{\link[=checkTagMapping]{checkTagMapping()}}, a list of such outputs, or a
+nested list whose deployment-level elements contain a \code{proposal} data frame.
+Each deployment must have a distinct identifier and should carry the metadata keys used
+by \code{group.by}. Missing grouping values isolate a deployment in its own group.}
 
-\item{group.by}{Character vector naming the metadata key(s) deployments are grouped by, one or more
-of \code{"package_id"} (default), \code{"logger_id"}, \code{"tag"} (model) and \code{"type"}. Pass
-several for a composite key (e.g. \code{c("tag", "type")}). Pick the unit whose axis orientation is
-actually constant: \code{"package_id"} (the physical housing/placement) is the safe default;
-\code{c("tag", "type")} pools all deployments of a model+type (best when a manufacturer standardises
-placement); \code{"logger_id"} follows the chip when boards are swapped/remounted between housings.
-In all cases the dissenting-outlier detection flags within-group deployments that do not fit.}
+\item{group.by}{Character vector of metadata keys defining compatible deployments:
+\code{"package_id"} (default), \code{"logger_id"}, \code{"tag"} or \code{"type"}.
+Multiple keys define a composite group, for example \code{c("package_id", "logger_id")}.
+\code{package_id} identifies the physical package, \code{logger_id} its logger,
+and \code{tag} and \code{type} the model and type recorded by \code{\link[=checkTagMapping]{checkTagMapping()}}.
+Choose keys for which the full raw-to-body signed permutation is expected to remain constant.}
 
-\item{min.agreement}{Numeric in (0, 1]. Within a group, a family's consensus is emitted only when the
-most common signed permutation is supported by at least this fraction of the deployments that
-resolved that family. Default 0.6.}
+\item{min.agreement}{Numeric value in \code{(0, 1]} giving the minimum fraction of valid
+family votes supporting the modal mapping (default \code{0.6}). Votes are unweighted;
+unresolved deployments do not enter the denominator. Values greater than \code{0.5}
+require a unique majority.}
 
-\item{min.voters}{Integer >= 1. A family's consensus is emitted only when at least this many
-deployments of the group resolved that family (so a lone resolution is never propagated). Default 2.}
+\item{min.voters}{Minimum number of deployments contributing valid complete mappings for
+a sensor family before its consensus can be propagated. Integer at least \code{1};
+default \code{2}. With the default, a single resolved deployment cannot supply consensus.}
 
-\item{verbose}{Verbosity level: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or
-\code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"},
+\code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Normal output provides
+group-level conclusions; detailed output adds family-level agreement and propagation.
+Group conflicts below the agreement threshold generate an R warning at any verbosity.}
 }
 \value{
-A list with:
-\itemize{
-\item \code{mappings}: a named list (one per deployment) of \code{from}/\code{to} data.frames
-giving each deployment's final, reconciled mapping, ready for \code{\link[=applyAxisMapping]{applyAxisMapping()}}
-(empty data.frame where still unresolved).
-\item \code{provenance}: a data.frame, one row per deployment, with the \code{group} key (and
-\code{package_id} for reference) and, per family (\code{accel}/\code{gyro}/\code{mag}), how it
-was resolved: \code{"self"} (own evidence), \code{"consensus"} (filled from the group),
-\code{"conflict"} (consensus contradicts the deployment's own candidates), \code{"ambiguous"}
-(unresolved), or \code{"none"} (family absent).
-\item \code{groups}: a per-group list (keyed by the \code{group.by} value) reporting, for each
-family, the number of voters, the winning \code{agreement} fraction, the number of distinct
-solutions, a \code{conflict} flag, the contributing deployment ids, and the consensus mapping.
-\item \code{n_groups}, \code{n_deployments}, \code{n_filled}, \code{n_conflicts}: run tallies.
+A list carrying a \code{nautilus.mapping.producer} attribute, with components:
+\describe{
+\item{\code{mappings}}{A named list of \code{from}/\code{to} data frames, one per deployment,
+accepted by \code{\link[=applyAxisMapping]{applyAxisMapping()}}. An unresolved deployment can have an empty mapping.}
+\item{\code{provenance}}{A data frame with \code{id}, \code{group}, \code{package_id} and
+\code{accel}, \code{gyro}, \code{mag} columns. Family values are \code{"self"} for an
+existing complete proposal, \code{"consensus"} for a group fill, \code{"conflict"} for an
+accelerometer consensus outside the candidate set, \code{"ambiguous"} for an unfilled
+accelerometer frame, or \code{"none"} when no family proposal is represented.
+Missing grouping keys are reported as \code{NA}.}
+\item{\code{groups}}{A named list of group reports containing the group key, grouping fields,
+deployment IDs and per-family summaries: \code{status}, \code{n_voters} and, where votes
+exist, \code{agreement}, \code{n_distinct}, \code{conflict} and \code{mapping}.
+A family with no votes has status \code{"none"}; its consensus mapping is otherwise
+\code{NULL} when the propagation criteria are unmet.}
+\item{\code{n_groups}, \code{n_deployments}}{Numbers of groups with known keys and deployments
+evaluated, respectively. Groups with missing keys are excluded from \code{n_groups}.}
+\item{\code{n_filled}}{Number of deployments gaining at least one family by consensus.}
+\item{\code{n_conflicts}}{Number of group--family conflicts below \code{min.agreement},
+not the number of deployment-level candidate conflicts.}
+\item{\code{n_outliers}, \code{n_standalone}}{Numbers of deployments retaining a dissenting
+own mapping and groups containing a single deployment, respectively.}
+\item{\code{n_resolved}, \code{n_unresolved}, \code{unresolved_ids}}{Resolution tallies and
+identifiers based on whether family provenance contains \code{"ambiguous"} or
+\code{"conflict"}. These describe reconciliation state, not independent sensor validation.}
 }
 }
 \description{
-The chip-to-housing axis orientation of a tag is a manufacturing constant: it is shared across
-every deployment of that physical unit. For the towed / fin-clamped, hydrodynamically self-righting
-tags this package targets, the housing-to-body orientation is also physically constrained to
-"upright (Z up) and forward (X forward)" regardless of the attachment site (dorsal, left or right
-pectoral), so the full raw -> body transform is a single per-unit constant.
+Combines deployment-level proposals from \code{\link[=checkTagMapping]{checkTagMapping()}} within groups expected to share
+a constant sensor-axis configuration. A modal signed permutation is calculated separately for
+the accelerometer, gyroscope and magnetometer, and eligible unresolved mappings can be filled
+from that consensus.
 
-This function groups the per-deployment results of \code{\link[=checkTagMapping]{checkTagMapping()}} by a metadata key
-(\code{group.by}, default the physical-unit \code{package_id}) and, within each group, builds a
-confidence-weighted consensus mapping from the deployments that resolved unambiguously. That
-consensus is then propagated to weaker / ambiguous deployments of the same group - but only when it
-is consistent with their own evidence - so a dive-rich deployment can rescue a flat-swimming or short
-one. Disagreement between confidently-resolved deployments of the same group is flagged as a
-\emph{conflict} (a likely sign that the circuit board was swapped, replaced, or remounted in a
-different orientation, or that the grouping key is shared by two physically different units).
+This is an optional step between \code{\link[=checkTagMapping]{checkTagMapping()}} and \code{\link[=applyAxisMapping]{applyAxisMapping()}}. It returns
+reconciled mappings and their provenance, without transforming sensor data. Existing complete
+deployment-level mappings are retained even when they differ from the group consensus.
+Keep the original diagnostic results for \code{\link[=reviewTagMapping]{reviewTagMapping()}}, which requires their
+deployment-level frame evidence.
 }
 \details{
-Only \emph{confident} deployments vote: an accelerometer vote is cast only when \code{checkTagMapping}
-resolved all three axes (its \code{$proposal} carries a complete accelerometer triplet), and a
-gyroscope / magnetometer vote only when that family was decisively resolved. Within a unit, the
-modal signed permutation per family is the consensus.
+\subsection{Grouping assumptions}{
 
-Propagation is \emph{consistency-gated}: an ambiguous deployment adopts the unit consensus for the
-accelerometer only if that mapping lies within its own tied candidate set (\code{$candidates}); a
-deployment that already resolved a family keeps its own mapping (never overridden). This guarantees
-the consensus can only \emph{fill} ambiguity, never contradict a deployment's own data.
+Consensus assumes that the complete raw-sensor-to-body signed permutation is shared within
+each group, not merely that its deployments used the same tag model. A fixed circuit-board
+orientation alone does not establish an unchanged housing-to-animal orientation. Mounting
+changes, board replacement or reused identifiers can violate the grouping assumption.
+
+Group by physical unit where that assumption is justified. Pooling by model or type requires
+independent evidence of standardised sensor and attachment conventions. An unknown value in
+any requested key makes that deployment a standalone group rather than pooling unrelated units.
+If no deployment carries the selected keys, a warning is issued.
+}
+
+\subsection{Voting and propagation}{
+
+Each proposal contributes one vote per sensor family only when that family contains a complete,
+valid signed-permutation triplet. No confidence weighting or additional family-status filter is
+applied: eligibility is determined from the proposal itself. Families are pooled independently.
+
+A consensus is available when there are at least \code{min.voters} valid votes and the modal
+mapping meets \code{min.agreement}. Unanimous solutions are \code{"agreed"}; qualifying
+non-unanimous solutions are \code{"majority"}. Multiple solutions below the agreement threshold
+are \code{"conflict"} and are not propagated. Too few votes are \code{"insufficient"}.
+At thresholds of \code{0.5} or lower, tied modal solutions can qualify; the first modal solution
+in the frequency table is then used. Prefer a threshold above \code{0.5} for majority consensus.
+
+A deployment's own complete mapping always takes precedence. Dissenting deployments retain
+that mapping and are counted as outliers, not overwritten. An unresolved accelerometer frame
+adopts consensus only when it is among that deployment's surviving \code{candidates}.
+A consensus outside a non-empty candidate set is recorded as a deployment-level conflict;
+no accelerometer mapping is filled. Missing candidates do not authorise propagation.
+
+Gyroscope and magnetometer proposals do not carry equivalent candidate sets. Their consensus
+can fill an omitted family without a deployment-level consistency or channel-presence check.
+Consequently, family provenance describes mapping availability, not necessarily usable sensor
+coverage. \code{\link[=applyAxisMapping]{applyAxisMapping()}} subsequently applies mappings only to complete sensor triplets.
+Inspect cross-family consistency and the diagnostic evidence before using these fills.
+}
+
+\subsection{Workflow and interpretation}{
+
+Reconciliation does not modify the original \code{results} or preserve their \code{frame_state}
+within its output. To review diagnostic cases while retaining reconciled defaults, pass the
+original results as \code{mapping} and this output as \code{base} to \code{\link[=reviewTagMapping]{reviewTagMapping()}}.
+Consensus does not confirm a documented configuration, calibrate a sensor or establish an
+absolute heading reference.
+
+Unresolved mappings can remain empty. \code{\link[=applyAxisMapping]{applyAxisMapping()}} passes those datasets through
+unchanged; their inclusion in its output does not establish a valid body frame.
+}
 }
 \examples{
 \dontrun{
-files <- list.files("imported", pattern = "\\\\.rds$", full.names = TRUE)
+# Raw-axis records already trimmed and checked for sensor integrity.
+files <- list.files("./checked", pattern = "\\\\.rds$", full.names = TRUE)
+evidence <- checkTagMapping(files)
+reconciled <- consensusAxisMapping(evidence, group.by = "package_id")
+reconciled$provenance
+reconciled$unresolved_ids
 
-# Pool per-deployment proposals across deployments of the same physical unit
-qc  <- checkTagMapping(files)
-rec <- consensusAxisMapping(qc, group.by = "package_id")
-rec$provenance                 # per-family origin (self / consensus / conflict)
-oriented <- applyAxisMapping(data = files, mapping = rec)
+# Restrict pooling to deployments sharing both package and logger identifiers.
+reconciled <- consensusAxisMapping(evidence,
+                                   group.by = c("package_id", "logger_id"),
+                                   min.agreement = 0.8, min.voters = 2)
+
+# Inspect the evidence before applying the reconciled mappings.
+oriented <- applyAxisMapping(files, mapping = reconciled)
 }
 }
 \seealso{
-\code{\link[=checkTagMapping]{checkTagMapping()}}, \code{\link[=applyAxisMapping]{applyAxisMapping()}}
+\code{\link[=checkTagMapping]{checkTagMapping()}} for deployment-level inference; \code{\link[=reviewTagMapping]{reviewTagMapping()}} for video
+review using the original evidence and reconciled base; \code{\link[=applyAxisMapping]{applyAxisMapping()}} for applying
+mappings; \code{\link[=processTagData]{processTagData()}} for deriving body-frame metrics.
 }

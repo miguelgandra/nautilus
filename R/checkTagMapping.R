@@ -2,190 +2,239 @@
 # Guess IMU Axis Mapping for Multiple Animals/Datasets ################################################
 #######################################################################################################
 
-#' Work out how a tag's sensor axes relate to the animal
+#' Assess sensor-axis mappings from deployment data
 #'
 #' @description
-#' An accelerometer records along its own three axes, which depend on how the circuit board sits in the
-#' housing and how the housing sits on the animal. Manufacturers document this inconsistently, tags are
-#' remounted between deployments, and a board can be replaced without anyone noting the change. Until
-#' the relationship is known, no orientation-derived quantity can be trusted.
+#' Evaluates candidate signed permutations of the accelerometer axes and identifies mappings
+#' consistent with gravity loading, posture and, where informative, diving dynamics. Optional
+#' gyroscope and magnetometer diagnostics assess their relationship to the accelerometer frame.
+#' Documented configurations can be compared with the inferred mappings without applying them.
 #'
-#' Getting it wrong is not obvious. Swapped or inverted axes produce pitch, roll and heading that look
-#' entirely plausible - smooth, correctly scaled, varying with behaviour - while describing an animal
-#' that is not the one you tagged. Dead-reckoned tracks, body-orientation summaries and dynamic
-#' acceleration all inherit the error silently.
+#' The function is used on raw-axis data after [filterDeploymentData()] and sensor quality control,
+#' before [applyAxisMapping()] and [processTagData()]. It returns deployment-level evidence and
+#' proposals, not remapped sensor data. Proposals can be reconciled with [consensusAxisMapping()]
+#' and inspected against synchronised footage with [reviewTagMapping()] before application.
 #'
-#' `checkTagMapping()` recovers the relationship from the data itself, using the two things physics
-#' guarantees: gravity points down, and a swimming animal spends most of its time roughly level. Each
-#' candidate arrangement of the axes is scored on how well the record it produces matches that
-#' expectation, and the best-supported one is proposed for review.
-#'
-#' It proposes rather than applies. Review the proposals with [reviewTagMapping()], then commit them
-#' with [applyAxisMapping()].
-#'
-#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
-#'   `.rds` paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-#'   processed without ever holding it all.
-#'
-#'   Trim the record first. A tag drifting after detachment, or sitting on deck, contributes postures
-#'   the animal never adopted and can pull the estimate towards the wrong arrangement; a warning is
-#'   raised for any deployment whose history shows no [filterDeploymentData()] step.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param depth.col Character. Name of the column containing raw depth data. Defaults to "depth".
-#' @param ax.col Character. Name of the column containing raw X-axis acceleration data. Defaults to "ax".
-#' @param ay.col Character. Name of the column containing raw Y-axis acceleration data. Defaults to "ay".
-#' @param az.col Character. Name of the column containing raw Z-axis acceleration data. Defaults to "az".
-#' @param configs Optional named dictionary of documented configurations (config name -> `from`/`to`
-#'   data.frame), the same object accepted by [applyAxisMapping()]. When supplied, each tag's
-#'   `axis_config` metadata (set at import) is looked up and its documented accelerometer frame is
-#'   **validated against the inferred frame**: per deployment, `frame_state$prior$status` reports
-#'   `"confirmed"` (data uniquely resolved to exactly that frame), `"consistent"` (the documented frame
-#'   is among the still-plausible candidates), `"conflict"` (it lies outside the plausible set - the doc
-#'   disagrees with the data, also added to `frame_state$conflicts`), or `"reflection"` (a left-handed
-#'   raw frame the right-handed search cannot judge). If the config also documents gyroscope or
-#'   magnetometer rows, those are validated too (`frame_state$prior$gyro_status` /
-#'   `mag_status`): `"confirmed"` / `"conflict"` against the inferred family mapping, or `"unverifiable"`.
-#'   Because the inferred gyro/mag mappings are expressed relative to the accelerometer body frame, a
-#'   gyro/mag row can only be judged when the accelerometer config is itself `"confirmed"` (otherwise the
-#'   reference frame is not pinned to the doc and the family is `"unverifiable"`). Default `NULL`.
-#' @param deployment.type Mount type controlling the posture scorer: `"rigid"` rewards near-zero
-#'   resting roll/pitch (assumes a level resting posture); `"towed"` rewards stability (MAD), which
-#'   tolerates the resting offsets typical of fin-clamp / tethered mounts, and suppresses the weak
-#'   pitch-depth warning (decoupling is expected). `NULL` (default) takes the type per dataset from
-#'   metadata (\code{columns = metadataColumns(deployment_type = ...)} in [importTagData()]),
-#'   falling back to the stability scorer when unknown. Either a single value or a per-dataset vector.
-#'   The vertical axis is resolved from gravity regardless, so this only affects horizontal ranking
-#'   and warnings.
-#' @param static.threshold A numeric value (in g's) used to identify "static" periods.
-#'   Data points where the magnitude of the **static** accelerometer vector is within this
-#'   threshold of 1g are considered static. Defaults to 0.1g.
-#' @param vertical.speed.threshold Numeric. Speed threshold (m/s) for horizontal periods. Default 0.5.
-#' @param stable.horizontal.window Numeric. Window size (s) for stable horizontal identification. Default 10.
-#' @param g.value The gravitational acceleration value (in g's) expected when static. Defaults to 1.
-#' @param dba.window The window size (in seconds) for calculating static acceleration using a rolling mean. Defaults to 2.5 seconds.
-#' @param depth.smoothing,vertical.smoothing Smoothing windows (seconds) for the vertical-velocity estimate
-#'   used by the surge anchor (centered difference on smoothed depth, then optional velocity smoothing -
-#'   the same estimate as [processTagData()]). Low-passing removes the quantization staircase
-#'   that otherwise degrades the pitch / depth-rate relationship. Defaults 10 and 1; `NULL` disables.
-#' @param tie.tolerance Numeric. Score gap (in the score's units, roughly degrees) within which
-#'   competing mappings are treated as tied when assessing per-axis resolution. A body axis is
-#'   reported as "resolved" only if all mappings within this tolerance of the best agree on it.
-#'   Defaults to 2.
-#' @param use.dynamics Logical. If `TRUE` (default), attempt to break the horizontal (surge/sway)
-#'   tie left by the accelerometer scorer using diving dynamics: the correct surge axis is the one
-#'   whose body pitch correlates with vertical velocity during dives, after which the proper-rotation
-#'   constraint fixes the sway axis and sign. If `FALSE`, only the gravity-based vertical axis is
-#'   resolved.
-#' @param dive.speed.threshold Numeric. Minimum absolute vertical velocity (m/s) for a sample to
-#'   count as "diving" in the surge anchor. Defaults to 0.2.
-#' @param max.vertical.speed Numeric. Maximum plausible absolute vertical velocity (m/s) for a
-#'   swimming animal. Samples faster than this are treated as depth-sensor artifacts (e.g. a stuck or
-#'   saturated depth block, which can inject speeds of tens to hundreds of m/s) and excluded from the
-#'   surge-resolution correlation, so a corrupt depth segment cannot hijack the pitch /
-#'   vertical-velocity anchor. Must exceed `dive.speed.threshold`. Defaults to 5.
-#' @param min.dynamic.corr Numeric. Minimum magnitude of the pitch / vertical-velocity correlation
-#'   required to accept the surge axis as resolved. Defaults to 0.4.
-#' @param locomotor.band Numeric `c(low, high)`. Frequency band (Hz) used for the tail-beat power
-#'   corroboration of the locomotor axis; set the lower edge above the tag's tether/pendulum frequency
-#'   to exclude that contamination. Defaults to `c(0.2, 3)`.
-#' @param locomotor.axis Character. Body axis expected to carry the propulsive (tail-beat) oscillation,
-#'   used to corroborate the mapping: `"sway"` (default; lateral, fish/sharks), `"heave"` (dorso-ventral,
-#'   mobulid rays / cetaceans), or `"surge"`. The corroboration passes when this axis carries the most
-#'   locomotor-band power of the three, and the spectra panel labels/highlights it accordingly.
-#' @param mag.hard.iron Logical. If `TRUE` (default), apply a provisional spherical (hard-iron) offset
-#'   correction to the magnetometer before the dip-consistency diagnostic, but only when orientation
-#'   coverage is sufficient (else it is skipped). This is diagnostic only and never persisted; it
-#'   improves the dip plot / consistency check on uncalibrated deployments.
-#' @param plot Logical. If `TRUE`, draw a per-individual visual-validation panel (depth-rate vs
-#'   pitch, gravity partition over a dive, per-axis spectra, magnetometer dip angle) to the active
-#'   graphics device. Default `FALSE`.
-#' @param plot.file Character. Path to a single multi-page PDF in which to save the validation panels
-#'   (one page per individual). The parent directory must already exist; must end in `.pdf`. If
-#'   `NULL` (default), no file is written. Independent of `plot`.
-#' @param verbose Verbosity level: `FALSE`/`0`/"quiet", `TRUE`/`1`/"normal" (a per-individual cli
-#'   block: status, proposed mapping, per-axis resolution, gyro/mag families, and a one-line note),
-#'   or `2`/"detailed" (default; adds low-level per-step diagnostics). Defaults to `"detailed"`.
-#'
-#' @return A named list, one element per individual, each containing:
-#'   \itemize{
-#'     \item \code{id}, \code{package_id}, \code{tag}, \code{type}: the deployment identifier plus the
-#'       grouping keys carried from metadata (\code{NA} if absent) - the physical-unit \code{package_id},
-#'       the \code{tag} model and \code{type}. Any of these can be used by [consensusAxisMapping()]
-#'       (via its \code{group.by}) to reconcile mapping solutions across related deployments.
-#'     \item \code{proposal}: a \code{from}/\code{to} data.frame for the best-scoring mapping, ready to
-#'       pass to [applyAxisMapping()].
-#'     \item \code{resolution}: a data.frame stating, for each body axis (X/Y/Z), whether it is
-#'       \code{"resolved"} or \code{"ambiguous"}, the raw source axis/sign when resolved, and the
-#'       \code{evidence} that resolved it ("gravity", "depth-rate", or "handedness").
-#'     \item \code{families}: gyroscope and magnetometer results. The gyroscope defaults to the
-#'       co-die transform of the accelerometer map (\code{gyro = det(M)*M}, an axial vector) and that
-#'       default is validated by co-registration (the strapdown identity \code{d(ghat)/dt = -omega x ghat}
-#'       scored for the identity hypothesis; see \code{families$gyro$coreg_corr} and
-#'       \code{frame_state$coreg}). When it co-registers (or there is too little rotation to judge) it is
-#'       adopted (\code{source = "coreg-derived"}); when it is decisively rejected the data-driven
-#'       resolvers (roll-rate / pitch-rate correlation and the strapdown frame estimator) take over and
-#'       the deployment is flagged \code{coreg_fail} for [reviewTagMapping()]. The magnetometer
-#'       is validated against the accelerometer frame via the gravity-field dip (its heading axes cannot
-#'       be fixed from dip alone, so they share the accelerometer resolution). Each has a \code{status}
-#'       ("resolved" / "unresolved" / "inconsistent" / "absent/insufficient") and a \code{mapping}.
-#'       The magnetometer also reports \code{measured_inclination} and, when deployment coordinates
-#'       are available, the IGRF \code{expected_inclination} and their \code{inclination_residual}.
-#'     \item \code{confidence}: a list with the score \code{margin} to the runner-up, the number of
-#'       static-tied candidates, whether surge was resolved, the surge correlation, tail-beat
-#'       corroboration, the attachment site, and a human-readable \code{note}.
-#'     \item \code{candidates}: the set of near-best (tied) mappings.
-#'     \item \code{all_results}: scores for all evaluated mappings.
-#'     \item \code{metric_explanation}: description of the scoring methodology.
-#'   }
+#' @param data A \code{nautilus_tag} object, a named list of deployment datasets, a data frame
+#'   containing deployments identified by \code{id.col}, or a character vector of \code{.rds}
+#'   file paths. Each deployment requires \code{POSIXct} timestamps, depth in metres and all three
+#'   accelerometer channels in g. File inputs are read sequentially. Use raw-axis records trimmed
+#'   to the on-animal period; see Details.
+#' @param id.col Character. Name of the column identifying deployments, not animals. Default
+#'   \code{"ID"}.
+#' @param datetime.col Character. Name of the \code{POSIXct} timestamp column. Default
+#'   \code{"datetime"}.
+#' @param depth.col Character. Name of the depth column, in metres and positive downwards.
+#'   Default \code{"depth"}.
+#' @param ax.col,ay.col,az.col Character. Names of the raw X-, Y- and Z-axis accelerometer
+#'   columns, in g. Defaults \code{"ax"}, \code{"ay"} and \code{"az"}.
+#' @param configs Optional named list of documented configurations, each a data frame with
+#'   \code{from} and \code{to} columns as described in [applyAxisMapping()]. Each deployment's
+#'   \code{tag$axis_config} metadata selects the configuration to assess. Configurations are
+#'   compared with the data-derived frame, not used to force a solution. Default \code{NULL}.
+#' @param deployment.type Mount type used for posture scoring: \code{"rigid"} uses median
+#'   absolute roll and pitch, assuming a near-level posture during horizontal swimming;
+#'   \code{"towed"} uses their median absolute deviations, allowing persistent mounting offsets.
+#'   Supply one value for all deployments or a vector in input order. \code{NULL} (default)
+#'   uses each deployment's \code{deployment_type} metadata, with the stability-based scorer
+#'   when unknown. This changes posture ranking and associated diagnostics, not the gravity anchor.
+#' @param static.threshold Non-negative tolerance, in g, around \code{g.value} for classifying
+#'   the magnitude of the smoothed acceleration vector as approximately static. Default \code{0.1}.
+#' @param vertical.speed.threshold Non-negative absolute vertical-velocity threshold, in m/s,
+#'   for identifying approximately horizontal swimming periods. Default \code{0.5}.
+#' @param stable.horizontal.window Non-negative duration, in seconds, over which all observations
+#'   must meet the horizontal-swimming criterion. Default \code{10}. If the record is too short
+#'   or no stable interval is found, individual horizontal observations are used instead.
+#' @param g.value Expected acceleration magnitude under static conditions, in g. Default \code{1}.
+#' @param dba.window Non-negative centred rolling-mean window, in seconds, used to estimate
+#'   static acceleration. Default \code{2.5}.
+#' @param depth.smoothing,vertical.smoothing Non-negative centred smoothing windows, in seconds,
+#'   for depth and its derived vertical velocity. Defaults \code{10} and \code{1}, respectively.
+#'   \code{NULL} disables the corresponding smoothing step. The estimator is shared with
+#'   [processTagData()].
+#' @param tie.tolerance Non-negative numeric value retained in the API (default \code{2}).
+#'   The current gravity-anchored implementation does not use this argument to select candidates
+#'   or resolve axes; changing it does not alter the inferred mapping.
+#' @param use.dynamics Logical. Use diving dynamics to resolve the horizontal accelerometer
+#'   axes and run gyroscope, magnetometer and locomotor-power diagnostics. Default \code{TRUE}.
+#'   When \code{FALSE}, inference is restricted to gravity and posture evidence, which generally
+#'   leaves surge and sway ambiguous.
+#' @param dive.speed.threshold Non-negative minimum absolute vertical velocity, in m/s, for
+#'   samples used by the pitch--depth-rate correlation. Default \code{0.2}.
+#' @param max.vertical.speed Maximum absolute vertical velocity, in m/s, admitted to that
+#'   correlation (default \code{5}). Must exceed \code{dive.speed.threshold}. Faster samples
+#'   are omitted from the diagnostic as potentially implausible depth changes; sensor data are
+#'   not filtered by this argument.
+#' @param min.dynamic.corr Minimum correlation magnitude for accepting the pitch--depth-rate
+#'   anchor or the gyroscope tilt-rate estimator. Default \code{0.4}. Additional separation
+#'   and signal-availability criteria also apply; this is not a confidence probability.
+#' @param locomotor.band Numeric vector \code{c(low, high)} defining the frequency band, in Hz,
+#'   for locomotor-power corroboration. Default \code{c(0.2, 3)}. Choose a biologically relevant
+#'   band that the sampling rate can resolve, excluding known tether or housing oscillations.
+#' @param locomotor.axis Body axis expected to carry the largest locomotor-band power:
+#'   \code{"sway"} (default, lateral oscillation), \code{"heave"} (dorsoventral oscillation),
+#'   or \code{"surge"} (longitudinal oscillation). This diagnostic corroborates a candidate
+#'   but does not determine whether its axes are resolved.
+#' @param mag.hard.iron Logical. Estimate and apply a provisional spherical hard-iron offset
+#'   for the magnetometer dip diagnostic when orientation coverage is sufficient. Default
+#'   \code{TRUE}. This correction is diagnostic only; it is not saved as a calibration or applied
+#'   to the returned sensor data.
+#' @param plot Logical. Draw the diagnostic report on the active graphics device. Default
+#'   \code{FALSE}.
+#' @param plot.file Character. Path to a diagnostic PDF, or \code{NULL} (default). The report
+#'   contains a run-summary page followed by one page per evaluated deployment. Providing a path
+#'   writes the report independently of \code{plot}; the parent directory must exist.
+#' @param verbose How much detail to print: \code{0}/\code{"quiet"},
+#'   \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Normal output reports
+#'   deployment-level conclusions; detailed output adds diagnostic steps.
 #'
 #' @details
-#' The function evaluates the 24 handedness-preserving signed permutations of the raw axes (proper
-#' rotations, determinant +1; the 24 reflections are excluded because they flip handedness and would
-#' invert heading and cross-product quantities downstream). Each is scored from the accelerometer by:
-#' \enumerate{
-#'   \item Median absolute roll and pitch angles (should be near zero for horizontal posture)
-#'   \item Deviation of static Z-axis acceleration from expected gravity during static periods
-#' }
-#' Lower scores indicate better mappings; the function assumes animals spend significant time in
-#' horizontal postures (e.g. resting or steady swimming).
+#' ## Reference frames and input preparation
 #'
-#' \strong{Interpretation.} The gravity-based score reliably resolves the \emph{vertical}
-#' (dorsoventral) axis but cannot, on its own, distinguish the two horizontal axes (surge vs sway):
-#' several mappings tie. When \code{use.dynamics = TRUE}, the function then disambiguates the
-#' horizontal axes from diving dynamics - the correct surge axis is the one whose body pitch tracks
-#' vertical velocity during dives - and the proper-rotation constraint fixes the sway axis and sign;
-#' a tail-beat power check corroborates the sway axis. If there is insufficient diving signal (e.g.
-#' an animal that swims flat), the surge/sway assignment is reported as \emph{ambiguous} rather than
-#' guessed. The \code{resolution} and \code{confidence} elements make this explicit.
+#' Axis mapping establishes the relationship between recorded sensor axes and the longitudinal
+#' (X, surge), lateral (Y, sway) and dorsoventral (Z, heave) body axes used by [processTagData()].
+#' The model is a constant signed permutation: axis exchange and sign inversion, not an arbitrary
+#' three-dimensional rotation. Continuous mounting offsets are treated separately during processing.
 #'
-#' The gyroscope and magnetometer families are then resolved against the accelerometer body frame
-#' (see \code{families}). Across several deployments of one tag unit, pool the proposals with
-#' [consensusAxisMapping()]. Set \code{plot} / \code{plot.file} for a per-individual visual
-#' validation panel (depth-rate vs pitch, gravity partition over a dive, per-axis spectra, mag dip).
+#' Trim off-animal periods and inspect sensor integrity and quality before inference. A stationary
+#' tag on deck or a detached tag can provide gravity and posture evidence unrelated to the animal.
+#' Records with a processing history but no [filterDeploymentData()] step produce a warning.
+#' Inference on already remapped axes does not recover an absolute raw-to-body mapping.
 #'
-#' For tags whose metadata flags a magnetic paddle wheel (\code{tag$paddle_wheel = TRUE}), the
-#' magnetometer is pre-smoothed with a 3-second rolling mean before the dip diagnostic - mirroring the
-#' safeguard in [processTagData()] - so the spinning-magnet noise does not inflate the dip
-#' variance. Standard tags are unaffected.
+#' List names and file basenames supply the result identifiers. Keep them consistent with deployment
+#' IDs in the sensor data and video metadata. Use the canonical IMU column names throughout the
+#' four-function workflow: the application step recognises \code{ax/ay/az}, \code{gx/gy/gz} and
+#' \code{mx/my/mz}, and does not rename custom sensor columns automatically.
 #'
-#' \strong{Performance.} The axis resolution is entirely low-frequency (gravity loading, dive pitch,
-#' tilt-rate correlations, magnetic dip), so for high-rate tags it runs on a 1 Hz block-mean copy of
-#' the data (an anti-aliasing low-pass) rather than the full series - typically a 20-100x reduction in
-#' work with no effect on the result, which is a set of axis labels. Only the tail-beat corroboration
-#' keeps a higher-rate copy (decimated just enough to hold \code{locomotor.band} below Nyquist).
+#' ## Accelerometer evidence
 #'
-#' @seealso [applyAxisMapping()], [consensusAxisMapping()], [importTagData()]
+#' The search evaluates 24 proper-rotation signed permutations (determinant +1). For each candidate,
+#' smoothed acceleration provides a gravity-loading term and roll/pitch posture terms. The latter
+#' are median absolute angles for rigid mounts or median absolute deviations for towed or unknown
+#' mounts. Scores rank candidates for presentation; they are not statistical confidence measures.
+#'
+#' The vertical axis is anchored independently by its signed static gravity loading. Alternative
+#' vertical axes within \code{0.3 * g.value} of the strongest loading remain plausible. Horizontal
+#' axes are then assessed from the negative relationship between pitch and depth rate during
+#' diving: under the package convention, descending motion has positive vertical velocity and
+#' nose-down pitch is negative. Acceptance requires sufficient diving samples, correlation strength
+#' and separation from competing assignments. Sway is completed by the proper-rotation constraint.
+#'
+#' An axis is resolved only when every surviving candidate agrees on its source and sign. When
+#' vertical loading is ambiguous, diving evidence can narrow candidates within each plausible
+#' vertical frame without claiming to resolve heave. The accelerometer proposal remains empty
+#' until all three axes are resolved. Locomotor-band power is corroborative only.
+#'
+#' These are conditional biomechanical assumptions, not universal guarantees. Persistent tag tilt,
+#' towing motion, little depth variation, sensor gaps or movement unrelated to longitudinal swimming
+#' can leave the frame ambiguous or weaken the pitch--depth-rate relationship. Retain and inspect
+#' that uncertainty rather than treating the highest-ranked candidate as an established body frame.
+#'
+#' ## Gyroscope and magnetometer diagnostics
+#'
+#' Gyroscope inference starts from the shared-frame assumption: for accelerometer matrix \code{M},
+#' angular velocity transforms as \code{det(M) * M}. The extra determinant factor is required
+#' because angular velocity is an axial vector. The shared native sensor frame is a hardware
+#' assumption, assessed through the gravity-direction identity
+#' \code{d(ghat)/dt = -omega x ghat}.
+#'
+#' When this assumption is consistent with the data, or rotation is insufficient to reject it,
+#' the derived gyroscope mapping is retained. A decisive failure triggers independent tilt-rate and
+#' gravity-rotation estimators; disagreement leaves the gyroscope unresolved and is flagged for review.
+#' A resolved status with insufficient rotation is therefore not independent empirical confirmation.
+#'
+#' Magnetometer diagnostics test whether a candidate frame yields a sufficiently stable angle
+#' between gravity and the magnetic field. Magnetic dip cannot independently resolve heading axes.
+#' The common-frame mapping is tested rather than a full independent magnetometer frame being inferred.
+#' Deployment location and date, when available, provide an International Geomagnetic Reference Field
+#' (IGRF) inclination comparison through \pkg{oce}; an unavailable prediction remains \code{NA}.
+#' For tags marked \code{tag$paddle_wheel = TRUE}, magnetometer data are smoothed over three seconds
+#' before these diagnostics to reduce rotating-magnet interference.
+#'
+#' Family diagnostics can be reported for a representative ambiguous accelerometer frame, but gyro
+#' and magnetometer rows enter \code{proposal} only when the accelerometer frame is fully resolved.
+#' These checks do not replace [calibrateMagnetometer()] or establish a geographic heading reference.
+#'
+#' ## Documented configurations
+#'
+#' \code{frame_state$prior$status} is \code{"confirmed"} when the sole surviving accelerometer frame
+#' matches the documented configuration; \code{"consistent"} when it is one of several survivors;
+#' or \code{"conflict"} when it lies outside that set. A documented reflection (determinant -1)
+#' is reported as \code{"reflection"}, not a conflict: it is outside the proper-rotation search.
+#' Missing configurations are \code{"absent"} and non-permutation configurations are
+#' \code{"unverifiable"}.
+#'
+#' Explicit gyroscope and magnetometer configuration rows are assessed only when the documented
+#' accelerometer frame is confirmed and the corresponding inferred family mapping is available.
+#' Their statuses are \code{"confirmed"}, \code{"conflict"}, \code{"unverifiable"} or \code{"absent"}.
+#' Configuration conflicts are diagnostic; they never replace the data-derived proposal.
+#'
+#' ## Computation and unavailable records
+#'
+#' Low-frequency diagnostics use block-mean data at 1 Hz, or the native rate when lower. A separate,
+#' higher-rate copy is retained for locomotor-band power when dynamics are enabled. Sensor units are
+#' not converted here; optional gyroscope channels must be in rad/s and magnetometer channels must
+#' share consistent magnetic-field units, normally microtesla.
+#'
+#' Missing required channels, unreadable records, insufficient horizontal data or failed inference
+#' leave no entry in the returned mapping list. Skips and failures are reported, while other
+#' deployments continue; an entirely unsuccessful run returns an empty list. Structural argument
+#' errors and missing input paths can stop the call before deployment-level inference. A missing
+#' result is not an identity mapping and should not be interpreted as a verified frame.
+#'
+#' @return A named list with one element per successfully evaluated deployment, carrying the
+#'   \code{nautilus.mapping.producer} attribute. Each element contains:
+#'   \describe{
+#'     \item{\code{id}, \code{package_id}, \code{logger_id}, \code{tag}, \code{type}}{The result
+#'       identifier and metadata grouping keys; unavailable grouping values are \code{NA}.
+#'       \code{tag} is the tag model, not a sensor dataset.}
+#'     \item{\code{proposal}}{A data frame with \code{from} and \code{to} columns containing
+#'       complete, resolved sensor-family mappings for [applyAxisMapping()]. It is empty when
+#'       the accelerometer frame is unresolved, even if family diagnostics suggest a mapping.}
+#'     \item{\code{resolution}}{A data frame with \code{body_axis}, \code{status}, \code{source},
+#'       \code{sign} and \code{evidence}. Each body axis is \code{"resolved"} or \code{"ambiguous"};
+#'       unresolved source, sign and evidence values are \code{NA}.}
+#'     \item{\code{frame_state}}{The surviving candidate frames, vertical and surge evidence,
+#'       gyroscope co-registration result, documented-configuration statuses and conflict messages.
+#'       This is the deployment-level evidence used by [reviewTagMapping()].}
+#'     \item{\code{families}}{Gyroscope and magnetometer diagnostic lists, with \code{status}
+#'       (\code{"resolved"}, \code{"unresolved"}, \code{"inconsistent"} or
+#'       \code{"absent/insufficient"}) and a mapping where resolved. Additional fields record
+#'       correlation, dip variability, magnetic inclination and provisional hard-iron diagnostics
+#'       when available. Angular diagnostics are in degrees.}
+#'     \item{\code{confidence}}{Diagnostic summaries: score margin, candidate count, vertical/surge
+#'       resolution, surge correlation, number of dynamic samples, locomotor corroboration,
+#'       attachment site and an explanatory note. These are not probabilities of correctness.}
+#'     \item{\code{candidates}}{A data frame of surviving accelerometer frames, encoded by
+#'       \code{newX_col/newY_col/newZ_col}, their signs and a presentation score.}
+#'     \item{\code{all_results}}{The scored search table, ordered by increasing score. Posture
+#'       terms are in degrees and gravity loading is in g; the combined score is heuristic.}
+#'     \item{\code{metric_explanation}}{A character summary of the scoring methodology.}
+#'   }
+#'
+#' @seealso [importTagData()] for raw-axis data; [filterDeploymentData()] for deployment trimming;
+#'   [checkSensorIntegrity()] and [checkSensorQuality()] for sensor quality control;
+#'   [consensusAxisMapping()] for cross-deployment reconciliation; [reviewTagMapping()] for video
+#'   review; [applyAxisMapping()] for applying the selected mappings; [processTagData()] for
+#'   deriving body-frame metrics.
+#'
 #' @examples
 #' \dontrun{
-#' # Imported (raw-axis) deployments; infer the IMU axis orientation per tag
-#' files <- list.files("imported", pattern = "\\.rds$", full.names = TRUE)
-#' qc <- checkTagMapping(data = files, plot.file = "axis_qc.pdf")
-#' qc[[1]]$proposal      # best-scoring from/to mapping for the first deployment
+#' # Raw-axis records already trimmed and checked for sensor integrity.
+#' files <- list.files("./checked", pattern = "\\.rds$", full.names = TRUE)
+#' evidence <- checkTagMapping(files, plot.file = "./plots/axis_mapping.pdf")
+#' evidence[[1]]$resolution
+#' evidence[[1]]$proposal
 #'
-#' # Reconcile across deployments of one unit, then apply the mapping
-#' qc <- consensusAxisMapping(qc)
-#' oriented <- applyAxisMapping(data = files, mapping = qc)
+#' # Optional reconciliation across deployments of the same physical tag unit.
+#' reconciled <- consensusAxisMapping(evidence, group.by = "package_id")
+#' reconciled$provenance
+#'
+#' # Apply only after inspecting the evidence and any required video review.
+#' oriented <- applyAxisMapping(files, mapping = reconciled)
+#'
+#' # Dorsoventral propulsion: change the corroborating axis, not the frame convention.
+#' evidence <- checkTagMapping(files, locomotor.axis = "heave")
 #' }
 #' @export
 
