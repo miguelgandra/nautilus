@@ -166,7 +166,8 @@
 #' depth studies of marine endotherms. *Polar Biology* 15:575-581. \doi{10.1007/BF00239649}
 #'
 #' @seealso [diveControl()] for detection and phase settings; [diveMetrics()] for per-dive
-#'   summaries; [plotDepthProfiles()] for annotated depth traces; [plotDives()] for per-dive
+#'   summaries and optional shape classification; [diveShapeControl()] for shape criteria;
+#'   [plotDepthProfiles()] for annotated depth traces; [plotDives()] for per-dive
 #'   distributions; [processTagData()] for depth correction and preprocessing.
 #'
 #' @examples

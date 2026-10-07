@@ -77,6 +77,11 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
   separated by a sensor blackout are not read as one long surface interval. Any per-sample channel can be
   summarised per dive (optionally per phase) through `variables`, with circular handling for headings
   and roll.
+* `diveMetrics(shape = diveShapeControl())` optionally classifies complete, resolved depth profiles as
+  V, U, W or other using normalised profile broadness and prominent internal excursions. The output
+  includes geometric descriptors and diagnostic statuses; censored or unsupported profiles remain
+  unclassified. Shape controls are explicit, taxon-agnostic heuristics and do not change dive detection
+  or phase annotations.
 * `plotDives()` compares deployments on those metrics: every dive is a point in its deployment's column,
   with a median and interquartile marker over it, one panel per metric. It deliberately does not draw a
   bar of per-individual maxima -- a bar reads magnitude from a zero that does not exist when dives are

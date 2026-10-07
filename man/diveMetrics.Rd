@@ -13,7 +13,8 @@ diveMetrics(
   id.col = "ID",
   datetime.col = "datetime",
   depth.col = "depth",
-  verbose = "detailed"
+  verbose = "detailed",
+  shape = NULL
 )
 }
 \arguments{
@@ -55,6 +56,11 @@ Default \code{"depth"}.}
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"},
 \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Detailed output
 adds phase-support, censoring and unusually long-dive diagnostics.}
+
+\item{shape}{Optional control object from \code{\link[=diveShapeControl]{diveShapeControl()}} enabling geometric V-, U-
+and W-shaped profile classification. A named list of constructor arguments is also accepted.
+\code{NULL} (default) disables classification and preserves the existing metric schema.
+Shape rules do not alter dive boundaries, phase labels or the original depth channel.}
 }
 \value{
 A data frame of class \code{nautilus_dive_metrics}, with one row per positive
@@ -92,6 +98,27 @@ and logical \code{shape_supported}. See Details for their distinct interpretatio
 }
 Dive durations and intervals are in seconds, depth quantities in metres, and phase/channel
 means and standard deviations retain their source units. An empty result preserves the schema.
+With shape classification enabled, five columns are added before channel summaries:
+\describe{
+\item{\code{dive_shape}}{Character: \code{"V"}, \code{"U"}, \code{"W"},
+\code{"other"}, or \code{NA} when classification abstains.}
+\item{\code{dive_shape_status}}{Character. \code{"classified"} for V/U/W,
+\code{"intermediate"} for a single peak between broadness thresholds, or
+\code{"complex_profile"} for substantial movement below the endpoint chord.
+Abstention reasons are \code{"censored"}, \code{"noncontiguous"},
+\code{"invalid_time"}, \code{"missing_reference"}, \code{"low_coverage"},
+\code{"gap"}, \code{"insufficient_samples"}, \code{"insufficient_resolution"},
+\code{"insufficient_limbs"} or \code{"ambiguous_direction"}.}
+\item{\code{shape_broadness}}{Numeric normalised profile area on \code{[0, 1]},
+not a proportion of bottom-phase samples.}
+\item{\code{shape_n_peaks}}{Integer number of qualifying peaks, including the main
+excursion peak, after prominence and separation screening.}
+\item{\code{shape_prominence_m}}{Numeric effective rise/fall criterion in metres,
+including the relative, absolute, noise and quantisation floors.}
+}
+Descriptors are \code{NA} when preparation abstains before they can be calculated.
+The \code{shape_classification} attribute records the method \code{"profile_rules"},
+algorithm version and validated control settings, including on zero-row results.
 }
 \description{
 Reduces deployment datasets annotated by \code{\link[=detectDives]{detectDives()}} to one row per retained dive.
@@ -213,6 +240,35 @@ No attenuation correction is applied. Reprocess at finer resolution when binning
 the excursions required for the analysis.
 }
 
+\subsection{Optional geometric shape classification}{
+
+Supply \code{shape = diveShapeControl()} to classify the retained timestamped depth profiles,
+independently of \code{phase_structure}, \code{shape_supported} and \code{n_reversals}.
+Profiles are oriented relative to their depth reference, smoothed only for classification,
+and detrended against the line joining their endpoints after checking that both transit
+limbs were observed. Time-weighted normalised area measures broadness; amplitude-filtered
+and temporally separated peaks identify significant internal excursions.
+
+Two or more qualifying peaks define \code{"W"}. A single peak defines \code{"V"} or
+\code{"U"} according to the broadness thresholds. Intermediate or complex profiles are
+\code{"other"}, not forced into one of the three classes. Unsuitable records receive
+\code{NA} with a diagnostic status. Default thresholds are heuristic starting points,
+not universally validated biological definitions. See \code{\link[=diveShapeControl]{diveShapeControl()}} for the full
+preparation, resolution floors and decision rules.
+
+Shape classification does not redefine \code{shape_supported}, which remains an indicator
+of resolved phase durations. Censored dives are not classified. Additional quality checks
+concern chronological timestamps, contiguous identifiers, reference availability, finite-depth
+coverage, gaps, sample count, excursion relief and observed limbs. Short bracketed gaps can
+be interpolated for classification only; neither missing endpoints nor long gaps are bridged.
+
+The classes describe geometry, not independently established foraging or movement behaviour.
+Detection thresholds and sampling resolution affect the retained shape. Optional prominence
+splitting in \code{\link[=detectDives]{detectDives()}} can turn a W-shaped excursion into separate dives; classification
+respects those boundaries and does not join fragments. Validate thresholds against reviewed
+profiles and assess sensitivity before using classes in scientific analyses.
+}
+
 \subsection{Additional channel summaries}{
 
 Linear variables produce \code{<variable>_mean} and/or \code{<variable>_sd}, according to
@@ -234,7 +290,8 @@ handling is used: an empty or entirely missing subset can yield \code{NaN} for i
 and fewer than two observations yield \code{NA} for its standard deviation. Use
 \code{is.na()} to recognise both \code{NA} and \code{NaN}. Infinite linear values are not
 automatically removed. Tables share the same columns when \code{variables},
-\code{circular.variables}, \code{statistics} and \code{by.phase} are identical.
+\code{circular.variables}, \code{statistics}, \code{by.phase} and whether shape classification
+is enabled are identical.
 }
 }
 \examples{
@@ -245,8 +302,11 @@ dives <- detectDives(
   control = diveControl(depth.threshold = 5, surface.band = 1, min.duration = 20)
 )
 metrics <- diveMetrics(
-  dives, variables = c("temp", "vedba", "heading"), by.phase = TRUE
+  dives, variables = c("temp", "vedba", "heading"), by.phase = TRUE,
+  shape = diveShapeControl()
 )
+table(metrics$dive_shape, useNA = "ifany")
+table(metrics$dive_shape_status)
 
 # Select uncensored observations; choose a coverage criterion for the study
 observed <- subset(metrics, complete & depth_coverage >= 0.95)
@@ -260,6 +320,7 @@ intervals <- subset(
 }
 \seealso{
 \code{\link[=detectDives]{detectDives()}} for sample-level annotation; \code{\link[=diveControl]{diveControl()}} for detection and
-phase criteria; \code{\link[=plotDives]{plotDives()}} for per-dive plots; \code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for source profiles;
+phase criteria; \code{\link[=diveShapeControl]{diveShapeControl()}} for optional geometric classification;
+\code{\link[=plotDives]{plotDives()}} for per-dive plots; \code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for source profiles;
 \code{\link[=summarizeTagData]{summarizeTagData()}} for deployment-level summaries.
 }

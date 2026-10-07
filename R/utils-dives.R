@@ -955,7 +955,7 @@
 #' The empty table with the full fixed schema, so a zero-dive run still rbinds with a non-empty one.
 #' @keywords internal
 #' @noRd
-.diveMetricsSchema <- function(variables, circular.variables, statistics, by.phase) {
+.diveMetricsSchema <- function(variables, circular.variables, statistics, by.phase, shape = NULL) {
   base <- data.frame(
     ID = character(0), dive_id = integer(0),
     start = as.POSIXct(character(0)), end = as.POSIXct(character(0)),
@@ -976,6 +976,13 @@
     n_gaps = integer(0), gap_s = numeric(0), censoring = character(0),
     depth_attenuation = numeric(0),
     depth_coverage = numeric(0), shape_supported = logical(0), stringsAsFactors = FALSE)
+  if (!is.null(shape)) {
+    base$dive_shape <- character(0)
+    base$dive_shape_status <- character(0)
+    base$shape_broadness <- numeric(0)
+    base$shape_n_peaks <- integer(0)
+    base$shape_prominence_m <- numeric(0)
+  }
   for (v in variables) {
     circ <- v %in% circular.variables
     nms <- if (circ) c(paste0(v, "_mean_angle"), paste0(v, "_mrl"))
@@ -1067,10 +1074,10 @@
 #' @keywords internal
 #' @noRd
 .diveMetricsOne <- function(x, id, datetime.col, depth.col, variables, circular.variables,
-                            statistics, by.phase) {
+                            statistics, by.phase, shape = NULL) {
   did <- x[["dive_id"]]
   if (!any(did > 0, na.rm = TRUE))
-    return(.diveMetricsSchema(variables, circular.variables, statistics, by.phase))
+    return(.diveMetricsSchema(variables, circular.variables, statistics, by.phase, shape))
 
   tnum <- .asTimeSeconds(x[[datetime.col]])
   tpos <- x[[datetime.col]]
@@ -1078,6 +1085,7 @@
   b <- if ("depth_baseline" %in% names(x)) .asNumericSafe(x[["depth_baseline"]]) else rep(0, nrow(x))
   ph <- as.character(x[["dive_phase"]])
   n_total <- nrow(x)
+  shape_resolution <- if (!is.null(shape)) .diveShapeResolution(d) else NULL
 
   # provenance: the settings that produced these dives travel with every row
   pr <- Filter(function(r) identical(r$step, "detectDives"), .getMeta(x)$processing)
@@ -1199,6 +1207,14 @@
       depth_coverage = mean(is.finite(dd)),
       shape_supported = shape_ok,
       stringsAsFactors = FALSE)
+
+    if (!is.null(shape)) {
+      classification <- .classifyDiveShapeOne(
+        dd, b[idx], tt, p$direction, row$complete, shape,
+        resolution = shape_resolution, contiguous = length(idx) == i1 - i0 + 1L
+      )
+      for (nm in names(classification)) row[[nm]] <- classification[[nm]]
+    }
 
     for (v in variables) {
       circ <- v %in% circular.variables

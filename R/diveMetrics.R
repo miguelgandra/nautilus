@@ -45,6 +45,10 @@
 #' @param verbose How much detail to print: \code{0}/\code{"quiet"},
 #'   \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"} (default). Detailed output
 #'   adds phase-support, censoring and unusually long-dive diagnostics.
+#' @param shape Optional control object from [diveShapeControl()] enabling geometric V-, U-
+#'   and W-shaped profile classification. A named list of constructor arguments is also accepted.
+#'   \code{NULL} (default) disables classification and preserves the existing metric schema.
+#'   Shape rules do not alter dive boundaries, phase labels or the original depth channel.
 #'
 #' @details
 #' ## Workflow and input assumptions
@@ -150,6 +154,34 @@
 #' No attenuation correction is applied. Reprocess at finer resolution when binning compromises
 #' the excursions required for the analysis.
 #'
+#' ## Optional geometric shape classification
+#'
+#' Supply \code{shape = diveShapeControl()} to classify the retained timestamped depth profiles,
+#' independently of \code{phase_structure}, \code{shape_supported} and \code{n_reversals}.
+#' Profiles are oriented relative to their depth reference, smoothed only for classification,
+#' and detrended against the line joining their endpoints after checking that both transit
+#' limbs were observed. Time-weighted normalised area measures broadness; amplitude-filtered
+#' and temporally separated peaks identify significant internal excursions.
+#'
+#' Two or more qualifying peaks define \code{"W"}. A single peak defines \code{"V"} or
+#' \code{"U"} according to the broadness thresholds. Intermediate or complex profiles are
+#' \code{"other"}, not forced into one of the three classes. Unsuitable records receive
+#' \code{NA} with a diagnostic status. Default thresholds are heuristic starting points,
+#' not universally validated biological definitions. See [diveShapeControl()] for the full
+#' preparation, resolution floors and decision rules.
+#'
+#' Shape classification does not redefine \code{shape_supported}, which remains an indicator
+#' of resolved phase durations. Censored dives are not classified. Additional quality checks
+#' concern chronological timestamps, contiguous identifiers, reference availability, finite-depth
+#' coverage, gaps, sample count, excursion relief and observed limbs. Short bracketed gaps can
+#' be interpolated for classification only; neither missing endpoints nor long gaps are bridged.
+#'
+#' The classes describe geometry, not independently established foraging or movement behaviour.
+#' Detection thresholds and sampling resolution affect the retained shape. Optional prominence
+#' splitting in [detectDives()] can turn a W-shaped excursion into separate dives; classification
+#' respects those boundaries and does not join fragments. Validate thresholds against reviewed
+#' profiles and assess sensitivity before using classes in scientific analyses.
+#'
 #' ## Additional channel summaries
 #'
 #' Linear variables produce \code{<variable>_mean} and/or \code{<variable>_sd}, according to
@@ -171,7 +203,8 @@
 #' and fewer than two observations yield \code{NA} for its standard deviation. Use
 #' \code{is.na()} to recognise both \code{NA} and \code{NaN}. Infinite linear values are not
 #' automatically removed. Tables share the same columns when \code{variables},
-#' \code{circular.variables}, \code{statistics} and \code{by.phase} are identical.
+#' \code{circular.variables}, \code{statistics}, \code{by.phase} and whether shape classification
+#' is enabled are identical.
 #'
 #' @return A data frame of class \code{nautilus_dive_metrics}, with one row per positive
 #'   dive identifier and a fixed core schema followed by requested channel summaries.
@@ -208,9 +241,31 @@
 #'   }
 #'   Dive durations and intervals are in seconds, depth quantities in metres, and phase/channel
 #'   means and standard deviations retain their source units. An empty result preserves the schema.
+#'   With shape classification enabled, five columns are added before channel summaries:
+#'   \describe{
+#'     \item{\code{dive_shape}}{Character: \code{"V"}, \code{"U"}, \code{"W"},
+#'       \code{"other"}, or \code{NA} when classification abstains.}
+#'     \item{\code{dive_shape_status}}{Character. \code{"classified"} for V/U/W,
+#'       \code{"intermediate"} for a single peak between broadness thresholds, or
+#'       \code{"complex_profile"} for substantial movement below the endpoint chord.
+#'       Abstention reasons are \code{"censored"}, \code{"noncontiguous"},
+#'       \code{"invalid_time"}, \code{"missing_reference"}, \code{"low_coverage"},
+#'       \code{"gap"}, \code{"insufficient_samples"}, \code{"insufficient_resolution"},
+#'       \code{"insufficient_limbs"} or \code{"ambiguous_direction"}.}
+#'     \item{\code{shape_broadness}}{Numeric normalised profile area on \code{[0, 1]},
+#'       not a proportion of bottom-phase samples.}
+#'     \item{\code{shape_n_peaks}}{Integer number of qualifying peaks, including the main
+#'       excursion peak, after prominence and separation screening.}
+#'     \item{\code{shape_prominence_m}}{Numeric effective rise/fall criterion in metres,
+#'       including the relative, absolute, noise and quantisation floors.}
+#'   }
+#'   Descriptors are \code{NA} when preparation abstains before they can be calculated.
+#'   The \code{shape_classification} attribute records the method \code{"profile_rules"},
+#'   algorithm version and validated control settings, including on zero-row results.
 #'
 #' @seealso [detectDives()] for sample-level annotation; [diveControl()] for detection and
-#'   phase criteria; [plotDives()] for per-dive plots; [plotDepthProfiles()] for source profiles;
+#'   phase criteria; [diveShapeControl()] for optional geometric classification;
+#'   [plotDives()] for per-dive plots; [plotDepthProfiles()] for source profiles;
 #'   [summarizeTagData()] for deployment-level summaries.
 #'
 #' @examples
@@ -221,8 +276,11 @@
 #'   control = diveControl(depth.threshold = 5, surface.band = 1, min.duration = 20)
 #' )
 #' metrics <- diveMetrics(
-#'   dives, variables = c("temp", "vedba", "heading"), by.phase = TRUE
+#'   dives, variables = c("temp", "vedba", "heading"), by.phase = TRUE,
+#'   shape = diveShapeControl()
 #' )
+#' table(metrics$dive_shape, useNA = "ifany")
+#' table(metrics$dive_shape_status)
 #'
 #' # Select uncensored observations; choose a coverage criterion for the study
 #' observed <- subset(metrics, complete & depth_coverage >= 0.95)
@@ -243,7 +301,8 @@ diveMetrics <- function(data,
                         id.col             = "ID",
                         datetime.col       = "datetime",
                         depth.col          = "depth",
-                        verbose            = "detailed") {
+                        verbose            = "detailed",
+                        shape              = NULL) {
 
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
@@ -251,6 +310,8 @@ diveMetrics <- function(data,
   .assert_flag(by.phase, "by.phase")
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   .assert_string(depth.col, "depth.col")
+  if (!is.null(shape))
+    shape <- .as_control(shape, diveShapeControl, "nautilus_dive_shape", "shape")
   if (!is.null(variables) && (!is.character(variables) || !length(variables)))
     .abort("{.arg variables} must be a non-empty character vector of column names, or {.code NULL}.")
   if (!is.null(circular.variables) && !is.character(circular.variables))
@@ -282,7 +343,7 @@ diveMetrics <- function(data,
       n_missing <- n_missing + 1L; next
     }
     r <- .diveMetricsOne(x, id, datetime.col, depth.col, variables, circular.variables,
-                         statistics, by.phase)
+                         statistics, by.phase, shape)
     if (!is.null(r) && nrow(r)) { rows[[length(rows) + 1L]] <- r; n_dep <- n_dep + 1L }
   }
   .log_progress_done(pb)
@@ -298,8 +359,9 @@ diveMetrics <- function(data,
       .log_summary(lvl); .log_done(lvl, 0L, " dives summarised")
       .log_runtime(lvl, start.time)
     }
-    return(structure(.diveMetricsSchema(variables, circular.variables, statistics, by.phase),
-                     class = c("nautilus_dive_metrics", "data.frame")))
+    return(.diveShapeResult(
+      .diveMetricsSchema(variables, circular.variables, statistics, by.phase, shape), shape
+    ))
   }
   out <- do.call(rbind, rows); rownames(out) <- NULL
 
@@ -311,6 +373,17 @@ diveMetrics <- function(data,
     .log_arrow(lvl, sprintf("phase structure resolved for %s of %s dive%s",
                             format(ok, big.mark = ","), format(nrow(out), big.mark = ","),
                             if (nrow(out) != 1) "s" else ""))
+    if (!is.null(shape)) {
+      n_classified <- sum(out$dive_shape_status == "classified")
+      .log_arrow(lvl, sprintf("V/U/W shapes classified for %d of %d dives", n_classified, nrow(out)))
+      counts <- table(out$dive_shape, useNA = "no")
+      if (length(counts))
+        .log_detail(lvl, paste(sprintf("%s: %d", names(counts), as.integer(counts)), collapse = " \u00b7 "))
+      reasons <- table(out$dive_shape_status[out$dive_shape_status != "classified"])
+      if (length(reasons))
+        .log_detail(lvl, paste("shape diagnostics:",
+                              paste(sprintf("%s: %d", names(reasons), as.integer(reasons)), collapse = " \u00b7 ")))
+    }
     if (length(unique(out$reference)) > 1)
       .log_detail(lvl, sprintf("mixed reference across the cohort: %s",
                                paste(sprintf("%s x%d", names(table(out$reference)),
@@ -338,5 +411,5 @@ diveMetrics <- function(data,
                                n_trunc, n_gapped))
     .log_runtime(lvl, start.time)
   }
-  structure(out, class = c("nautilus_dive_metrics", "data.frame"))
+  .diveShapeResult(out, shape)
 }

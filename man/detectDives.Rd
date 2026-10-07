@@ -220,6 +220,7 @@ depth studies of marine endotherms. \emph{Polar Biology} 15:575-581. \doi{10.100
 }
 \seealso{
 \code{\link[=diveControl]{diveControl()}} for detection and phase settings; \code{\link[=diveMetrics]{diveMetrics()}} for per-dive
-summaries; \code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for annotated depth traces; \code{\link[=plotDives]{plotDives()}} for per-dive
+summaries and optional shape classification; \code{\link[=diveShapeControl]{diveShapeControl()}} for shape criteria;
+\code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for annotated depth traces; \code{\link[=plotDives]{plotDives()}} for per-dive
 distributions; \code{\link[=processTagData]{processTagData()}} for depth correction and preprocessing.
 }

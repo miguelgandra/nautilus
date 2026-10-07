@@ -253,6 +253,7 @@ diveControl(depth.threshold = 5, min.prominence = 10)
 }
 \seealso{
 \code{\link[=detectDives]{detectDives()}} for sample-level annotation; \code{\link[=diveMetrics]{diveMetrics()}} for per-dive metrics
-and quality diagnostics; \code{\link[=processTagData]{processTagData()}} for depth correction and sampling provenance;
+and quality diagnostics; \code{\link[=diveShapeControl]{diveShapeControl()}} for geometric classification, separate from
+detection and phase assignment; \code{\link[=processTagData]{processTagData()}} for depth correction and sampling provenance;
 \code{\link[=depthDriftControl]{depthDriftControl()}} for depth-zero correction settings.
 }

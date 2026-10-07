@@ -68,9 +68,9 @@ print(processed_files)
 #                into many and the dive count becomes a property of the pressure transducer.
 #
 # Whale sharks surface regularly, so "auto" will generally resolve to a surface reference. We set an
-# explicit 5 m threshold rather than letting it derive: a derived threshold is the smallest excursion
-# the RECORD can support, which is a property of the instrument, not of the animal. Choose yours from
-# the study system - and choose it before looking at your response variable.
+# explicit 10 m threshold rather than letting it derive. Derived settings are processing heuristics,
+# not biological definitions or guarantees of sensor resolution. Choose yours from the study system,
+# and choose them before looking at your response variable.
 
 dive_settings <- diveControl(
   reference       = "auto",   # resolve per deployment; the choice is reported and stored
@@ -85,8 +85,9 @@ dive_settings <- diveControl(
 # On min.prominence: left NULL, a deep excursion with a partial re-ascent in the middle is reported
 # whole, however many sub-peaks it contains. That is deliberate - splitting is an interpretive act,
 # and a 50 m dive with a 5 m re-ascent halfway is probably one dive. Set a number (in metres) to opt
-# in. Either way the prominence is reported per dive as `prominence_m`, so you can see what splitting
-# WOULD do before choosing to do it.
+# in. `prominence_m` instead describes the peak relative to the retained endpoints; it is not the
+# interior-saddle criterion for splitting. Keeping excursions whole allows the optional shape
+# classifier below to identify W-shaped profiles without first splitting them into separate dives.
 
 ################################################################################
 # STEP 2. Detect the dives                                                     #
@@ -130,6 +131,19 @@ detectDives(data          = processed_files,
 #
 # Angles need circular statistics (the mean of 350 and 10 degrees is 0, not 180), so heading and roll
 # are handled separately and reported as a mean angle plus a mean resultant length.
+#
+# Shape classification is a separate, opt-in geometric interpretation. The defaults below are
+# heuristic starting points, not validated whale-shark cutoffs. Review depth profiles and evaluate
+# threshold sensitivity before using these classes in a manuscript.
+
+shape_settings <- diveShapeControl(
+  v.max.broadness      = 0.60,  # normalised time-weighted profile area, not bottom-phase fraction
+  u.min.broadness      = 0.75,  # intermediate single-peak profiles remain "other"
+  peak.prominence     = 0.10,  # minimum rise/fall relative to the prepared excursion height
+  min.peak.amplitude  = 0.5,   # absolute floor in metres; noise/resolution floors also apply
+  min.peak.separation = 5,     # seconds; at least two sampling intervals are required
+  smooth.window       = 3,     # seconds; used for classification only
+  min.coverage        = 0.95)
 
 
 dive_metrics <- diveMetrics(data               = list.files("./data interim/07_dives", full.names = TRUE),
@@ -137,11 +151,13 @@ dive_metrics <- diveMetrics(data               = list.files("./data interim/07_d
                             circular.variables = c("heading", "roll"),
                             statistics         = c("mean", "sd"),
                             by.phase           = TRUE,   # also summarise within descent/bottom/ascent
+                            shape              = shape_settings,  # omit or use NULL to disable
                             verbose            = "detailed")
 
 # by.phase = TRUE is what lets you ask whether effort differs between descent and ascent - a natural
 # question for a negatively buoyant animal, and one the whole-dive mean cannot answer. It costs
-# columns: each variable adds 2 without it and 8 with it.
+# columns: at the default statistics each linear variable adds 2 without it and 8 with it.
+# Circular variables add 2 whole-dive columns, or 5 with phase summaries.
 
 nrow(dive_metrics)
 head(dive_metrics[, c("ID", "dive_id", "start", "duration_s", "max_depth_m", "amplitude_m")])
@@ -150,6 +166,23 @@ head(dive_metrics[, c("ID", "dive_id", "start", "duration_s", "max_depth_m", "am
 # per-phase versions alongside them (vedba_descent_mean, vedba_bottom_mean, vedba_ascent_mean), and
 # the circular ones as a mean angle plus a resultant length (heading_mean_angle, heading_mrl).
 grep("^vedba|^heading", names(dive_metrics), value = TRUE)
+
+# Shapes use the retained depth profiles, independently of descent/bottom/ascent labels:
+#   V = a narrow single-peak excursion
+#   U = a broad single-peak excursion
+#   W = two or more significant, separated peaks
+#   other = an intermediate or complex profile that is not forced into those classes
+#   NA = an unsuitable record, with the reason given in dive_shape_status
+# These are morphological labels, not automatic evidence of foraging, resting or transit.
+table(dive_metrics$dive_shape, useNA = "ifany")
+table(dive_metrics$dive_shape_status)
+head(dive_metrics[, c("ID", "dive_id", "dive_shape", "dive_shape_status",
+                     "shape_broadness", "shape_n_peaks", "shape_prominence_m")])
+
+# The effective prominence threshold is recorded per dive; the method, algorithm version and
+# chosen settings travel with the table. Keep this contract when exporting just a CSV, since
+# CSV files do not retain R attributes. Censored/low-resolution profiles remain unclassified.
+attr(dive_metrics, "shape_classification")
 
 ################################################################################
 # STEP 4. Read the quality block before analysing anything                     #
