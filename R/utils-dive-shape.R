@@ -142,6 +142,10 @@
   z <- r - chord
   amplitude <- max(z)
   if (amplitude <= resolution) return(abstain("insufficient_resolution"))
+  # Study-scale eligibility is separate from sensor resolution and internal-peak prominence.
+  # Use the same prepared height that normalises broadness, not absolute depth or the raw range.
+  if (!is.null(control$min.excursion.amplitude) && amplitude < control$min.excursion.amplitude)
+    return(abstain("below_min_amplitude"))
   # Substantial movement below the endpoint chord is a complex profile, not a folded excursion.
   if (-min(z) > max(resolution, control$max.opposite.prop * amplitude)) {
     out$dive_shape <- "other"

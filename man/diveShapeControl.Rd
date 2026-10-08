@@ -15,7 +15,8 @@ diveShapeControl(
   max.gap = NULL,
   min.samples = 20L,
   min.limb.prop = 0.2,
-  max.opposite.prop = 0.2
+  max.opposite.prop = 0.2,
+  min.excursion.amplitude = NULL
 )
 }
 \arguments{
@@ -66,6 +67,14 @@ departure as a fraction of the dominant departure when inferring direction, and 
 prepared height when checking movement below the endpoint chord. Default \code{0.20}.
 The effective tolerance is at least the resolution floor. Larger opposing departures
 cause direction abstention or an \code{"other"} complex-profile classification.}
+
+\item{min.excursion.amplitude}{Optional non-negative numeric minimum prepared profile
+height in metres for shape classification. \code{NULL} (default) or zero disables this
+additional eligibility threshold; technical resolution requirements still apply.
+Height is the maximum positive departure of the smoothed, direction-oriented,
+reference-relative profile from the line joining its endpoints. Equality is eligible.
+Profiles below the threshold receive \code{NA} with status \code{"below_min_amplitude"};
+dive rows, other metrics, source depth and detection boundaries are retained.}
 }
 \value{
 A named list of class \code{nautilus_dive_shape} containing validated settings.
@@ -124,6 +133,17 @@ increasing, and the reference must be finite. Even with complete coverage, an un
 opening or return limb causes abstention. There is no forced V/U/W assignment or estimated
 probability of class membership.
 
+\code{min.excursion.amplitude} optionally limits shape classification to a study-specific
+vertical scale, independently of the internal-peak criterion \code{min.peak.amplitude}.
+It is checked after technical resolution and observed-limb requirements, but before
+broadness and peaks are calculated. It is not an absolute-depth cutoff, the raw depth
+range, or the \code{amplitude_m} returned by \code{\link[=diveMetrics]{diveMetrics()}}. Unlike
+\code{diveControl(min.amplitude = ...)}, it does not remove detected dives.
+Small excursions may be genuine behaviour; withholding their shape is an analytical
+eligibility decision, not evidence of sensor failure. There is no universal ecological
+amplitude threshold. Select one using reviewed profiles, instrument resolution and the
+study question, and report unclassified counts alongside shape proportions.
+
 Rules classify the intervals retained by \code{\link[=detectDives]{detectDives()}}, not an inferred full dive.
 Detection thresholds crop the profile, and downsampling or smoothing can remove narrow
 peaks. In particular, prominence splitting during detection can turn one W-shaped excursion
@@ -142,6 +162,9 @@ diveShapeControl(
   min.peak.amplitude = 1, min.peak.separation = 10,
   smooth.window = 2, max.gap = 5
 )
+
+# An illustrative study-specific eligibility threshold, not a universal recommendation
+diveShapeControl(min.excursion.amplitude = 10)
 }
 \seealso{
 \code{\link[=diveMetrics]{diveMetrics()}} for optional classification and output definitions;

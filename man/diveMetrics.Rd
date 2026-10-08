@@ -108,7 +108,9 @@ With shape classification enabled, five columns are added before channel summari
 Abstention reasons are \code{"censored"}, \code{"noncontiguous"},
 \code{"invalid_time"}, \code{"missing_reference"}, \code{"low_coverage"},
 \code{"gap"}, \code{"insufficient_samples"}, \code{"insufficient_resolution"},
-\code{"insufficient_limbs"} or \code{"ambiguous_direction"}.}
+\code{"insufficient_limbs"}, \code{"ambiguous_direction"} or
+\code{"below_min_amplitude"}. The last is study-scale ineligibility, not a
+sensor-quality failure. Technical failures take precedence when both apply.}
 \item{\code{shape_broadness}}{Numeric normalised profile area on \code{[0, 1]},
 not a proportion of bottom-phase samples.}
 \item{\code{shape_n_peaks}}{Integer number of qualifying peaks, including the main
@@ -261,6 +263,14 @@ of resolved phase durations. Censored dives are not classified. Additional quali
 concern chronological timestamps, contiguous identifiers, reference availability, finite-depth
 coverage, gaps, sample count, excursion relief and observed limbs. Short bracketed gaps can
 be interpolated for classification only; neither missing endpoints nor long gaps are bridged.
+
+Set \code{min.excursion.amplitude} in \code{\link[=diveShapeControl]{diveShapeControl()}} to withhold shape labels below
+a study-specific prepared profile height in metres. This optional threshold is applied
+after smoothing and endpoint detrending; it is not \code{max_depth_m} or \code{amplitude_m}.
+Below-threshold dives retain their rows and all non-shape metrics, with \code{NA} shape
+descriptors and status \code{"below_min_amplitude"}. It does not change dive detection
+or the internal-peak prominence criterion. Report shape proportions with their eligible
+denominator and the counts of intermediate and unclassified profiles.
 
 The classes describe geometry, not independently established foraging or movement behaviour.
 Detection thresholds and sampling resolution affect the retained shape. Optional prominence

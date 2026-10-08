@@ -82,6 +82,10 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
   includes geometric descriptors and diagnostic statuses; censored or unsupported profiles remain
   unclassified. Shape controls are explicit, taxon-agnostic heuristics and do not change dive detection
   or phase annotations.
+* `diveShapeControl(min.excursion.amplitude = ...)` optionally withholds shape labels below a
+  study-specific prepared profile height in metres. These dives retain all non-shape metrics and
+  receive `NA` shapes with status `"below_min_amplitude"`; the default `NULL` preserves existing
+  classifications. Eligibility is separate from dive detection and internal-peak prominence.
 * `plotDives()` compares deployments on those metrics: every dive is a point in its deployment's column,
   with a median and interquartile marker over it, one panel per metric. It deliberately does not draw a
   bar of per-individual maxima -- a bar reads magnitude from a zero that does not exist when dives are

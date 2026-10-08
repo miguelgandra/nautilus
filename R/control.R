@@ -1442,6 +1442,13 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #'   prepared height when checking movement below the endpoint chord. Default \code{0.20}.
 #'   The effective tolerance is at least the resolution floor. Larger opposing departures
 #'   cause direction abstention or an \code{"other"} complex-profile classification.
+#' @param min.excursion.amplitude Optional non-negative numeric minimum prepared profile
+#'   height in metres for shape classification. \code{NULL} (default) or zero disables this
+#'   additional eligibility threshold; technical resolution requirements still apply.
+#'   Height is the maximum positive departure of the smoothed, direction-oriented,
+#'   reference-relative profile from the line joining its endpoints. Equality is eligible.
+#'   Profiles below the threshold receive \code{NA} with status \code{"below_min_amplitude"};
+#'   dive rows, other metrics, source depth and detection boundaries are retained.
 #'
 #' @details
 #' ## Profile preparation and broadness
@@ -1484,6 +1491,17 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #' opening or return limb causes abstention. There is no forced V/U/W assignment or estimated
 #' probability of class membership.
 #'
+#' \code{min.excursion.amplitude} optionally limits shape classification to a study-specific
+#' vertical scale, independently of the internal-peak criterion \code{min.peak.amplitude}.
+#' It is checked after technical resolution and observed-limb requirements, but before
+#' broadness and peaks are calculated. It is not an absolute-depth cutoff, the raw depth
+#' range, or the \code{amplitude_m} returned by [diveMetrics()]. Unlike
+#' \code{diveControl(min.amplitude = ...)}, it does not remove detected dives.
+#' Small excursions may be genuine behaviour; withholding their shape is an analytical
+#' eligibility decision, not evidence of sensor failure. There is no universal ecological
+#' amplitude threshold. Select one using reviewed profiles, instrument resolution and the
+#' study question, and report unclassified counts alongside shape proportions.
+#'
 #' Rules classify the intervals retained by [detectDives()], not an inferred full dive.
 #' Detection thresholds crop the profile, and downsampling or smoothing can remove narrow
 #' peaks. In particular, prominence splitting during detection can turn one W-shaped excursion
@@ -1509,6 +1527,9 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #'   min.peak.amplitude = 1, min.peak.separation = 10,
 #'   smooth.window = 2, max.gap = 5
 #' )
+#'
+#' # An illustrative study-specific eligibility threshold, not a universal recommendation
+#' diveShapeControl(min.excursion.amplitude = 10)
 #' @export
 diveShapeControl <- function(v.max.broadness = 0.60,
                              u.min.broadness = 0.75,
@@ -1520,7 +1541,8 @@ diveShapeControl <- function(v.max.broadness = 0.60,
                              max.gap = NULL,
                              min.samples = 20L,
                              min.limb.prop = 0.20,
-                             max.opposite.prop = 0.20) {
+                             max.opposite.prop = 0.20,
+                             min.excursion.amplitude = NULL) {
   .assert_number(v.max.broadness, "shape$v.max.broadness", min = 0, max = 1)
   .assert_number(u.min.broadness, "shape$u.min.broadness", min = 0, max = 1)
   if (v.max.broadness >= u.min.broadness)
@@ -1537,11 +1559,13 @@ diveShapeControl <- function(v.max.broadness = 0.60,
   .assert_number(min.limb.prop, "shape$min.limb.prop", min = 0, max = 0.5)
   if (min.limb.prop <= 0) .abort("{.arg shape$min.limb.prop} must be greater than zero.")
   .assert_number(max.opposite.prop, "shape$max.opposite.prop", min = 0, max = 0.5)
+  .assert_number(min.excursion.amplitude, "shape$min.excursion.amplitude", min = 0, null_ok = TRUE)
   structure(list(v.max.broadness = v.max.broadness, u.min.broadness = u.min.broadness,
                  peak.prominence = peak.prominence, min.peak.amplitude = min.peak.amplitude,
                  min.peak.separation = min.peak.separation, smooth.window = smooth.window,
                  min.coverage = min.coverage, max.gap = max.gap,
                  min.samples = as.integer(min.samples), min.limb.prop = min.limb.prop,
-                 max.opposite.prop = max.opposite.prop),
+                 max.opposite.prop = max.opposite.prop,
+                 min.excursion.amplitude = min.excursion.amplitude),
             class = "nautilus_dive_shape")
 }

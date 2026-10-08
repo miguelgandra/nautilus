@@ -49,6 +49,8 @@ test_that("shape controls validate thresholds, units and scalar values", {
   ctl <- diveShapeControl()
   expect_s3_class(ctl, "nautilus_dive_shape")
   expect_identical(ctl$min.samples, 20L)
+  expect_null(ctl$min.excursion.amplitude)
+  expect_identical(diveShapeControl(min.excursion.amplitude = 0)$min.excursion.amplitude, 0)
   expect_error(diveShapeControl(v.max.broadness = 0.8, u.min.broadness = 0.7), "smaller")
   expect_error(diveShapeControl(v.max.broadness = -1), "between")
   expect_error(diveShapeControl(u.min.broadness = 2), "between")
@@ -65,6 +67,9 @@ test_that("shape controls validate thresholds, units and scalar values", {
   expect_error(diveShapeControl(min.limb.prop = 0.6), "between")
   expect_error(diveShapeControl(max.opposite.prop = -0.1), "between")
   expect_error(diveShapeControl(max.opposite.prop = 0.6), "between")
+  expect_error(diveShapeControl(min.excursion.amplitude = -1), "between")
+  for (value in list(NA_real_, Inf, c(1, 2), numeric(0), "10", TRUE))
+    expect_error(diveShapeControl(min.excursion.amplitude = value), "single, finite number")
 })
 
 test_that("canonical V, U and W profiles receive transparent descriptors", {
@@ -126,6 +131,52 @@ test_that("relative thresholds transfer across scales while absolute floors stil
   }
   expect_identical(.dsClassify(.dsProfile() / 100)$dive_shape_status, "insufficient_resolution")
   expect_identical(.dsClassify(.dsProfile(), resolution = 50)$dive_shape_status,
+                   "insufficient_resolution")
+})
+
+test_that("minimum excursion amplitude withholds labels without changing peak rules", {
+  for (type in c("V", "U", "W", "other")) {
+    z <- .dsProfile(type) / 5
+    plain <- .dsClassify(z)
+    zero <- .dsClassify(z, control = diveShapeControl(min.excursion.amplitude = 0))
+    permissive <- .dsClassify(z, control = diveShapeControl(min.excursion.amplitude = 5))
+    expect_identical(zero, plain)
+    expect_identical(permissive, plain)
+    blocked <- .dsClassify(z, control = diveShapeControl(min.excursion.amplitude = 10))
+    expect_identical(blocked$dive_shape, NA_character_)
+    expect_identical(blocked$dive_shape_status, "below_min_amplitude")
+    expect_identical(blocked$shape_broadness, NA_real_)
+    expect_identical(blocked$shape_n_peaks, NA_integer_)
+    expect_identical(blocked$shape_prominence_m, NA_real_)
+    expect_identical(.dsClassify(.dsProfile(type),
+                                 control = diveShapeControl(min.excursion.amplitude = 10)),
+                     .dsClassify(.dsProfile(type)))
+  }
+})
+
+test_that("excursion eligibility uses prepared height and includes the exact threshold", {
+  t <- 0:240
+  z <- .dsProfile() / 5
+  ctl <- diveShapeControl(smooth.window = 0, min.excursion.amplitude = 8)
+  expect_identical(.dsClassify(z, control = ctl)$dive_shape, "V")
+  strict <- diveShapeControl(smooth.window = 0, min.excursion.amplitude = 8.01)
+  chord <- seq(100, 105, length.out = length(z))
+  for (profile in list(z, chord + z, 100 - z, rev(chord + z))) {
+    direction <- if (identical(profile, 100 - z)) "up" else "down"
+    allowed <- .dsClassify(profile, direction = direction, control = ctl)
+    blocked <- .dsClassify(profile, direction = direction, control = strict)
+    expect_identical(allowed$dive_shape, "V")
+    expect_equal(allowed$shape_broadness, 0.5)
+    expect_identical(blocked$dive_shape_status, "below_min_amplitude")
+  }
+  baseline <- seq(100, 150, length.out = length(z))
+  expect_identical(.dsClassify(baseline + z, baseline = baseline, control = strict)$dive_shape_status,
+                   "below_min_amplitude")
+  # Eligibility is measured after smoothing, which slightly lowers this sharp apex.
+  smoothed <- .dsClassify(z, control = diveShapeControl(min.excursion.amplitude = 8))
+  expect_identical(smoothed$dive_shape_status, "below_min_amplitude")
+  expect_identical(.dsClassify(z, complete = FALSE, control = strict)$dive_shape_status, "censored")
+  expect_identical(.dsClassify(z, resolution = 10, control = strict)$dive_shape_status,
                    "insufficient_resolution")
 })
 
@@ -236,6 +287,50 @@ test_that("opting in preserves all original metrics, source data and phase annot
   expect_equal(diveMetrics(tags, shape = list(), verbose = FALSE), enabled)
   expect_error(diveMetrics(tags, shape = list(bogus = 1), verbose = FALSE), "unknown field")
   expect_error(diveMetrics(tags, shape = TRUE, verbose = FALSE), "must be created")
+})
+
+test_that("amplitude eligibility preserves dive rows, summaries, inputs and provenance", {
+  small <- .dsTag("V", id = "small")
+  small$depth <- small$depth / 5
+  small$depth_baseline <- small$depth_baseline / 5
+  small$temp <- rep(22, nrow(small))
+  large <- .dsTag("W", id = "large")
+  large$temp <- rep(24, nrow(large))
+  tags <- list(small, large)
+  original <- lapply(tags, data.table::copy)
+  ctl <- diveShapeControl(min.excursion.amplitude = 10)
+  unrestricted <- diveMetrics(tags, variables = "temp", shape = diveShapeControl(), verbose = FALSE)
+  restricted <- diveMetrics(tags, variables = "temp", shape = ctl, verbose = FALSE)
+  expect_identical(names(restricted), names(unrestricted))
+  expect_identical(restricted$ID, c("small", "large"))
+  expect_identical(restricted$dive_shape, c(NA_character_, "W"))
+  expect_identical(restricted$dive_shape_status, c("below_min_amplitude", "classified"))
+  shape_columns <- c("dive_shape", "dive_shape_status", "shape_broadness", "shape_n_peaks",
+                     "shape_prominence_m")
+  other_columns <- setdiff(names(restricted), shape_columns)
+  expect_identical(restricted[other_columns], unrestricted[other_columns], ignore_attr = TRUE)
+  expect_equal(restricted$temp_mean, c(22, 24))
+  for (i in seq_along(tags)) expect_identical(tags[[i]], original[[i]])
+  expect_identical(attr(restricted, "shape_classification")$control, ctl)
+  expect_equal(diveMetrics(tags, variables = "temp", shape = list(min.excursion.amplitude = 10),
+                          verbose = FALSE), restricted)
+  path <- tempfile(fileext = ".rds"); on.exit(unlink(path), add = TRUE)
+  saveRDS(small, path)
+  expect_equal(diveMetrics(path, variables = "temp", shape = ctl, verbose = FALSE),
+               diveMetrics(small, variables = "temp", shape = ctl, verbose = FALSE))
+  empty <- data.table::copy(small); empty$dive_id <- 0L
+  result <- diveMetrics(empty, variables = "temp", shape = ctl, verbose = FALSE)
+  expect_equal(nrow(result), 0L)
+  expect_identical(names(result), names(restricted))
+  expect_identical(attr(result, "shape_classification")$control, ctl)
+  withr::local_options(list(cli.width = 200))
+  normal <- cli::cli_fmt(invisible(diveMetrics(tags, shape = ctl, verbose = "normal")))
+  expect_match(paste(normal, collapse = "\n"),
+               "shape withheld for 1 dive below 10 m excursion amplitude")
+  detailed <- cli::cli_fmt(invisible(diveMetrics(tags, shape = ctl, verbose = "detailed")))
+  expect_match(paste(detailed, collapse = "\n"), "below_min_amplitude: 1")
+  quiet <- cli::cli_fmt(invisible(diveMetrics(tags, shape = ctl, verbose = FALSE)))
+  expect_length(quiet, 0L)
 })
 
 test_that("phase methods and realised directions do not redefine geometric classes", {

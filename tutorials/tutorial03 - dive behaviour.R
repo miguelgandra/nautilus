@@ -143,7 +143,13 @@ shape_settings <- diveShapeControl(
   min.peak.amplitude  = 0.5,   # absolute floor in metres; noise/resolution floors also apply
   min.peak.separation = 5,     # seconds; at least two sampling intervals are required
   smooth.window       = 3,     # seconds; used for classification only
-  min.coverage        = 0.95)
+  min.coverage        = 0.95,
+  min.excursion.amplitude = NULL)  # optional study-scale eligibility threshold in metres
+
+# To restrict shapes to larger excursions, replace NULL with a validated study-specific height.
+# This is the maximum departure of the smoothed profile from its endpoint chord, not absolute
+# depth or amplitude_m. Below-threshold dives remain in the table with all non-shape metrics;
+# their shape/descriptors are NA and dive_shape_status is "below_min_amplitude".
 
 
 dive_metrics <- diveMetrics(data               = list.files("./data interim/07_dives", full.names = TRUE),
@@ -172,8 +178,10 @@ grep("^vedba|^heading", names(dive_metrics), value = TRUE)
 #   U = a broad single-peak excursion
 #   W = two or more significant, separated peaks
 #   other = an intermediate or complex profile that is not forced into those classes
-#   NA = an unsuitable record, with the reason given in dive_shape_status
+#   NA = an ineligible or unsuitable profile, with the reason given in dive_shape_status
 # These are morphological labels, not automatic evidence of foraging, resting or transit.
+# Report intermediate and unclassified counts too; shape proportions should use an explicit
+# eligible denominator rather than silently dropping NA shapes from the full detected roster.
 table(dive_metrics$dive_shape, useNA = "ifany")
 table(dive_metrics$dive_shape_status)
 head(dive_metrics[, c("ID", "dive_id", "dive_shape", "dive_shape_status",
