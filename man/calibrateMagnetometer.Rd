@@ -2,7 +2,7 @@
 % Please edit documentation in R/calibrateMagnetometer.R
 \name{calibrateMagnetometer}
 \alias{calibrateMagnetometer}
-\title{Estimate a magnetometer calibration for each deployment}
+\title{Estimate magnetometer calibration parameters from tag recordings}
 \usage{
 calibrateMagnetometer(
   data,
@@ -25,220 +25,259 @@ calibrateMagnetometer(
 )
 }
 \arguments{
-\item{data}{A tag object, a list of them, a single table with an \code{id.col}, or a character vector of
-\code{.rds} paths. Paths are read one deployment at a time, so a fleet too large for memory can be
-processed without ever holding it all. The output of \code{\link[=applyAxisMapping]{applyAxisMapping()}} is expected.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+identified by \code{id.col}, or a character vector of \code{.rds} file paths. Datasets must
+contain uncorrected \code{mx}, \code{my} and \code{mz} measurements in consistent units
+(\eqn{\mu}T for geomagnetic normalisation). Body-axis-mapped data are recommended. File inputs are
+read sequentially to gather fitting samples, then read again when writing proposals.}
 
-\item{control}{A control object from \code{\link[=magCalibrationControl]{magCalibrationControl()}} governing the fit method, the
-quality-control thresholds and the confidence gate. Pass \code{magCalibrationControl(...)} to change it.}
+\item{control}{A \code{\link[=magCalibrationControl]{magCalibrationControl()}} object or a named list of its arguments specifying the
+fitting method, target field magnitude and diagnostic thresholds.}
 
-\item{group.by}{Which \code{tag} metadata keys identify deployments that share a physical tag, and can
-therefore be pooled: one or more of \code{"package_id"} (default), \code{"logger_id"}, \code{"tag"} (the model)
-and \code{"type"}. Pass several for a composite key, for example \code{c("package_id", "logger_id")}, which
-pools separately for each unique combination. Pooling widens the orientation coverage available to
-the fit and can rescue a deployment that is ill-posed on its own. A deployment missing any of the
-keys is calibrated by itself.}
+\item{group.by}{One or more tag-metadata keys used to group deployments when
+\code{calibration.data = NULL}: \code{"package_id"} (default), \code{"logger_id"},
+\code{"tag"} or \code{"type"}. Several keys define a composite group. A deployment missing any
+requested key is fitted separately. Use keys identifying a physical instrument with stable
+magnetic configuration; a shared model or type alone does not establish this.}
 
-\item{calibration.data}{Optional calibration recordings to fit from instead of the deployment's own,
-often under-covered, cloud: a dedicated rotation through many orientations before deployment or
-after recovery, or an untrimmed import that still contains one. Accepts the same input types as
-\code{data}. Each recording is matched to a deployment by tag identity, reframed into that deployment's
-body frame, and the resulting fit applied to the real data - so the correction is estimated where
-coverage is good and acts where it is needed. \code{NULL} (default) fits from the deployments
-themselves. Collect one in a magnetically clean setting, away from the vessel and any steel; it is
-judged by its quality control, never trusted by label.}
+\item{calibration.data}{Optional separate calibration recordings, in the same input forms as
+\code{data}. Matching recordings supply the calibration fit instead of the deployment clouds.
+Stored axis mappings are used to reframe source measurements into the target frame. Collect
+rotation recordings with broad orientation coverage in a magnetically clean setting.
+Default \code{NULL}.}
 
-\item{calibration.match}{Which \code{tag} identity fields bind a \code{calibration.data} recording to a
-deployment, in priority order. Default \code{c("package_id", "logger_id")}: an exactly equal, non-blank
-\code{package_id} is tried first, because the housing fixes both the axis orientation and the iron, then
-\code{logger_id}. A bind additionally requires the \code{paddle_wheel} flag to agree. Ignored when
-\code{calibration.data} is \code{NULL}.}
+\item{calibration.match}{Tag-identity fields used to match external recordings, in priority order
+(default \code{c("package_id", "logger_id")}). Exact, non-blank matches at the first available
+matching key are used; the fields are alternatives, not a composite key. Source and target
+\code{paddle_wheel} flags must also agree. Ignored without \code{calibration.data}.}
 
-\item{calibration.on.missing}{What to do for a deployment with no usable \code{calibration.data} bind,
-either because no key matched or because the source failed the centre cross-check described below:
-\code{"fallback"} (default) fits from the deployment's own cloud and reports having done so, \code{"error"}
-stops, and \code{"skip"} leaves the deployment uncalibrated. Ignored when \code{calibration.data} is \code{NULL}.}
+\item{calibration.on.missing}{Policy when no usable external source can be matched or fitted, or
+when its centre is rejected: \code{"fallback"} (default) fits the target deployment alone,
+\code{"error"} stops the call, or \code{"skip"} retains the deployment without writing a new
+proposal. Skipping does not remove any existing proposal. Ignored without
+\code{calibration.data}.}
 
-\item{calibration.context}{Optional labels recording how each \code{calibration.data} recording was
-collected, for example \code{"in_water"}, \code{"bench"} or \code{"lab"}. Recycled over the recordings and stored
-for provenance. Purely descriptive: calibration quality is judged from the diagnostics, never from
-an assumed environment, so this never changes a threshold. Ignored when \code{calibration.data} is
-\code{NULL}.}
+\item{calibration.context}{Optional descriptive labels for external recordings, such as
+\code{"in_water"}, \code{"bench"} or \code{"lab"}, recycled over the source recordings.
+All matched source identifiers and the first matched source's context are recorded. Labels do not
+alter fitting thresholds. Ignored without \code{calibration.data}.}
 
-\item{return.data}{Whether to return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument - so a large fleet can be processed without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{return.data}{Logical; whether to return datasets in memory (default \code{TRUE}). With
+\code{FALSE}, written \code{.rds} paths are returned invisibly, requiring \code{output.dir}.}
 
-\item{output.dir}{Directory in which to write one \verb{<id>.rds} file per deployment. Providing a
-directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already
-exist.}
+\item{output.dir}{An existing directory in which datasets are saved as individual
+\code{<id>.rds} files. Supplying a directory triggers saving, including for deployments without
+a new calibration proposal. Default \code{NULL}.}
 
-\item{output.suffix}{Optional suffix appended to each saved file name, before \code{.rds}, to tag a
-processing run or avoid overwriting an earlier one. Only used when \code{output.dir} is set.}
+\item{output.suffix}{Optional string appended to saved deployment identifiers before \code{.rds},
+to label a calibration run or avoid overwriting earlier files. Default \code{NULL}.}
 
-\item{compress}{Compression for the saved \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
-\code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is set. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
+\item{compress}{Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip),
+\code{FALSE}, or one of \code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when
+\code{output.dir} is specified. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{plot}{Whether to draw the diagnostic report (described below) to the active graphics device.
-Default \code{FALSE}.}
+\item{plot}{Logical; whether to display the diagnostic report on the active graphics device
+(default \code{FALSE}).}
 
-\item{plot.file}{Path to a single multi-page PDF for the diagnostic report. The parent directory must
-exist. Default \code{NULL}, which writes no file.}
+\item{plot.file}{Optional path to a multi-page diagnostic PDF, independent of \code{plot}. The name
+must end in \code{.pdf} and the parent directory must exist. Default \code{NULL}.}
 
-\item{force.plots}{Whether to draw a detail page for every deployment rather than only those of low
-or medium confidence. Default \code{FALSE}. Useful when you want to see a high-confidence fit before
-trusting the fleet to it.}
+\item{force.plots}{Logical; whether to include detail pages for all estimated proposals rather than
+only low- and medium-confidence proposals (default \code{FALSE}). A single-deployment run includes
+a detail page whenever an estimate is available, regardless of confidence.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col, datetime.col}{Names of the deployment-identifier and \code{POSIXct} timestamp columns
+(defaults \code{"ID"} and \code{"datetime"}).}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
-
-\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
-(default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or
+\code{2}/\code{"detailed"} (default).}
 }
 \value{
-If \code{return.data = TRUE}, a named list of the input objects, each with its \code{mag_calibration}
-metadata populated. The estimate is written to the \code{proposed} block
-(\code{getTagMetadata(x)$mag_calibration$proposed}), a list of \code{params} (\code{center}, \code{soft_iron}, \code{axis_net}),
-\code{qc} (\code{confidence}, \code{coverage_ok}, \code{radcv}, \code{igrf_residual}, \code{axis_span}) and \code{provenance}
-(\code{method}, \code{source}, \code{group}, \code{n_deployments}, plus any external-source fields). The raw \code{mx/my/mz}
-are left untouched and \code{applied} stays \code{FALSE}. If \code{return.data = FALSE}, a character vector of the
-written \code{.rds} file paths.
+With \code{return.data = TRUE}, a named list of deployment datasets with unchanged sensor
+measurements and any available calibration proposals. With \code{return.data = FALSE}, a
+character vector of written \code{.rds} paths, returned invisibly.
+
+New proposals are stored in \code{getTagMetadata(x)$mag_calibration$proposed}:
+\describe{
+\item{\code{params}}{\code{center}, a numeric vector of length three; \code{soft_iron}, a
+\eqn{3 \times 3} matrix; and \code{axis_net}, the stored axis mapping.}
+\item{\code{qc}}{\code{confidence}, \code{coverage_ok}, \code{radcv},
+\code{igrf_residual} and \code{axis_span}. \code{radcv} is the standard deviation of corrected
+field radius divided by its median; dip residual and axis spans are in degrees. Unavailable
+diagnostics are missing values.}
+\item{\code{provenance}}{Fitting method, source (\code{"per_tag"}, \code{"per_package"} or
+\code{"external"}), grouping and fit labels, number of contributing deployments or external
+recordings, and available external-source identifiers, context and centre diagnostics.}
+}
+
+The enclosing calibration record has \code{applied = FALSE} for a new proposal. Use
+\code{\link[=processingHistory]{processingHistory()}} to inspect the estimation history, and the applied calibration block after
+\code{\link[=processTagData]{processTagData()}} to determine whether it was used. Diagnostic graphics and saved datasets are
+optional side effects.
 }
 \description{
-A magnetometer measures the magnetic field where it sits, which is not quite the field of the Earth.
-Permanently magnetised components and nearby steel inside the tag add a fixed offset, and
-ferromagnetic material stretches and shears the field differently along each axis. Uncorrected, the
-offset alone swings the compass heading by tens of degrees, and that error accumulates into a
-dead-reckoned track that drifts steadily away from the animal's real path.
+Estimates hard-iron offsets and soft-iron corrections from three-axis magnetometer measurements.
+Calibration parameters, diagnostic quality measures and source information are stored as a proposal
+in each deployment's metadata; sensor values are not corrected by this function.
 
-The correction is recoverable from the recording itself, because the field traced out as the animal
-turns should lie on a sphere. Free-swimming animals, however, rarely rotate through enough
-orientations to define one: a shark holding a near-horizontal posture sweeps a thin band, not a
-sphere. This function therefore produces a best-effort estimate carrying an explicit confidence flag,
-rather than a correction you are asked to take on trust. Run it after \code{\link[=applyAxisMapping]{applyAxisMapping()}}, so that
-the magnetometer and accelerometer share a body frame, and before \code{\link[=processTagData]{processTagData()}}.
+Fits can use individual deployments, pooled deployments sharing a physical tag, or separate
+calibration recordings. Orientation coverage and magnetic-field consistency determine whether a
+full ellipsoid fit is supported and how the resulting proposal is classified.
 
-The estimate is stored in each deployment's metadata (\code{getTagMetadata(x)$mag_calibration}) alongside its
-quality-control metrics. The raw \code{mx/my/mz} are left untouched: \code{\link[=processTagData]{processTagData()}} applies the stored
-estimate later, and only if it clears the confidence gate (see \code{use.stored} in
-\code{\link[=calibrationControl]{calibrationControl()}}).
+Run after \code{\link[=applyAxisMapping]{applyAxisMapping()}} and before \code{\link[=processTagData]{processTagData()}}. The latter can apply a stored proposal
+when its confidence, coordinate frame and application state satisfy \code{\link[=calibrationControl]{calibrationControl()}}.
 }
 \details{
-\subsection{What the calibration does}{
+\subsection{Calibration model and identifiability}{
 
-The distortion has two parts. Permanently magnetised material adds a fixed offset, the \emph{hard iron},
-while ferromagnetic material redistributes the field unevenly across the axes, the \emph{soft iron}. The
-calibrated field is
-\deqn{M_{corrected} = S\,(M_{raw} - c),}
-with \eqn{c} the three-vector hard-iron centre and \eqn{S} the 3x3 soft-iron matrix. Geometrically,
-the raw field traces an off-centre, tilted ellipsoid as the animal turns; \eqn{c} re-centres it and
-\eqn{S} maps it back onto a sphere of the true field magnitude.
+For a magnetic-field column vector \eqn{m}, the proposed correction is
+\deqn{m_{\mathrm{corrected}} = S\,(m_{\mathrm{raw}} - c),}
+where \eqn{c} is the three-component hard-iron centre and \eqn{S} is the \eqn{3 \times 3}
+soft-iron matrix. Hard iron represents an additive magnetic offset; soft iron describes directional
+distortion and scaling.
+
+Estimation requires rotation through sufficiently varied orientations. A near-horizontal swimmer
+may sample a narrow band rather than a three-dimensional field cloud, leaving the perpendicular
+centre and out-of-plane distortion poorly constrained. More samples from the same posture do not
+resolve this lack of coverage.
+
+The implementation gathers a decimated fitting cloud and trims gross radial outliers. At least
+200 complete three-axis samples are required to gather a cloud. This trimming is not a general
+robust-regression procedure: sensor-integrity and signal-quality checks should precede calibration.
+Where acceleration is available, a smoothed gravity estimate supports inclination diagnostics.
 }
 
-\subsection{Why free-swimming data is hard}{
+\subsection{Fitting methods and confidence}{
 
-Recovering \eqn{c} and \eqn{S} requires the animal to rotate through enough orientations to populate
-the whole sphere. A level-swimming shark mostly holds a near-horizontal posture, so its field cloud
-is a thin, near-horizontal band. Within the plane of that band - the horizontal circle swept as the
-animal changes heading - the centre is well determined. Perpendicular to it the data barely move, so
-that component of \eqn{c}, and the out-of-plane soft-iron shape, are effectively unobservable. No
-amount of extra data from the same posture will fix this, which is why the confidence flag matters as
-much as the estimate.
+With \code{control$method = "ellipsoid"}, an algebraic least-squares ellipsoid is assessed for
+positive definiteness, conditioning and coverage on all axes. Where an expected geomagnetic
+inclination is available, the dip residual also gates acceptance.
+
+Unsupported ellipsoid fits are routed to a constrained hard-iron fallback for approximately planar
+clouds. The in-plane centre is estimated from robust ranges; the perpendicular component can be
+constrained by geomagnetic inclination and gravity when available. Without that constraint, the
+range midpoint is used. The fallback does not estimate directional soft-iron distortion, although a
+scalar field-magnitude normalisation may still be included in \eqn{S}. Clouds with inadequate
+extent or unsuitable geometry can yield no proposal.
+
+Setting \code{control$method = "diagonal"} instead requests per-axis offset and scale estimates.
+It is an alternative model, not evidence that an under-covered recording determines all calibration
+parameters.
+
+Proposals receive \code{"high"}, \code{"medium"} or \code{"low"} confidence from coverage,
+corrected-radius dispersion and available dip diagnostics. Full-fit confidence cannot be high
+without an available dip check. The planar fallback is capped at medium confidence and assesses
+support for the in-plane centre using azimuthal coverage. These are diagnostic categories, not
+confidence intervals or guarantees of heading accuracy.
 }
 
-\subsection{The fit, step by step}{
-\enumerate{
-\item \strong{Robust outlier trim.} Gross spikes are dropped first. Neither the least-squares fit nor the
-band-geometry analysis is outlier-robust, so a handful of bad samples would skew both the centre
-and the shape.
-\item \strong{Full ellipsoid.} An algebraic least-squares ellipsoid is fitted, hard and soft iron together.
-\item \strong{Accept the three-dimensional fit only when the data earn it} (status \code{"calibrated_3d"}). The
-full soft iron is trusted only when the cloud is genuinely three-dimensional: well covered on
-every axis, and consistent with the geomagnetic dip, meaning that after correction the field sits
-at the true inclination \eqn{I} relative to gravity. A thin band can yield a numerically valid
-ellipsoid whose out-of-plane centre is arbitrary, and a large dip residual is what betrays it.
-Such a fit is refused and routed to the fallback.
-\item \strong{Hard-iron-only fallback for a band} (status \code{"calibrated_2d_fallback"}). Only the hard iron is
-estimated: the robust in-plane centre, which is the midpoint of the swept horizontal circle, plus
-the single unobservable perpendicular component, which is pinned from the geomagnetic inclination.
-Because the corrected field must dip by \eqn{I} relative to gravity, the true centre lies a
-distance \eqn{d = \rho\tan(I)} off the band plane along its normal, where \eqn{\rho} is the
-in-plane radius; the sign is the one whose corrected dip residual is smaller. The soft iron is
-left at identity, since an under-sampled scale cannot be trusted and must not be allowed to
-distort the field.
-\item \strong{Confidence, matched to what heading actually needs.} Compass heading is read from the
-\emph{horizontal} field after tilt compensation, so it depends on the in-plane hard iron and not on the
-vertical component. A full three-dimensional fit earns \code{"high"} when the corrected cloud is
-spherical, judged by a low coefficient of variation in the corrected radius, and dip-consistent. A
-fallback fit is capped at \code{"medium"} and earns it from the swept yaw arc alone: a near-complete
-rotation pins the in-plane centre, so heading is trustworthy even where the perpendicular
-component and the soft iron are not. The dip residual and out-of-plane sphericity are vertical
-quantities and do not gate heading trust. Too little rotation, a single held heading, or a
-near-stationary cloud give \code{"low"}, and the heading is left raw. Read \code{"low"} as: do not trust the
-calibrated heading.
-}
+\subsection{Field magnitude and coordinate frame}{
+
+\code{control$target.field} overrides the target magnitude. Otherwise, with
+\code{control$igrf.normalize = TRUE}, available deployment coordinates and time are used to obtain
+the expected geomagnetic field through \pkg{oce}; without a usable reference, the native centred
+field magnitude is retained. Inclination diagnostics may be unavailable when coordinates, time or
+acceleration are missing. This calibration does not convert magnetic heading to true heading.
+
+Magnetometer and accelerometer measurements must use compatible coordinate frames. The proposal
+records the target's axis mapping so that \code{\link[=processTagData]{processTagData()}} can reject a stored correction whose
+frame no longer matches. Run on uncorrected measurements, not on magnetometer values to which a
+calibration has already been applied.
 }
 
-\subsection{Pooling deployments from one tag}{
+\subsection{Pooling and paddle-wheel recordings}{
 
-Deployments sharing a physical tag carry the same hard and soft iron, but each samples a different
-band of orientations. Pooling them, with each field first rescaled to a common magnitude, widens the
-effective sphere coverage and can lift an otherwise ill-posed fit into a usable one. The pooled soft
-iron is shared across the group, while the hard-iron centre and field scale stay per deployment. A
-tag with a single deployment, or a blank grouping key, is calibrated on its own and reported as
-\code{source = "per_tag"}.
+Without external recordings, eligible deployments sharing \code{group.by} keys are pooled after
+centring and normalising their fitting clouds to a common radius. The pooled shape is shared while
+centres and target scales are resolved per deployment. Group members must have compatible axis
+mappings and stable sensor configuration; grouping does not automatically establish either.
+
+Paddle-wheel and non-paddle recordings are never pooled together. For deployments marked
+\code{tag$paddle_wheel = TRUE}, magnetometer values are smoothed over approximately three seconds
+for fitting, reducing high-frequency paddle-magnet variation. This does not change the raw
+measurements in the returned dataset.
 }
 
-\subsection{Tags with a paddle wheel}{
+\subsection{External calibration sources}{
 
-A magnetic paddle-wheel speed sensor injects strong high-frequency noise into \code{mx/my/mz}. Where
-\code{tag$paddle_wheel = TRUE} the cloud is smoothed with a short rolling mean before the fit, as in
-\code{\link[=processTagData]{processTagData()}} and \code{\link[=checkTagMapping]{checkTagMapping()}}. Because the paddle magnet is itself part of the tag's
-ferromagnetic environment, paddle and non-paddle deployments of the same tag are calibrated
-separately and never pooled together.
+Matching source recordings at the selected identity key are pooled and reframed using their stored
+axis mappings. In this mode \code{group.by} does not pool target deployments; a fallback fits only
+the target's own cloud.
+
+For non-paddle targets, the external hard-iron centre is compared with an available in-situ centre.
+The separation, expressed relative to field radius, can cap confidence at medium above
+\code{control$center.warn}, or reject the source above \code{control$center.reject}. Paddle targets
+instead use their own in-situ centre where available; using a source centre when it is unavailable
+caps confidence at medium.
+
+These checks cannot establish that a source recording is free of environmental magnetic
+interference. A magnetic object rotating with the tag can produce a well-shaped cloud with a
+displaced centre. Inspect the deployment diagnostics and calibration environment, not just the
+confidence label. Sources that do not improve orientation coverage are reported but are not
+automatically rejected.
 }
 
-\subsection{Fitting from a dedicated recording}{
+\subsection{Stored proposal and later application}{
 
-When \code{calibration.data} is supplied, the soft-iron shape always comes from the source recording,
-which is where the coverage is. The hard-iron centre is cross-checked against the deployment's own
-in-situ estimate, and for paddle tags taken from it. This guards against a magnetic mass that
-co-rotated with the tag during the calibration spin: such a mass produces a clean-looking sphere with
-a displaced centre, which nothing internal to the source recording can reveal. Recordings sharing a
-deployment's key are pooled. The applied source, its context and the centre agreement are all
-recorded in \code{mag_calibration}; the rejection threshold is \code{center.reject} in
-\code{\link[=magCalibrationControl]{magCalibrationControl()}}.
+A successful estimate replaces \code{getTagMetadata(x)$mag_calibration} with a new, unapplied
+proposal and appends a processing-history entry describing its source, method and principal
+diagnostics. Deployments with no estimate are retained, with earlier calibration metadata unchanged.
+No sensor values, existing orientation columns or whole-deployment exclusion logs are modified.
+
+Application is a separate \code{\link[=processTagData]{processTagData()}} step. Stored reuse requires appropriate
+\code{\link[=calibrationControl]{calibrationControl()}} settings, a finite centre, a supported matrix, matching axis metadata,
+high or medium confidence and an unapplied state. A stored proposal is therefore not evidence that
+calibration has been applied.
 }
 
-\subsection{The diagnostic report}{
+\subsection{Diagnostic report}{
 
-When \code{plot} or \code{plot.file} is set, the function draws a worst-first summary page, one row per
-deployment giving its pooling, method, sphere coverage, radius coefficient of variation, dip residual
-and confidence. A detail page follows for each low or medium confidence deployment, or for every
-deployment under \code{force.plots}. A detail page shows the raw and corrected clouds as three plane
-projections against the target-field circle, the corrected field-magnitude distribution, and the
-measured dip against the expected geomagnetic inclination. Between them the panels answer the three
-questions behind the confidence flag - is the field centred and spherical, is it tightly on a sphere,
-and is it physically consistent with the field expected at that place - so a low-confidence verdict
-is explained rather than merely asserted.
+The overview summarises grouping, fitting method, coverage, corrected-radius dispersion, dip
+residual and confidence, ordered to prioritise weaker results. Detail pages show raw and
+hypothetically corrected clouds in three plane projections, field-magnitude distributions and
+available inclination diagnostics. They illustrate the proposed correction rather than changes
+made to the sensor record.
 }
 }
 \examples{
-\dontrun{
-# Run after applyAxisMapping(), before processTagData()
-oriented <- applyAxisMapping(data = files, mapping = qc)
-cal <- calibrateMagnetometer(oriented, group.by = "package_id",
-                             plot.file = "mag_cal.pdf")
-getTagMetadata(cal[[1]])$mag_calibration$proposed$qc$confidence
+# Synthetic orientations illustrate estimation without a geomagnetic reference.
+n <- 1000L
+z <- seq(-0.99, 0.99, length.out = n)
+phi <- seq_len(n) * pi * (3 - sqrt(5))
+field <- 50 * cbind(
+  sqrt(1 - z^2) * cos(phi),
+  sqrt(1 - z^2) * sin(phi),
+  z)
+recording <- data.frame(
+  ID = "deployment_01",
+  datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(n) - 1,
+  mx = 1.2 * field[, 1] + 5,
+  my = 0.8 * field[, 2] - 3,
+  mz = field[, 3] + 2)
+estimated <- calibrateMagnetometer(
+  recording, control = magCalibrationControl(igrf.normalize = FALSE),
+  verbose = "quiet")
+getTagMetadata(estimated[[1]])$mag_calibration$proposed$qc
 
-# Fit from a dedicated rotation recording rather than the deployment cloud
-cal <- calibrateMagnetometer(oriented, calibration.data = "spin.rds",
-                             calibration.match = c("package_id", "logger_id"))
+\dontrun{
+# Use uncorrected, body-axis-mapped deployment recordings.
+files <- list.files(
+  "./data interim/04_oriented", pattern = "\\\\.rds$", full.names = TRUE)
+calibrated <- calibrateMagnetometer(
+  files, group.by = "package_id", plot.file = "magnetometer_calibration.pdf")
+processed <- processTagData(calibrated)
+
+# A separate rotation recording is matched using stored tag identifiers.
+calibrated <- calibrateMagnetometer(
+  files,
+  calibration.data = "rotation_recording.rds",
+  calibration.match = c("package_id", "logger_id"),
+  calibration.on.missing = "error",
+  calibration.context = "in_water")
 }
 }
 \seealso{
-\code{\link[=magCalibrationControl]{magCalibrationControl()}} for the fit method and thresholds; \code{\link[=applyAxisMapping]{applyAxisMapping()}} for the
-step that must come first; \code{\link[=processTagData]{processTagData()}} for the step that applies the estimate.
+\code{\link[=magCalibrationControl]{magCalibrationControl()}}, \code{\link[=calibrationControl]{calibrationControl()}}, \code{\link[=applyAxisMapping]{applyAxisMapping()}},
+\code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, \code{\link[=checkSensorQuality]{checkSensorQuality()}}, \code{\link[=processTagData]{processTagData()}}, \code{\link[=getTagMetadata]{getTagMetadata()}},
+\code{\link[=processingHistory]{processingHistory()}}.
 }

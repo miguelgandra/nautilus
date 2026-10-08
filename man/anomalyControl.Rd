@@ -19,9 +19,9 @@ sample-to-sample change beyond this is treated as a spike rather than a measurem
 what the animal and the environment allow, with some headroom: too low and normal behaviour is
 flagged, too high and real spikes survive into your analysis. Required.}
 
-\item{sensor.resolution}{The smallest change the channel can express - its quantisation step. It stops
-ordinary rounding from registering as a rate of change, which otherwise makes a coarsely-quantised
-channel look full of spikes.
+\item{sensor.resolution}{The smallest change the channel can express, in its measurement units.
+Used in the resolution gate preceding the rate test. The current gate is sampling-interval
+dependent; see \code{\link[=checkSensorQuality]{checkSensorQuality()}} for its criterion and limitations.
 
 Required, with no default, because resolution is a property of a particular instrument and channel
 and the package has no basis for guessing it: a value suited to depth in metres is an order of
@@ -29,16 +29,16 @@ magnitude too coarse for temperature in degrees. Take it from the tag's specific
 smallest non-zero difference between consecutive raw readings.}
 
 \item{sensor.accuracy.fixed, sensor.accuracy.percent}{The sensor's stated accuracy, as a fixed value in
-the channel's units or as a percentage of the reading. Supply at most one. Recorded with the results
-for provenance; detection itself uses \code{sensor.resolution}. Defaults \code{NULL}.}
+the channel's units or as a percentage of the reading. Supply at most one. Retained in this control
+object but not used by the detector or copied into the processing-history entry. Defaults \code{NULL}.}
 
 \item{outlier.window}{How close together, in minutes, outliers must fall to be treated as one
 malfunction period rather than as separate spikes. Default 5. Widen it where a failing sensor
 glitches intermittently over a longer stretch.}
 
-\item{stall.threshold}{How long a run of identical, non-zero readings must last, in minutes, before
-the sensor is judged to have stalled. Default 5. Raise it for a channel that legitimately holds
-steady - a temperature record from an animal resting in a thermally uniform layer, for instance.}
+\item{stall.threshold}{Minimum duration of identical, strictly positive readings flagged as a stall,
+in minutes (default \code{5}), evaluated using the nominal sampling frequency. Zero and negative
+constant readings are not flagged. Raise it for channels that legitimately remain constant.}
 }
 \value{
 A validated \code{nautilus_anomaly} object, for one entry of \code{\link[=checkSensorQuality]{checkSensorQuality()}}'s \code{sensors}

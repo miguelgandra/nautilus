@@ -118,18 +118,17 @@ paddleFrequencyControl <- function(window.size = 5,
 #' the spot. The mounting offset corrections and the orientation-estimator tuning live in
 #' [orientationControl()].
 #'
-#' @param hard.iron Whether to correct the fixed offset that magnetised components inside the tag add to
-#'   the field (default `TRUE`). This is the dominant distortion and the one heading depends on; there is
-#'   rarely a reason to disable it.
-#' @param soft.iron Whether to correct the per-axis scaling that ferromagnetic material imposes on the
-#'   field (default `TRUE`). Only the axis-aligned scales are fitted here, not the cross-axis shear.
-#'   Disable it if a deployment's orientation coverage is so poor that the scales are being fitted to
-#'   noise.
+#' @param hard.iron Logical; whether to apply a supported hard-iron centre correction
+#'   (default \code{TRUE}). This subtracts the additive magnetic offset.
+#' @param soft.iron Logical; whether to apply a supported soft-iron matrix
+#'   (default \code{TRUE}). Full ellipsoid fits can include cross-axis terms; a constrained planar
+#'   fallback does not estimate directional distortion. Confidence gates still apply.
 #' @param use.stored Whether to prefer a calibration already stored in the metadata by
 #'   [calibrateMagnetometer()], such as a fit pooled across every deployment of one tag (default
-#'   `TRUE`). A stored fit is used only when it clears the confidence gate; a low-confidence one is
-#'   ignored and the inline per-deployment estimate is used instead. Set `FALSE` to always estimate
-#'   inline, for instance when comparing the two.
+#'   `TRUE`). Reuse requires both correction switches, high or medium confidence, a finite centre,
+#'   a stored matrix and matching axis metadata. Otherwise an inline per-deployment estimate is
+#'   considered and is itself confidence-gated. Set \code{FALSE} to bypass stored proposals.
+#'   A calibration already marked as applied is not applied or estimated again.
 #'
 #' @return A validated `nautilus_calibration` object for the `calibration` argument of
 #'   [processTagData()].
@@ -228,26 +227,29 @@ basemapControl <- function(provider = "Esri.WorldImagery", cache = TRUE, zoom = 
 #' needed to trust the in-plane centre, while `planarity.max`, `linearity.abort` and `extent.min` reject
 #' clouds that are not a genuine planar ring - a solid blob, or a single heading held throughout.
 #'
-#' `center.warn` and `center.reject` apply only when the fit comes from an external `calibration.data`
-#' source.
+#' \code{center.warn} and \code{center.reject} apply to non-paddle deployments when the fit comes
+#' from an external \code{calibration.data} source. Paddle deployments use their own in-situ centre
+#' where available.
 #'
 #' @param method How to fit the distortion. `"ellipsoid"` (default) fits the full hard-iron and
 #'   soft-iron ellipsoid where the data genuinely determine it, and otherwise falls back to a
-#'   hard-iron-only fit that still corrects heading. `"diagonal"` forces a per-axis offset-and-scale fit,
-#'   which is worth trying when the full ellipsoid is unstable.
-#' @param igrf.normalize When pooling deployments of one tag, whether to rescale each deployment's field
-#'   to the expected geomagnetic intensity at its location before pooling (default `TRUE`), so that
-#'   deployments from different survey areas do not distort the shared soft iron. Ignored for a single
-#'   deployment with no coordinates.
+#'   constrained hard-iron fit. \code{"diagonal"} requests a per-axis offset-and-scale fit.
+#'   Neither method establishes identifiability when orientation coverage is inadequate.
+#' @param igrf.normalize Logical; whether to normalise the proposed corrected field to the expected
+#'   geomagnetic intensity when a reference is available (default \code{TRUE}). Applies to individual,
+#'   pooled and external-source fits. A supplied \code{target.field} takes precedence; otherwise,
+#'   without a reference, the native centred field magnitude is retained. Pooled clouds are normalised
+#'   to a common radius independently of this setting.
 #' @param min.coverage Minimum per-axis coverage, as a fraction of the sphere radius, for the fit to be
 #'   trusted (default `0.5`). Below this the animal did not turn through enough orientations. Lower it
 #'   only if you are prepared to accept a fit resting on a narrow slice of the sphere.
-#' @param cond.max Largest ellipsoid axis ratio still accepted as a real ellipsoid before falling back
-#'   to the diagonal fit (default `25`). A very elongated ellipsoid usually means the cloud is a band
-#'   being over-fitted rather than a genuinely distorted sphere.
-#' @param radcv.max Coefficient of variation of the corrected radius at or below which a fit earns high
-#'   confidence (default `0.1`; zero would be a perfect sphere). This is the sphericity test: how tightly
-#'   the corrected field sits on one sphere.
+#' @param cond.max Maximum ratio of the largest to smallest eigenvalues of the fitted ellipsoid's
+#'   quadratic-form matrix (default \code{25}), equivalent to the squared ratio of its longest and
+#'   shortest axes. An ill-conditioned fit is routed to the constrained hard-iron fallback, not the
+#'   diagonal method.
+#' @param radcv.max Maximum corrected-radius dispersion for high confidence (default \code{0.1}).
+#'   Dispersion is calculated as the standard deviation divided by the median radius, not its mean.
+#'   Coverage and available inclination diagnostics also enter the confidence assessment.
 #' @param igrf.residual.max Largest absolute dip residual, in degrees, at or below which a full
 #'   three-dimensional fit earns high confidence (default `15`). Dip residual is the measured
 #'   geomagnetic inclination minus the value expected at that place. It also gates soft-iron acceptance:
@@ -258,10 +260,10 @@ basemapControl <- function(provider = "Esri.WorldImagery", cache = TRUE, zoom = 
 #'   vertical dip.
 #' @param center.warn,center.reject How closely the hard-iron centre estimated from an external source
 #'   must agree with the deployment's own in-situ centre, as a fraction of the field radius. Used only
-#'   when a calibration is fitted from `calibration.data`. A disagreement above `center.reject` (default
-#'   `0.35`) rejects the source; above `center.warn` (default `0.10`) the source is kept but its
-#'   confidence is downgraded. This cross-check exists because a fixed magnetic mass that co-rotated with
-#'   the tag during the calibration spin - vessel steel, most often - is absorbed into the centre and
+#'   for non-paddle deployments when a calibration is fitted from `calibration.data`. A disagreement
+#'   above \code{center.reject} (default \code{0.35}) rejects the source; above \code{center.warn}
+#'   (default \code{0.10}) confidence is capped at medium. This cross-check exists because a fixed
+#'   magnetic mass that co-rotated with the tag during the calibration spin is absorbed into the centre and
 #'   still passes every sphericity and dip test, so nothing internal to the recording can reveal it.
 #'   `center.reject` must be at least `center.warn`.
 #' @param azimuth.min Minimum swept yaw arc, in degrees, for a hard-iron-only fit to earn medium heading
@@ -275,9 +277,10 @@ basemapControl <- function(provider = "Esri.WorldImagery", cache = TRUE, zoom = 
 #'   Default `0.1`.
 #' @param extent.min Minimum angular extent of the cloud about its centre, in degrees, below which it is
 #'   a stationary blob and no fit is applied. Default `40`.
-#' @param target.field Optional override for the target field magnitude, in \eqn{\mu}T. By default the
-#'   expected geomagnetic intensity is used where coordinates are available, and the cloud's own median
-#'   radius otherwise. Set it if you know the local field and the deployment has no position.
+#' @param target.field Optional positive target field magnitude, in \eqn{\mu}T, overriding
+#'   \code{igrf.normalize}. With \code{NULL} (default), the expected geomagnetic intensity is used
+#'   when \code{igrf.normalize = TRUE} and a reference is available; otherwise the native centred
+#'   field magnitude is retained.
 #'
 #' @return A validated `nautilus_mag_calibration` object for the `control` argument of
 #'   [calibrateMagnetometer()].
@@ -426,23 +429,23 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
 #'   sample-to-sample change beyond this is treated as a spike rather than a measurement. Set it from
 #'   what the animal and the environment allow, with some headroom: too low and normal behaviour is
 #'   flagged, too high and real spikes survive into your analysis. Required.
-#' @param sensor.resolution The smallest change the channel can express - its quantisation step. It stops
-#'   ordinary rounding from registering as a rate of change, which otherwise makes a coarsely-quantised
-#'   channel look full of spikes.
+#' @param sensor.resolution The smallest change the channel can express, in its measurement units.
+#'   Used in the resolution gate preceding the rate test. The current gate is sampling-interval
+#'   dependent; see [checkSensorQuality()] for its criterion and limitations.
 #'
 #'   Required, with no default, because resolution is a property of a particular instrument and channel
 #'   and the package has no basis for guessing it: a value suited to depth in metres is an order of
 #'   magnitude too coarse for temperature in degrees. Take it from the tag's specification, or from the
 #'   smallest non-zero difference between consecutive raw readings.
 #' @param sensor.accuracy.fixed,sensor.accuracy.percent The sensor's stated accuracy, as a fixed value in
-#'   the channel's units or as a percentage of the reading. Supply at most one. Recorded with the results
-#'   for provenance; detection itself uses `sensor.resolution`. Defaults `NULL`.
+#'   the channel's units or as a percentage of the reading. Supply at most one. Retained in this control
+#'   object but not used by the detector or copied into the processing-history entry. Defaults `NULL`.
 #' @param outlier.window How close together, in minutes, outliers must fall to be treated as one
 #'   malfunction period rather than as separate spikes. Default 5. Widen it where a failing sensor
 #'   glitches intermittently over a longer stretch.
-#' @param stall.threshold How long a run of identical, non-zero readings must last, in minutes, before
-#'   the sensor is judged to have stalled. Default 5. Raise it for a channel that legitimately holds
-#'   steady - a temperature record from an animal resting in a thermally uniform layer, for instance.
+#' @param stall.threshold Minimum duration of identical, strictly positive readings flagged as a stall,
+#'   in minutes (default \code{5}), evaluated using the nominal sampling frequency. Zero and negative
+#'   constant readings are not flagged. Raise it for channels that legitimately remain constant.
 #' @return A validated `nautilus_anomaly` object, for one entry of [checkSensorQuality()]'s `sensors`
 #'   argument.
 #' @seealso [checkSensorQuality()]
@@ -863,8 +866,9 @@ trackMetricsControl <- function(metrics = "all",
 #' @param min.time.mins The shortest separation, in minutes, between two fixes for the speed implied
 #'   between them to be trusted. Closer pairs are not judged, because a sub-threshold gap inflates the
 #'   apparent speed unreliably: a metre of positional jitter over a few seconds looks like a huge
-#'   speed. Default `0`, which judges every segment, the position record having already dropped
-#'   duplicate timestamps. Raise it if your tag reports bursts of near-simultaneous fixes.
+#'   speed. Default \code{0}; non-finite speeds, including those from zero-time intervals, are not
+#'   judged. This filter does not remove duplicate timestamps. Raise it if your tag reports bursts
+#'   of near-simultaneous fixes.
 #' @param max.iterations The most removal passes to make. Each pass removes the single most egregious
 #'   spike and recomputes speeds against the new neighbours, and the loop stops early once no fix is
 #'   implausible. Default `50`. It is a runaway guard rather than a tuning knob; reaching it usually
@@ -872,8 +876,9 @@ trackMetricsControl <- function(metrics = "all",
 #' @param spike.angle An optional direction-reversal test, in degrees between 90 and 180, that
 #'   supplements the speed test: an interior fix is also treated as a spike when the track's heading
 #'   reverses by at least this much there *and* at least one adjoining segment exceeds
-#'   `max.speed.kmh`. It catches the sharp out-and-back spikes that travel slowly enough to pass the
-#'   speed test alone. `NULL` (default) disables it; around 160 degrees is a reasonable starting point.
+#'   `max.speed.kmh`. It can therefore flag a reversal with only one over-threshold segment, but does
+#'   not flag reversals whose adjacent speeds are both below the threshold. \code{NULL} (default)
+#'   disables it; choose the angle after inspecting representative tracks.
 #'
 #' @return A validated `nautilus_filter_locations` object for the `control` argument of
 #'   [filterLocations()].

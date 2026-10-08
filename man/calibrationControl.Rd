@@ -7,20 +7,19 @@
 calibrationControl(hard.iron = TRUE, soft.iron = TRUE, use.stored = TRUE)
 }
 \arguments{
-\item{hard.iron}{Whether to correct the fixed offset that magnetised components inside the tag add to
-the field (default \code{TRUE}). This is the dominant distortion and the one heading depends on; there is
-rarely a reason to disable it.}
+\item{hard.iron}{Logical; whether to apply a supported hard-iron centre correction
+(default \code{TRUE}). This subtracts the additive magnetic offset.}
 
-\item{soft.iron}{Whether to correct the per-axis scaling that ferromagnetic material imposes on the
-field (default \code{TRUE}). Only the axis-aligned scales are fitted here, not the cross-axis shear.
-Disable it if a deployment's orientation coverage is so poor that the scales are being fitted to
-noise.}
+\item{soft.iron}{Logical; whether to apply a supported soft-iron matrix
+(default \code{TRUE}). Full ellipsoid fits can include cross-axis terms; a constrained planar
+fallback does not estimate directional distortion. Confidence gates still apply.}
 
 \item{use.stored}{Whether to prefer a calibration already stored in the metadata by
 \code{\link[=calibrateMagnetometer]{calibrateMagnetometer()}}, such as a fit pooled across every deployment of one tag (default
-\code{TRUE}). A stored fit is used only when it clears the confidence gate; a low-confidence one is
-ignored and the inline per-deployment estimate is used instead. Set \code{FALSE} to always estimate
-inline, for instance when comparing the two.}
+\code{TRUE}). Reuse requires both correction switches, high or medium confidence, a finite centre,
+a stored matrix and matching axis metadata. Otherwise an inline per-deployment estimate is
+considered and is itself confidence-gated. Set \code{FALSE} to bypass stored proposals.
+A calibration already marked as applied is not applied or estimated again.}
 }
 \value{
 A validated \code{nautilus_calibration} object for the \code{calibration} argument of

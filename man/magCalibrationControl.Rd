@@ -23,25 +23,27 @@ magCalibrationControl(
 \arguments{
 \item{method}{How to fit the distortion. \code{"ellipsoid"} (default) fits the full hard-iron and
 soft-iron ellipsoid where the data genuinely determine it, and otherwise falls back to a
-hard-iron-only fit that still corrects heading. \code{"diagonal"} forces a per-axis offset-and-scale fit,
-which is worth trying when the full ellipsoid is unstable.}
+constrained hard-iron fit. \code{"diagonal"} requests a per-axis offset-and-scale fit.
+Neither method establishes identifiability when orientation coverage is inadequate.}
 
-\item{igrf.normalize}{When pooling deployments of one tag, whether to rescale each deployment's field
-to the expected geomagnetic intensity at its location before pooling (default \code{TRUE}), so that
-deployments from different survey areas do not distort the shared soft iron. Ignored for a single
-deployment with no coordinates.}
+\item{igrf.normalize}{Logical; whether to normalise the proposed corrected field to the expected
+geomagnetic intensity when a reference is available (default \code{TRUE}). Applies to individual,
+pooled and external-source fits. A supplied \code{target.field} takes precedence; otherwise,
+without a reference, the native centred field magnitude is retained. Pooled clouds are normalised
+to a common radius independently of this setting.}
 
 \item{min.coverage}{Minimum per-axis coverage, as a fraction of the sphere radius, for the fit to be
 trusted (default \code{0.5}). Below this the animal did not turn through enough orientations. Lower it
 only if you are prepared to accept a fit resting on a narrow slice of the sphere.}
 
-\item{cond.max}{Largest ellipsoid axis ratio still accepted as a real ellipsoid before falling back
-to the diagonal fit (default \code{25}). A very elongated ellipsoid usually means the cloud is a band
-being over-fitted rather than a genuinely distorted sphere.}
+\item{cond.max}{Maximum ratio of the largest to smallest eigenvalues of the fitted ellipsoid's
+quadratic-form matrix (default \code{25}), equivalent to the squared ratio of its longest and
+shortest axes. An ill-conditioned fit is routed to the constrained hard-iron fallback, not the
+diagonal method.}
 
-\item{radcv.max}{Coefficient of variation of the corrected radius at or below which a fit earns high
-confidence (default \code{0.1}; zero would be a perfect sphere). This is the sphericity test: how tightly
-the corrected field sits on one sphere.}
+\item{radcv.max}{Maximum corrected-radius dispersion for high confidence (default \code{0.1}).
+Dispersion is calculated as the standard deviation divided by the median radius, not its mean.
+Coverage and available inclination diagnostics also enter the confidence assessment.}
 
 \item{igrf.residual.max}{Largest absolute dip residual, in degrees, at or below which a full
 three-dimensional fit earns high confidence (default \code{15}). Dip residual is the measured
@@ -54,10 +56,10 @@ vertical dip.}
 
 \item{center.warn, center.reject}{How closely the hard-iron centre estimated from an external source
 must agree with the deployment's own in-situ centre, as a fraction of the field radius. Used only
-when a calibration is fitted from \code{calibration.data}. A disagreement above \code{center.reject} (default
-\code{0.35}) rejects the source; above \code{center.warn} (default \code{0.10}) the source is kept but its
-confidence is downgraded. This cross-check exists because a fixed magnetic mass that co-rotated with
-the tag during the calibration spin - vessel steel, most often - is absorbed into the centre and
+for non-paddle deployments when a calibration is fitted from \code{calibration.data}. A disagreement
+above \code{center.reject} (default \code{0.35}) rejects the source; above \code{center.warn}
+(default \code{0.10}) confidence is capped at medium. This cross-check exists because a fixed
+magnetic mass that co-rotated with the tag during the calibration spin is absorbed into the centre and
 still passes every sphericity and dip test, so nothing internal to the recording can reveal it.
 \code{center.reject} must be at least \code{center.warn}.}
 
@@ -76,9 +78,10 @@ Default \code{0.1}.}
 \item{extent.min}{Minimum angular extent of the cloud about its centre, in degrees, below which it is
 a stationary blob and no fit is applied. Default \code{40}.}
 
-\item{target.field}{Optional override for the target field magnitude, in \eqn{\mu}T. By default the
-expected geomagnetic intensity is used where coordinates are available, and the cloud's own median
-radius otherwise. Set it if you know the local field and the deployment has no position.}
+\item{target.field}{Optional positive target field magnitude, in \eqn{\mu}T, overriding
+\code{igrf.normalize}. With \code{NULL} (default), the expected geomagnetic intensity is used
+when \code{igrf.normalize = TRUE} and a reference is available; otherwise the native centred
+field magnitude is retained.}
 }
 \value{
 A validated \code{nautilus_mag_calibration} object for the \code{control} argument of
@@ -107,8 +110,9 @@ For the hard-iron-only fallback used on a thin swimming band, \code{azimuth.min}
 needed to trust the in-plane centre, while \code{planarity.max}, \code{linearity.abort} and \code{extent.min} reject
 clouds that are not a genuine planar ring - a solid blob, or a single heading held throughout.
 
-\code{center.warn} and \code{center.reject} apply only when the fit comes from an external \code{calibration.data}
-source.
+\code{center.warn} and \code{center.reject} apply to non-paddle deployments when the fit comes
+from an external \code{calibration.data} source. Paddle deployments use their own in-situ centre
+where available.
 }
 \examples{
 magCalibrationControl(method = "diagonal")

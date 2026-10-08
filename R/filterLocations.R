@@ -5,140 +5,176 @@
 #' Screen implausible satellite position fixes
 #'
 #' @description
-#' Satellite fixes are not all equally believable. A Fastloc-GPS position computed from too few
-#' satellites is geometrically weak, an Argos position can decode to the wrong hemisphere, and either
-#' can place an animal somewhere it could not possibly have swum to and back from in the time
-#' available. Left in place, such a fix anchors a reconstructed track to a point the animal never
-#' visited, and drags the surrounding path with it.
+#' Filters the ancillary position record of archival tag datasets using optional satellite-count,
+#' distance and neighbour-consistency speed checks. Rejected fixes are removed from the stored position
+#' record without changing sensor measurements or deleting rows from the sensor time series.
 #'
-#' This function screens the position record for those cases and removes the fixes that fail, leaving
-#' the sensor time series untouched. It is the location-channel counterpart of [checkSensorQuality()],
-#' so it belongs in the cleaning phase, before any track reconstruction or mapping consumes the fixes.
+#' The function is intended for location quality control after [importTagData()] and before
+#' [reconstructTrack()] or [crossValidateTrack()] uses position fixes as spatial constraints. All
+#' threshold checks are disabled by default; select limits appropriate to the tracking system, study
+#' duration and movement ecology.
 #'
-#' All three checks are opt-in: with the defaults nothing is removed, so choose thresholds that suit
-#' your species and tag.
-#'
-#' @param data A tag object, a list of them, a single table with an `id.col`, or a character vector of
-#'   `.rds` paths - the output of [importTagData()] or any later step. Paths are read one deployment at
-#'   a time, so a fleet too large for memory can be processed without ever holding it all.
-#' @param metadata An optional deployment-metadata table, one row per deployment, supplying the
-#'   reference coordinates for the distance check and the diagnostic map. `NULL` (default) uses the
-#'   coordinates already stored in each tag's metadata at import. Where both are present they are
-#'   cross-checked and a disagreement is warned about.
-#' @param id.col Which column identifies the animal (default `"ID"`); also used to match rows in
-#'   `metadata`.
-#' @param max.speed.kmh The fastest sustained speed, in km/h, you would believe between two fixes.
-#'   `NULL` (default) disables the speed check. Set it from your species' plausible sustained travel
-#'   speed rather than its burst speed, since the test is applied between fixes that may be hours
-#'   apart.
-#' @param max.distance.km A gross-error bound, in kilometres, on how far a fix may lie from the
-#'   deployment location. `NULL` (default) disables it. Read the Details before enabling: this catches
-#'   decoding errors, and is not a movement constraint.
-#' @param min.satellites The fewest satellites a Fastloc-GPS fix may be computed from and still be
-#'   kept. `NULL` (default) disables the check. Four is the geometric minimum for a position; raising it
-#'   trades fixes for confidence.
-#' @param control A control object from [filterLocationsControl()] tuning how the speed test is applied
-#'   - the minimum time separation, the iteration cap, and the optional direction-reversal test. Pass
-#'   `filterLocationsControl(...)` to change it.
-#' @param deploy.lon.col,deploy.lat.col Which columns in `metadata` hold the deployment longitude and
-#'   latitude. Defaults `"deploy_lon"` and `"deploy_lat"`. Ignored when `metadata` is `NULL`.
-#' @param plot Whether to draw the diagnostic map, one page per deployment with removed fixes, to the
-#'   active graphics device. Default `FALSE`.
-#' @param plot.file Path to a single multi-page PDF for the diagnostic maps. The parent directory must
-#'   exist and the name must end in `.pdf`. `NULL` (default) writes no file. Independent of `plot`.
-#' @param basemap The background canvas for the diagnostic map: `"land"` (default, a filled coastline
-#'   over a flat sea), `"satellite"` for imagery tiles, which is useful for judging coastal fixes,
-#'   `"none"` for blank sea, or a pre-fetched raster from [getBasemap()].
-#' @param coastline Which vector coastline to draw: `"auto"` (default), `"high"`, `"low"`, `"none"`, or
-#'   a custom coastline as an \pkg{sf} object, a lon/lat table, or a file path. See [plotTracks()] for
-#'   the full resolution ladder. It is drawn filled under `basemap = "land"` and as an outline over a
-#'   raster canvas.
-#' @param basemap.control A control object from [basemapControl()] tuning the satellite fetch. Used only
-#'   when `basemap = "satellite"`.
-#' @param return.data Whether to return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument - so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Directory in which to write one `<id>.rds` file per deployment. Providing a
-#'   directory is what triggers saving; `NULL` (default) writes nothing. The directory must already
-#'   exist.
-#' @param output.suffix Optional suffix appended to each saved file name, before `.rds`, to tag a
-#'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is set.
-#' @param compress Compression for the saved `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
-#'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is set. See [base::saveRDS()].
-#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default), which adds per-check diagnostics.
+#' @param data A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+#'   identified by \code{id.col}, or a character vector of \code{.rds} file paths. Position fixes must
+#'   be stored in the ancillary metadata created by [importTagData()]. File inputs are read one
+#'   deployment at a time.
+#' @param metadata Optional deployment-metadata table containing \code{id.col}, \code{deploy.lon.col}
+#'   and \code{deploy.lat.col}. Matching rows supply reference coordinates in preference to the stored
+#'   deployment coordinates. If no matching row is available, stored coordinates are used. Where both
+#'   sources are usable and \pkg{geosphere} is installed, discrepancies exceeding 1 km generate a
+#'   warning. Default \code{NULL}.
+#' @param id.col Name of the deployment-identifier column (default \code{"ID"}), also used to match
+#'   rows in \code{metadata}.
+#' @param max.speed.kmh Non-negative threshold for speed between retained fixes, in km/h.
+#'   \code{NULL} (default) disables the speed check. Speeds represent displacement over the interval
+#'   between fixes, not instantaneous swimming speed; select the threshold accordingly.
+#' @param max.distance.km Non-negative maximum distance from the deployment reference location, in km.
+#'   \code{NULL} (default) disables this check. This is a gross-error screen independent of elapsed
+#'   time, and can remove genuine displacement in a long or wide-ranging deployment.
+#' @param min.satellites Minimum satellite count required for a \code{"FastGPS"} fix. Must be a
+#'   positive integer; \code{NULL} (default) disables this check. Missing or non-numeric counts are
+#'   retained, and other position types are not assessed by satellite count.
+#' @param control A [filterLocationsControl()] object or a named list of its arguments specifying
+#'   minimum fix separation, the iteration limit and an optional direction-reversal test.
+#'   \code{NULL} (default) uses the constructor defaults.
+#' @param deploy.lon.col,deploy.lat.col Names of the longitude and latitude columns in
+#'   \code{metadata} (defaults \code{"deploy_lon"} and \code{"deploy_lat"}). Coordinates must be
+#'   geographic longitude and latitude in decimal degrees.
+#' @param plot Logical; whether to display diagnostic maps on the active graphics device (default
+#'   \code{FALSE}). Only deployments with removed fixes contribute a page.
+#' @param plot.file Optional path to a multi-page diagnostic PDF, independent of \code{plot}. The name
+#'   must end in \code{.pdf} and the parent directory must exist. No PDF is created when no fixes are
+#'   removed. Default \code{NULL}.
+#' @param basemap Map background: \code{"land"} (default), \code{"satellite"}, \code{"none"}, or a
+#'   pre-fetched RGB \pkg{terra} \code{SpatRaster} returned by [getBasemap()]. Bathymetry rasters are
+#'   not supported here. Satellite imagery requires the optional mapping packages and, for automatic
+#'   retrieval, network access.
+#' @param coastline Vector coastline: \code{"auto"} (default), \code{"high"}, \code{"low"},
+#'   \code{"none"}, an \pkg{sf} geometry, a longitude/latitude table or matrix, or a spatial-file path.
+#'   Custom coordinates must be geographic longitude and latitude. Coastlines are filled on a land
+#'   background and outlined over imagery; \code{basemap = "none"} omits them. See [plotTracks()] for
+#'   supported inputs and automatic resolution selection.
+#' @param basemap.control A [basemapControl()] object controlling automatic satellite-tile retrieval.
+#'   Ignored for other backgrounds and pre-fetched rasters.
+#' @param return.data Logical; whether to return datasets in memory (default \code{TRUE}). With
+#'   \code{FALSE}, written \code{.rds} paths are returned invisibly, requiring \code{output.dir}.
+#' @param output.dir An existing directory in which datasets with a non-empty position record are
+#'   saved as individual \code{<id>.rds} files. Supplying a directory triggers saving, including when
+#'   no fixes were removed. Deployments without positions are not written. Default \code{NULL}.
+#' @param output.suffix Optional string appended to saved deployment identifiers before \code{.rds},
+#'   to label a processing run or avoid overwriting earlier files. Default \code{NULL}.
+#' @param compress Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip),
+#'   \code{FALSE}, or one of \code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when
+#'   \code{output.dir} is specified. See [base::saveRDS()].
+#' @param verbose How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or
+#'   \code{2}/\code{"detailed"} (default), which adds per-check diagnostics.
 #'
 #' @details
-#' The fixes live in the deployment's position record, created by [importTagData()], and this function
-#' reads that record directly, so it can run at any point after import.
+#' ## Position record and workflow
 #'
-#' ## The three checks
+#' Fixes are read from \code{getTagMetadata(x)$ancillary$positions$data}, whose canonical columns are
+#' \code{datetime}, \code{type}, \code{lon}, \code{lat} and \code{quality}. The function does not
+#' filter sample-level longitude or latitude columns. Supply valid geographic coordinates and
+#' timestamps; this is not a general coordinate-validation or duplicate-removal utility.
 #'
-#' They are applied in this order, and only to automatically acquired fixes.
+#' Only \code{"FastGPS"} and \code{"Argos"} fixes with non-missing coordinates can be removed.
+#' Other types, including curated \code{"User"} fixes, are retained and still act as neighbours in the
+#' speed check. Stored deployment and pop-up coordinates are separate reference points and are not
+#' modified. Argos quality classes are not screened directly, and coastlines are for display rather
+#' than land-crossing tests.
 #'
-#' 1. **Satellite count** (`min.satellites`). A Fastloc-GPS fix computed from too few satellites is
-#'    geometrically weak, so fixes below the threshold are removed. Argos fixes carry no satellite count
-#'    and are exempt.
-#' 2. **Distance from the deployment** (`max.distance.km`). A sanity bound for gross errors: a fix that
-#'    decoded to an impossible location sits absurdly far from the release site. It is off by default,
-#'    because it is anchored to the deployment and blind to elapsed time, so used as a movement
-#'    constraint it will clip the genuine displacement of a wide-ranging animal. Set it, if at all, well
-#'    beyond the animal's plausible range. The deployment and pop-up positions are never removed by it.
-#' 3. **Speed** (`max.speed.kmh`). The principled check, described below.
+#' ## Filtering sequence
 #'
-#' ## Why the speed check tests both neighbours
+#' Enabled checks are applied in this order:
 #'
-#' Flagging every over-threshold step does not work, because a single fast segment implicates two fixes
-#' and cannot say which of them is wrong. This function instead uses the neighbour-consistency, or
-#' "root", test of Freitas et al. (2008), as implemented in `argosfilter::sda` and \pkg{aniMotum}: a fix
-#' is implausible only when the implied speed to *both* its previous and its next retained fix exceeds
-#' the threshold - that is, when it is an isolated spike the track jumps out to and back from. A
-#' genuinely fast segment in the middle of a track, fast to one neighbour and normal to the other, is
-#' kept, because it cannot be attributed to either fix.
+#' \enumerate{
+#'   \item Satellite count: remove \code{"FastGPS"} fixes with a known count below
+#'     \code{min.satellites}.
+#'   \item Distance: remove eligible fixes farther than \code{max.distance.km} from the reference
+#'     deployment location. If that location is unavailable, a warning is issued and the distance
+#'     check is skipped for that deployment; other checks continue.
+#'   \item Speed: iteratively screen the remaining fixes in chronological order using geodesic
+#'     distance divided by elapsed time.
+#' }
 #'
-#' The first and last retained fix are the exception, and necessarily so: an endpoint has only one
-#' neighbour, so there is nothing for the rule to compare against. There a single implausible segment
-#' is enough to remove the fix, which is what catches a bad first or last position.
+#' The speed check follows the neighbour-consistency principle of Freitas et al. (2008). An interior
+#' fix is a candidate for removal when speeds to both adjacent retained fixes exceed
+#' \code{max.speed.kmh}. An endpoint has only one neighbour and is a candidate when that segment
+#' exceeds the threshold. A single fast segment within a record is insufficient to identify which
+#' endpoint is erroneous.
 #'
-#' The most egregious spike is removed, the speeds are recomputed against the new neighbours, and the
-#' process repeats until every remaining fix is plausible or `control$max.iterations` is reached. The
-#' optional direction-reversal test, `control$spike.angle`, additionally catches sharp out-and-back
-#' spikes that travel at moderate speed.
+#' If \code{control$spike.angle} is set, an interior fix can also be removed when the change in
+#' bearing reaches that angle and at least one adjacent speed exceeds the threshold. This supplements
+#' rather than replaces the speed requirement. Non-finite speeds and intervals shorter than
+#' \code{control$min.time.mins} are not judged.
 #'
-#' ## What is never removed
+#' Each pass removes the candidate with the largest adjacent speed, then recomputes neighbours.
+#' Filtering stops when no candidate remains or \code{control$max.iterations} is reached. Retained
+#' segments are not guaranteed to fall below the speed threshold: one-sided exceedances, trusted fix
+#' types and the iteration limit can leave faster segments in the record.
 #'
-#' Only `"FastGPS"` and `"Argos"` fixes - the automatically acquired positions that can be spurious -
-#' are ever removed. `"User"` positions, curated by hand in the tag manufacturer's data portal, are
-#' trusted and kept, though they still act as fixed anchors in the speed test. The deployment and pop-up
-#' positions are reference points and are never touched.
+#' ## Outputs and provenance
 #'
-#' Removed fixes are dropped from the position record, and the counts and thresholds are written to the
-#' processing history, readable with [processingHistory()]. The diagnostic maps show every fix coloured
-#' by outcome - kept, or removed and by which check - together with the chronological path through the
-#' retained fixes and the deployment anchors.
+#' There is no report-only mode: enabled checks immediately update returned or saved position records.
+#' Preserve the original inputs if removed coordinates must remain available for subsequent review.
+#' Supplied deployment metadata controls the reference location but does not replace stored deployment
+#' coordinates.
 #'
-#' @return If `return.data = TRUE`, a named list of tag objects with the implausible fixes removed from
-#'   their position records. If `return.data = FALSE`, a character vector of the written `.rds` file
-#'   paths. The diagnostic maps are a side effect of either.
+#' Each deployment with positions receives a processing-history entry recording the three main
+#' thresholds and the number of removed fixes. Disabled thresholds are recorded as missing values.
+#' The full control object and removed coordinates are not stored in that entry. Use
+#' [processingHistory()] to inspect it; no deployment-exclusion log is written.
+#'
+#' Deployments without positions pass through unchanged in memory but are omitted from saved outputs
+#' and the returned file-path vector. With all threshold checks disabled, a warning is issued and
+#' position records are retained.
+#'
+#' ## Diagnostics and dependencies
+#'
+#' Diagnostic maps distinguish retained fixes from removals by the first failed check, and show the
+#' path connecting retained fixes and available deployment anchors. These connecting segments are not
+#' reconstructed underwater trajectories.
+#'
+#' The speed and distance checks require \pkg{geosphere}; satellite-count filtering alone does not.
+#' The default land background uses locally available coastline data. Satellite backgrounds require
+#' \pkg{maptiles}, \pkg{terra} and \pkg{sf} for automatic retrieval; tile settings are provided by
+#' [basemapControl()]. See [plotTracks()] and [getBasemap()] for mapping dependencies and background
+#' preparation.
+#'
+#' @return With \code{return.data = TRUE}, a named list of deployment datasets, with filtered
+#'   ancillary position records where available and unchanged sensor time series. With
+#'   \code{return.data = FALSE}, a character vector of written \code{.rds} paths, returned invisibly.
+#'   Deployments without a position record are retained only in the in-memory result. Diagnostic
+#'   graphics and saved files are optional side effects.
 #'
 #' @references
 #' Freitas C, Lydersen C, Fedak MA, Kovacs KM (2008) A simple new algorithm to filter marine mammal
-#' Argos locations. *Marine Mammal Science* 24:315-325. \doi{10.1111/j.1748-7692.2007.00180.x}
+#' Argos locations. \emph{Marine Mammal Science} 24:315-325. \doi{10.1111/j.1748-7692.2007.00180.x}
 #'
-#' @seealso [importTagData()] for the step that creates the position record; [checkSensorQuality()] for
-#'   the sensor-channel counterpart; [filterLocationsControl()] for tuning the speed test;
-#'   [reconstructTrack()] and [crossValidateTrack()] for what consumes the cleaned fixes.
+#' @seealso [importTagData()], [filterLocationsControl()], [checkSensorQuality()],
+#'   [reconstructTrack()], [crossValidateTrack()], [plotTracks()], [processingHistory()].
 #'
 #' @examples
 #' \dontrun{
-#' imported <- importTagData(folders, metadata = meta)
+#' # Thresholds are illustrative and must be validated for the study.
+#' imported <- importTagData(folders, metadata = deployments)
+#' cleaned <- filterLocations(
+#'   imported,
+#'   max.speed.kmh = 8,
+#'   min.satellites = 4,
+#'   control = filterLocationsControl(min.time.mins = 2),
+#'   plot.file = "location_quality.pdf")
 #'
-#' # drop Fastloc fixes implying more than 8 km/h to both neighbours, or from fewer than 4 satellites
-#' cleaned <- filterLocations(imported,
-#'                            max.speed.kmh  = 8,
-#'                            min.satellites = 4,
-#'                            plot           = TRUE)
+#' getTagMetadata(cleaned[[1]])$ancillary$positions$data
+#' processingHistory(cleaned[[1]])
+#'
+#' # For a disk-based workflow, the output directory must already exist.
+#' cleaned.files <- filterLocations(
+#'   list.files("./data interim/01_imported", pattern = "\\.rds$", full.names = TRUE),
+#'   max.speed.kmh = 8,
+#'   min.satellites = 4,
+#'   output.dir = "./data interim/02_locations",
+#'   return.data = FALSE)
 #' }
 #' @export
 
@@ -301,7 +337,7 @@ filterLocations <- function(data,
     # only the automatically-acquired fixes may be removed; User fixes are trusted anchors
     removable <- pos$type %in% c("FastGPS", "Argos") & !is.na(pos$lon) & !is.na(pos$lat)
 
-    # resolve the reference deployment position (metadata -> meta$deployment -> first User fix)
+    # resolve the reference deployment position (supplied metadata -> meta$deployment)
     deploy <- .resolveDeployPosition(meta, metadata, id, id.col, deploy.lon.col, deploy.lat.col, pos, lvl)
 
     # per-fix outcome, filled as the checks run (""=kept)

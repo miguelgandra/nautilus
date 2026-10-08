@@ -21,143 +21,183 @@ checkSensorQuality(
 )
 }
 \arguments{
-\item{data}{Sensor data in any of the pipeline forms: a list of \code{nautilus_tag} objects (one per
-individual), a single aggregated data.table/data.frame with an \code{id.col}, or a character vector of
-\code{.rds} file paths (loaded lazily). The output of \link{importTagData} is expected.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+identified by \code{id.col}, or a character vector of \code{.rds} file paths. The output of
+\code{\link[=importTagData]{importTagData()}} followed by time-series regularisation and sensor-integrity checks is
+recommended. File inputs are read one deployment at a time.}
 
-\item{sensors}{A named list mapping each channel to screen (e.g. \code{depth}, \code{temp}) to an
-\code{\link[=anomalyControl]{anomalyControl()}} object (or a named list of its fields) carrying that channel's thresholds.
-Channels absent from a given deployment are skipped for that individual.}
+\item{sensors}{A non-empty named list specifying the channels to screen, such as \code{depth} and
+\code{temp}. Each entry must be an \code{\link[=anomalyControl]{anomalyControl()}} object or a named list of arguments to that
+constructor. Thresholds are expressed in the units of the corresponding numeric channel.
+Channels absent from a deployment are skipped.}
 
-\item{apply}{Logical. If \code{FALSE} (default), the function only reports the detected anomalies (the data
-passes through unchanged). If \code{TRUE}, the repairs are written into the returned/saved data (isolated
-spikes interpolated or set to \code{NA} per \code{interpolate}; malfunction/stall blocks removed).}
+\item{apply}{Logical; whether to apply the proposed repairs (default \code{FALSE}). A report-only
+run preserves sensor values, although returned records may be sorted chronologically and receive
+a processing-history entry. With \code{TRUE}, affected values are replaced in the returned or saved
+datasets.}
 
-\item{interpolate}{Logical. If \code{TRUE} (default), isolated outliers are linearly interpolated;
-otherwise they are left as \code{NA}. Malfunction/stall blocks are always removed, never interpolated.
-Only consulted when \code{apply = TRUE}.}
+\item{interpolate}{Logical; whether isolated spikes are linearly interpolated from adjacent samples
+(default \code{TRUE}) rather than left as \code{NA}. Sustained anomalies are never interpolated.
+This also determines the proposed treatment described in a report-only run.}
 
-\item{id.col, datetime.col}{Column names for the animal ID and datetime (POSIXct). Defaults
-\code{"ID"}/\code{"datetime"}.}
+\item{id.col, datetime.col}{Names of the deployment-identifier and timestamp columns (defaults
+\code{"ID"} and \code{"datetime"}). Timestamps must be \code{POSIXct}, with a usable, approximately
+regular sampling interval.}
 
-\item{plot}{Logical. If \code{TRUE}, draw the diagnostic report (overview page + one page per flagged
-deployment) to the active graphics device. Default \code{FALSE}.}
+\item{plot}{Logical; whether to display the diagnostic report on the active graphics device (default
+\code{FALSE}). The report contains an overview and detail pages for deployments with sustained
+anomalies.}
 
-\item{plot.file}{Character. Path to a single multi-page PDF for the report. The parent directory must
-exist; the name must end in \code{.pdf}. \code{NULL} (default) writes none. Independent of \code{plot}.}
+\item{plot.file}{Optional path to a multi-page diagnostic PDF, independent of \code{plot}. The name
+must end in \code{.pdf} and the parent directory must exist. Default \code{NULL}.}
 
-\item{return.data}{Logical. Return the curated data in memory (default \code{TRUE}). When \code{FALSE} and
-\code{apply = TRUE}, the function instead returns the paths of the \code{.rds} files it wrote, which feed
-directly into the next step's \code{data} argument -- so a large fleet can be curated without ever holding
-it all in memory; \code{return.data = FALSE} then requires an \code{output.dir}. A report-only run
-(\code{apply = FALSE}) still returns the \code{issues} report regardless.}
+\item{return.data}{Logical; whether to include datasets in the returned \code{curated_data} element
+(default \code{TRUE}). With \code{FALSE}, that element contains saved paths when
+\code{apply = TRUE}, or \code{NULL} in a report-only run. Applying repairs with
+\code{return.data = FALSE} requires \code{output.dir}. The \code{issues} table is always returned.}
 
-\item{output.dir}{Character. Directory in which to write one curated \verb{<id>.rds} file per deployment.
-Providing a directory is what triggers saving; \code{NULL} (default) writes nothing. Requires \code{apply = TRUE}
-(a report-only run does not repair anything, so writing is refused to avoid files that look curated
-but aren't). The directory must already exist.}
+\item{output.dir}{An existing directory in which repaired datasets are saved as individual
+\code{<id>.rds} files. Supplying a directory triggers saving and requires \code{apply = TRUE};
+report-only copies cannot be written through this argument. Default \code{NULL}.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{output.suffix}{Optional string appended to saved deployment identifiers before \code{.rds},
+to label a processing run or avoid overwriting earlier files. Default \code{NULL}.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
-(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+\item{compress}{Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip),
+\code{FALSE}, or one of \code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when
+\code{output.dir} is specified. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or
+\code{2}/\code{"detailed"} (default).}
 }
 \value{
-A list with:
-\itemize{
-\item \code{curated_data}: with \code{return.data = TRUE} (the default), a named list of \code{data.table}s,
-one per deployment. \strong{It is repaired ONLY when \code{apply = TRUE}.} With \code{apply = FALSE} - which is
-the default - you get the input back UNCHANGED, under a name that says curated. Nothing is
-repaired, and the anomalies live in \code{issues} instead. That combination is easy to misread as
-screened data, so the verbose summary says so explicitly; read it, or test
-\code{attr(x, "processing")}'s \code{applied} flag. With \code{return.data = FALSE} it is a character vector of
-written paths (which needs \code{apply = TRUE}), and \code{NULL} for a report-only run that wrote nothing.
-Each returned object carries a \code{checkSensorQuality} entry in its metadata audit trail recording
-whether the repairs were \code{applied}.
-\item \code{issues}: a data.frame of per-channel findings (zero rows when everything is clean), with
-columns \code{id}, \code{channel}, \code{severity} (\code{"warning"} for a block/stall, \code{"info"} for
-spikes only), \code{n_corrected}, \code{spikes}, \code{blocks}, \code{pct_affected} and \code{message}.
+A list with two elements:
+\describe{
+\item{\code{curated_data}}{With \code{return.data = TRUE}, a named list of deployment datasets.
+Sensor values are repaired only when \code{apply = TRUE}. With \code{return.data = FALSE}, a
+character vector of written \code{.rds} paths for a repair run, or \code{NULL} for a report-only
+run.}
+\item{\code{issues}}{A data frame with one row per flagged deployment and channel, or a typed
+zero-row table when no anomalies are found. Columns are \code{id}, \code{channel},
+\code{severity}, \code{n_corrected}, \code{spikes}, \code{blocks}, \code{pct_affected} and
+\code{message}.}
 }
+
+In \code{issues}, \code{severity} is \code{"warning"} for sustained anomalies and \code{"info"}
+for isolated spikes only; these labels do not themselves issue R warnings. \code{n_corrected} counts
+selected spike samples and initially flagged block samples, including in report-only runs. It
+excludes additional missing-gap cleanup and does not confirm successful interpolation.
+\code{spikes} counts isolated-spike groups and \code{blocks} counts contiguous flagged block runs.
+\code{pct_affected} estimates affected duration relative to the full recording span; it is not the
+percentage of rows replaced.
 }
 \description{
-Sensors glitch. A pressure transducer records a single impossible spike, a thermistor sticks at one
-value for an hour, a channel drops out and returns. These are transient faults in an otherwise sound
-sensor, and left in place a single spike is enough to invent a dive, distort a maximum depth, or pull
-a mean off course.
+Screens selected sensor channels for abrupt changes and prolonged constant readings using
+channel-specific thresholds. Detected anomalies are reported for review; optional repairs replace
+affected values with interpolated estimates or missing values without deleting rows from the sensor
+time series.
 
-\code{checkSensorQuality()} finds them and, if you ask it to, repairs them. It distinguishes isolated
-spikes, which can be interpolated from their neighbours, from sustained malfunctions, which cannot -
-a stretch where the sensor was not measuring has no value to recover, so it is removed rather than
-invented.
-
-This is the signal-quality half of the sensor-QC pair. Run \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}} first: it asks
-whether a channel is trustworthy at all, and there is no point repairing the symptoms of a channel
-that should be discarded.
+The function complements \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, which assesses whether an entire sensor stream
+is usable. Apply integrity checks first, then use this function to assess transient anomalies in the
+surviving channels before deriving movement, dive or environmental metrics.
 }
 \details{
-\subsection{What is detected}{
+\subsection{Detection and repair}{
+
+Each channel is assessed independently using its \code{\link[=anomalyControl]{anomalyControl()}} settings:
 
 \describe{
-\item{Isolated outliers (\code{info})}{Single spikes whose sample-to-sample rate of change
-exceeds the channel's \code{rate.threshold}, gated by its \code{sensor.resolution} so ordinary quantisation
-noise is not flagged. These are transient glitches; with \code{interpolate = TRUE} they are linearly
-interpolated from their neighbours, otherwise left as \code{NA}.}
-\item{Malfunction and stall periods (\code{warning})}{Clusters of outliers within \code{outlier.window}
-minutes of one another, or prolonged runs of a constant non-zero reading longer than
-\code{stall.threshold} minutes (a stuck sensor). These signal a sustained sensor failure and are removed
-as whole blocks, together with any small islands of valid data stranded between them, and are
-never interpolated.}
-}
-All thresholds are set per channel through \code{\link[=anomalyControl]{anomalyControl()}}.
-}
-
-\subsection{Reporting and repairing}{
-
-Like \code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, the function reports first: with
-\code{apply = FALSE} (default) it only \emph{detects} the anomalies and returns them in \code{issues}, leaving the data
-untouched; with \code{apply = TRUE} it additionally \emph{writes} the repairs into the returned/saved data. This
-lets you review what would change before committing to it.
+\item{Abrupt changes}{Sample-to-sample changes exceeding the resolution gate and
+\code{rate.threshold} are grouped when separated by no more than \code{outlier.window} minutes,
+using the nominal sampling frequency. A group of exactly two flagged changes is treated as an
+isolated spike; the reading with the larger absolute value is selected for replacement.}
+\item{Constant readings}{Runs of identical, strictly positive values lasting at least
+\code{stall.threshold} minutes, as measured by nominal sample count, are flagged as stalls.
+Constant zero or negative readings are not detected by this criterion.}
+\item{Sustained anomalies}{Other groups of flagged changes and stall samples are replaced by
+\code{NA}. When sustained anomalies occur, finite runs bracketed by missing values are also
+removed; this cleanup has no maximum run-length limit and can include runs between pre-existing
+gaps.}
 }
 
-\subsection{The diagnostic report}{
-
-When \code{plot} or \code{plot.file} is set, an overview page tables every tag and its
-anomaly count per channel (sorted worst-first), followed by one page per tag with a stall/malfunction
-block - each anomalous channel's trace with the removed spikes (red), interpolated values (cyan) and
-shaded block spans, plus an interpretation note. Tags with only isolated spikes appear in the overview
-but do not get their own page.
-}
-}
-\section{Known limitation - the rate gate is sampling-rate dependent}{
-
-The spike test gates on \code{abs(diff) > sensor.resolution / dt}, which compares a value against a rate.
-The effective floor is therefore \code{sensor.resolution / dt}, so sensitivity SCALES WITH THE SAMPLING
-INTERVAL: at 100 Hz with \code{sensor.resolution = 0.5} a step must exceed 50 units to be considered at
-all, where at 1 Hz it need only exceed 0.5. This does NOT affect gross sensor failure - validated on
-six real deployments carrying impossible depth (to 3059 m) and temperature (to 52,657 degrees)
-excursions, every one detected and fully repaired - but a SUBTLE in-range transient is harder to
-catch on a fast record than on a slow one. The dimensionally-obvious correction is worse and
-mass-flags noise; a proper fix needs a noise-floor estimator and is deliberately deferred. Treat the
-rate test as a tripwire for gross failure rather than a fine screen, and set \code{sensor.resolution}
-from the channel's true quantum.
+With \code{apply = TRUE}, isolated spikes are replaced by \code{NA} and, if requested, interpolated
+linearly within a three-sample neighbourhood. Interpolation uses sample position rather than elapsed
+time and does not extrapolate at record boundaries. Sustained anomalies remain missing. Rows,
+timestamps and unscreened channels are retained.
 }
 
+\subsection{Sampling and scientific limitations}{
+
+The current rate detector first requires
+\code{abs(diff(value)) > sensor.resolution / diff(time)}, then compares the absolute rate with
+\code{rate.threshold}, with time differences expressed in seconds. The initial gate compares a value
+difference with a rate, making sensitivity
+sampling-interval dependent: with a resolution of 0.5 units, the gate is 50 units at 100 Hz but
+0.5 units at 1 Hz. It should therefore be treated as a screen for gross anomalies, not as a
+sampling-invariant noise or uncertainty model.
+
+Choose thresholds from instrument specifications and plausible changes in the measured quantity,
+then validate them against representative traces. Slowly varying drift, subtle in-range faults and
+biologically unusual but valid readings are not distinguished reliably by these heuristics.
+Irregular sampling, duplicate timestamps and existing gaps require particular care; use
+\code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}} where appropriate before screening. Sensor-accuracy fields in
+\code{\link[=anomalyControl]{anomalyControl()}} do not enter the detector.
+}
+
+\subsection{Reporting and processing history}{
+
+Review \code{issues} before enabling repairs. Its messages describe the proposed treatment even
+when \code{apply = FALSE}; neither the name \code{curated_data} nor a message stating
+\code{"interpolated"} confirms that sensor values were changed. Use \code{\link[=processingHistory]{processingHistory()}} to inspect
+the recorded \code{applied} flag.
+
+Each checked, non-empty deployment receives a history entry recording the screened channels,
+detector count, application mode and interpolation setting. The full channel controls and a
+sample-level anomaly mask are not stored in that entry. No deployment-exclusion log is written.
+}
+
+\subsection{Diagnostic report}{
+
+The overview lists findings by deployment and channel, ordered by severity and affected duration.
+Detail pages are drawn for deployments with stall or malfunction blocks, and include all anomalous
+channels in those deployments. Deployments with isolated spikes only appear in the overview.
+Traces and markers show the original readings and proposed treatment, not a verification of the
+repaired signal.
+}
+}
 \examples{
+# Illustrative thresholds, not general biological limits
+n <- 120L
+recording <- data.frame(
+  ID = "deployment_01",
+  datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(n) - 1,
+  depth = 10 + sin(seq_len(n) / 12))
+recording$depth[60] <- 100
+sensors <- list(depth = anomalyControl(
+  rate.threshold = 7, sensor.resolution = 0.5))
+
+report <- checkSensorQuality(recording, sensors = sensors, verbose = "quiet")
+report$issues
+repaired <- checkSensorQuality(
+  recording, sensors = sensors, apply = TRUE, verbose = "quiet")
+processingHistory(repaired$curated_data[[1]])
+
 \dontrun{
+# Run integrity checks before repairing surviving channels.
 checked <- checkSensorIntegrity(regularized, apply = TRUE)$curated_data
-# Repair transient glitches on the surviving channels (spikes interpolated, stalls removed):
 quality <- checkSensorQuality(
   checked,
   sensors = list(
     depth = anomalyControl(rate.threshold = 7, sensor.resolution = 0.5),
-    temp  = anomalyControl(rate.threshold = 1, sensor.resolution = 0.05)),
-  apply = TRUE)
-quality$issues
+    temp = anomalyControl(rate.threshold = 1, sensor.resolution = 0.05)),
+  apply = TRUE,
+  plot.file = "sensor_quality.pdf",
+  output.dir = "./data interim/03_quality",
+  return.data = FALSE)
+files <- quality$curated_data
 }
 }
 \seealso{
-\code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, \code{\link[=anomalyControl]{anomalyControl()}}, \link{importTagData}.
+\code{\link[=checkSensorIntegrity]{checkSensorIntegrity()}}, \code{\link[=anomalyControl]{anomalyControl()}}, \code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}},
+\code{\link[=importTagData]{importTagData()}}, \code{\link[=processingHistory]{processingHistory()}}.
 }

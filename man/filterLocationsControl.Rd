@@ -14,8 +14,9 @@ filterLocationsControl(
 \item{min.time.mins}{The shortest separation, in minutes, between two fixes for the speed implied
 between them to be trusted. Closer pairs are not judged, because a sub-threshold gap inflates the
 apparent speed unreliably: a metre of positional jitter over a few seconds looks like a huge
-speed. Default \code{0}, which judges every segment, the position record having already dropped
-duplicate timestamps. Raise it if your tag reports bursts of near-simultaneous fixes.}
+speed. Default \code{0}; non-finite speeds, including those from zero-time intervals, are not
+judged. This filter does not remove duplicate timestamps. Raise it if your tag reports bursts
+of near-simultaneous fixes.}
 
 \item{max.iterations}{The most removal passes to make. Each pass removes the single most egregious
 spike and recomputes speeds against the new neighbours, and the loop stops early once no fix is
@@ -25,8 +26,9 @@ means the threshold is too tight for the data.}
 \item{spike.angle}{An optional direction-reversal test, in degrees between 90 and 180, that
 supplements the speed test: an interior fix is also treated as a spike when the track's heading
 reverses by at least this much there \emph{and} at least one adjoining segment exceeds
-\code{max.speed.kmh}. It catches the sharp out-and-back spikes that travel slowly enough to pass the
-speed test alone. \code{NULL} (default) disables it; around 160 degrees is a reasonable starting point.}
+\code{max.speed.kmh}. It can therefore flag a reversal with only one over-threshold segment, but does
+not flag reversals whose adjacent speeds are both below the threshold. \code{NULL} (default)
+disables it; choose the angle after inspecting representative tracks.}
 }
 \value{
 A validated \code{nautilus_filter_locations} object for the \code{control} argument of

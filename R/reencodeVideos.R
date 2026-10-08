@@ -2,58 +2,104 @@
 # Re-encode camera-tag videos to HEVC #################################################################
 #######################################################################################################
 
-#' Re-encode camera-tag videos to a more compact format
+#' Re-encode camera-tag videos to HEVC
 #'
 #' @description
-#' Camera tags produce very large files - a single deployment can fill a disk - and the original
-#' encoding is chosen for the camera's convenience rather than for storage. Re-encoding to HEVC, also
-#' known as H.265, typically cuts the size substantially at visually equivalent quality, which matters
-#' when an archive has to be kept for the life of a study.
+#' Batch re-encodes camera-tag video files using FFmpeg, with configurable software or hardware
+#' encoding. Outputs are written as \code{.mp4} files with HEVC-compatible container tagging; audio
+#' streams are discarded.
 #'
-#' This function batch-converts every video in a directory with FFmpeg, skipping any whose output
-#' already exists.
+#' Re-encoding can reduce storage requirements, but the default settings do not provide a lossless
+#' archival copy or establish equivalence to the original footage. Retain source files and verify image
+#' quality, timestamps and compatibility before using re-encoded videos for scientific annotation or analysis.
 #'
-#' @param mov.directory The directory holding the `.mov` or `.mp4` files to re-encode.
-#' @param output.dir Where to write the re-encoded `.mp4` files. Defaults to `mov.directory`.
-#' @param file.suffix A string appended to each output name, before `.mp4`, to keep the re-encoded files
-#'   distinct from the originals when writing to the same directory. Default `""`.
-#' @param encoder Which FFmpeg encoder to use. Default `"libx265"`, the portable software encoder.
-#'   Hardware encoders are far faster where supported: `"hevc_videotoolbox"` on macOS, `"hevc_nvenc"` on
-#'   NVIDIA, `"hevc_amf"` on AMD, `"hevc_qsv"` on Intel. List what your build offers with
-#'   `ffmpeg -encoders`.
-#' @param crf The constant rate factor for the **software** encoder, from 0 to 51, where lower means
-#'   higher quality and a larger file. Default `18`, which is visually near-lossless for this material.
-#'   Ignored by the hardware encoders.
-#' @param video.quality The quality setting for the **hardware** encoders, from 1 to 100, where higher
-#'   is better. Default `50`. Ignored by the software encoder.
-#' @param preset How hard the software encoder works for a given quality: one of `"ultrafast"`,
-#'   `"superfast"`, `"veryfast"`, `"faster"`, `"fast"`, `"medium"` (default), `"slow"`, `"slower"` or
-#'   `"veryslow"`. Slower presets buy smaller files at the same quality, at a cost in time that is
-#'   substantial across a whole archive.
-#' @param overwrite Whether to re-encode files whose output already exists (default `FALSE`, which skips
-#'   them). Leave it off so an interrupted batch can simply be re-run.
-#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default).
+#' @param mov.directory An existing directory containing \code{.mov} or \code{.mp4} source files.
+#'   Extension matching is case-insensitive and subdirectories are not searched.
+#' @param output.dir An existing directory in which output videos are written. Defaults to
+#'   \code{mov.directory}; a separate output directory is recommended to avoid collisions and
+#'   accidental re-encoding of previous outputs.
+#' @param file.suffix String appended to each source-file stem before the output \code{.mp4} extension
+#'   (default \code{""}). Use a suffix or a separate directory when processing \code{.mp4} sources,
+#'   since a file is never re-encoded onto its own path.
+#' @param encoder FFmpeg video encoder (default \code{"libx265"}, a software HEVC encoder). Recognised
+#'   hardware choices are \code{"hevc_videotoolbox"}, \code{"hevc_nvenc"}, \code{"hevc_amf"} and
+#'   \code{"hevc_qsv"}. The encoder must be available in the local FFmpeg build; hardware encoders
+#'   additionally require compatible hardware and runtime support. Inspect \code{ffmpeg -encoders}
+#'   before selecting an alternative.
+#' @param crf Constant rate factor passed as \code{-crf} to encoders not recognised as hardware
+#'   encoders. Must be between 0 and 51 (default \code{18}). For \code{libx265}, lower values generally
+#'   retain more detail at the cost of larger files. Ignored for the four recognised hardware encoders.
+#' @param video.quality Quality value passed as \code{-q:v} to the four recognised hardware encoders.
+#'   Must be between 1 and 100 (default \code{50}). Its interpretation and effective range depend on
+#'   the encoder; it is not a comparable quality scale across hardware backends. Ignored for other
+#'   encoders.
+#' @param preset Encoding preset: \code{"ultrafast"}, \code{"superfast"}, \code{"veryfast"},
+#'   \code{"faster"}, \code{"fast"}, \code{"medium"} (default), \code{"slow"}, \code{"slower"} or
+#'   \code{"veryslow"}. With \code{libx265}, this controls the encoding-effort and compression trade-off.
+#'   The value is forwarded to every selected encoder without translation; hardware backends may
+#'   ignore or reject these software-style presets.
+#' @param overwrite Logical; whether to replace existing output files (default \code{FALSE}). Files
+#'   whose output path equals the source path are always skipped, even with \code{TRUE}.
+#' @param verbose How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or
+#'   \code{2}/\code{"detailed"} (default).
 #'
 #' @details
-#' Audio is dropped, since a camera tag's audio track is rarely of interest and removing it saves space.
-#' If you need the audio, re-encode outside this function.
+#' ## Encoding and dependencies
 #'
-#' Requires FFmpeg on the system path.
+#' FFmpeg must be installed and discoverable on the system \code{PATH}. Encoding is sequential, with
+#' one FFmpeg process per source file. The requested encoder is checked against the build's advertised
+#' encoder list; this does not verify that a hardware encoder can run. There is no automatic encoder
+#' fallback or translation of backend-specific quality controls.
 #'
-#' @return The output file paths, invisibly.
+#' All outputs use the \code{hvc1} video tag and omit audio through \code{-an}. Select an HEVC encoder
+#' compatible with the resulting MP4 container. The function does not request resizing or explicit
+#' frame-rate conversion, and does not apply sensor/video clock corrections. It does not guarantee
+#' preservation of all source container metadata.
 #'
-#' @seealso [getVideoMetadata()] for reading the timestamps of the resulting files;
-#'   [renderOverlayVideo()] for compositing them with a sensor dashboard.
+#' ## File naming and overwrite safeguards
+#'
+#' Output names are \code{<source stem><file.suffix>.mp4}. Existing outputs are skipped unless
+#' \code{overwrite = TRUE}; skipped paths are not included in the returned vector. When input and
+#' output directories are the same, an unsuffixed \code{.mp4} input is skipped because its destination
+#' is identical to its source.
+#'
+#' Different source files sharing a stem, such as \code{clip.mov} and \code{clip.mp4}, can map to the
+#' same output path. The same-path safeguard does not prevent overwriting another source with that
+#' name. Use distinct source stems and preferably separate directories. Re-running in a directory
+#' containing earlier outputs can also re-encode those outputs and append the suffix again.
+#'
+#' ## Failure handling and verification
+#'
+#' Missing FFmpeg, an unavailable encoder or a directory with no supported source files stops the
+#' call. Individual encoding failures are reported in the console when verbosity permits, then the
+#' batch continues. Failed attempts can leave partial output files; these are not removed or checked
+#' for validity, and a later run with \code{overwrite = FALSE} skips any existing file.
+#'
+#' A successful result means FFmpeg returned success and the output file exists, not that image
+#' quality or complete playback has been validated. Check outputs before replacing originals.
+#' Re-run [getVideoMetadata()] for the new paths when integrating them into the video workflow.
+#'
+#' @return A character vector of newly encoded output paths, returned invisibly. Skipped and failed
+#'   encodings are omitted; if none succeed, the result is \code{character(0)}. Writing video files is
+#'   the principal side effect.
+#'
+#' @seealso [getVideoMetadata()], [launchVideo()], [renderOverlayVideo()].
 #'
 #' @examples
 #' \dontrun{
-#' # portable software encoder, written beside the originals with a suffix
-#' reencodeVideos("./videos/raw", file.suffix = "_hevc")
+#' # Both directories must already exist. Preserve the original footage.
+#' encoded <- reencodeVideos(
+#'   mov.directory = "./videos/raw",
+#'   output.dir = "./videos/hevc",
+#'   encoder = "libx265",
+#'   crf = 18,
+#'   preset = "medium")
 #'
-#' # the much faster macOS hardware encoder, into a separate folder
-#' reencodeVideos("./videos/raw", output.dir = "./videos/hevc",
-#'                encoder = "hevc_videotoolbox")
+#' # Inspect outputs and retain the deployment ID when refreshing video metadata.
+#' video.metadata <- getVideoMetadata(c(deployment_01 = "./videos/hevc"))
+#'
+#' # Alternatively, distinguish outputs written beside their sources.
+#' reencodeVideos("./videos/raw", file.suffix = "_hevc")
 #' }
 #' @export
 
