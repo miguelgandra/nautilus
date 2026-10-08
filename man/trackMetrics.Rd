@@ -2,7 +2,7 @@
 % Please edit documentation in R/trackMetrics.R
 \name{trackMetrics}
 \alias{trackMetrics}
-\title{Summarise each movement path into trajectory metrics}
+\title{Summarise horizontal movement paths and trajectory geometry}
 \usage{
 trackMetrics(
   data,
@@ -15,75 +15,156 @@ trackMetrics(
 )
 }
 \arguments{
-\item{data}{A tag object or data frame holding a track, a list of them, a single table with an
-\code{id.col}, or a character vector of \code{.rds} paths. Each must carry longitude, latitude and timestamp
-columns.}
+\item{data}{A tag dataset, a list of track datasets, a data frame containing multiple deployments
+identified by \code{id.col}, or a character vector of \code{.rds} file paths. Each track must contain
+longitude, latitude and timestamp columns. The output of \code{\link[=reconstructTrack]{reconstructTrack()}} can be supplied
+directly. File inputs are read sequentially; a named list can identify tables lacking \code{id.col}.}
 
-\item{control}{A control object from \code{\link[=trackMetricsControl]{trackMetricsControl()}} selecting which metrics to compute and
-the rolling-window sizes. Pass \code{trackMetricsControl(...)} to change it.}
+\item{control}{A control object from \code{\link[=trackMetricsControl]{trackMetricsControl()}}, or a named list of its arguments,
+selecting the optional geometric metrics, minimum position count and temporal window lengths.
+Default \code{trackMetricsControl()}, which selects all optional metrics and requires at least five
+positions. The temporal tortuosity columns are computed regardless of the optional metric selection.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col}{Name of the deployment-identifier column (default \code{"ID"}). Used to split a single
+table and label output rows. For list or file inputs without a usable identifier, the list name
+or file basename is used. The output identifier column is always named \code{ID}.}
 
-\item{lon.col, lat.col}{Which columns hold longitude and latitude. Left \code{NULL} (default), the
-reconstructed columns \code{pseudo_lon} and \code{pseudo_lat} are used where present, and \code{lon}/\code{lat}
-otherwise. Name them explicitly to summarise a different track, such as the raw satellite fixes.}
+\item{lon.col, lat.col}{Names of the longitude and latitude columns, in decimal degrees. With both
+\code{NULL} (default), \code{pseudo_lon} and \code{pseudo_lat} are selected if both columns exist; otherwise
+\code{lon} and \code{lat} are used. Explicit names override the selection for each axis. Set both when
+summarising a different coordinate pair, such as observed rather than reconstructed positions.}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+\item{datetime.col}{Name of the timestamp column (default \code{"datetime"}), expected to contain
+non-missing \code{POSIXct} values. Positions are ordered by this column before calculating metrics.}
 
-\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
-(default).}
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (per-deployment outcomes and
+summary), or \code{2}/\code{"detailed"} (default), which adds position counts, distance, duration and
+straightness diagnostics.}
 }
 \value{
-A data frame with one row per animal, holding whichever of these the selected metrics
-produce:
-\itemize{
-\item \code{ID} - the animal identifier.
-\item \code{Total_points} - how many positions were used.
-\item \code{Track_duration_h} - the span of the track in hours.
-\item \code{Total_distance_km} - path length, the sum of the great-circle steps.
-\item \code{Net_displacement_km} - straight-line distance from the first position to the last.
-\item \code{Path_ratio} - path length divided by net displacement; 1 for a straight path, larger for a
-convoluted one.
-\item \code{Sinuosity} - the index of Bovet and Benhamou (1988), \verb{1.18 * sd(turning angle in radians) / sqrt(mean step length in km)}.
-\item \code{Mean_turning_angle} - the mean absolute change in bearing, in degrees.
-\item \code{Straightness} - net displacement divided by path length; 0 for a tortuous path, 1 for a straight
-one.
-\item \code{Hourly_tortuosity}, \code{Daily_tortuosity} - the mean path-to-displacement ratio over rolling windows
-of \code{control$hourly.window.h} and \code{control$daily.window.h} hours.
+A data frame with one row per eligible deployment. The following columns are always present
+in a non-empty result:
+\describe{
+\item{\code{ID}}{Deployment identifier, as character.}
+\item{\code{Total_points}}{Number of retained positions.}
+\item{\code{Track_duration_h}}{Time between the first and last retained positions, in hours.}
+\item{\code{Total_distance_km}}{Sum of consecutive horizontal step lengths, in kilometres.}
+\item{\code{Net_displacement_km}}{Great-circle distance between the first and last positions,
+in kilometres.}
+\item{\code{Hourly_tortuosity}, \code{Daily_tortuosity}}{Dimensionless mean path-to-displacement ratios
+over the respective temporal windows. Their names do not change when window lengths change.}
 }
+\code{control$metrics} selects additional columns:
+\describe{
+\item{\code{Path_ratio}}{Dimensionless total path length divided by net displacement; \code{NA} when
+endpoint displacement is zero.}
+\item{\code{Sinuosity}}{Local sinuosity index, in inverse square-root kilometres; \code{NA} when too few
+positive steps or turning angles are available.}
+\item{\code{Mean_turning_angle}}{Mean absolute change in bearing, in degrees.}
+\item{\code{Straightness}}{Dimensionless net displacement divided by total path length; \code{NA} when
+total path length is zero. Values near one indicate a relatively direct path.}
+}
+Duration and distance columns are rounded to two decimal places, and other numeric metrics to
+three. Infinite results are replaced by \code{NA}; undefined means may remain \code{NaN}. Use \code{is.na()}
+to recognise either missing-value form. If every track is omitted, the zero-row result contains
+only the five base columns from \code{ID} through \code{Net_displacement_km}.
 }
 \description{
-A reconstructed track holds thousands of positions, but the questions asked of it are usually
-summary ones: how far did the animal travel, how far did it actually get, and how convoluted was the
-route in between. The last of these - tortuosity - is a common proxy for behavioural mode, since a
-straight transit and a tightly looping search look quite different even when they cover the same
-distance.
+Calculates deployment-level summaries of horizontal movement paths, including total path length,
+net displacement, local turning, straightness and temporal tortuosity. Each eligible deployment is
+reduced to one row, using reconstructed positions from \code{\link[=reconstructTrack]{reconstructTrack()}} or a supplied series of
+geographic locations.
 
-This function reduces each path to one row of such measures: path length, net displacement, and a
-family of tortuosity and straightness indices. Run it on the pseudo-track from \code{\link[=reconstructTrack]{reconstructTrack()}},
-or on any track carrying longitude, latitude and timestamps.
+The metrics describe complementary aspects of path geometry. Global path-to-displacement ratios
+summarise the complete record, whereas local turning and windowed ratios describe finer-scale
+variation. These are geometric descriptors rather than independent classifications of behaviour.
 }
 \details{
-The measures give complementary views of the same path. \code{Path_ratio} and \code{Straightness} are global,
-comparing the route to the straight line from start to end, and so say nothing about where the
-wandering happened. \code{Sinuosity} and \code{Mean_turning_angle} are driven by local turning instead, and
-will separate two paths that share the same endpoints but not the same behaviour.
-\code{Hourly_tortuosity} and \code{Daily_tortuosity} sit between the two, reporting how the
-path-to-displacement ratio behaves over rolling windows.
+\subsection{Workflow and input assumptions}{
 
-Distances are computed with the haversine great-circle formula. A metric is returned as \code{NA} where
-the track is too short to support it, rather than guessed.
+Use \code{\link[=reconstructTrack]{reconstructTrack()}} to estimate a dead-reckoned path and \code{\link[=plotTracks]{plotTracks()}} to inspect it before
+summarising its geometry. Coordinate columns are selected by their presence, not by their coverage:
+an entirely missing reconstructed pair does not trigger a fallback to observed coordinates when
+both reconstructed columns exist. To summarise ancillary fixes, supply their position table
+explicitly; the function does not read fixes from tag metadata or add deployment/pop-up anchors.
 
-Run this after \code{\link[=reconstructTrack]{reconstructTrack()}}, which supplies \code{pseudo_lon} and \code{pseudo_lat}. It reduces a track
-to a summary and never modifies the input.
+Longitude and latitude should be finite geographic coordinates in decimal degrees, with consistent
+timestamps. Rows with \code{NA} longitude or latitude are removed, and the remaining rows are sorted by
+time. This is not a geographic or timestamp quality-control procedure: coordinates are not range
+checked, duplicate timestamps are not resolved, and missing timestamps should be addressed beforehand.
+
+A deployment with missing required columns is warned about and omitted without stopping the other
+tracks. A track with fewer than \code{control$min.points} positions after coordinate-NA removal is also
+omitted. Empty input collections are rejected. Input datasets and metadata are not modified; the
+function neither saves the summary nor writes to a deployment-exclusion log.
+}
+
+\subsection{Distances and local turning}{
+
+Step lengths and endpoint displacement are calculated using the haversine great-circle formula
+with a spherical Earth radius of 6371 km. They describe horizontal movement, not three-dimensional
+distance through the water column. Turning angles are signed differences between successive initial
+step bearings, wrapped to -180 to 180 degrees; the reported turning metric uses their absolute values.
+
+\code{Path_ratio} is path length divided by endpoint displacement, whereas \code{Straightness} is the inverse
+ratio where both are defined. Neither identifies where within the record a change in movement occurred.
+\code{Sinuosity} uses the implemented Bovet and Benhamou (1988) expression
+\verb{1.18 * sd(turning angles in radians) / sqrt(mean positive step length in km)} and therefore has
+units of inverse square-root kilometres. It requires at least one finite positive step and two
+finite turning angles. Zero-length steps are omitted from the mean step length but their bearings
+are not removed before calculating turning angles; repeated positions warrant particular care.
+}
+
+\subsection{Temporal tortuosity}{
+
+\code{Hourly_tortuosity} and \code{Daily_tortuosity} are unweighted means of path-to-displacement ratios in
+successive, non-overlapping windows of \code{control$hourly.window.h} and \code{control$daily.window.h} hours
+(defaults \code{1} and \code{24}). These are not sliding windows. Windows begin at the first retained timestamp
+and advance by their full duration; a final incomplete window is omitted. Both window boundaries are
+inclusive, so a position exactly on a shared boundary can contribute to both adjacent windows.
+
+Each window needs at least three retained positions and positive endpoint displacement. Unsupported
+windows are omitted from the mean. A track shorter than a window returns \code{NA} for that column;
+if no window provides a defined ratio, the mean may be \code{NaN}.
+}
+
+\subsection{Interpretation and limitations}{
+
+Missing coordinate rows are removed without splitting the trajectory. Consecutive retained positions
+are connected even across long recording gaps, and temporal windows have no maximum-gap or minimum
+temporal-coverage criterion. Longer intervals between fixes can conceal intervening movement and
+reduce estimated path length; location noise can instead inflate distances and turning. Sampling
+interval, reconstruction settings and location quality should therefore be comparable across tracks.
+
+The function does not propagate positional uncertainty into the metrics. A tortuous trajectory alone
+is not evidence of foraging, and a reconstructed path is not an independently observed trajectory.
+Assess reconstruction accuracy with \code{\link[=crossValidateTrack]{crossValidateTrack()}} and interpret geometric metrics alongside
+the sensor record and the study's biological context.
+}
 }
 \examples{
-\dontrun{
-tracks <- reconstructTrack(processed)
-
-# one summary row per animal, using pseudo_lon/pseudo_lat automatically
-metrics <- trackMetrics(tracks, control = trackMetricsControl(metrics = "all"))
+# Illustrative geographic positions sampled once per hour
+n <- 30
+positions <- data.frame(
+  ID = "deployment_01",
+  datetime = as.POSIXct("2023-01-01", tz = "UTC") + (seq_len(n) - 1) * 3600,
+  lon = seq(-25.2, -25.0, length.out = n),
+  lat = 37 + 0.01 * sin(seq(0, 2 * pi, length.out = n))
+)
+metrics <- trackMetrics(positions, verbose = "quiet")
 metrics[, c("ID", "Total_distance_km", "Straightness")]
+
+\dontrun{
+# Reconstructed coordinate pairs are selected automatically
+tracks <- reconstructTrack(processed)
+metrics <- trackMetrics(tracks, control = trackMetricsControl(metrics = "all"))
+
+# Summarise observed fixes separately from the reconstructed track
+fixes <- getTagMetadata(tracks[[1]])$ancillary$positions$data
+observed_metrics <- trackMetrics(
+  list(deployment_01 = fixes), lon.col = "lon", lat.col = "lat",
+  control = trackMetricsControl(metrics = c("path_ratio", "straightness"))
+)
 }
 }
 \references{
@@ -91,6 +172,7 @@ Bovet P, Benhamou S (1988) Spatial analysis of animals' movements using a correl
 model. \emph{Journal of Theoretical Biology} 131:419-433. \doi{10.1016/S0022-5193(88)80038-9}
 }
 \seealso{
-\code{\link[=trackMetricsControl]{trackMetricsControl()}} for selecting the metrics; \code{\link[=reconstructTrack]{reconstructTrack()}} for producing the
-track; \code{\link[=summarizeTagData]{summarizeTagData()}} for a deployment-level overview.
+\code{\link[=trackMetricsControl]{trackMetricsControl()}} for metric selection and temporal windows; \code{\link[=reconstructTrack]{reconstructTrack()}}
+for track estimation; \code{\link[=crossValidateTrack]{crossValidateTrack()}} for reconstruction validation; \code{\link[=plotTracks]{plotTracks()}} for
+maps; \code{\link[=filterLocations]{filterLocations()}} for location screening; \code{\link[=summarizeTagData]{summarizeTagData()}} for sensor-data summaries.
 }

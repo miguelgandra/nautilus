@@ -2,78 +2,156 @@
 # Movement-path metrics (tortuosity + supporting track statistics) ####################################
 #######################################################################################################
 
-#' Summarise each movement path into trajectory metrics
+#' Summarise horizontal movement paths and trajectory geometry
 #'
 #' @description
-#' A reconstructed track holds thousands of positions, but the questions asked of it are usually
-#' summary ones: how far did the animal travel, how far did it actually get, and how convoluted was the
-#' route in between. The last of these - tortuosity - is a common proxy for behavioural mode, since a
-#' straight transit and a tightly looping search look quite different even when they cover the same
-#' distance.
+#' Calculates deployment-level summaries of horizontal movement paths, including total path length,
+#' net displacement, local turning, straightness and temporal tortuosity. Each eligible deployment is
+#' reduced to one row, using reconstructed positions from [reconstructTrack()] or a supplied series of
+#' geographic locations.
 #'
-#' This function reduces each path to one row of such measures: path length, net displacement, and a
-#' family of tortuosity and straightness indices. Run it on the pseudo-track from [reconstructTrack()],
-#' or on any track carrying longitude, latitude and timestamps.
+#' The metrics describe complementary aspects of path geometry. Global path-to-displacement ratios
+#' summarise the complete record, whereas local turning and windowed ratios describe finer-scale
+#' variation. These are geometric descriptors rather than independent classifications of behaviour.
 #'
-#' @param data A tag object or data frame holding a track, a list of them, a single table with an
-#'   `id.col`, or a character vector of `.rds` paths. Each must carry longitude, latitude and timestamp
-#'   columns.
-#' @param control A control object from [trackMetricsControl()] selecting which metrics to compute and
-#'   the rolling-window sizes. Pass `trackMetricsControl(...)` to change it.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param lon.col,lat.col Which columns hold longitude and latitude. Left `NULL` (default), the
-#'   reconstructed columns `pseudo_lon` and `pseudo_lat` are used where present, and `lon`/`lat`
-#'   otherwise. Name them explicitly to summarise a different track, such as the raw satellite fixes.
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
-#'   (default).
+#' @param data A tag dataset, a list of track datasets, a data frame containing multiple deployments
+#'   identified by `id.col`, or a character vector of `.rds` file paths. Each track must contain
+#'   longitude, latitude and timestamp columns. The output of [reconstructTrack()] can be supplied
+#'   directly. File inputs are read sequentially; a named list can identify tables lacking `id.col`.
+#' @param control A control object from [trackMetricsControl()], or a named list of its arguments,
+#'   selecting the optional geometric metrics, minimum position count and temporal window lengths.
+#'   Default `trackMetricsControl()`, which selects all optional metrics and requires at least five
+#'   positions. The temporal tortuosity columns are computed regardless of the optional metric selection.
+#' @param id.col Name of the deployment-identifier column (default `"ID"`). Used to split a single
+#'   table and label output rows. For list or file inputs without a usable identifier, the list name
+#'   or file basename is used. The output identifier column is always named `ID`.
+#' @param lon.col,lat.col Names of the longitude and latitude columns, in decimal degrees. With both
+#'   `NULL` (default), `pseudo_lon` and `pseudo_lat` are selected if both columns exist; otherwise
+#'   `lon` and `lat` are used. Explicit names override the selection for each axis. Set both when
+#'   summarising a different coordinate pair, such as observed rather than reconstructed positions.
+#' @param datetime.col Name of the timestamp column (default `"datetime"`), expected to contain
+#'   non-missing `POSIXct` values. Positions are ordered by this column before calculating metrics.
+#' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (per-deployment outcomes and
+#'   summary), or `2`/`"detailed"` (default), which adds position counts, distance, duration and
+#'   straightness diagnostics.
 #'
 #' @details
-#' The measures give complementary views of the same path. `Path_ratio` and `Straightness` are global,
-#' comparing the route to the straight line from start to end, and so say nothing about where the
-#' wandering happened. `Sinuosity` and `Mean_turning_angle` are driven by local turning instead, and
-#' will separate two paths that share the same endpoints but not the same behaviour.
-#' `Hourly_tortuosity` and `Daily_tortuosity` sit between the two, reporting how the
-#' path-to-displacement ratio behaves over rolling windows.
+#' ## Workflow and input assumptions
 #'
-#' Distances are computed with the haversine great-circle formula. A metric is returned as `NA` where
-#' the track is too short to support it, rather than guessed.
+#' Use [reconstructTrack()] to estimate a dead-reckoned path and [plotTracks()] to inspect it before
+#' summarising its geometry. Coordinate columns are selected by their presence, not by their coverage:
+#' an entirely missing reconstructed pair does not trigger a fallback to observed coordinates when
+#' both reconstructed columns exist. To summarise ancillary fixes, supply their position table
+#' explicitly; the function does not read fixes from tag metadata or add deployment/pop-up anchors.
 #'
-#' Run this after [reconstructTrack()], which supplies `pseudo_lon` and `pseudo_lat`. It reduces a track
-#' to a summary and never modifies the input.
+#' Longitude and latitude should be finite geographic coordinates in decimal degrees, with consistent
+#' timestamps. Rows with `NA` longitude or latitude are removed, and the remaining rows are sorted by
+#' time. This is not a geographic or timestamp quality-control procedure: coordinates are not range
+#' checked, duplicate timestamps are not resolved, and missing timestamps should be addressed beforehand.
 #'
-#' @return A data frame with one row per animal, holding whichever of these the selected metrics
-#'   produce:
+#' A deployment with missing required columns is warned about and omitted without stopping the other
+#' tracks. A track with fewer than `control$min.points` positions after coordinate-NA removal is also
+#' omitted. Empty input collections are rejected. Input datasets and metadata are not modified; the
+#' function neither saves the summary nor writes to a deployment-exclusion log.
 #'
-#' - `ID` - the animal identifier.
-#' - `Total_points` - how many positions were used.
-#' - `Track_duration_h` - the span of the track in hours.
-#' - `Total_distance_km` - path length, the sum of the great-circle steps.
-#' - `Net_displacement_km` - straight-line distance from the first position to the last.
-#' - `Path_ratio` - path length divided by net displacement; 1 for a straight path, larger for a
-#'   convoluted one.
-#' - `Sinuosity` - the index of Bovet and Benhamou (1988), `1.18 * sd(turning angle in radians) /
-#'   sqrt(mean step length in km)`.
-#' - `Mean_turning_angle` - the mean absolute change in bearing, in degrees.
-#' - `Straightness` - net displacement divided by path length; 0 for a tortuous path, 1 for a straight
-#'   one.
-#' - `Hourly_tortuosity`, `Daily_tortuosity` - the mean path-to-displacement ratio over rolling windows
-#'   of `control$hourly.window.h` and `control$daily.window.h` hours.
+#' ## Distances and local turning
+#'
+#' Step lengths and endpoint displacement are calculated using the haversine great-circle formula
+#' with a spherical Earth radius of 6371 km. They describe horizontal movement, not three-dimensional
+#' distance through the water column. Turning angles are signed differences between successive initial
+#' step bearings, wrapped to -180 to 180 degrees; the reported turning metric uses their absolute values.
+#'
+#' `Path_ratio` is path length divided by endpoint displacement, whereas `Straightness` is the inverse
+#' ratio where both are defined. Neither identifies where within the record a change in movement occurred.
+#' `Sinuosity` uses the implemented Bovet and Benhamou (1988) expression
+#' `1.18 * sd(turning angles in radians) / sqrt(mean positive step length in km)` and therefore has
+#' units of inverse square-root kilometres. It requires at least one finite positive step and two
+#' finite turning angles. Zero-length steps are omitted from the mean step length but their bearings
+#' are not removed before calculating turning angles; repeated positions warrant particular care.
+#'
+#' ## Temporal tortuosity
+#'
+#' `Hourly_tortuosity` and `Daily_tortuosity` are unweighted means of path-to-displacement ratios in
+#' successive, non-overlapping windows of `control$hourly.window.h` and `control$daily.window.h` hours
+#' (defaults `1` and `24`). These are not sliding windows. Windows begin at the first retained timestamp
+#' and advance by their full duration; a final incomplete window is omitted. Both window boundaries are
+#' inclusive, so a position exactly on a shared boundary can contribute to both adjacent windows.
+#'
+#' Each window needs at least three retained positions and positive endpoint displacement. Unsupported
+#' windows are omitted from the mean. A track shorter than a window returns `NA` for that column;
+#' if no window provides a defined ratio, the mean may be `NaN`.
+#'
+#' ## Interpretation and limitations
+#'
+#' Missing coordinate rows are removed without splitting the trajectory. Consecutive retained positions
+#' are connected even across long recording gaps, and temporal windows have no maximum-gap or minimum
+#' temporal-coverage criterion. Longer intervals between fixes can conceal intervening movement and
+#' reduce estimated path length; location noise can instead inflate distances and turning. Sampling
+#' interval, reconstruction settings and location quality should therefore be comparable across tracks.
+#'
+#' The function does not propagate positional uncertainty into the metrics. A tortuous trajectory alone
+#' is not evidence of foraging, and a reconstructed path is not an independently observed trajectory.
+#' Assess reconstruction accuracy with [crossValidateTrack()] and interpret geometric metrics alongside
+#' the sensor record and the study's biological context.
+#'
+#' @return A data frame with one row per eligible deployment. The following columns are always present
+#'   in a non-empty result:
+#'   \describe{
+#'     \item{`ID`}{Deployment identifier, as character.}
+#'     \item{`Total_points`}{Number of retained positions.}
+#'     \item{`Track_duration_h`}{Time between the first and last retained positions, in hours.}
+#'     \item{`Total_distance_km`}{Sum of consecutive horizontal step lengths, in kilometres.}
+#'     \item{`Net_displacement_km`}{Great-circle distance between the first and last positions,
+#'       in kilometres.}
+#'     \item{`Hourly_tortuosity`, `Daily_tortuosity`}{Dimensionless mean path-to-displacement ratios
+#'       over the respective temporal windows. Their names do not change when window lengths change.}
+#'   }
+#'   `control$metrics` selects additional columns:
+#'   \describe{
+#'     \item{`Path_ratio`}{Dimensionless total path length divided by net displacement; `NA` when
+#'       endpoint displacement is zero.}
+#'     \item{`Sinuosity`}{Local sinuosity index, in inverse square-root kilometres; `NA` when too few
+#'       positive steps or turning angles are available.}
+#'     \item{`Mean_turning_angle`}{Mean absolute change in bearing, in degrees.}
+#'     \item{`Straightness`}{Dimensionless net displacement divided by total path length; `NA` when
+#'       total path length is zero. Values near one indicate a relatively direct path.}
+#'   }
+#'   Duration and distance columns are rounded to two decimal places, and other numeric metrics to
+#'   three. Infinite results are replaced by `NA`; undefined means may remain `NaN`. Use `is.na()`
+#'   to recognise either missing-value form. If every track is omitted, the zero-row result contains
+#'   only the five base columns from `ID` through `Net_displacement_km`.
 #'
 #' @references
 #' Bovet P, Benhamou S (1988) Spatial analysis of animals' movements using a correlated random walk
 #' model. *Journal of Theoretical Biology* 131:419-433. \doi{10.1016/S0022-5193(88)80038-9}
 #'
-#' @seealso [trackMetricsControl()] for selecting the metrics; [reconstructTrack()] for producing the
-#'   track; [summarizeTagData()] for a deployment-level overview.
+#' @seealso [trackMetricsControl()] for metric selection and temporal windows; [reconstructTrack()]
+#'   for track estimation; [crossValidateTrack()] for reconstruction validation; [plotTracks()] for
+#'   maps; [filterLocations()] for location screening; [summarizeTagData()] for sensor-data summaries.
 #'
 #' @examples
-#' \dontrun{
-#' tracks <- reconstructTrack(processed)
-#'
-#' # one summary row per animal, using pseudo_lon/pseudo_lat automatically
-#' metrics <- trackMetrics(tracks, control = trackMetricsControl(metrics = "all"))
+#' # Illustrative geographic positions sampled once per hour
+#' n <- 30
+#' positions <- data.frame(
+#'   ID = "deployment_01",
+#'   datetime = as.POSIXct("2023-01-01", tz = "UTC") + (seq_len(n) - 1) * 3600,
+#'   lon = seq(-25.2, -25.0, length.out = n),
+#'   lat = 37 + 0.01 * sin(seq(0, 2 * pi, length.out = n))
+#' )
+#' metrics <- trackMetrics(positions, verbose = "quiet")
 #' metrics[, c("ID", "Total_distance_km", "Straightness")]
+#'
+#' \dontrun{
+#' # Reconstructed coordinate pairs are selected automatically
+#' tracks <- reconstructTrack(processed)
+#' metrics <- trackMetrics(tracks, control = trackMetricsControl(metrics = "all"))
+#'
+#' # Summarise observed fixes separately from the reconstructed track
+#' fixes <- getTagMetadata(tracks[[1]])$ancillary$positions$data
+#' observed_metrics <- trackMetrics(
+#'   list(deployment_01 = fixes), lon.col = "lon", lat.col = "lat",
+#'   control = trackMetricsControl(metrics = c("path_ratio", "straightness"))
+#' )
 #' }
 #' @export
 trackMetrics <- function(data,

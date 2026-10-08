@@ -21,8 +21,8 @@ tracks are skipped. Default \code{5}. Raise it if a handful of positions is not 
 comparison you intend, since a two-point "path" is straight by construction.}
 
 \item{hourly.window.h, daily.window.h}{The window lengths in hours behind the \code{Hourly_tortuosity} and
-\code{Daily_tortuosity} columns, each the mean path-to-displacement ratio over rolling windows of that
-length. Defaults \code{1} and \code{24}. Choose them to bracket the timescales your animal's behaviour
+\code{Daily_tortuosity} columns, each the mean path-to-displacement ratio over successive, non-overlapping
+windows of that length. Defaults \code{1} and \code{24}. Choose them to bracket the timescales your animal's behaviour
 actually switches on - a foraging bout and a diel cycle, say - rather than leaving them at values
 that fall between the two.}
 }
@@ -30,7 +30,7 @@ that fall between the two.}
 A validated \code{nautilus_track_metrics} object for the \code{control} argument of \code{\link[=trackMetrics]{trackMetrics()}}.
 }
 \description{
-Selects which movement-path metrics \code{\link[=trackMetrics]{trackMetrics()}} computes and the sizes of the rolling windows
+Selects which movement-path metrics \code{\link[=trackMetrics]{trackMetrics()}} computes and the sizes of the successive windows
 behind its temporal tortuosity columns, so the main call stays uncluttered.
 }
 \examples{

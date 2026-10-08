@@ -2,7 +2,7 @@
 % Please edit documentation in R/plotTracks.R
 \name{plotTracks}
 \alias{plotTracks}
-\title{Plot reconstructed movement tracks}
+\title{Plot position fixes and reconstructed movement tracks}
 \usage{
 plotTracks(
   data,
@@ -25,128 +25,191 @@ plotTracks(
 )
 }
 \arguments{
-\item{data}{A \code{nautilus_tag}/data.frame, a (named) list of them, or a character vector of \code{.rds}
-file paths - typically the output of \code{\link[=reconstructTrack]{reconstructTrack()}} (its \code{pseudo_lon}/\code{pseudo_lat}
-columns drive the track). A single aggregated data.frame is split by \code{id.col}.}
+\item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple deployments
+identified by \code{id.col}, or a character vector of \code{.rds} file paths. The output of
+\code{\link[=reconstructTrack]{reconstructTrack()}} is recommended. File inputs are read sequentially; the reduced plotting
+records are retained for rendering. See Details for the sources of track coordinates and fixes.}
 
-\item{color.by}{Colour the pseudo-track by a variable: \code{NULL} (default, a single colour), \code{"depth"}
-(\code{pseudo_depth}) or \code{"speed"} (\code{speed_dr}). Ignored for deployments without that column.}
+\item{color.by}{Variable used to colour reconstructed track segments: \code{NULL} (default, a single
+colour), \code{"depth"} (\code{pseudo_depth}, in metres) or \code{"speed"} (\code{speed_dr}, in m/s). The colour scale
+is shared across panels. Missing channels and missing segment values use the single track colour.}
 
-\item{show.uncertainty}{Logical. Draw the \code{pseudo_error} uncertainty corridor around the pseudo-track.
-Default \code{TRUE}.}
+\item{show.uncertainty}{Logical; whether to draw the uncertainty overlay from \code{pseudo_error}, in
+metres (default \code{TRUE}). Has no effect when that column is absent or has no positive finite values.}
 
-\item{basemap}{The background canvas, of which there is one at a time: \code{"land"} (default, a filled coastline over a flat
-sea), \code{"bathymetry"} (a shaded depth relief painting the sea, with land drawn on top; via
-\pkg{marmap}), \code{"satellite"} (imagery tiles via \pkg{maptiles} - a network download, cached),
-\code{"none"} (blank sea), OR a pre-fetched canvas from \code{\link[=getBasemap]{getBasemap()}} - a \pkg{terra}
-\code{SpatRaster} (imagery) or a \pkg{marmap} \code{bathy} grid (depth), drawn as-is: the reproducible/offline
-path. Over imagery the coastline is drawn as an outline; over the depth relief it stays filled.
-\code{basemap = "bathymetry"} and \code{bathy.contours} compose, as relief plus isobaths, and share one download.}
+\item{basemap}{Background canvas: \code{"land"} (default, filled vector land over a uniform sea),
+\code{"bathymetry"} (shaded sea-floor relief), \code{"satellite"} (imagery tiles), or \code{"none"} (uniform sea
+without a coastline). Alternatively, supply a pre-fetched three-band RGB \code{terra::SpatRaster} or a
+\code{bathy} grid, as returned by \code{\link[=getBasemap]{getBasemap()}}. See Details for coordinate and dependency requirements.}
 
-\item{coastline}{Which vector coastline to draw over whichever canvas you chose - only
-\code{basemap = "none"} skips it. A keyword selecting a
-bundled source by resolution -- \code{"auto"} (default: the highest-resolution installed source,
-\pkg{mapdata}'s \code{worldHires} if present, else the coarse \code{maps::world} with a one-time hint),
-\code{"high"} (force \code{worldHires}; errors if \pkg{mapdata} is absent), \code{"low"} (force \code{maps::world}),
-\code{"none"} -- OR a custom coastline: an \pkg{sf} object, a two-column lon/lat \code{data.frame}/\code{matrix}
-(NA-separated rings), or a path to a spatial file. A custom coastline needs no extra packages for
-the \code{data.frame}/\code{matrix} form; \pkg{sf} is needed for \code{sf} objects and most file paths.}
+\item{coastline}{Vector coastline to draw: \code{"auto"} (default, the highest-resolution usable
+installed source), \code{"high"} (\code{mapdata::worldHires}), \code{"low"} (\code{maps::world}), or \code{"none"}.
+Alternatively, supply a spatial object of class \code{sf}, \code{sfc} or \code{sfg}, a longitude/latitude data
+frame or matrix with \code{NA}-separated rings, or a path to a spatial file. Coordinates must already
+be in the map's geographic reference frame. Ignored when \code{basemap = "none"}.}
 
-\item{basemap.control}{A \code{\link[=basemapControl]{basemapControl()}} object tuning the satellite fetch (tile provider, zoom,
-\code{provider}, \code{cache}). Used only when \code{basemap = "satellite"}; ignored for a pre-fetched raster.}
+\item{basemap.control}{A control object from \code{\link[=basemapControl]{basemapControl()}}, or a named list of its arguments,
+specifying the tile provider, zoom and cache settings. Used only for an automatic satellite fetch;
+ignored for a pre-fetched canvas.}
 
-\item{bathy.contours}{Bathymetric contour overlay (composes with any \code{basemap}). \code{FALSE} (default) is
-off; \code{TRUE} draws auto-chosen isobaths; a numeric vector draws exactly those isobath depths (negative
-metres), e.g. \code{c(-50, -200, -1000)} or \code{seq(-200, -4000, by = -200)} for a regular interval. Needs
-\pkg{marmap} (a one-off NOAA download for the whole run); the grid resolution is chosen automatically
-from the map extent.}
+\item{bathy.contours}{Bathymetric contour overlay: \code{FALSE} (default) or \code{NULL} disables it, \code{TRUE}
+selects isobaths automatically, and a finite numeric vector specifies contour depths in negative
+metres, for example \code{c(-50, -200, -1000)}. Can be used with any canvas. A bathymetry canvas and
+contours share the same depth grid; see Details for fetching and reuse.}
 
-\item{theme}{A \code{\link[=plotTheme]{plotTheme()}} object (or a named list of its fields) controlling the shared
-look: text/axis colours, panel and gridline chrome, marker outlines, font family, the master text
-scale (\code{cex}) and the sequential ramp used for \code{color.by}. Default \code{plotTheme()}.}
+\item{theme}{A control object from \code{\link[=plotTheme]{plotTheme()}}, or a named list of its arguments, specifying
+text and axis colours, panel styling, marker outlines, font family, text scale (\code{cex}) and the
+sequential colour ramp for \code{color.by}. Default \code{plotTheme()}.}
 
-\item{colors}{Optional named vector overriding individual entries of the map palette - the colour of
-each map \emph{element}, which is a different thing from \code{theme$palette}, the qualitative series palette
-for telling categories apart. Recognised names: \code{fastgps}, \code{argos},
-\code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{sea.deep}, \code{land}, \code{land.border}, \code{bathymetry},
-\code{uncertainty}, \code{start}, \code{end}. (\code{sea}/\code{sea.deep} are the shallow and deep ends of the
-\code{basemap = "bathymetry"} ramp; \code{start}/\code{end} are the track's first and last position markers.)
-Unrecognised names and values that are not valid colours are rejected. Unspecified entries keep
-their defaults. Default \code{NULL}.}
+\item{colors}{Optional named character vector overriding map-element colours. Recognised names are
+\code{fastgps}, \code{argos}, \code{user}, \code{track}, \code{deploy}, \code{popup}, \code{sea}, \code{sea.deep}, \code{land}, \code{land.border},
+\code{bathymetry}, \code{uncertainty}, \code{start} and \code{end}. \code{sea} and \code{sea.deep} set the shallow and deep ends
+of the bathymetric relief ramp; \code{start} and \code{end} set the endpoint marker fills. Unspecified entries
+retain their defaults. Unknown names and invalid colour values are rejected. Default \code{NULL}.}
 
-\item{max.points}{Integer. Per-track cap on the number of pseudo-track points actually drawn (the track
-is strided down to this many, always keeping the true first and last point) to keep screen rendering
-fast and vector PDFs small. Default 5000.}
+\item{max.points}{Target maximum number of reconstructed positions retained for drawing per
+deployment (default \code{5000}, at least \code{2}). Stride-based thinning preserves the first and last
+finite positions; retaining the last position can add one point beyond this target. It reduces
+rendering time and PDF size without changing the input data or thinning the recorded fixes.}
 
-\item{ncols, nrows}{Integer or \code{NULL}. Panel grid dimensions. When both are \code{NULL} (default) a grid is
-chosen automatically (up to 2 columns x 5 rows per page) and the run paginates across pages.}
+\item{ncols, nrows}{Number of panel columns and rows, or \code{NULL} (default). With both \code{NULL}, the
+grid has at most two columns and five rows per page. With one supplied, the other is inferred to
+fit all panels; with both supplied, additional panels are paginated at that fixed capacity.}
 
-\item{plot}{Logical. Draw to the active graphics device. Default \code{TRUE}.}
+\item{plot}{Logical; whether to draw maps on the active graphics device (default \code{TRUE}).}
 
-\item{plot.file}{Character. Path to a single multi-page PDF for the maps. The parent directory must
-already exist; must end in \code{.pdf}. \code{NULL} (default) writes no file. Independent of \code{plot}.}
+\item{plot.file}{Path to a multi-page PDF, or \code{NULL} (default), which writes no file. The path must
+end in \code{.pdf} and its parent directory must exist. Independent of \code{plot}: setting \code{plot = FALSE}
+writes only the PDF. At least one output destination must be enabled.}
 
-\item{id.col, datetime.col}{Character. Names of the ID and POSIXct datetime columns. Defaults \code{"ID"} /
-\code{"datetime"}.}
+\item{id.col}{Name of the deployment-identifier column used to split a single input table (default
+\code{"ID"}). Panel labels use the deployment identifier in the tag metadata where available.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet", \code{TRUE}/\code{1}/"normal", or \code{2}/"detailed" (default; adds a
-live progress bar and per-skip notes).}
+\item{datetime.col}{Name of the timestamp column used to order reconstructed positions (default
+\code{"datetime"}). \code{POSIXct} is recommended. If absent or not a supported time representation, row
+order is retained; character timestamps are not parsed.}
+
+\item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header, layout and summary),
+or \code{2}/\code{"detailed"} (default), which adds loading progress and skipped-deployment counts.}
 }
 \value{
-Invisibly, a data.frame with one row per input deployment (\code{id}, \code{n_fix}, \code{n_track}, \code{drawn}).
-Called for its side effect: the maps drawn to the active device and/or the multi-page \code{plot.file}.
+Invisibly, a data frame with one row per input deployment and columns:
+\describe{
+\item{\code{id}}{Deployment identifier used for the panel.}
+\item{\code{n_fix}}{Number of rows in the ancillary position table, excluding metadata anchors.}
+\item{\code{n_track}}{Number of finite reconstructed positions retained after plotting-only thinning.}
+\item{\code{drawn}}{Logical; whether the deployment was included in the panel set.}
+}
+Maps are drawn on the active device and/or saved to \code{plot.file}. Input datasets and their
+metadata are not modified. An empty input collection is rejected; a collection with no drawable
+records returns its summary with all \code{drawn} values \code{FALSE} and produces no map pages.
 }
 \description{
-A reconstructed track is a table of coordinates, and coordinates are hard to judge. Whether the
-reconstruction is plausible - whether it crosses land, doubles back implausibly, or wanders where
-the fixes say it should not - is a question the eye answers immediately and a summary statistic
-does not.
+Maps recorded position fixes, deployment and pop-up locations, and dead-reckoned movement tracks,
+with one panel per deployment. Reconstructed tracks can be coloured by depth or speed and displayed
+with their model-based horizontal uncertainty scale.
 
-This function draws that picture: one map per deployment, showing the genuine surface fixes, the
-deployment and pop-up anchors, and, where present, the dead-reckoned track between them. It is the
-horizontal counterpart to \code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, and the last step of the movement-track branch.
+The function supports visual assessment of reconstruction geometry and its relationship to observed
+locations and geographic features. It can also display deployments carrying position fixes but no
+reconstructed track. Mapping does not screen locations, alter the reconstruction or establish its
+accuracy; use \code{\link[=filterLocations]{filterLocations()}} and \code{\link[=crossValidateTrack]{crossValidateTrack()}} for those separate steps.
 }
 \details{
-Everything is drawn in a single WGS84 longitude/latitude coordinate system with a latitude-corrected
-equal-aspect projection, so points, track and coastline co-register exactly. The background is composed
-of three orthogonal layers: a \emph{canvas} (\code{basemap}), the \emph{coastline} vector
-(\code{coastline}), and optional \emph{overlays} that compose on top (\code{show.uncertainty},
-\code{bathy.contours}). The default canvas is a lightweight bundled vector coastline that degrades to a
-silent no-op when \pkg{maps}/\pkg{mapdata} are absent (no tile server, no Java, no network). For
-fine-scale maps (small islands, coastal features) install \pkg{mapdata} and use \code{coastline = "high"}
-(or the default \code{"auto"}, which prefers it), or pass your own high-resolution coastline via
-\code{coastline}. The two raster canvases are opt-in: \code{basemap = "bathymetry"} paints a shaded
-depth relief (\pkg{marmap}) under filled land, and \code{basemap = "satellite"} draws imagery tiles
-(\pkg{maptiles}) under an outlined coastline. Because the depth canvas and the depth contours
-(\code{bathy.contours}) are separate layers over one grid, they compose freely - relief alone, isobaths
-over any canvas, or relief with isobaths on top - and asking for both costs a single download,
-fetched once for the whole run and reused across panels.
+\subsection{Workflow and position sources}{
 
-\strong{Uncertainty.} A dead-reckoned track is a best estimate whose confidence shrinks at each
-anchoring fix and grows in the gaps between them. \code{reconstructTrack} quantifies this as
-\code{pseudo_error} (per-sample 1-sigma positional uncertainty, metres); with \code{show.uncertainty = TRUE}
-it is drawn as a translucent corridor around the track, so a segment that passes close to a fix
-is visibly tighter than one that has drifted mid-gap. The pseudo-track is never drawn with more visual
-weight than the genuine fixes it interpolates between.
+Apply the function after \code{\link[=reconstructTrack]{reconstructTrack()}} to inspect the horizontal projection of a
+dead-reckoned track. Both \code{pseudo_lon} and \code{pseudo_lat} are required to draw it. Rows with non-finite
+reconstructed coordinates are omitted, and the retained positions are ordered by the timestamp
+column where usable. Lines connect the retained positions, including across omitted rows; they do
+not identify or repair recording gaps. A single reconstructed position contributes to the map extent
+but does not produce a track line or endpoint markers.
 
-\strong{Colouring.} With \code{color.by = "depth"} or \code{"speed"} the track is coloured by
-\code{pseudo_depth} or \code{speed_dr} on a scale shared across all panels (with a compact colour bar),
-revealing where the animal was in the water column or how fast it moved.
+Recorded fixes are read from the canonical ancillary position table, accessible through
+\code{getTagMetadata(x)$ancillary$positions$data}. FastGPS, Argos and user-supplied positions have distinct
+symbols. Deployment and pop-up coordinates are read from the deployment metadata. Fixes remain at
+their own cadence and are not automatically trimmed to the sensor-recording interval or screened for
+location quality. Sample-level \code{lon} and \code{lat} columns alone are not used as the recorded-fix layer.
 
-Position fixes are read from each tag's canonical record (\code{meta$ancillary$positions}); the deploy
-and pop-up coordinates from \code{meta$deployment}. A deployment with neither a pseudo-track nor any
-fix is skipped (and reported).
+Deployments without a reconstructed position or a row in the ancillary position table are skipped,
+even if deployment or pop-up coordinates are present. Skipped deployments remain in the returned
+plotting summary, with \code{drawn = FALSE}; no deployment-exclusion log is written.
+}
+
+\subsection{Coordinate system and map layers}{
+
+Coordinates are interpreted as WGS84 longitude and latitude in decimal degrees. The display uses
+longitude/latitude axes with an aspect correction at each panel's central latitude, not a general
+map-projection transformation. Custom coastlines and pre-fetched canvases are drawn in their supplied
+coordinates and must already use this reference frame. The function does not unwrap longitudes at
+the antimeridian; broad or high-latitude extents require particular care in interpretation.
+
+Each panel has its own padded extent, derived from its fixes, reconstructed positions and metadata
+anchors. A canvas, vector coastline and optional bathymetric contours are drawn as separate layers.
+Land is filled over the default sea and bathymetric relief, and outlined over imagery.
+\code{basemap = "none"} suppresses the coastline but does not disable requested contours or uncertainty.
+
+The default land canvas requires no network access. Automatic coastline selection prefers a usable
+\code{worldHires} database from \pkg{mapdata}, falls back to \code{maps::world} with an informative message,
+and draws no coastline if neither source is available. An explicit \code{coastline = "high"} request
+errors if the high-resolution database cannot be used. Longitude/latitude tables and matrices need
+no spatial package; spatial objects and non-RDS spatial files require \pkg{sf}.
+
+Fetching bathymetry requires \pkg{marmap}; fetching satellite tiles requires \pkg{maptiles},
+\pkg{terra} and \pkg{sf}. Bathymetry and imagery are fetched for the combined deployment extent and
+reused across panels. Bathymetric resolution is chosen from that extent, while tile settings are
+controlled by \code{basemap.control}. A pre-fetched \code{bathy} grid avoids the depth download and can also
+supply contours without \pkg{marmap}; a pre-fetched RGB raster requires \pkg{terra} but no tile
+download. Failed downloads are reported at non-quiet verbosity and the remaining layers are drawn.
+When publishing imagery, check the provider's terms and retain its attribution.
+}
+
+\subsection{Track colouring and positional uncertainty}{
+
+Depth and speed colouring use the retained plotting positions to establish one range for the whole
+call. Segment colours represent the mean of their two endpoint values. If no finite range exists or
+the channel is constant across the call, tracks use the single \code{track} colour instead. The sequential
+ramp comes from \code{theme$sequential}; the named \code{colors} overrides affect map elements rather than the
+qualitative series palette in the theme.
+
+\code{pseudo_error} from \code{\link[=reconstructTrack]{reconstructTrack()}} is a model-based horizontal error scale, expressed as a
+nominal one-standard-deviation uncertainty in metres. It is displayed using translucent disks at a
+subset of retained positions, with radius equal to the supplied error scale. This is an approximate
+visual envelope, not a validated confidence region or an estimate of the precision of the recorded
+fixes. Missing, zero or negative error values contribute no disk. See \code{\link[=reconstructTrack]{reconstructTrack()}} and
+\code{\link[=crossValidateTrack]{crossValidateTrack()}} for the assumptions and empirical assessment of reconstruction uncertainty.
+}
 }
 \examples{
+# Illustrative reconstructed positions; no external files or map downloads are needed
+n <- 20
+track <- data.frame(
+  ID = "deployment_01",
+  datetime = as.POSIXct("2023-01-01", tz = "UTC") + seq_len(n) * 60,
+  pseudo_lon = seq(-25.2, -25.1, length.out = n),
+  pseudo_lat = 37 + 0.01 * sin(seq(0, pi, length.out = n)),
+  pseudo_depth = seq(0, 50, length.out = n)
+)
+map_file <- tempfile(fileext = ".pdf")
+map_summary <- plotTracks(
+  track, color.by = "depth", basemap = "none",
+  plot = FALSE, plot.file = map_file, verbose = "quiet"
+)
+map_summary
+unlink(map_file)
+
 \dontrun{
-tracks <- reconstructTrack(list.files("./data interim/oriented", full.names = TRUE))
-# Per-animal maps: fixes + the depth-coloured dead-reckoned track and its 1-sigma corridor
+# Map reconstructed deployments and save a report; ./plots must already exist
+tracks <- reconstructTrack(processed)
 plotTracks(tracks, color.by = "depth", plot.file = "./plots/tracks.pdf")
-# Larger text in a serif font, and a different track colour
-plotTracks(tracks, theme = plotTheme(cex = 1.2, font.family = "serif"), colors = c(track = "navy"))
+
+# Reuse a fetched canvas for subsequent figures
+canvas <- getBasemap(tracks, type = "satellite")
+plotTracks(tracks, basemap = canvas, coastline = "high")
 }
 }
 \seealso{
-\code{\link[=reconstructTrack]{reconstructTrack()}}, \code{\link[=crossValidateTrack]{crossValidateTrack()}}, \code{\link[=trackMetrics]{trackMetrics()}},
-\code{\link[=filterLocations]{filterLocations()}}, \code{\link[=plotDepthProfiles]{plotDepthProfiles()}}, \code{\link[=exportForSSM]{exportForSSM()}}.
+\code{\link[=reconstructTrack]{reconstructTrack()}} for track estimation; \code{\link[=crossValidateTrack]{crossValidateTrack()}} for reconstruction
+validation; \code{\link[=trackMetrics]{trackMetrics()}} for path summaries; \code{\link[=filterLocations]{filterLocations()}} for location screening;
+\code{\link[=getBasemap]{getBasemap()}} and \code{\link[=basemapControl]{basemapControl()}} for background layers; \code{\link[=plotTheme]{plotTheme()}} for plot styling;
+\code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for depth time series.
 }

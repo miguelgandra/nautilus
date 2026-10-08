@@ -808,7 +808,7 @@ integrityControl <- function(duplication.error        = 0.999,
 #' Metric selection and window sizes for trackMetrics()
 #'
 #' @description
-#' Selects which movement-path metrics [trackMetrics()] computes and the sizes of the rolling windows
+#' Selects which movement-path metrics [trackMetrics()] computes and the sizes of the successive windows
 #' behind its temporal tortuosity columns, so the main call stays uncluttered.
 #'
 #' @param metrics Which metrics to compute: any of `"path_ratio"`, `"sinuosity"`, `"turning_angle"` and
@@ -818,8 +818,8 @@ integrityControl <- function(duplication.error        = 0.999,
 #'   tracks are skipped. Default `5`. Raise it if a handful of positions is not enough for the
 #'   comparison you intend, since a two-point "path" is straight by construction.
 #' @param hourly.window.h,daily.window.h The window lengths in hours behind the `Hourly_tortuosity` and
-#'   `Daily_tortuosity` columns, each the mean path-to-displacement ratio over rolling windows of that
-#'   length. Defaults `1` and `24`. Choose them to bracket the timescales your animal's behaviour
+#'   `Daily_tortuosity` columns, each the mean path-to-displacement ratio over successive, non-overlapping
+#'   windows of that length. Defaults `1` and `24`. Choose them to bracket the timescales your animal's behaviour
 #'   actually switches on - a foraging bout and a diel cycle, say - rather than leaving them at values
 #'   that fall between the two.
 #'
