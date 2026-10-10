@@ -209,8 +209,12 @@ surface, or an inverted reference for species that rest on the bottom.<br/>
 
 **Behaviour and kinematics** &mdash; estimates tail-beat frequency and amplitude as a
 measure of swimming effort, builds sliding-window feature sets ready for behavioural
-classification, and assigns samples to day, night or twilight.<br/>
-`calculateTailBeats()` &middot; `extractFeatures()` &middot; `getDielPhase()`
+classification, detects candidate sustained heading rotations, and assigns samples to day,
+night or twilight. Circling event tables can be overlaid on depth profiles and reconstructed
+tracks through `events`, or mapped to samples with `annotateData()`. Assessment coverage
+distinguishes no detection from unavailable evidence; heading rotations alone do not establish
+foraging or closed spatial paths.<br/>
+`calculateTailBeats()` &middot; `detectCircling()` &middot; `extractFeatures()` &middot; `getDielPhase()`
 
 **Movement tracks** &mdash; reconstructs the animal's likely path from its heading and
 speed, corrected towards satellite fixes where these exist, and tells you how far to trust

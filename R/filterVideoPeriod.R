@@ -127,8 +127,18 @@ filterVideoPeriod <- function(data,
 #' @keywords internal
 #' @noRd
 .inAnyInterval <- function(t, starts, ends) {
-  m <- logical(length(t))
-  for (j in seq_along(starts)) if (!is.na(starts[j]) && !is.na(ends[j])) m <- m | (t >= starts[j] & t <= ends[j])
+  # Union windows once, then binary-search samples instead of scanning a high-rate record per event.
+  m <- logical(length(t)); a <- as.numeric(starts); b <- as.numeric(ends)
+  good <- is.finite(a) & is.finite(b) & a <= b
+  if (!any(good)) return(m)
+  a <- a[good]; b <- b[good]; ord <- order(a, b); a <- a[ord]; b <- cummax(b[ord])
+  begin <- c(TRUE, a[-1] > b[-length(b)])
+  finish <- c(which(begin)[-1] - 1L, length(b))
+  b <- b[finish]; a <- a[begin]
+  time <- as.numeric(t); valid <- is.finite(time)
+  k <- findInterval(time[valid], a)
+  m[valid] <- k > 0L & time[valid] <= b[pmax(1L, k)]
+  m[!valid] <- NA
   m
 }
 

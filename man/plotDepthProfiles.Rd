@@ -24,14 +24,16 @@ plotDepthProfiles(
   id.col = "ID",
   datetime.col = "datetime",
   depth.col = "depth",
-  verbose = "detailed"
+  verbose = "detailed",
+  events = NULL
 )
 }
 \arguments{
 \item{data}{Depth data: a character vector of \code{.rds} file paths, a single \code{nautilus_tag} /
 data.frame, or a list of them (see \code{\link[=processTagData]{processTagData()}}).}
 
-\item{color.by}{Character. Name of the column mapped to colour. Default \code{"temp"}.}
+\item{color.by}{Character. Name of the column mapped to colour. Default \code{"temp"}.
+A constant channel uses a uniform trace without a colour bar.}
 
 \item{color.label}{Character. Legend title for \code{color.by}. \code{NULL} (default) derives a sensible label
 (e.g. a degree-Celsius temperature label for \code{"temp"}).}
@@ -87,6 +89,15 @@ Defaults \code{"ID"}, \code{"datetime"}, \code{"depth"}.}
 \item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
 \code{2}/"detailed" (default): additionally reports per-deployment data-quality notes (deployments missing
 the colour variable or coordinates) and shows a live progress bar while the tags are read.}
+
+\item{events}{Optional data frame of event windows with \code{ID}, \code{event}, \code{start} and \code{end} (\code{POSIXct})
+columns, for example from \code{\link[=detectCircling]{detectCircling()}}. Default \code{NULL} draws no event layer. Matching is by
+deployment and time; windows are clipped to the visible profile and drawn as translucent bands
+using \code{theme$palette}. Their endpoints are independent of trace downsampling. For a specific dive,
+subset \code{data} to that dive before plotting. An absent band does not establish behavioural absence
+where the detector was unassessable. Extra deployment IDs are ignored for subset plots; a table
+whose IDs and detector roster do not match any plotted deployment raises a warning.
+No sample columns or input metadata are changed.}
 }
 \value{
 Invisibly \code{NULL}; called for its side effect (the plot).
@@ -111,8 +122,12 @@ separate metadata table is required.
 # Draw to a multi-page PDF, coloured by temperature
 plotDepthProfiles(list.files("./processed", full.names = TRUE),
                   plot = FALSE, plot.file = "./plots/depth-profiles.pdf")
+
+# Highlight candidate events; subset a deployment first to inspect a specific dive
+circles <- detectCircling(processed)
+plotDepthProfiles(processed, events = circles)
 }
 }
 \seealso{
-\code{\link[=processTagData]{processTagData()}}, \code{\link[=summarizeTagData]{summarizeTagData()}}
+\code{\link[=processTagData]{processTagData()}}, \code{\link[=summarizeTagData]{summarizeTagData()}}, \code{\link[=detectCircling]{detectCircling()}}, \code{\link[=annotateData]{annotateData()}}
 }

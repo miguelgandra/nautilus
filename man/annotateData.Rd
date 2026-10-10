@@ -13,19 +13,22 @@ annotateData(
   start.col = "start",
   end.col = "end",
   selected.events = NULL,
-  verbose = "detailed"
+  verbose = "detailed",
+  assessed.intervals = NULL
 )
 }
 \arguments{
 \item{data}{A \code{nautilus_tag}, a (named) list of them, or a plain data.frame/data.table - either one
-table per individual, or a single aggregated table carrying \code{id.col}, which is split internally.
+table per deployment, or a single aggregated table carrying \code{id.col}, which is split internally.
+List names must match the deployment identifiers in their tables.
 \code{NULL} list elements (e.g. a deployment dropped by an upstream quality-control step) are accepted,
-skipped, and omitted from the result.}
+skipped, and omitted from the result. A character vector of \code{.rds} paths is also accepted and
+read sequentially. Caller-owned datasets are not modified.}
 
-\item{annotations}{A data.frame of scored event windows, with an individual ID column (\code{id.col}), an
+\item{annotations}{A data.frame of scored event windows, with a deployment ID column (\code{id.col}), an
 event-type column (\code{event.col}), and POSIXct start and end columns (\code{start.col}, \code{end.col}).}
 
-\item{id.col}{Name of the column holding animal IDs, in both \code{data} and \code{annotations}.}
+\item{id.col}{Name of the deployment-identifier column, in both \code{data} and \code{annotations}.}
 
 \item{datetime.col}{Name of the POSIXct timestamp column in \code{data}.}
 
@@ -37,39 +40,52 @@ become the names of the new columns, so they must not clash with columns already
 \item{end.col}{Name of the POSIXct column in \code{annotations} holding each event's end time.}
 
 \item{selected.events}{Optional character vector of event types to annotate. \code{NULL} (default) uses
-every event present in \code{annotations}.}
+every event present or declared in \code{annotations}.}
 
 \item{verbose}{Console detail: \code{"quiet"}, \code{"normal"} or \code{"detailed"} (default).}
+
+\item{assessed.intervals}{Optional data frame of valid assessment windows, with canonical \code{ID},
+\code{start} and \code{end} (\code{POSIXct}) columns. Default \code{NULL} uses an \code{assessed_intervals} attribute of
+\code{annotations} when present; otherwise the existing manual-scoring \code{0}/\code{1} convention is retained.}
 }
 \value{
-A named list of tables, one per individual, each carrying one \code{0}/\code{1} column per event type.
+A named list of tables, one per deployment, each carrying one \code{0}/\code{1} column per event type
+(with typed \code{NA} outside assessment coverage when supplied).
 The class and metadata of the input are preserved, and the call is recorded in the processing
-history (see \code{\link[=processingHistory]{processingHistory()}}). Individuals whose input element was \code{NULL} are
-omitted, so the result may be shorter than the input.
+history (see \code{\link[=processingHistory]{processingHistory()}}). Deployments whose input element was \code{NULL} are
+omitted, so the result may be shorter than the input. Detector assessment attributes describe
+coverage only; matching does not interpolate or infer unobserved events.
 }
 \description{
 Marks each sample of a deployment according to whether it falls inside a scored event window.
 Events are normally read off the tag's own camera footage - a feeding bout, a social interaction, a
-cleaning station visit - and supplied as a table of start/end times per individual. Every sample
-inside a window is marked \code{1}, every sample outside it \code{0}, one column per event type.
+cleaning station visit - or supplied by a sensor-based detector as deployment-specific intervals.
+Samples inside a window are marked \code{1}, one column per event type. Without assessment coverage,
+samples outside windows are \code{0}; with coverage, unassessed samples are \code{NA}.
 
 The resulting columns are what turns a sensor record into a labelled training set:
 \code{\link[=extractFeatures]{extractFeatures()}} builds the predictors, and these columns supply the response.
 }
 \details{
-\strong{Every individual receives every event column.} The column set is fixed once, from the events
-present in \code{annotations} (after \code{selected.events} filtering), so a deployment that was never scored
-for a given behaviour gets that column filled with \code{0} rather than having it missing. This is what
-makes the returned tables safe to row-bind and pool; it also means a \code{0} should be read as "not
-scored as this event", which is not always the same as "this event did not occur".
+\strong{Every deployment receives every event column.} The column set is fixed once, from the events
+present or declared in \code{annotations} (after \code{selected.events} filtering). This makes returned tables
+safe to row-bind and pool. With ordinary manual scoring, a deployment absent from the scoring table
+receives zeros: these mean "not scored as this event", not necessarily "this event did not occur".
 
-\strong{What this function does not do.} It does not check that an individual was observed at all: an
-animal absent from \code{annotations} is returned with all-zero event columns, and is named in the
-console output so the difference is visible. It does not interpolate, resample, or alter any
-existing column. It does not infer event windows - the scoring is entirely yours.
+\strong{What this function does not do.} It does not infer whether a deployment was observed at all;
+supply assessment intervals when this distinction matters. Deployments absent from the event table
+are named in the console output. It does not interpolate, resample, alter existing columns or infer
+event windows. Sensor-derived candidates are not independently validated training responses.
 
 Windows are compared inclusively at both ends (\verb{start <= t <= end}), and overlapping windows for the
 same event are unioned. Annotation rows with a missing \code{start} or \code{end} are skipped and reported.
+
+With \code{assessed.intervals}, each event column is \code{1} inside a detected window, \code{0} elsewhere within
+assessed intervals, and \code{NA} outside them. The intervals are used automatically when retained in
+\code{annotations} by \code{\link[=detectCircling]{detectCircling()}}; an explicit argument takes precedence. This prevents unavailable
+heading from being labelled as behavioural absence. A valid zero-event detector table retains its
+\code{event_types} attribute, so it can still create these columns. Ordinary empty manual annotations
+without declared event types are rejected. Event membership is not an independent biological label.
 }
 \examples{
 \dontrun{
@@ -85,12 +101,12 @@ annotations <- data.frame(
 # `tags` is the processed output of processTagData()
 labelled <- annotateData(tags, annotations)
 
-# both animals carry both columns, so the cohort can be pooled
+# both deployments carry both columns, so the cohort can be pooled
 lapply(labelled, function(x) colSums(x[, c("feeding", "social")]))
 }
 }
 \seealso{
 \code{\link[=extractFeatures]{extractFeatures()}} for building the predictors these labels pair with;
 \code{\link[=filterVideoPeriod]{filterVideoPeriod()}} for restricting the data to the periods you scored; \code{\link[=launchVideo]{launchVideo()}} for
-checking a window against the footage.
+checking a window against the footage; \code{\link[=detectCircling]{detectCircling()}} for sensor-derived event windows.
 }

@@ -21,7 +21,8 @@ plotTracks(
   plot.file = NULL,
   id.col = "ID",
   datetime.col = "datetime",
-  verbose = "detailed"
+  verbose = "detailed",
+  events = NULL
 )
 }
 \arguments{
@@ -91,6 +92,15 @@ order is retained; character timestamps are not parsed.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header, layout and summary),
 or \code{2}/\code{"detailed"} (default), which adds loading progress and skipped-deployment counts.}
+
+\item{events}{Optional data frame of event windows with \code{ID}, \code{event}, \code{start} and \code{end} (\code{POSIXct})
+columns, for example from \code{\link[=detectCircling]{detectCircling()}}. Default \code{NULL} draws no event layer. Matching uses
+deployment IDs and timestamps, not spatial proximity. Event paths use \code{theme$palette} and are
+gathered independently before background thinning; each valid event subpath uses the \code{max.points}
+target. Missing coordinates, non-increasing timestamps and gaps exceeding four median positive
+sampling intervals break overlays. No positions are extrapolated or assigned across gaps.
+Extra deployment IDs are ignored for subset plots; a table whose IDs and detector roster do not
+match any input deployment raises a warning.}
 }
 \value{
 Invisibly, a data frame with one row per input deployment and columns:
@@ -123,6 +133,11 @@ reconstructed coordinates are omitted, and the retained positions are ordered by
 column where usable. Lines connect the retained positions, including across omitted rows; they do
 not identify or repair recording gaps. A single reconstructed position contributes to the map extent
 but does not produce a track line or endpoint markers.
+Event overlays, when requested, instead break at unavailable positions and recording gaps. They
+highlight samples inside the supplied intervals; boundaries between samples are not interpolated.
+A single matching position is drawn as a point. Windows without matching positions are reported.
+Highlighted positions remain model-dependent pseudo-locations, not observed event locations or
+independent validation of a detector using the same heading channel.
 
 Recorded fixes are read from the canonical ancillary position table, accessible through
 \code{getTagMetadata(x)$ancillary$positions$data}. FastGPS, Argos and user-supplied positions have distinct
@@ -201,6 +216,8 @@ unlink(map_file)
 # Map reconstructed deployments and save a report; ./plots must already exist
 tracks <- reconstructTrack(processed)
 plotTracks(tracks, color.by = "depth", plot.file = "./plots/tracks.pdf")
+circles <- detectCircling(processed)
+plotTracks(tracks, events = circles)
 
 # Reuse a fetched canvas for subsequent figures
 canvas <- getBasemap(tracks, type = "satellite")
@@ -211,5 +228,5 @@ plotTracks(tracks, basemap = canvas, coastline = "high")
 \code{\link[=reconstructTrack]{reconstructTrack()}} for track estimation; \code{\link[=crossValidateTrack]{crossValidateTrack()}} for reconstruction
 validation; \code{\link[=trackMetrics]{trackMetrics()}} for path summaries; \code{\link[=filterLocations]{filterLocations()}} for location screening;
 \code{\link[=getBasemap]{getBasemap()}} and \code{\link[=basemapControl]{basemapControl()}} for background layers; \code{\link[=plotTheme]{plotTheme()}} for plot styling;
-\code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for depth time series.
+\code{\link[=plotDepthProfiles]{plotDepthProfiles()}} for depth time series; \code{\link[=detectCircling]{detectCircling()}} for candidate event windows.
 }

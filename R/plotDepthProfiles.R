@@ -22,6 +22,7 @@
 #' @param data Depth data: a character vector of `.rds` file paths, a single `nautilus_tag` /
 #'   data.frame, or a list of them (see [processTagData()]).
 #' @param color.by Character. Name of the column mapped to colour. Default `"temp"`.
+#'   A constant channel uses a uniform trace without a colour bar.
 #' @param color.label Character. Legend title for `color.by`. `NULL` (default) derives a sensible label
 #'   (e.g. a degree-Celsius temperature label for `"temp"`).
 #' @param color.pal Character vector of colours for the mapped variable, overriding the theme. `NULL`
@@ -62,14 +63,26 @@
 #' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
 #'   `2`/"detailed" (default): additionally reports per-deployment data-quality notes (deployments missing
 #'   the colour variable or coordinates) and shows a live progress bar while the tags are read.
+#' @param events Optional data frame of event windows with `ID`, `event`, `start` and `end` (`POSIXct`)
+#'   columns, for example from [detectCircling()]. Default `NULL` draws no event layer. Matching is by
+#'   deployment and time; windows are clipped to the visible profile and drawn as translucent bands
+#'   using `theme$palette`. Their endpoints are independent of trace downsampling. For a specific dive,
+#'   subset `data` to that dive before plotting. An absent band does not establish behavioural absence
+#'   where the detector was unassessable. Extra deployment IDs are ignored for subset plots; a table
+#'   whose IDs and detector roster do not match any plotted deployment raises a warning.
+#'   No sample columns or input metadata are changed.
 #'
 #' @return Invisibly `NULL`; called for its side effect (the plot).
-#' @seealso [processTagData()], [summarizeTagData()]
+#' @seealso [processTagData()], [summarizeTagData()], [detectCircling()], [annotateData()]
 #' @examples
 #' \dontrun{
 #' # Draw to a multi-page PDF, coloured by temperature
 #' plotDepthProfiles(list.files("./processed", full.names = TRUE),
 #'                   plot = FALSE, plot.file = "./plots/depth-profiles.pdf")
+#'
+#' # Highlight candidate events; subset a deployment first to inspect a specific dive
+#' circles <- detectCircling(processed)
+#' plotDepthProfiles(processed, events = circles)
 #' }
 #' @export
 
@@ -92,7 +105,8 @@ plotDepthProfiles <- function(data,
                               id.col           = "ID",
                               datetime.col     = "datetime",
                               depth.col        = "depth",
-                              verbose          = "detailed") {
+                              verbose          = "detailed",
+                              events           = NULL) {
 
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
@@ -113,6 +127,8 @@ plotDepthProfiles <- function(data,
   if (!is.null(ncols)) .assert_count(ncols, "ncols", min = 1)
   if (!is.null(nrows)) .assert_count(nrows, "nrows", min = 1)
   theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
+  events <- .eventIntervals(events)
+  event.palette <- if (!is.null(events)) .eventPalette(events, theme) else NULL
   .assert_number(point.size, "point.size", min = 0)
   .assert_number(lwd, "lwd", min = 0)
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col"); .assert_string(depth.col, "depth.col")
@@ -158,10 +174,13 @@ plotDepthProfiles <- function(data,
     if (!has_color) n_no_color <- n_no_color + 1L
     if (!all(is.finite(c(lon, lat)))) n_no_coord <- n_no_coord + 1L
     deployments[[length(deployments) + 1L]] <-
-      list(id = meta$id %||% src$ids[i], coords = c(lon = lon, lat = lat), data = d, has_color = has_color)
+      list(id = meta$id %||% src$ids[i], coords = c(lon = lon, lat = lat), data = d, has_color = has_color,
+           events = .eventsForDeployment(events, meta$id %||% src$ids[i]), event.palette = event.palette,
+           time.range = if (!is.null(events)) range(tag[[datetime.col]], na.rm = TRUE) else NULL)
   }
   .log_progress_done(pb)
   if (!length(deployments)) .abort("No non-empty datasets to plot.")
+  .warnUnmatchedEvents(events, vapply(deployments, function(d) as.character(d$id), character(1)))
 
 
   ##############################################################################
@@ -174,7 +193,7 @@ plotDepthProfiles <- function(data,
     rng <- unlist(lapply(deployments, function(d) if (d$has_color) range(d$data[[color.by]], na.rm = TRUE) else NULL))
     if (length(rng)) color_range <- range(rng, na.rm = TRUE)
   }
-  use_shared_legend <- same.color.scale && !is.null(color_range)
+  use_shared_legend <- same.color.scale && !is.null(color_range) && all(is.finite(color_range)) && diff(color_range) > 0
 
   # shared depth axis (deepest deployment), when requested
   depth_ylim_global <- NULL
@@ -351,7 +370,8 @@ plotDepthProfiles <- function(data,
   time  <- d[[datetime.col]]
 
   # map colours (guard the palette index to 1..length; NAs stay transparent)
-  has_color <- !is.null(color_range) && color.by %in% names(d) && any(!is.na(d[[color.by]]))
+  has_color <- !is.null(color_range) && all(is.finite(color_range)) && diff(color_range) > 0 &&
+    color.by %in% names(d) && any(!is.na(d[[color.by]]))
   point_col <- rep(theme$ink, length(depth))                        # no colour variable -> plain ink trace
   if (has_color) {
     idx <- round(.rescale(d[[color.by]], from = color_range, to = c(1, length(color.pal))))
@@ -360,7 +380,7 @@ plotDepthProfiles <- function(data,
 
   graphics::par(mar = c(2.2, 5, 2.2, if (panel.legend) 5 else 1.2))
   plot(x = time, y = depth, type = "n", axes = FALSE, xaxs = "i", xlab = "", ylab = "Depth (m)",
-       ylim = depth_ylim, cex.lab = cex, col.lab = theme$ink)
+       ylim = depth_ylim, xlim = dep$time.range, cex.lab = cex, col.lab = theme$ink)
 
   # Panel fill from the theme, but only when diel shading is switched off for the whole figure: with
   # shading on the background greys MEAN a phase, so a themed fill on a panel that merely lacks
@@ -370,6 +390,7 @@ plotDepthProfiles <- function(data,
     graphics::rect(usr[1], usr[3], usr[2], usr[4], col = theme$panel, border = NA)
   }
   if (shade.diel && all(is.finite(dep$coords))) .shadeDiel(dep$coords)
+  .drawEventBands(dep$events, dep$event.palette, dep$time.range %||% time, theme, cex)
 
   # geometry: a coloured LINE traces the dive (default), coloured POINTS show the raw samples, or BOTH.
   # The line is drawn as gap-broken segments so it never connects across a recording gap (see .drawColorLine).
@@ -377,7 +398,7 @@ plotDepthProfiles <- function(data,
   if (geom %in% c("points", "both")) graphics::points(x = time, y = depth, pch = 16, col = point_col, cex = point.size)
 
   # axes: date or clock time depending on the record length, labelled in the DATA's zone (see .axisTime)
-  .axisTime(time, n = 5, cex.axis = cex * 0.95, col = theme$axis, col.axis = theme$axis)
+  .axisTime(dep$time.range %||% time, n = 5, cex.axis = cex * 0.95, col = theme$axis, col.axis = theme$axis)
   graphics::axis(2, at = pretty(c(0, depth_ylim[1]), n = 5), las = 1, cex.axis = cex * 0.95,
                  col = theme$axis, col.axis = theme$axis)
 

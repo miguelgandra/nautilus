@@ -98,6 +98,74 @@ report double the true frequency, and the function warns when it detects this. A
 the Nyquist limit: you need at least twice `max.freq.Hz` to resolve the beat (the run aborts
 below that), and four times to be comfortable.
 
+## Candidate circling events
+
+`detectCircling()` identifies sustained, predominantly same-direction heading rotations and returns
+one row per event. It is a specialised query, not a new structuring step: dive detection and track
+reconstruction are optional, and the original sensor records are unchanged.
+
+```{r circling}
+circles <- detectCircling(
+  tags,
+  min.rotations = 2,
+  min.directionality = 0.8,
+  variables = c("depth", "temp", "vedba")
+)
+
+# The same event table is accepted by both plotters. No sample annotation is required.
+plotDepthProfiles(tags, events = circles)
+tracks <- reconstructTrack(tags)
+plotTracks(tracks, events = circles)
+
+# Optional sample labels: 1 inside events, 0 elsewhere when assessed, NA when unassessable.
+labelled <- annotateData(tags, circles)
+attr(circles, "circling_detection")$deployments
+saveRDS(circles, "circling_events.rds")   # preserves settings and assessment windows
+```
+
+The defaults are heuristic starting points. Heading must change by less than 180 degrees between
+successive observations; gaps, missing orientation and near-vertical posture break assessment.
+Smoothing and pause tolerances are in seconds, and angular rates are in degrees/second. Known pitch
+offsets are accounted for in the posture screen. Very slow circling may require a smaller
+`min.turn.rate`; fast-turning animals may require finer sampling and shorter smoothing.
+
+To inspect one dive, subset a deployment to its `dive_id` and pass the original event table to
+`plotDepthProfiles(events = circles)`. The plot clips windows without changing the event metrics.
+Events are detected over the full deployment and may cross dive or phase boundaries. A missing band
+does not demonstrate absence if heading was unassessable, and loops in a reconstructed track are
+not independent confirmation: both calculations use heading. Infer ecological function from
+additional depth, activity or video evidence.
+
+### Matching events to dive intervals
+
+For custom analyses, an overlap join preserves all event--dive relationships rather than forcing
+each event into one dive. The following recipe makes a separate relationship table:
+
+```{r circling-dive-overlap}
+dives <- detectDives(tags)
+dm <- diveMetrics(dives)
+ev <- data.table::as.data.table(circles)[, .(ID, circling_id, event_start = start, event_end = end)]
+di <- data.table::as.data.table(dm)[, .(ID, dive_id, dive_start = start, dive_end = end)]
+data.table::setkeyv(di, c("ID", "dive_start", "dive_end"))
+links <- data.table::foverlaps(
+  ev, di,
+  by.x = c("ID", "event_start", "event_end"),
+  by.y = c("ID", "dive_start", "dive_end"),
+  type = "any", nomatch = NULL
+)
+links[, overlap_s := as.numeric(
+  difftime(pmin(event_end, dive_end), pmax(event_start, dive_start), units = "secs")
+)]
+links <- links[overlap_s > 0]  # endpoint contact alone contributes no elapsed time
+```
+
+For phase-specific analysis, derive intervals from contiguous valid runs of `dive_phase` rather
+than treating a gap-spanning first/last timestamp as uninterrupted bottom residence. Do not copy an
+event's total rotations to every matching dive, or prorate them by duration without an explicit
+constant-rate assumption. Union overlapping windows for time budgets and use assessed duration as
+the denominator. A mean binary annotation is a sample fraction, not an automatic elapsed-time budget
+under irregular sampling.
+
 ## Windowed features for machine learning
 
 To classify behaviour you rarely feed raw samples to a model; you summarise short windows.

@@ -65,6 +65,14 @@
 #'   order is retained; character timestamps are not parsed.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (header, layout and summary),
 #'   or `2`/`"detailed"` (default), which adds loading progress and skipped-deployment counts.
+#' @param events Optional data frame of event windows with `ID`, `event`, `start` and `end` (`POSIXct`)
+#'   columns, for example from [detectCircling()]. Default `NULL` draws no event layer. Matching uses
+#'   deployment IDs and timestamps, not spatial proximity. Event paths use `theme$palette` and are
+#'   gathered independently before background thinning; each valid event subpath uses the `max.points`
+#'   target. Missing coordinates, non-increasing timestamps and gaps exceeding four median positive
+#'   sampling intervals break overlays. No positions are extrapolated or assigned across gaps.
+#'   Extra deployment IDs are ignored for subset plots; a table whose IDs and detector roster do not
+#'   match any input deployment raises a warning.
 #'
 #' @details
 #' ## Workflow and position sources
@@ -75,6 +83,11 @@
 #' column where usable. Lines connect the retained positions, including across omitted rows; they do
 #' not identify or repair recording gaps. A single reconstructed position contributes to the map extent
 #' but does not produce a track line or endpoint markers.
+#' Event overlays, when requested, instead break at unavailable positions and recording gaps. They
+#' highlight samples inside the supplied intervals; boundaries between samples are not interpolated.
+#' A single matching position is drawn as a point. Windows without matching positions are reported.
+#' Highlighted positions remain model-dependent pseudo-locations, not observed event locations or
+#' independent validation of a detector using the same heading channel.
 #'
 #' Recorded fixes are read from the canonical ancillary position table, accessible through
 #' `getTagMetadata(x)$ancillary$positions$data`. FastGPS, Argos and user-supplied positions have distinct
@@ -142,7 +155,7 @@
 #' @seealso [reconstructTrack()] for track estimation; [crossValidateTrack()] for reconstruction
 #'   validation; [trackMetrics()] for path summaries; [filterLocations()] for location screening;
 #'   [getBasemap()] and [basemapControl()] for background layers; [plotTheme()] for plot styling;
-#'   [plotDepthProfiles()] for depth time series.
+#'   [plotDepthProfiles()] for depth time series; [detectCircling()] for candidate event windows.
 #'
 #' @examples
 #' # Illustrative reconstructed positions; no external files or map downloads are needed
@@ -166,6 +179,8 @@
 #' # Map reconstructed deployments and save a report; ./plots must already exist
 #' tracks <- reconstructTrack(processed)
 #' plotTracks(tracks, color.by = "depth", plot.file = "./plots/tracks.pdf")
+#' circles <- detectCircling(processed)
+#' plotTracks(tracks, events = circles)
 #'
 #' # Reuse a fetched canvas for subsequent figures
 #' canvas <- getBasemap(tracks, type = "satellite")
@@ -190,7 +205,8 @@ plotTracks <- function(data,
                        plot.file        = NULL,
                        id.col           = "ID",
                        datetime.col     = "datetime",
-                       verbose          = "detailed") {
+                       verbose          = "detailed",
+                       events           = NULL) {
 
   ##############################################################################
   # Validate arguments #########################################################
@@ -208,6 +224,8 @@ plotTracks <- function(data,
   bathy_levels <- .resolveBathyContours(bathy.contours)         # NULL when off; numeric(0) when auto
   bathy_on     <- !is.null(bathy_levels)
   theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
+  events <- .eventIntervals(events)
+  event.palette <- if (!is.null(events)) .eventPalette(events, theme) else NULL
   .assert_count(max.points, "max.points", min = 2L)
   if (!is.null(ncols)) .assert_count(ncols, "ncols", min = 1L)
   if (!is.null(nrows)) .assert_count(nrows, "nrows", min = 1L)
@@ -268,7 +286,7 @@ plotTracks <- function(data,
                                 if (!is.null(color.by)) paste0(" ", cli::symbol$bullet, " coloured by ", color.by) else ""))
 
   payloads <- list(); summary_rows <- vector("list", src$n)
-  n_empty <- 0L
+  n_empty <- 0L; unmapped <- character(0)
   pb <- .log_progress_start(lvl, src$n, "Loading")
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
@@ -283,6 +301,10 @@ plotTracks <- function(data,
 
     # dead-reckoned pseudo-track (time-ordered, downsampled for drawing; true endpoints preserved)
     track <- .gatherPseudoTrack(x, datetime.col, color.by, max.points)
+    event.rows <- .eventsForDeployment(events, id)
+    event.paths <- .eventTrackPaths(x, event.rows, datetime.col, max.points)
+    if (length(event.paths$matched) && any(!event.paths$matched))
+      unmapped <- c(unmapped, sprintf("%s: %d windows without reconstructed positions", id, sum(!event.paths$matched)))
 
     n_fix <- nrow(fixes); n_track <- if (is.null(track)) 0L else nrow(track)
     summary_rows[[i]] <- data.frame(id = id, n_fix = n_fix, n_track = n_track, drawn = FALSE,
@@ -291,10 +313,13 @@ plotTracks <- function(data,
 
     summary_rows[[i]]$drawn <- TRUE
     payloads[[length(payloads) + 1L]] <- list(id = id, fixes = fixes, track = track,
-                                              deploy = deploy, popup = popup)
+                                              deploy = deploy, popup = popup,
+                                              event.paths = event.paths$paths, event.palette = event.palette)
   }
   .log_progress_done(pb)
   summary_df <- do.call(rbind, summary_rows)
+  .warnUnmatchedEvents(events, summary_df$id)
+  .warn_grouped("Some event windows could not be mapped to reconstructed positions.", unmapped)
 
   if (!length(payloads)) {
     if (lvl >= 1L) { .log_summary(lvl); .log_done(lvl, "0 tracks plotted (no fixes or reconstructed tracks)"); .log_runtime(lvl, start.time) }
@@ -500,6 +525,9 @@ plotTracks <- function(data,
     graphics::points(track$lon[n], track$lat[n], pch = 21, bg = pal[["end"]], col = pal[["start"]], lwd = 0.6, cex = cex * 1.2)
   }
 
+  # Event paths retain their own temporal subsets, independent of background stride thinning.
+  .drawEventTracks(payload$event.paths, payload$event.palette)
+
   # --- genuine fixes, by type ------------------------------------------------------------------------
   .pts <- function(sel, ...) if (any(sel)) graphics::points(fixes$lon[sel], fixes$lat[sel], ...)
   .pts(fixes$type == "FastGPS", pch = 21, bg = pal[["fastgps"]], col = outline, lwd = 0.4, cex = cex)
@@ -511,7 +539,7 @@ plotTracks <- function(data,
   if (!is.null(popup))  graphics::points(popup$lon,  popup$lat,  pch = 23, bg = pal[["popup"]],  col = outline, lwd = 0.5, cex = cex * 1.5)
 
   # --- legend + colour bar ---------------------------------------------------------------------------
-  .trackLegend(fixes, track, deploy, popup, pal, theme)
+  .trackLegend(fixes, track, deploy, popup, pal, theme, payload$event.paths, payload$event.palette)
   if (!is.null(color.by) && !is.null(color_range) && !is.null(track) && "value" %in% names(track))
     .trackColorbar(ramp, color_range, .defaultColorLabel(color.by), theme)
 
@@ -559,7 +587,7 @@ plotTracks <- function(data,
 # Compact in-panel legend (top-left) listing only the elements actually drawn.
 #' @keywords internal
 #' @noRd
-.trackLegend <- function(fixes, track, deploy, popup, pal, theme) {
+.trackLegend <- function(fixes, track, deploy, popup, pal, theme, event.paths = NULL, event.palette = NULL) {
   ink <- theme$ink; cex <- theme$cex; outline <- theme$bar.border
   lab <- character(0); pch <- integer(0); pcol <- character(0); pbg <- character(0); lty <- integer(0); lwd <- numeric(0)
   add <- function(l, pc, co, bg = NA, lt = NA, lw = NA) {
@@ -574,6 +602,8 @@ plotTracks <- function(data,
   }
   if (!is.null(deploy)) add("deployment", 23, outline, pal[["deploy"]])
   if (!is.null(popup))  add("pop-up", 23, outline, pal[["popup"]])
+  types <- unique(vapply(event.paths, function(p) p$event, character(1)))
+  for (type in types) add(type, NA_integer_, unname(event.palette[type]), NA, 1L, 3)
   if (!length(lab)) return(invisible(NULL))
   graphics::legend("topleft", legend = lab, pch = pch, col = pcol, pt.bg = pbg, lty = lty, lwd = lwd,
                    bty = "o", bg = grDevices::adjustcolor(theme$panel, alpha.f = 0.8), box.col = theme$grid,

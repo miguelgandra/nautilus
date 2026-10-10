@@ -49,6 +49,19 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Processing, kinematics and behaviour
 
+* `detectCircling()` returns candidate sustained heading-rotation events with explicit net-rotation,
+  directional-consistency, angular-rate and posture controls. It uses wrapped heading differences,
+  elapsed-time smoothing and gap-separated unwrapping, without changing sensor data or excluding
+  deployments. Results retain assessment intervals and distinguish unassessable records from zero events.
+* `plotDepthProfiles(events = ...)` and `plotTracks(events = ...)` display generic event tables as
+  exact-time bands and reconstructed path highlights. Short event paths are gathered before background
+  thinning and are broken at missing coordinates or long gaps. A constant depth-plot colour channel
+  now uses a uniform trace instead of failing in the colour legend.
+* `annotateData()` accepts `.rds` paths and detector results, including valid zero-event tables.
+  `assessed.intervals` (automatically read from detector provenance where available) provides `1` for
+  detected events, `0` for assessed non-event samples and `NA` for unavailable evidence. Manual scoring
+  retains its existing default convention. Interval unions avoid repeated full-record scans, and
+  caller-owned data tables are copied before annotation.
 * `calculatePaddleSpeed()` no longer censors speeds above 10 km/h by default. Its `max.speed` argument
   now defaults to `NULL`; an upper cutoff is applied only when supplied explicitly.
 * `processTagData()` derives orientation (tilt-compensated compass or Madgwick fusion), kinematics,
