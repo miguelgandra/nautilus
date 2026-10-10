@@ -108,6 +108,11 @@
 #' no bottom phase. Coarse sampling, depth quantisation or limited within-dive variation can
 #' leave transit limbs unresolved. Diagnostics report baseline risks and poorly resolved limbs;
 #' they do not automatically change the settings or manufacture a bottom phase.
+#' Candidate bottoms are additionally checked for net directional change relative to a smoothed,
+#' resolution-filtered vertical path. Predominantly directional intervals are refined towards the
+#' extremum rather than treating slow continued transit as bottom. This check is controlled by
+#' \code{bottom.max.directionality} and is independent of geometric shape classification.
+#' Rounded V-shaped profiles can retain brief bottoms. See [diveControl()] for the exact rule.
 #'
 #' ## Deployment status and provenance
 #'
@@ -206,6 +211,9 @@ detectDives <- function(data,
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
   control <- .as_control(control, diveControl, "nautilus_dive", "control")
+  # Saved controls predating this field use the current default, explicitly recorded below.
+  if (!"bottom.max.directionality" %in% names(control))
+    control$bottom.max.directionality <- formals(diveControl)$bottom.max.directionality
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   .assert_string(depth.col, "depth.col")
   .assert_flag(plot, "plot"); .assert_flag(return.data, "return.data")
@@ -285,6 +293,12 @@ detectDives <- function(data,
                                                  settings$phase.window else NA_real_,
                               min_phase_duration_s = if (identical(control$phase.method, "vertical.rate"))
                                                  settings$min.phase.duration else NA_real_,
+                              rate_crit = control$rate.crit, rate_quantile = control$rate.quantile,
+                              bottom_prop = control$bottom.prop,
+                              bottom_max_directionality = if (identical(control$phase.method, "vertical.rate"))
+                                                            control$bottom.max.directionality else NA_real_,
+                              phase_version = 2L,
+                              n_bottom_refined = res$phases$n_bottom_refined %||% 0L,
                               baseline_stat = control$baseline.stat,
                               n_dives = res$n_dives, status = res$status)
     x <- .restoreMeta(x, meta)
@@ -373,7 +387,9 @@ detectDives <- function(data,
               `Rate window`  = sprintf("%.3g s %s", settings$phase.window,
                                        src(settings$phase_window_source)),
               `Min. phase`   = sprintf("%.3g s %s", settings$min.phase.duration,
-                                       src(settings$phase_duration_source)))
+                                       src(settings$phase_duration_source)),
+              `Bottom directionality` = if (is.null(control$bottom.max.directionality)) "not checked"
+                                       else sprintf("at most %.2f", control$bottom.max.directionality))
   else
     rows <- c(rows, `Bottom span` = sprintf("deeper than %.0f%% of amplitude", 100 * control$bottom.prop))
 
@@ -399,6 +415,9 @@ detectDives <- function(data,
 .reportDiveDeployment <- function(lvl, res, settings, auto) {
   if (lvl < 2L) return(invisible(NULL))
   .log_arrow(lvl, "Reference: ", res$reference)
+  if (!is.null(res$phases) && isTRUE(res$phases$n_bottom_refined > 0L))
+    .log_arrow(lvl, res$phases$n_bottom_refined, " candidate bottom interval",
+               if (res$phases$n_bottom_refined == 1L) "" else "s", " refined: directional transit")
   if (auto && is.finite(res$occupancy))
     .log_rows(lvl, c(`ZOC status` = if (isTRUE(res$zoc_anchored)) "anchored" else "not anchored",
                      `Surface occupancy` = sprintf("%.2f%% (%.1f m band)",
@@ -434,6 +453,8 @@ detectDives <- function(data,
     tb <- table(other)
     res <- c(res, Skipped = paste(sprintf("%d (%s)", as.integer(tb), names(tb)), collapse = ", "))
   }
+  n_refined <- sum(vapply(phase_tally, function(z) z$n_bottom_refined %||% 0L, numeric(1)))
+  if (n_refined > 0) res <- c(res, `Candidate bottoms refined` = format(n_refined))
   .log_section(lvl, "Results")
   .log_rows(lvl, res)
 

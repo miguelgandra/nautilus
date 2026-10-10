@@ -24,7 +24,8 @@ diveControl(
   max.gap = NULL,
   wiggle.amplitude = NULL,
   min.surface.occupancy = 0.005,
-  require.zoc = c("warn", "error", "ignore")
+  require.zoc = c("warn", "error", "ignore"),
+  bottom.max.directionality = 0.6
 )
 }
 \arguments{
@@ -122,6 +123,13 @@ Set to zero to use depth-correction provenance alone.}
 no usable deployment has depth-correction provenance indicating an anchored zero:
 \code{"warn"} (default), \code{"error"} or \code{"ignore"}. This check is batch-level,
 not a per-deployment guarantee of an anchored zero; see Details.}
+
+\item{bottom.max.directionality}{Optional numeric proportion in \code{[0, 1]}. Default
+\code{0.60}. For \code{"vertical.rate"}, the candidate bottom is checked for net depth
+change relative to its resolved vertical path. Larger ratios indicate predominantly
+directional transit. Such intervals are refined towards the extremum and reassessed;
+unresolved residence is removed rather than labelled bottom. \code{NULL} disables this
+additional check. It does not affect \code{"prop.depth"}; see Details for movement resolution.}
 }
 \value{
 A named list of class \code{nautilus_dive} containing the validated settings.
@@ -211,9 +219,33 @@ Sampling floors can therefore exceed the duration-based caps for short, sparsely
 Noisy or coarsely quantised profiles can trigger adaptive window widening. This can lengthen
 a derived hold; when the hold was explicitly supplied, adaptive widening is limited by it.
 
+The interval between the independently detected limbs is a candidate bottom, not proof of
+residence. It is smoothed over the applied slope window for validation only. The movement
+deadband is the larger of three times the deployment depth-noise estimate and the smaller
+limb rate criterion multiplied by that window (with a numerical floor). Depth quantisation
+contributes to the noise estimate. A vertical path joins endpoints and extrema confirmed
+by reversals clearing this deadband; forward and reverse paths are averaged for symmetry.
+Raw sample-to-sample distances are not accumulated. Net changes within the deadband are
+accepted as unresolved drift; otherwise net change divided by resolved path must not exceed
+\code{bottom.max.directionality}. The default 0.60 requires at least 20\% of resolved movement
+to oppose the net direction, unless net progress is within the deadband. It is a heuristic
+kinematic criterion, not a validated behavioural threshold.
+
+If the candidate is predominantly directional, its opening boundary (net descent) or closing
+boundary (net ascent) is moved to the first or last sample within one deadband of the smoothed
+candidate extremum. The shortened interval is reassessed, preserving a level bottom after a
+slow approach. If directional progress still dominates, the limbs meet at the observed extremum
+and bottom is empty. No check bridges non-finite depth or invalid timestamps; the existing
+limb labels remain in those cases. Dives with unresolved limbs are not refined. Geometric
+shape labels and their prominence settings are never used to determine phases.
+
 A V-shaped excursion can have no bottom phase. Limited sampling or insufficient vertical
 variation can prevent one or both transit limbs from being resolved. Phase labels describe
-depth-profile kinematics, not independently verified behavioural states.
+depth-profile kinematics, not independently verified behavioural states. A rounded V can
+legitimately retain a brief bottom; there is no rule forcing every V into descent-ascent.
+The pause hold confirms boundaries, not a minimum duration of the final bottom interval.
+Slow, directionally drifting working-depth periods can be shortened by this check; assess
+sensitivity or relax/disable it when such periods belong to the study's bottom definition.
 }
 
 \subsection{Geometric phase classification and terminology}{

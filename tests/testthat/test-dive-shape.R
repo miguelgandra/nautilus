@@ -280,7 +280,7 @@ test_that("opting in preserves all original metrics, source data and phase annot
   for (i in seq_along(tags)) expect_identical(tags[[i]], original[[i]])
   contract <- attr(enabled, "shape_classification")
   expect_identical(contract$method, "profile_rules")
-  expect_identical(contract$version, 1L)
+  expect_identical(contract$version, 2L)
   expect_identical(contract$control, diveShapeControl())
   expect_null(attr(plain, "shape_classification"))
   expect_identical(diveMetrics(tags, shape = NULL, verbose = FALSE), plain)

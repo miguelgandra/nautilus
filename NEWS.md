@@ -86,6 +86,16 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
   study-specific prepared profile height in metres. These dives retain all non-shape metrics and
   receive `NA` shapes with status `"below_min_amplitude"`; the default `NULL` preserves existing
   classifications. Eligibility is separate from dive detection and internal-peak prominence.
+* `diveShapeControl(peak.scope = "bottom")` optionally restricts W classification to significant
+  peaks and intervening valleys in one labelled bottom interval. Whole-dive broadness and amplitude
+  are unchanged; unresolved phases abstain explicitly. The default `"profile"` remains phase-independent.
+  `peak.prominence.cap` optionally caps the proportional criterion in metres, without lowering absolute
+  or instrument-resolution floors. Shape provenance records algorithm version 2 and the selected scope.
+* Vertical-rate phases now independently validate candidate bottoms using net change relative to a
+  smoothed, resolution-filtered vertical path. `diveControl(bottom.max.directionality = 0.60)` is the
+  default heuristic; `NULL` restores the unchecked rule. Directional intervals are refined while
+  preserving a real plateau after a slow approach. Detection boundaries and source depth are unchanged;
+  phase-specific metrics must be regenerated after rerunning `detectDives()`.
 * `plotDives()` compares deployments on those metrics: every dive is a point in its deployment's column,
   with a median and interquartile marker over it, one panel per metric. It deliberately does not draw a
   bar of per-individual maxima -- a bar reads magnitude from a zero that does not exist when dives are

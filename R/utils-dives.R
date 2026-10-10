@@ -571,7 +571,7 @@
     pk <- .divePhases(resid[idx] * runs$sign[k], tnum[idx], control, settings, noise = nz,
                       dt = dt_dep)
     phase[idx] <- pk$phase
-    lim[[k]] <- c(pk[c("descent_established", "ascent_established")],
+    lim[[k]] <- c(pk[c("descent_established", "ascent_established", "bottom_refined")],
                   list(truncated = isTRUE(runs$truncated_start[k]) || isTRUE(runs$truncated_end[k]),
                        structure = .divePhaseCode(pk$phase)))
   }
@@ -598,7 +598,7 @@
 #' @noRd
 .divePhaseTally <- function(lim) {
   if (!length(lim)) return(list(n = 0L, n_judged = 0L, no_descent = 0L, no_ascent = 0L,
-                                structures = character(0)))
+                                n_bottom_refined = 0L, structures = character(0)))
   # A dive is judged only when the rule was in a position to answer: not cut short by the record, and
   # carrying some vertical variation to find limbs in. NA from `.divePhases()` means "no answer", which
   # is not the same as "no limb" and must not be counted as one.
@@ -608,7 +608,62 @@
   list(n = length(lim), n_judged = length(jd),
        no_descent = sum(vapply(jd, function(z) !isTRUE(z$descent_established), logical(1))),
        no_ascent  = sum(vapply(jd, function(z) !isTRUE(z$ascent_established),  logical(1))),
+       n_bottom_refined = sum(vapply(lim, function(z) isTRUE(z$bottom_refined), logical(1))),
        structures = vapply(lim, function(z) as.character(z$structure), character(1)))
+}
+
+# Noise-deadband vertical path: commit an extremum only after a resolved reversal. Include endpoints
+# rather than summing raw sample differences, which accumulates jitter as sampling rate rises.
+# Averaging forward and reverse walks makes the endpoint treatment exactly time-reversal symmetric.
+.diveResolvedMovement <- function(z, resolution) {
+  if (length(z) < 2L || any(!is.finite(z))) return(c(net = NA_real_, path = NA_real_))
+  resolution <- max(resolution, .Machine$double.eps)
+  net <- abs(z[length(z)] - z[1L])
+  if (diff(range(z)) <= resolution) return(c(net = net, path = 0))
+  walk <- function(v) {
+    last <- extreme <- low <- high <- v[1L]; direction <- 0L; path <- 0
+    for (i in seq.int(2L, length(v))) {
+      if (direction == 0L) {
+        low <- min(low, v[i]); high <- max(high, v[i])
+        if (v[i] - low >= resolution) {
+          path <- abs(low - last); last <- low; extreme <- v[i]; direction <- 1L
+        } else if (high - v[i] >= resolution) {
+          path <- abs(high - last); last <- high; extreme <- v[i]; direction <- -1L
+        }
+      } else if (direction * (v[i] - extreme) >= 0) {
+        extreme <- v[i]
+      } else if (abs(v[i] - extreme) >= resolution) {
+        path <- path + abs(extreme - last)
+        last <- extreme; extreme <- v[i]; direction <- -direction
+      }
+    }
+    path + abs(extreme - last) + abs(v[length(v)] - extreme)
+  }
+  c(net = net, path = max(net, (walk(z) + walk(rev(z))) / 2))
+}
+
+# Validate the interval proposed by the independent transit limbs. If net movement dominates the
+# resolved path, advance the directional limb to the extremum's resolution band, then reassess.
+# This preserves a real plateau after a slow approach instead of rejecting the entire bottom.
+.diveValidateBottom <- function(z, tnum, first, last, window, resolution, max.directionality) {
+  out <- list(first = first, last = last, refined = FALSE)
+  if (is.null(max.directionality) || first >= last || any(!is.finite(z)) ||
+      any(!is.finite(tnum)) || any(diff(tnum) <= 0)) return(out)
+  smooth <- .diveShapeSmooth(z, tnum - tnum[1L], window)
+  movement <- .diveResolvedMovement(smooth[first:last], resolution)
+  directional <- function(m) m[["net"]] > resolution && m[["path"]] > 0 &&
+                             m[["net"]] / m[["path"]] > max.directionality
+  if (!directional(movement)) return(out)
+  near <- which(smooth[first:last] >= max(smooth[first:last]) - resolution) + first - 1L
+  if (smooth[last] > smooth[first]) out$first <- near[1L]
+  else                            out$last <- near[length(near)]
+  out$refined <- TRUE
+  if (out$first < out$last &&
+      directional(.diveResolvedMovement(smooth[out$first:out$last], resolution))) {
+    # No supported residence remains. Meet at the apex, without changing the dive's boundaries.
+    out$first <- out$last <- which.max(z)
+  }
+  out
 }
 
 #' Centred least-squares slope of `z` against `tnum`, over a window given in SECONDS.
@@ -797,8 +852,9 @@
 #' @noRd
 .divePhases <- function(z, tnum, control, settings = NULL, noise = NA_real_, dt = NULL) {
   m <- length(z)
-  out <- function(ph, descent = NA, ascent = NA)
-    list(phase = ph, descent_established = descent, ascent_established = ascent)
+  out <- function(ph, descent = NA, ascent = NA, bottom_refined = FALSE)
+    list(phase = ph, descent_established = descent, ascent_established = ascent,
+         bottom_refined = bottom_refined)
   if (m < 3L) return(out(rep("bottom", m)))
   # No vertical variation inside the dive at all - a square pulse whose transitions fell between the
   # boundary samples. There are no limbs to find, and reporting "no descent was resolved" would describe
@@ -927,10 +983,27 @@
   # DA it is. This is the case that separates the rate rule from a proportion-of-depth rule.
   if (a_start <= d_end) a_start <- d_end + 1L
 
+  # A low signed rate can also describe slow continued transit. Resolve vertical movement over the
+  # measurement scale, independently of the shape classifier or its peak-prominence settings.
+  max_dir <- if ("bottom.max.directionality" %in% names(control))
+               control$bottom.max.directionality else 0.60
+  refined <- FALSE
+  if (isTRUE(d$established) && isTRUE(a$established) && a_start - d_end > 2L) {
+    resolution <- max(if (is.finite(noise)) 3 * noise else 0,
+                       min(crit_d, crit_a) * w_win, 1e-6)
+    bottom <- .diveValidateBottom(z, tnum, d_end + 1L, a_start - 1L, w_win,
+                                  resolution, max_dir)
+    if (isTRUE(bottom$refined)) {
+      d_end <- bottom$first - 1L; a_start <- bottom$last + 1L
+      if (bottom$first >= bottom$last) { d_end <- which.max(z); a_start <- d_end + 1L }
+      refined <- TRUE
+    }
+  }
+
   ph <- rep("bottom", m)
   if (d_end >= 1L) ph[seq_len(d_end)] <- "descent"
   if (a_start <= m) ph[a_start:m] <- "ascent"
-  out(ph, descent = d$established, ascent = a$established)
+  out(ph, descent = d$established, ascent = a$established, bottom_refined = refined)
 }
 
 
@@ -1211,7 +1284,7 @@
     if (!is.null(shape)) {
       classification <- .classifyDiveShapeOne(
         dd, b[idx], tt, p$direction, row$complete, shape,
-        resolution = shape_resolution, contiguous = length(idx) == i1 - i0 + 1L
+        resolution = shape_resolution, contiguous = length(idx) == i1 - i0 + 1L, phase = pp
       )
       for (nm in names(classification)) row[[nm]] <- classification[[nm]]
     }

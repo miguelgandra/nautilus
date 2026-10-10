@@ -16,16 +16,18 @@ diveShapeControl(
   min.samples = 20L,
   min.limb.prop = 0.2,
   max.opposite.prop = 0.2,
-  min.excursion.amplitude = NULL
+  min.excursion.amplitude = NULL,
+  peak.prominence.cap = NULL,
+  peak.scope = c("profile", "bottom")
 )
 }
 \arguments{
 \item{v.max.broadness}{Numeric in \code{[0, 1]}. Maximum normalised profile area classified
-as V when there is one significant peak. Default \code{0.60}. Must be smaller than
+as V when W is not supported. Default \code{0.60}. Must be smaller than
 \code{u.min.broadness}; the interval between the thresholds is deliberately unclassified.}
 
 \item{u.min.broadness}{Numeric in \code{[0, 1]}. Minimum normalised profile area classified
-as U when there is one significant peak. Default \code{0.75}.}
+as U when W is not supported. Default \code{0.75}.}
 
 \item{peak.prominence}{Positive numeric proportion no larger than one. Default \code{0.10}.
 Required rise and subsequent fall of a peak, as a fraction of the prepared profile's
@@ -75,6 +77,17 @@ Height is the maximum positive departure of the smoothed, direction-oriented,
 reference-relative profile from the line joining its endpoints. Equality is eligible.
 Profiles below the threshold receive \code{NA} with status \code{"below_min_amplitude"};
 dive rows, other metrics, source depth and detection boundaries are retained.}
+
+\item{peak.prominence.cap}{Optional positive numeric cap in metres on the proportional
+component of the peak criterion. \code{NULL} (default) preserves uncapped proportions.
+Absolute and instrument-resolution floors are applied after the cap and may exceed it.
+Must not be smaller than \code{min.peak.amplitude}. It does not exclude larger reversals.}
+
+\item{peak.scope}{Character. \code{"profile"} (default) counts significant peaks anywhere
+in the retained profile, independently of phase labels. \code{"bottom"} restricts W
+detection to peaks and their intervening valleys in one contiguous labelled bottom interval.
+Whole-dive preparation, amplitude and V/U broadness are unchanged. Invalid or unresolved
+descent-bottom-ascent annotations cause abstention, not a forced V; see Details.}
 }
 \value{
 A named list of class \code{nautilus_dive_shape} containing validated settings.
@@ -84,7 +97,8 @@ statuses, broadness, significant peak count and effective prominence threshold.
 \description{
 Creates a validated control object for optional V-, U- and W-shaped profile classification
 in \code{\link[=diveMetrics]{diveMetrics()}}. Rules use time-weighted profile broadness and significant internal
-excursions, independently of the phase labels assigned by \code{\link[=detectDives]{detectDives()}}.
+excursions. Whole-profile rules are independent of phase labels; optional bottom-scoped
+W classification uses the annotations assigned by \code{\link[=detectDives]{detectDives()}}.
 
 Classes describe the geometry of the retained depth record, not feeding, resting or transit
 behaviour. Default thresholds are heuristic starting points and require validation for the
@@ -112,16 +126,17 @@ It is not the published time-allocation-at-depth index or a proportion of phase-
 
 \subsection{Significant peaks and decision rules}{
 
-The peak criterion in metres is the largest of \code{peak.prominence} times the prepared
-profile height, \code{min.peak.amplitude}, three times the deployment depth-noise estimate
+The proportional component is \code{peak.prominence} times the prepared profile height,
+optionally limited by \code{peak.prominence.cap}. The peak criterion in metres is the largest
+of this component, \code{min.peak.amplitude}, three times the deployment depth-noise estimate
 and twice the estimated depth quantum. Noise is estimated by the median absolute deviation
 of finite second differences divided by \eqn{\sqrt{6}}; the quantum estimate is used only
 when a sufficiently populated depth lattice is detected.
 
 Peaks must have both a rise and a subsequent fall meeting this criterion. Sub-threshold
 oscillations are suppressed by hysteresis; flat summits use their temporal midpoint.
-After applying peak separation, two or more significant peaks define W. A single peak
-defines V or U according to the broadness thresholds; intermediate profiles are
+After scope and separation screening, two or more significant peaks define W. Otherwise
+V or U follows the broadness thresholds; intermediate profiles are
 \code{"other"}. These operational definitions are not a universal taxonomic standard.
 }
 
@@ -132,6 +147,24 @@ profiles receive \code{NA} with a diagnostic status. Timestamps must be finite a
 increasing, and the reference must be finite. Even with complete coverage, an unresolved
 opening or return limb causes abstention. There is no forced V/U/W assignment or estimated
 probability of class membership.
+}
+
+\subsection{Bottom-scoped W classification}{
+
+With \code{peak.scope = "bottom"}, significant peaks are first detected over the full
+prepared profile. Only peaks whose centres are labelled bottom are retained, before temporal
+separation is applied. Phase runs must be either descent-ascent (a known empty bottom) or
+descent-bottom-ascent with one contiguous bottom. This ensures the entire interval between
+retained peak centres, including their valley, belongs to bottom. External limbs may still
+establish the prominence of peaks at the bottom boundaries. Bottom is not cropped or renormalised.
+
+Two or more retained peaks define W. With zero or one bottom peak, V/U/other follows whole-dive
+broadness; no bottom does not automatically imply V. Missing, invalid, noncontiguous or unresolved
+phase structure gives \code{NA} with \code{"unresolved_phases"}. The main full-profile peak
+must still be resolved. Upward excursions use the same logical opening-bottom-return labels.
+Bottom-scoped results depend on the supplied phase method and settings. Rerun \code{\link[=detectDives]{detectDives()}}
+to use revised phase rules; \code{\link[=diveMetrics]{diveMetrics()}} never repairs or overwrites old annotations.
+A bottom W is geometric evidence of repeated vertical movement, not proof of searching or feeding.
 
 \code{min.excursion.amplitude} optionally limits shape classification to a study-specific
 vertical scale, independently of the internal-peak criterion \code{min.peak.amplitude}.
@@ -165,6 +198,9 @@ diveShapeControl(
 
 # An illustrative study-specific eligibility threshold, not a universal recommendation
 diveShapeControl(min.excursion.amplitude = 10)
+
+# Illustrative deep-dive rule: validate the cap and bottom annotations for the study
+diveShapeControl(peak.scope = "bottom", peak.prominence = 0.10, peak.prominence.cap = 50)
 }
 \seealso{
 \code{\link[=diveMetrics]{diveMetrics()}} for optional classification and output definitions;

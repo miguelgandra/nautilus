@@ -154,6 +154,11 @@ The default vertical-rate method can retain a V-shaped excursion with descent an
 no bottom phase. Coarse sampling, depth quantisation or limited within-dive variation can
 leave transit limbs unresolved. Diagnostics report baseline risks and poorly resolved limbs;
 they do not automatically change the settings or manufacture a bottom phase.
+Candidate bottoms are additionally checked for net directional change relative to a smoothed,
+resolution-filtered vertical path. Predominantly directional intervals are refined towards the
+extremum rather than treating slow continued transit as bottom. This check is controlled by
+\code{bottom.max.directionality} and is independent of geometric shape classification.
+Rounded V-shaped profiles can retain brief bottoms. See \code{\link[=diveControl]{diveControl()}} for the exact rule.
 }
 
 \subsection{Deployment status and provenance}{

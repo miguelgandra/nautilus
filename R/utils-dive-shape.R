@@ -2,7 +2,7 @@
 # Optional geometric classification of retained dive profiles #########################################
 #######################################################################################################
 
-# Shape rules deliberately do not use phase labels, phase support or the whole-dive reversal count.
+# Default shape rules do not use phase labels; bottom-scoped W explicitly uses the supplied phases.
 # All preparation is local to classification: source depth, annotations and detection history survive.
 
 .diveShapeResolution <- function(depth) {
@@ -65,6 +65,12 @@
     }
   }
   if (!n_found) return(integer(0))
+  .diveShapeSeparatePeaks(candidates[seq_len(n_found)], z, t, separation)
+}
+
+.diveShapeSeparatePeaks <- function(candidates, z, t, separation) {
+  n_found <- length(candidates)
+  if (!n_found) return(integer(0))
   # Resolve successive temporal conflicts in favour of the taller peak (earlier on exact ties).
   kept <- integer(n_found); n_kept <- 0L
   for (p in candidates[seq_len(n_found)]) {
@@ -77,7 +83,7 @@
 }
 
 .classifyDiveShapeOne <- function(depth, baseline, tnum, direction, complete, control,
-                                   resolution = 0, contiguous = TRUE) {
+                                   resolution = 0, contiguous = TRUE, phase = NULL) {
   out <- list(dive_shape = NA_character_, dive_shape_status = "insufficient_samples",
               shape_broadness = NA_real_, shape_n_peaks = NA_integer_,
               shape_prominence_m = NA_real_)
@@ -153,12 +159,29 @@
   }
   z <- pmax(0, z)
   broadness <- sum(diff(t) * (z[-n] + z[-1L]) / 2) / (duration * amplitude)
-  prominence <- max(control$peak.prominence * amplitude, resolution)
-  peaks <- .diveShapePeaks(z, t, prominence, max(control$min.peak.separation, 2 * dt))
+  relative <- control$peak.prominence * amplitude
+  if (!is.null(control$peak.prominence.cap)) relative <- min(relative, control$peak.prominence.cap)
+  prominence <- max(relative, resolution)
+  separation <- max(control$min.peak.separation, 2 * dt)
+  # Find full-profile peaks first: clipping to bottom would change the height and truncate boundary
+  # peaks. Scope precedes separation so a nearby transit peak cannot suppress a valid bottom peak.
+  peaks <- .diveShapePeaks(z, t, prominence, 0)
+  if (!length(peaks)) return(abstain("insufficient_resolution"))
+  if (identical(control$peak.scope, "bottom")) {
+    if (length(phase) != n || anyNA(phase)) return(abstain("unresolved_phases"))
+    phase <- as.character(phase)
+    structure <- rle(phase)$values
+    if (!identical(structure, c("descent", "ascent")) &&
+        !identical(structure, c("descent", "bottom", "ascent")))
+      return(abstain("unresolved_phases"))
+    # A contiguous bottom means both peak centres and the complete intervening valley are in scope.
+    # Their external opening/closing limbs can still establish full-profile peak prominence.
+    peaks <- peaks[phase[peaks] == "bottom"]
+  }
+  peaks <- .diveShapeSeparatePeaks(peaks, z, t, separation)
   out$shape_broadness <- max(0, min(1, broadness))
   out$shape_n_peaks <- length(peaks)
   out$shape_prominence_m <- prominence
-  if (!length(peaks)) return(abstain("insufficient_resolution"))
   out$dive_shape <- if (length(peaks) >= 2L) "W"
                     else if (broadness <= control$v.max.broadness) "V"
                     else if (broadness >= control$u.min.broadness) "U"
@@ -170,6 +193,6 @@
 # Only shape-enabled results carry this contract; default tables remain byte-for-byte compatible.
 .diveShapeResult <- function(x, control) {
   if (!is.null(control))
-    attr(x, "shape_classification") <- list(method = "profile_rules", version = 1L, control = control)
+    attr(x, "shape_classification") <- list(method = "profile_rules", version = 2L, control = control)
   structure(x, class = c("nautilus_dive_metrics", "data.frame"))
 }

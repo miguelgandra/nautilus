@@ -157,7 +157,8 @@
 #' ## Optional geometric shape classification
 #'
 #' Supply \code{shape = diveShapeControl()} to classify the retained timestamped depth profiles,
-#' independently of \code{phase_structure}, \code{shape_supported} and \code{n_reversals}.
+#' independently of \code{n_reversals}. The default \code{peak.scope = "profile"} is also
+#' independent of phase labels and \code{shape_supported}.
 #' Profiles are oriented relative to their depth reference, smoothed only for classification,
 #' and detrended against the line joining their endpoints after checking that both transit
 #' limbs were observed. Time-weighted normalised area measures broadness; amplitude-filtered
@@ -169,6 +170,15 @@
 #' \code{NA} with a diagnostic status. Default thresholds are heuristic starting points,
 #' not universally validated biological definitions. See [diveShapeControl()] for the full
 #' preparation, resolution floors and decision rules.
+#'
+#' With \code{peak.scope = "bottom"}, W requires at least two significant peak centres and
+#' their intervening valley within one contiguous labelled bottom. Peaks are found over the
+#' complete prepared profile before scope and separation screening; bottom is not renormalised.
+#' Whole-dive amplitude and V/U broadness remain unchanged. Known descent-ascent profiles can
+#' have zero bottom peaks; invalid or unresolved phase structure abstains with
+#' \code{"unresolved_phases"}. Revised bottom detection requires rerunning [detectDives()] first.
+#' \code{peak.prominence.cap} optionally caps only the proportional criterion; absolute and
+#' resolution floors still apply. Bottom-scoped shape is not an independently verified behaviour.
 #'
 #' Shape classification does not redefine \code{shape_supported}, which remains an indicator
 #' of resolved phase durations. Censored dives are not classified. Additional quality checks
@@ -254,20 +264,23 @@
 #'     \item{\code{dive_shape}}{Character: \code{"V"}, \code{"U"}, \code{"W"},
 #'       \code{"other"}, or \code{NA} when classification abstains.}
 #'     \item{\code{dive_shape_status}}{Character. \code{"classified"} for V/U/W,
-#'       \code{"intermediate"} for a single peak between broadness thresholds, or
+#'       \code{"intermediate"} for a non-W profile between broadness thresholds, or
 #'       \code{"complex_profile"} for substantial movement below the endpoint chord.
 #'       Abstention reasons are \code{"censored"}, \code{"noncontiguous"},
 #'       \code{"invalid_time"}, \code{"missing_reference"}, \code{"low_coverage"},
 #'       \code{"gap"}, \code{"insufficient_samples"}, \code{"insufficient_resolution"},
-#'       \code{"insufficient_limbs"}, \code{"ambiguous_direction"} or
-#'       \code{"below_min_amplitude"}. The last is study-scale ineligibility, not a
+#'       \code{"insufficient_limbs"}, \code{"ambiguous_direction"},
+#'       \code{"below_min_amplitude"} or \code{"unresolved_phases"}. The latter applies
+#'       only to bottom-scoped classification. Amplitude ineligibility is not a
 #'       sensor-quality failure. Technical failures take precedence when both apply.}
 #'     \item{\code{shape_broadness}}{Numeric normalised profile area on \code{[0, 1]},
 #'       not a proportion of bottom-phase samples.}
-#'     \item{\code{shape_n_peaks}}{Integer number of qualifying peaks, including the main
-#'       excursion peak, after prominence and separation screening.}
+#'     \item{\code{shape_n_peaks}}{Integer number of qualifying peaks after prominence, scope
+#'       and separation screening. Includes the main peak in profile scope; can be zero with
+#'       bottom scope. Its meaning must be interpreted with the recorded \code{peak.scope}.}
 #'     \item{\code{shape_prominence_m}}{Numeric effective rise/fall criterion in metres,
-#'       including the relative, absolute, noise and quantisation floors.}
+#'       including the optionally capped proportional component and absolute, noise and
+#'       quantisation floors.}
 #'   }
 #'   Descriptors are \code{NA} when preparation abstains before they can be calculated.
 #'   The \code{shape_classification} attribute records the method \code{"profile_rules"},
@@ -320,8 +333,11 @@ diveMetrics <- function(data,
   .assert_flag(by.phase, "by.phase")
   .assert_string(id.col, "id.col"); .assert_string(datetime.col, "datetime.col")
   .assert_string(depth.col, "depth.col")
-  if (!is.null(shape))
+  if (!is.null(shape)) {
     shape <- .as_control(shape, diveShapeControl, "nautilus_dive_shape", "shape")
+    if (is.null(shape$peak.scope)) shape$peak.scope <- "profile"
+    shape["peak.prominence.cap"] <- list(shape$peak.prominence.cap)
+  }
   if (!is.null(variables) && (!is.character(variables) || !length(variables)))
     .abort("{.arg variables} must be a non-empty character vector of column names, or {.code NULL}.")
   if (!is.null(circular.variables) && !is.character(circular.variables))

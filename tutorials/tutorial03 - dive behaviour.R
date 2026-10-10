@@ -80,7 +80,13 @@ dive_settings <- diveControl(
   min.duration    = 20,       # seconds; excludes brief undulations that are not dives
   min.prominence  = NULL,     # NULL never splits a W-shaped excursion into two dives (see below)
   max.gap         = 60*30,      # a longer interruption splits the dive and marks both parts censored
-  phase.method    = "vertical.rate")   # how descent/bottom/ascent are separated
+  phase.method    = "vertical.rate",   # how descent/bottom/ascent are separated
+  bottom.max.directionality = 0.60)    # net progress / resolved vertical path; heuristic, not behaviour
+
+# Bottom validation is independent of shape: slow directional arrivals are refined towards the
+# extremum, while resolved oscillations and near-level residence remain bottom. NULL disables the
+# additional directionality check. Rounded V-dives can still have a brief bottom interval. Rerun
+# this detection step (not just diveMetrics) when changing phase settings or updating phase logic.
 
 # On min.prominence: left NULL, a deep excursion with a partial re-ascent in the middle is reported
 # whole, however many sub-peaks it contains. That is deliberate - splitting is an interpretive act,
@@ -140,6 +146,8 @@ shape_settings <- diveShapeControl(
   v.max.broadness      = 0.60,  # normalised time-weighted profile area, not bottom-phase fraction
   u.min.broadness      = 0.75,  # intermediate single-peak profiles remain "other"
   peak.prominence     = 0.10,  # minimum rise/fall relative to the prepared excursion height
+  peak.prominence.cap = NULL,  # optional cap in metres; absolute/noise floors still apply
+  peak.scope          = "profile",  # default: peaks anywhere; "bottom" ignores transit peaks for W
   min.peak.amplitude  = 0.5,   # absolute floor in metres; noise/resolution floors also apply
   min.peak.separation = 5,     # seconds; at least two sampling intervals are required
   smooth.window       = 3,     # seconds; used for classification only
@@ -150,6 +158,15 @@ shape_settings <- diveShapeControl(
 # This is the maximum departure of the smoothed profile from its endpoint chord, not absolute
 # depth or amplitude_m. Below-threshold dives remain in the table with all non-shape metrics;
 # their shape/descriptors are NA and dive_shape_status is "below_min_amplitude".
+
+# For a reviewed deep-dive study, an illustrative alternative is:
+# shape_settings <- diveShapeControl(
+#   v.max.broadness = 0.60, u.min.broadness = 0.70,
+#   peak.prominence = 0.10, peak.prominence.cap = 50, peak.scope = "bottom",
+#   min.peak.amplitude = 2, min.peak.separation = 30, smooth.window = 5)
+# A 50 m cap is not a universal ecological threshold. Validate shallow and deep profiles and assess
+# sensitivity. Bottom scope uses the stored phases: two peak centres and their intervening valley
+# must be bottom; missing or unresolved phases withhold the shape. Whole-dive broadness is unchanged.
 
 
 dive_metrics <- diveMetrics(data               = list.files("./data interim/07_dives", full.names = TRUE),
@@ -173,10 +190,10 @@ head(dive_metrics[, c("ID", "dive_id", "start", "duration_s", "max_depth_m", "am
 # the circular ones as a mean angle plus a resultant length (heading_mean_angle, heading_mrl).
 grep("^vedba|^heading", names(dive_metrics), value = TRUE)
 
-# Shapes use the retained depth profiles, independently of descent/bottom/ascent labels:
+# Shapes use the retained depth profiles (phase-independent at the default "profile" scope):
 #   V = a narrow single-peak excursion
 #   U = a broad single-peak excursion
-#   W = two or more significant, separated peaks
+#   W = two or more significant, separated peaks (within bottom when that scope is selected)
 #   other = an intermediate or complex profile that is not forced into those classes
 #   NA = an ineligible or unsuitable profile, with the reason given in dive_shape_status
 # These are morphological labels, not automatic evidence of foraging, resting or transit.

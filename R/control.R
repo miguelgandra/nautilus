@@ -1166,6 +1166,12 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 #'   proximity to the extremum required for a pause to end a transit limb, relative to that
 #'   limb's depth range. Increasing it requires closer approach to the extremum; decreasing
 #'   it permits a broader bottom region.
+#' @param bottom.max.directionality Optional numeric proportion in \code{[0, 1]}. Default
+#'   \code{0.60}. For \code{"vertical.rate"}, the candidate bottom is checked for net depth
+#'   change relative to its resolved vertical path. Larger ratios indicate predominantly
+#'   directional transit. Such intervals are refined towards the extremum and reassessed;
+#'   unresolved residence is removed rather than labelled bottom. \code{NULL} disables this
+#'   additional check. It does not affect \code{"prop.depth"}; see Details for movement resolution.
 #' @param max.gap Non-negative numeric maximum interruption in seconds that a dive may span.
 #'   Timestamp jumps and runs of non-finite depth longer than this value split candidate
 #'   intervals without interpolation. \code{NULL} (default) uses the larger of 60 seconds
@@ -1255,9 +1261,33 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 #' Noisy or coarsely quantised profiles can trigger adaptive window widening. This can lengthen
 #' a derived hold; when the hold was explicitly supplied, adaptive widening is limited by it.
 #'
+#' The interval between the independently detected limbs is a candidate bottom, not proof of
+#' residence. It is smoothed over the applied slope window for validation only. The movement
+#' deadband is the larger of three times the deployment depth-noise estimate and the smaller
+#' limb rate criterion multiplied by that window (with a numerical floor). Depth quantisation
+#' contributes to the noise estimate. A vertical path joins endpoints and extrema confirmed
+#' by reversals clearing this deadband; forward and reverse paths are averaged for symmetry.
+#' Raw sample-to-sample distances are not accumulated. Net changes within the deadband are
+#' accepted as unresolved drift; otherwise net change divided by resolved path must not exceed
+#' \code{bottom.max.directionality}. The default 0.60 requires at least 20% of resolved movement
+#' to oppose the net direction, unless net progress is within the deadband. It is a heuristic
+#' kinematic criterion, not a validated behavioural threshold.
+#'
+#' If the candidate is predominantly directional, its opening boundary (net descent) or closing
+#' boundary (net ascent) is moved to the first or last sample within one deadband of the smoothed
+#' candidate extremum. The shortened interval is reassessed, preserving a level bottom after a
+#' slow approach. If directional progress still dominates, the limbs meet at the observed extremum
+#' and bottom is empty. No check bridges non-finite depth or invalid timestamps; the existing
+#' limb labels remain in those cases. Dives with unresolved limbs are not refined. Geometric
+#' shape labels and their prominence settings are never used to determine phases.
+#'
 #' A V-shaped excursion can have no bottom phase. Limited sampling or insufficient vertical
 #' variation can prevent one or both transit limbs from being resolved. Phase labels describe
-#' depth-profile kinematics, not independently verified behavioural states.
+#' depth-profile kinematics, not independently verified behavioural states. A rounded V can
+#' legitimately retain a brief bottom; there is no rule forcing every V into descent-ascent.
+#' The pause hold confirms boundaries, not a minimum duration of the final bottom interval.
+#' Slow, directionally drifting working-depth periods can be shortened by this check; assess
+#' sensitivity or relax/disable it when such periods belong to the study's bottom definition.
 #'
 #' ## Geometric phase classification and terminology
 #'
@@ -1322,7 +1352,8 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
                         max.gap               = NULL,
                         wiggle.amplitude      = NULL,
                         min.surface.occupancy = 0.005,
-                        require.zoc           = c("warn", "error", "ignore")) {
+                        require.zoc           = c("warn", "error", "ignore"),
+                        bottom.max.directionality = 0.60) {
 
   reference     <- match.arg(reference)
   direction     <- match.arg(direction)
@@ -1351,6 +1382,8 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
   .assert_number(rate.quantile,         "dive$rate.quantile",         min = 0)
   .assert_number(bottom.prop,           "dive$bottom.prop",           min = 0)
   .assert_number(min.surface.occupancy, "dive$min.surface.occupancy", min = 0)
+  .assert_number(bottom.max.directionality, "dive$bottom.max.directionality",
+                 min = 0, max = 1, null_ok = TRUE)
 
   if (baseline.window <= 0) .abort("{.arg dive$baseline.window} must be greater than zero.")
   if (rate.crit <= 0 || rate.crit >= 1)
@@ -1389,7 +1422,8 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
                  min.phase.duration = min.phase.duration,
                  rate.crit = rate.crit, rate.quantile = rate.quantile,
                  bottom.prop = bottom.prop, max.gap = max.gap, wiggle.amplitude = wiggle.amplitude,
-                 min.surface.occupancy = min.surface.occupancy, require.zoc = require.zoc),
+                 min.surface.occupancy = min.surface.occupancy, require.zoc = require.zoc,
+                 bottom.max.directionality = bottom.max.directionality),
             class = "nautilus_dive")
 }
 
@@ -1399,21 +1433,31 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #' @description
 #' Creates a validated control object for optional V-, U- and W-shaped profile classification
 #' in [diveMetrics()]. Rules use time-weighted profile broadness and significant internal
-#' excursions, independently of the phase labels assigned by [detectDives()].
+#' excursions. Whole-profile rules are independent of phase labels; optional bottom-scoped
+#' W classification uses the annotations assigned by [detectDives()].
 #'
 #' Classes describe the geometry of the retained depth record, not feeding, resting or transit
 #' behaviour. Default thresholds are heuristic starting points and require validation for the
 #' study system, sampling resolution and dive definition.
 #'
 #' @param v.max.broadness Numeric in \code{[0, 1]}. Maximum normalised profile area classified
-#'   as V when there is one significant peak. Default \code{0.60}. Must be smaller than
+#'   as V when W is not supported. Default \code{0.60}. Must be smaller than
 #'   \code{u.min.broadness}; the interval between the thresholds is deliberately unclassified.
 #' @param u.min.broadness Numeric in \code{[0, 1]}. Minimum normalised profile area classified
-#'   as U when there is one significant peak. Default \code{0.75}.
+#'   as U when W is not supported. Default \code{0.75}.
 #' @param peak.prominence Positive numeric proportion no larger than one. Default \code{0.10}.
 #'   Required rise and subsequent fall of a peak, as a fraction of the prepared profile's
 #'   maximum departure from its endpoint chord. Absolute and resolution-based floors also
 #'   apply. This hysteretic rise/fall criterion is not a general topographic-prominence estimator.
+#' @param peak.prominence.cap Optional positive numeric cap in metres on the proportional
+#'   component of the peak criterion. \code{NULL} (default) preserves uncapped proportions.
+#'   Absolute and instrument-resolution floors are applied after the cap and may exceed it.
+#'   Must not be smaller than \code{min.peak.amplitude}. It does not exclude larger reversals.
+#' @param peak.scope Character. \code{"profile"} (default) counts significant peaks anywhere
+#'   in the retained profile, independently of phase labels. \code{"bottom"} restricts W
+#'   detection to peaks and their intervening valleys in one contiguous labelled bottom interval.
+#'   Whole-dive preparation, amplitude and V/U broadness are unchanged. Invalid or unresolved
+#'   descent-bottom-ascent annotations cause abstention, not a forced V; see Details.
 #' @param min.peak.amplitude Non-negative numeric absolute floor for peak rise/fall in metres.
 #'   Default \code{0.5}. Excursion relief and both observed limbs must also clear the effective
 #'   resolution floor. Setting zero removes this explicit floor, not the estimated noise floor.
@@ -1471,16 +1515,17 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #'
 #' ## Significant peaks and decision rules
 #'
-#' The peak criterion in metres is the largest of \code{peak.prominence} times the prepared
-#' profile height, \code{min.peak.amplitude}, three times the deployment depth-noise estimate
+#' The proportional component is \code{peak.prominence} times the prepared profile height,
+#' optionally limited by \code{peak.prominence.cap}. The peak criterion in metres is the largest
+#' of this component, \code{min.peak.amplitude}, three times the deployment depth-noise estimate
 #' and twice the estimated depth quantum. Noise is estimated by the median absolute deviation
 #' of finite second differences divided by \eqn{\sqrt{6}}; the quantum estimate is used only
 #' when a sufficiently populated depth lattice is detected.
 #'
 #' Peaks must have both a rise and a subsequent fall meeting this criterion. Sub-threshold
 #' oscillations are suppressed by hysteresis; flat summits use their temporal midpoint.
-#' After applying peak separation, two or more significant peaks define W. A single peak
-#' defines V or U according to the broadness thresholds; intermediate profiles are
+#' After scope and separation screening, two or more significant peaks define W. Otherwise
+#' V or U follows the broadness thresholds; intermediate profiles are
 #' \code{"other"}. These operational definitions are not a universal taxonomic standard.
 #'
 #' ## Quality requirements and scope
@@ -1490,6 +1535,23 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #' increasing, and the reference must be finite. Even with complete coverage, an unresolved
 #' opening or return limb causes abstention. There is no forced V/U/W assignment or estimated
 #' probability of class membership.
+#'
+#' ## Bottom-scoped W classification
+#'
+#' With \code{peak.scope = "bottom"}, significant peaks are first detected over the full
+#' prepared profile. Only peaks whose centres are labelled bottom are retained, before temporal
+#' separation is applied. Phase runs must be either descent-ascent (a known empty bottom) or
+#' descent-bottom-ascent with one contiguous bottom. This ensures the entire interval between
+#' retained peak centres, including their valley, belongs to bottom. External limbs may still
+#' establish the prominence of peaks at the bottom boundaries. Bottom is not cropped or renormalised.
+#'
+#' Two or more retained peaks define W. With zero or one bottom peak, V/U/other follows whole-dive
+#' broadness; no bottom does not automatically imply V. Missing, invalid, noncontiguous or unresolved
+#' phase structure gives \code{NA} with \code{"unresolved_phases"}. The main full-profile peak
+#' must still be resolved. Upward excursions use the same logical opening-bottom-return labels.
+#' Bottom-scoped results depend on the supplied phase method and settings. Rerun [detectDives()]
+#' to use revised phase rules; [diveMetrics()] never repairs or overwrites old annotations.
+#' A bottom W is geometric evidence of repeated vertical movement, not proof of searching or feeding.
 #'
 #' \code{min.excursion.amplitude} optionally limits shape classification to a study-specific
 #' vertical scale, independently of the internal-peak criterion \code{min.peak.amplitude}.
@@ -1530,6 +1592,9 @@ diveControl <- function(reference             = c("auto", "surface", "baseline")
 #'
 #' # An illustrative study-specific eligibility threshold, not a universal recommendation
 #' diveShapeControl(min.excursion.amplitude = 10)
+#'
+#' # Illustrative deep-dive rule: validate the cap and bottom annotations for the study
+#' diveShapeControl(peak.scope = "bottom", peak.prominence = 0.10, peak.prominence.cap = 50)
 #' @export
 diveShapeControl <- function(v.max.broadness = 0.60,
                              u.min.broadness = 0.75,
@@ -1542,7 +1607,10 @@ diveShapeControl <- function(v.max.broadness = 0.60,
                              min.samples = 20L,
                              min.limb.prop = 0.20,
                              max.opposite.prop = 0.20,
-                             min.excursion.amplitude = NULL) {
+                             min.excursion.amplitude = NULL,
+                             peak.prominence.cap = NULL,
+                             peak.scope = c("profile", "bottom")) {
+  peak.scope <- match.arg(peak.scope)
   .assert_number(v.max.broadness, "shape$v.max.broadness", min = 0, max = 1)
   .assert_number(u.min.broadness, "shape$u.min.broadness", min = 0, max = 1)
   if (v.max.broadness >= u.min.broadness)
@@ -1560,12 +1628,18 @@ diveShapeControl <- function(v.max.broadness = 0.60,
   if (min.limb.prop <= 0) .abort("{.arg shape$min.limb.prop} must be greater than zero.")
   .assert_number(max.opposite.prop, "shape$max.opposite.prop", min = 0, max = 0.5)
   .assert_number(min.excursion.amplitude, "shape$min.excursion.amplitude", min = 0, null_ok = TRUE)
+  .assert_number(peak.prominence.cap, "shape$peak.prominence.cap", min = 0, null_ok = TRUE)
+  if (!is.null(peak.prominence.cap) && peak.prominence.cap <= 0)
+    .abort("{.arg shape$peak.prominence.cap} must be greater than zero.")
+  if (!is.null(peak.prominence.cap) && peak.prominence.cap < min.peak.amplitude)
+    .abort("{.arg shape$peak.prominence.cap} must not be below the {.arg min.peak.amplitude} floor.")
   structure(list(v.max.broadness = v.max.broadness, u.min.broadness = u.min.broadness,
                  peak.prominence = peak.prominence, min.peak.amplitude = min.peak.amplitude,
                  min.peak.separation = min.peak.separation, smooth.window = smooth.window,
                  min.coverage = min.coverage, max.gap = max.gap,
                  min.samples = as.integer(min.samples), min.limb.prop = min.limb.prop,
                  max.opposite.prop = max.opposite.prop,
-                 min.excursion.amplitude = min.excursion.amplitude),
+                 min.excursion.amplitude = min.excursion.amplitude,
+                 peak.prominence.cap = peak.prominence.cap, peak.scope = peak.scope),
             class = "nautilus_dive_shape")
 }
