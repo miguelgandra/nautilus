@@ -9,6 +9,7 @@
     vedba = runif(n, 0, 0.4), vertical_velocity = rnorm(n, 0, 0.3),
     paddle_speed = runif(n, 0.5, 2), paddle_freq = runif(n, 5, 20),
     tbf_hz_peaks = runif(n, 0.1, 0.8), tbf_hz_wavelet = runif(n, 0.1, 0.8),
+    tbf_amplitude_peaks = rep(.2, n), tbf_amplitude_wavelet = rep(.2, n),
     ax = rnorm(n, 0, 0.1), ay = rnorm(n, 0, 0.3), az = rnorm(n, 1, 0.1),
     gx = rnorm(n, 0, 0.2), gy = rnorm(n, 0, 0.2), gz = rnorm(n, 0, 0.2))
   d[, `:=`(pseudo_lon = -16 + cumsum(cos(heading * pi / 180)) * 1e-5,
@@ -48,12 +49,12 @@ test_that("input validation aborts clearly (before touching av/ffmpeg)", {
                "not found", ignore.case = TRUE)
   # non-existent output directory
   expect_error(renderOverlayVideo(vid, .mk_sensor(), "/no/such/dir/out.mp4", verbose = FALSE),
-               "directory does not exist", ignore.case = TRUE)
+               "directory that does not exist", ignore.case = TRUE)
   # codec is a family enum, not a raw ffmpeg encoder name
   expect_error(renderOverlayVideo(vid, .mk_sensor(), file.path(tempdir(), "o.mp4"), codec = "libx264", verbose = FALSE),
                "should be one of", ignore.case = TRUE)
   expect_error(renderOverlayVideo(vid, .mk_sensor(), out, orientation.model = "penguin", verbose = FALSE),
-               "should be one of", ignore.case = TRUE)
+               "must be one of", ignore.case = TRUE)
 })
 
 test_that(".dashboardColumns lists the right required columns per dashboard", {
@@ -101,35 +102,38 @@ test_that("all dashboards render a frame without error (including NA-tolerant mo
   clip <- .mk_sensor()
   clip$heading[1] <- NA_real_; clip$roll[2] <- NA_real_         # NAs must not break any panel
   pdf(NULL); on.exit(grDevices::dev.off())
-  for (dashboard in c("general", "compact", "expanded", "ribbon", "focus")) {
-    plan <- nautilus:::.resolveDashboardPlan(dashboard)
+  model <- nautilus:::.prepareOverlayModel("shark")
+  draw <- function(dashboard, clip, candidates = NULL, plan = NULL) {
+    if (is.null(plan)) plan <- nautilus:::.resolveDashboardPlan(dashboard, candidates = candidates)
     context <- nautilus:::.prepareOverlayContext(clip, plan)
-    expect_no_error(nautilus:::.drawDashboard(dashboard, context$clip[30], context$clip,
-                                               clip$datetime[30], 300, 30, .theme, NULL, NULL,
-                                               plan = plan, context = context))
+    nautilus:::.drawPreparedOverlayDashboard(as.list(context$clip[30]), context$clip,
+      clip$datetime[30], 300, 30, .theme, "cap", candidates, plan, context, model, NULL)
+  }
+  for (dashboard in c("general", "compact", "expanded", "ribbon", "focus")) {
+    expect_no_error(draw(dashboard, clip))
   }
   dial_plan <- nautilus:::.resolveDashboardPlan("general", orientation = "dials")
-  dial_context <- nautilus:::.prepareOverlayContext(clip, dial_plan)
-  expect_no_error(nautilus:::.drawDashboard("general", dial_context$clip[30], dial_context$clip,
-                                             clip$datetime[30], 300, 30, .theme, NULL, NULL,
-                                             plan = dial_plan, context = dial_context))
-  expect_no_error(nautilus:::.drawDashboard("validation", clip[30], clip, clip$datetime[30], 300, 30, .theme, "cap", NULL))
+  expect_no_error(draw("general", clip, plan = dial_plan))
+  expect_no_error(draw("validation", clip))
   # gyro panel must degrade gracefully when the channels are absent
-  expect_no_error(nautilus:::.drawDashboard("validation", clip[, !c("gx", "gy", "gz")][30],
-                                            clip[, !c("gx", "gy", "gz")], clip$datetime[30], 300, 30, .theme, "cap", NULL))
+  expect_no_error(draw("validation", clip[, !c("gx", "gy", "gz")]))
   clip$pitch.c1 <- clip$pitch; clip$roll.c1 <- clip$roll; clip$pitch.c2 <- -clip$pitch; clip$roll.c2 <- -clip$roll
   cand <- data.frame(label = c("c1", "c2"), pitch = c("pitch.c1", "pitch.c2"), roll = c("roll.c1", "roll.c2"), stringsAsFactors = FALSE)
-  expect_no_error(nautilus:::.drawDashboard("validation-compare", clip[30], clip, clip$datetime[30], 300, 30, .theme, "cap", cand))
+  expect_no_error(draw("validation-compare", clip, cand))
 })
 
-test_that(".drawAttitudeModel3D is NA-tolerant and draws", {
+test_that("the prepared attitude drawer is NA-tolerant and draws", {
   pdf(NULL); on.exit(grDevices::dev.off())
-  expect_no_error(nautilus:::.drawAttitudeModel3D(NA_real_, NA_real_, .theme, label = "x"))
-  expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme))
-  expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, heading = 270, show.heading = TRUE))
+  draw <- function(pitch, roll, model = "shark", ...) {
+    nautilus:::.drawPreparedAttitudeModel(list(pitch = pitch, roll = roll, heading = 270),
+      nautilus:::.completeOverlayTheme(.theme), nautilus:::.prepareOverlayModel(model), NULL, ...)
+  }
+  expect_no_error(draw(NA_real_, NA_real_, label = "x"))
+  expect_no_error(draw(15, -30, show.heading = FALSE))
+  expect_no_error(draw(15, -30, show.heading = TRUE))
   for (model in c("shark", "cetacean", "turtle", "fish", "manta")) {
-    expect_no_error(nautilus:::.drawAttitudeModel3D(15, -30, .theme, model = model))
-    expect_no_error(nautilus:::.drawAttitudeModel3D(0, 180, .theme, model = model))
+    expect_no_error(draw(15, -30, model = model))
+    expect_no_error(draw(0, 180, model = model))
   }
 })
 
@@ -197,13 +201,13 @@ test_that("FFmpeg progress timestamps are parsed in seconds", {
 })
 
 test_that("the 3-D attitude projection has the correct handedness (roll right-down, pitch nose-up)", {
-  # reproduce the drawer's rotation + camera projection (kept in lockstep with .drawAttitudeModel3D)
+  # Exercise the renderer's projection rather than duplicating its rotation math.
   proj <- function(pitch, roll, v) {
-    th <- pitch * pi / 180; ro <- roll * pi / 180
-    Rx <- matrix(c(1, 0, 0, 0, cos(ro), -sin(ro), 0, sin(ro), cos(ro)), 3, byrow = TRUE)
-    Ry <- matrix(c(cos(th), 0, sin(th), 0, 1, 0, -sin(th), 0, cos(th)), 3, byrow = TRUE)
-    w  <- (Ry %*% Rx) %*% v; a <- 24 * pi / 180
-    c(xs = sum(c(0, 1, 0) * w), ys = sum(c(sin(a), 0, -cos(a)) * w))     # screen x (right), y (up)
+    model <- list(faces = list(1:3), display.scale = 1)
+    vertices <- rbind(v, c(0, 0, 0), c(0, 0, -1))
+    points <- nautilus:::.projectPreparedOverlayModel(model, vertices,
+      nautilus:::.overlayAttitudeRotation(pitch, roll))$points
+    c(xs = unname(points[1, 1]), ys = unname(points[1, 2]))
   }
   right <- c(0, 1, 0)                                       # a point on the animal's right (+y)
   nose  <- c(1, 0, 0)                                       # the nose (+x forward)
@@ -214,6 +218,8 @@ test_that("the 3-D attitude projection has the correct handedness (roll right-do
   expect_gt(proj(0, 30, c(0, -1, 0))["ys"], proj(0, 0, c(0, -1, 0))["ys"])
   # a positive pitch (nose up): the nose rises on screen
   expect_gt(proj(30, 0, nose)["ys"], proj(0, 0, nose)["ys"])
+  expect_lt(proj(-18, 0, nose)["ys"], proj(0, 0, nose)["ys"])
+  expect_equal(proj(-18, 0, nose)["ys"], -proj(18, 0, nose)["ys"])
 })
 
 test_that("end-to-end: composites a dashboard panel beside a synthetic source video", {
@@ -227,8 +233,10 @@ test_that("end-to-end: composites a dashboard panel beside a synthetic source vi
     output = src, width = 480, height = 720, framerate = 30, verbose = FALSE))
   out <- tempfile(fileext = ".mp4"); on.exit(unlink(out), add = TRUE)
   expect_no_error(suppressWarnings(suppressMessages(
+    # Existing positional arguments still map to the same sync anchor.
     renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), out,
-                       video.start = t0, overlay.fps = 5, codec = "h264", crf = 30, verbose = FALSE))))
+                       "general", NULL, "beside", "model", "shark", t0,
+                       codec = "h264", crf = 30, verbose = FALSE))))
   expect_true(file.exists(out))
   info <- av::av_video_info(out)
   expect_equal(info$video$height, 720)
@@ -251,12 +259,12 @@ test_that("end-to-end: composites a dashboard panel beside a synthetic source vi
     renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), manta_out,
                        dashboard = "general", composition = "overlay", orientation.model = "manta",
                        video.start = t0, start = t0, end = t0 + 1,
-                       overlay.fps = 2, codec = "h264", crf = 30, verbose = FALSE))))
+                       animate = TRUE, overlay.fps = 20, codec = "h264", crf = 30, verbose = FALSE))))
   expect_true(file.exists(manta_out))
   expect_equal(av::av_video_info(manta_out)$video$width, 480)
 })
 
-test_that("codec = 'hevc' tags the stream hvc1 for QuickTime compatibility", {
+test_that("HEVC supports an animated custom model beside the video with the hvc1 tag", {
   skip_if_not_installed("av")
   skip_if(!nzchar(Sys.which("ffmpeg")), "ffmpeg not available")
   skip_if(!nautilus:::.hasEncoder("hevc_videotoolbox") && !nautilus:::.hasEncoder("libx265"), "no HEVC encoder")
@@ -266,8 +274,13 @@ test_that("codec = 'hevc' tags the stream hvc1 for QuickTime compatibility", {
     { for (i in 1:30) { par(mar = c(0, 0, 0, 0)); plot.new(); rect(0, 0, 1, 1, col = "tomato", border = NA) } },
     output = src, width = 480, height = 720, framerate = 30, verbose = FALSE))
   out <- tempfile(fileext = ".mp4"); on.exit(unlink(out), add = TRUE)
+  custom <- overlayModel(
+    rbind(c(1, 0, 0), c(-1, .3, 0), c(-1, -.3, 0), c(-.5, 0, -.3)),
+    rbind(c(1, 2, 3), c(1, 4, 2), c(1, 3, 4), c(2, 4, 3)),
+    motion = "lateral", weights = c(0, 1, 1, .5))
   suppressWarnings(suppressMessages(
-    renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), out, video.start = t0, overlay.fps = 5,
+    renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), out, video.start = t0, overlay.fps = 20,
+                       orientation.model = custom, motion = overlayMotionControl(),
                        codec = "hevc", verbose = FALSE)))
   expect_true(file.exists(out))
   expect_equal(av::av_video_info(out)$video$codec, "hevc")

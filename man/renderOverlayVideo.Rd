@@ -13,12 +13,12 @@ renderOverlayVideo(
   metrics = NULL,
   composition = c("beside", "overlay"),
   orientation = c("model", "dials"),
-  orientation.model = c("shark", "cetacean", "turtle", "fish", "manta"),
+  orientation.model = "shark",
   video.start = NULL,
   start = NULL,
   end = NULL,
   side = c("right", "left"),
-  overlay.fps = 5,
+  overlay.fps = NULL,
   panel.width = NULL,
   depth.window = 300,
   activity.window = 30,
@@ -29,7 +29,11 @@ renderOverlayVideo(
   crf = 23,
   codec = c("hevc", "h264"),
   keep.temp = FALSE,
-  verbose = "detailed"
+  verbose = "detailed",
+  motion = NULL,
+  max.sensor.gap = 1,
+  overwrite = FALSE,
+  animate = NULL
 )
 }
 \arguments{
@@ -37,11 +41,13 @@ renderOverlayVideo(
 
 \item{data}{A \code{nautilus_tag}, data frame or data table containing the sensor data for one deployment;
 alternatively, a list containing exactly one such dataset. A finite \code{POSIXct} column named
-\code{datetime} is required. Additional required columns depend on \code{dashboard} and \code{metrics}; see
+\code{datetime} is required, with unique timestamps. Input is sorted on a copy. Additional required
+columns depend on \code{dashboard} and \code{metrics}; see
 Details. Processed output from \code{\link[=processTagData]{processTagData()}} is recommended.}
 
 \item{output}{Path of the video file to create. The parent directory must already exist. An existing
-file at this path is overwritten. An \code{.mp4} output is recommended for the supported codecs.}
+file is preserved unless \code{overwrite = TRUE}. The source video cannot be overwritten. An \code{.mp4}
+output is recommended for the supported codecs.}
 
 \item{dashboard}{Dashboard layout. \code{"general"} (default), \code{"compact"}, \code{"expanded"}, \code{"ribbon"}
 and \code{"focus"} are configurable presentation layouts. \code{"validation"} and
@@ -71,7 +77,8 @@ displayed silhouette; it does not alter the underlying orientation values or coo
 conventions. Presentation dashboards ignore it when \code{orientation = "dials"}; fixed validation
 dashboards always use the selected model. \code{"cetacean"} depicts a dolphin-like odontocete,
 \code{"turtle"} a hard-shelled sea turtle, and \code{"fish"} a generic ray-finned fish; these are not
-species-specific anatomical reconstructions.}
+species-specific anatomical reconstructions. A validated \code{\link[=overlayModel]{overlayModel()}} object can supply
+custom untextured triangle geometry in the same body frame.}
 
 \item{video.start}{One finite \code{POSIXct} value giving the sensor-clock time represented by the first
 frame of \code{video}. \code{NULL} (default) attempts to read a UTC timestamp in \code{YYYYMMDD-HHMMSS} or
@@ -85,9 +92,9 @@ These arguments can restrict the render to a validation or behavioural interval.
 panel order; in overlay mode it anchors the dashboard to that edge. It is ignored by the full-width
 \code{"ribbon"} layout.}
 
-\item{overlay.fps}{Positive dashboard update rate in frames per second (default \code{5}). It is independent
-of the source video frame rate, which is retained in the output. Lower values reduce rendering time
-but update sensor indicators less frequently.}
+\item{overlay.fps}{Positive dashboard update rate in frames per second. \code{NULL} (default) uses 5 fps
+for rigid models and the source video rate when motion is enabled. The source frame rate is retained
+in the output. Lower values reduce rendering time; explicit rates are checked for motion aliasing.}
 
 \item{panel.width}{Dashboard width in pixels, or \code{NULL} (default) to calculate it from the source video
 and selected layout. In overlay mode the automatically calculated width is limited to part of the
@@ -129,6 +136,20 @@ directory for diagnosis (default \code{FALSE}).}
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
 (default). Normal and detailed output include separate progress indicators for dashboard-frame
 rendering and FFmpeg composition when the console supports live progress output.}
+
+\item{motion}{\code{NULL} (default) for a rigid model, or \code{\link[=overlayMotionControl]{overlayMotionControl()}} to enable schematic
+animation. Requires a full orientation model module in a presentation dashboard; animation is
+unavailable in validation dashboards or when \code{orientation = "dials"}.}
+
+\item{max.sensor.gap}{Largest sensor interval, in seconds, across which orientation and motion may
+be interpolated (default 1). Missing estimates also break motion segments.}
+
+\item{overwrite}{Whether to overwrite an existing output (default \code{FALSE}). The output path must
+always differ from the source video.}
+
+\item{animate}{Optional logical shortcut. \code{TRUE} enables default schematic motion when \code{motion} is
+\code{NULL}, or uses the supplied control. \code{FALSE} disables motion. \code{NULL} (default) leaves \code{motion} in
+control.}
 }
 \value{
 The \code{output} path, returned invisibly after the video has been written.
@@ -158,9 +179,10 @@ Where video and sensor clocks differ, resolve that discrepancy through \code{\li
 \code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} before calling this function.
 
 The rendered interval is the intersection of the video coverage, the sensor coverage, and any
-\code{start}/\code{end} bounds. The function stops if that intersection is empty. At each dashboard update, the
-displayed state is taken from the most recent sensor observation at or before the frame time. The
-timestamp printed on the dashboard is displayed in UTC.
+\code{start}/\code{end} bounds. The function stops if that intersection is empty. Scalar values use the most
+recent sensor observation at or before the frame time. Pitch is linearly interpolated, while roll
+and heading follow their shortest angular arc. Missing values and intervals longer than
+\code{max.sensor.gap} are not bridged. The timestamp shows the actual dashboard frame time in UTC.
 }
 
 \subsection{Dashboard layouts}{
@@ -239,6 +261,39 @@ gaps are not bridged. The stated depth exaggeration is chosen for legibility; th
 representation of an existing pseudo-track, not a geographic map or a new position estimate.
 }
 
+\subsection{Schematic animation and custom geometry}{
+
+\code{animate = TRUE} enables default motion; \code{motion = overlayMotionControl(...)} allows explicit
+control of the backend, amplitude reference, maximum bend and phase. Shark/fish models bend
+laterally, cetaceans vertically, and turtle/manta models use paired flipper/wing bending.
+\code{method = "auto"} selects one backend for the full deployment, preferring positive peaks estimates
+and otherwise wavelet. Motion requires paired numeric \code{tbf_hz_peaks}/\code{tbf_amplitude_peaks} or
+\code{tbf_hz_wavelet}/\code{tbf_amplitude_wavelet} columns from \code{\link[=calculateTailBeats]{calculateTailBeats()}}.
+
+Frequency is integrated over the full supplied sensor record, so restricting \code{start}/\code{end} does
+not change phase in overlapping clips. Missing estimates and long sensor gaps break a motion
+segment; the next valid segment restarts at \code{phase.offset}. An explicit logical
+\code{tbf_swimming = FALSE} shows a neutral model labelled as gliding. Unavailable estimates show
+a neutral model labelled as unavailable. The default amplitude reference is the 95th percentile
+of valid positive amplitudes over the full supplied deployment. Amplitude scales the configured
+maximum visual bend with saturation; it does not measure tail displacement or joint angle.
+Frequency estimates do not recover actual beat phase. Keep full deployment data and use
+\code{start}/\code{end} for reproducible comparisons between overlapping clips.
+
+The original rear camera alignment is retained, without an oblique azimuth. A display-only
+pitch-zero rotation compensates the camera elevation before projection so descents and ascents
+show symmetric signed pitch cues. Physical body rotations use x forward, y right, z down, with
+positive pitch nose up and positive roll right side down. Heading remains a separate compass.
+Animated insets display the interpolated driving frequency as \verb{TBF: X.XX Hz} below H/P/R with
+matching font size and weight, or \code{TBF: NA} during unavailable/gliding intervals.
+
+\code{\link[=overlayModel]{overlayModel()}} validates custom geometry and optional per-vertex deformation weights before
+rendering. Geometry is prepared once and display scale stays fixed across frames. Custom meshes
+are limited to 5000 vertices and 2000 untextured triangles. Consistent winding and simple surfaces
+are expected: the painter's algorithm has no z-buffer and cannot resolve arbitrary intersections.
+Model-file import, textures and skeletal rigs are outside this interface.
+}
+
 \subsection{Composition, encoding and temporary files}{
 
 Beside mode retains the source height and adds \code{panel.width} to its width. Overlay mode preserves both
@@ -272,6 +327,15 @@ renderOverlayVideo(video = video_metadata$file[1],
                    side = "right",
                    video.start = video_metadata$start[1])
 
+# Animate the model using estimated tail-beat frequency and amplitude.
+# tag must include the paired tbf_hz_* and tbf_amplitude_* columns.
+renderOverlayVideo(video = video_metadata$file[1],
+                   data = tag,
+                   output = "./overlay/PIN_CAM_01_animated.mp4",
+                   composition = "overlay",
+                   animate = TRUE,
+                   video.start = video_metadata$start[1])
+
 # Replace the combined orientation model with separate gauges.
 renderOverlayVideo(video = video_metadata$file[1],
                    data = tag,
@@ -299,5 +363,5 @@ renderOverlayVideo(video = video_metadata$file[1],
 \code{\link[=getVideoMetadata]{getVideoMetadata()}} and \code{\link[=getVideoClockCorrections]{getVideoClockCorrections()}} for video timing;
 \code{\link[=processTagData]{processTagData()}} for deriving the displayed sensor metrics; \code{\link[=reconstructTrack]{reconstructTrack()}} for producing the
 pseudo-trajectory columns; \code{\link[=reviewTagMapping]{reviewTagMapping()}} and \code{\link[=findValidationSegments]{findValidationSegments()}} for sensor-axis
-validation.
+validation; \code{\link[=overlayModel]{overlayModel()}} for custom geometry and \code{\link[=overlayMotionControl]{overlayMotionControl()}} for schematic motion.
 }

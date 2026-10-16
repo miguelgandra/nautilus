@@ -22,10 +22,12 @@
 #' @param video Path to one source video file.
 #' @param data A `nautilus_tag`, data frame or data table containing the sensor data for one deployment;
 #'   alternatively, a list containing exactly one such dataset. A finite `POSIXct` column named
-#'   `datetime` is required. Additional required columns depend on `dashboard` and `metrics`; see
+#'   `datetime` is required, with unique timestamps. Input is sorted on a copy. Additional required
+#'   columns depend on `dashboard` and `metrics`; see
 #'   Details. Processed output from [processTagData()] is recommended.
 #' @param output Path of the video file to create. The parent directory must already exist. An existing
-#'   file at this path is overwritten. An `.mp4` output is recommended for the supported codecs.
+#'   file is preserved unless `overwrite = TRUE`. The source video cannot be overwritten. An `.mp4`
+#'   output is recommended for the supported codecs.
 #' @param dashboard Dashboard layout. `"general"` (default), `"compact"`, `"expanded"`, `"ribbon"`
 #'   and `"focus"` are configurable presentation layouts. `"validation"` and
 #'   `"validation-compare"` are fixed sensor-axis review layouts used by [reviewTagMapping()]. See
@@ -50,7 +52,8 @@
 #'   conventions. Presentation dashboards ignore it when `orientation = "dials"`; fixed validation
 #'   dashboards always use the selected model. `"cetacean"` depicts a dolphin-like odontocete,
 #'   `"turtle"` a hard-shelled sea turtle, and `"fish"` a generic ray-finned fish; these are not
-#'   species-specific anatomical reconstructions.
+#'   species-specific anatomical reconstructions. A validated [overlayModel()] object can supply
+#'   custom untextured triangle geometry in the same body frame.
 #' @param video.start One finite `POSIXct` value giving the sensor-clock time represented by the first
 #'   frame of `video`. `NULL` (default) attempts to read a UTC timestamp in `YYYYMMDD-HHMMSS` or
 #'   `YYMMDD-HHMMSS` form from the file name. A value returned by [getVideoMetadata()] is recommended.
@@ -60,9 +63,9 @@
 #' @param side Position of the dashboard: `"right"` (default) or `"left"`. In beside mode it determines
 #'   panel order; in overlay mode it anchors the dashboard to that edge. It is ignored by the full-width
 #'   `"ribbon"` layout.
-#' @param overlay.fps Positive dashboard update rate in frames per second (default `5`). It is independent
-#'   of the source video frame rate, which is retained in the output. Lower values reduce rendering time
-#'   but update sensor indicators less frequently.
+#' @param overlay.fps Positive dashboard update rate in frames per second. `NULL` (default) uses 5 fps
+#'   for rigid models and the source video rate when motion is enabled. The source frame rate is retained
+#'   in the output. Lower values reduce rendering time; explicit rates are checked for motion aliasing.
 #' @param panel.width Dashboard width in pixels, or `NULL` (default) to calculate it from the source video
 #'   and selected layout. In overlay mode the automatically calculated width is limited to part of the
 #'   source frame. Ignored by the full-width `"ribbon"` layout.
@@ -94,6 +97,16 @@
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
 #'   (default). Normal and detailed output include separate progress indicators for dashboard-frame
 #'   rendering and FFmpeg composition when the console supports live progress output.
+#' @param motion `NULL` (default) for a rigid model, or [overlayMotionControl()] to enable schematic
+#'   animation. Requires a full orientation model module in a presentation dashboard; animation is
+#'   unavailable in validation dashboards or when `orientation = "dials"`.
+#' @param max.sensor.gap Largest sensor interval, in seconds, across which orientation and motion may
+#'   be interpolated (default 1). Missing estimates also break motion segments.
+#' @param overwrite Whether to overwrite an existing output (default `FALSE`). The output path must
+#'   always differ from the source video.
+#' @param animate Optional logical shortcut. `TRUE` enables default schematic motion when `motion` is
+#'   `NULL`, or uses the supplied control. `FALSE` disables motion. `NULL` (default) leaves `motion` in
+#'   control.
 #'
 #' @details
 #' ## Time alignment and rendered interval
@@ -105,9 +118,10 @@
 #' [getVideoClockCorrections()] before calling this function.
 #'
 #' The rendered interval is the intersection of the video coverage, the sensor coverage, and any
-#' `start`/`end` bounds. The function stops if that intersection is empty. At each dashboard update, the
-#' displayed state is taken from the most recent sensor observation at or before the frame time. The
-#' timestamp printed on the dashboard is displayed in UTC.
+#' `start`/`end` bounds. The function stops if that intersection is empty. Scalar values use the most
+#' recent sensor observation at or before the frame time. Pitch is linearly interpolated, while roll
+#' and heading follow their shortest angular arc. Missing values and intervals longer than
+#' `max.sensor.gap` are not bridged. The timestamp shows the actual dashboard frame time in UTC.
 #'
 #' ## Dashboard layouts
 #'
@@ -182,6 +196,38 @@
 #' gaps are not bridged. The stated depth exaggeration is chosen for legibility; the display is a local
 #' representation of an existing pseudo-track, not a geographic map or a new position estimate.
 #'
+#' ## Schematic animation and custom geometry
+#'
+#' `animate = TRUE` enables default motion; `motion = overlayMotionControl(...)` allows explicit
+#' control of the backend, amplitude reference, maximum bend and phase. Shark/fish models bend
+#' laterally, cetaceans vertically, and turtle/manta models use paired flipper/wing bending.
+#' `method = "auto"` selects one backend for the full deployment, preferring positive peaks estimates
+#' and otherwise wavelet. Motion requires paired numeric `tbf_hz_peaks`/`tbf_amplitude_peaks` or
+#' `tbf_hz_wavelet`/`tbf_amplitude_wavelet` columns from [calculateTailBeats()].
+#'
+#' Frequency is integrated over the full supplied sensor record, so restricting `start`/`end` does
+#' not change phase in overlapping clips. Missing estimates and long sensor gaps break a motion
+#' segment; the next valid segment restarts at `phase.offset`. An explicit logical
+#' `tbf_swimming = FALSE` shows a neutral model labelled as gliding. Unavailable estimates show
+#' a neutral model labelled as unavailable. The default amplitude reference is the 95th percentile
+#' of valid positive amplitudes over the full supplied deployment. Amplitude scales the configured
+#' maximum visual bend with saturation; it does not measure tail displacement or joint angle.
+#' Frequency estimates do not recover actual beat phase. Keep full deployment data and use
+#' `start`/`end` for reproducible comparisons between overlapping clips.
+#'
+#' The original rear camera alignment is retained, without an oblique azimuth. A display-only
+#' pitch-zero rotation compensates the camera elevation before projection so descents and ascents
+#' show symmetric signed pitch cues. Physical body rotations use x forward, y right, z down, with
+#' positive pitch nose up and positive roll right side down. Heading remains a separate compass.
+#' Animated insets display the interpolated driving frequency as `TBF: X.XX Hz` below H/P/R with
+#' matching font size and weight, or `TBF: NA` during unavailable/gliding intervals.
+#'
+#' [overlayModel()] validates custom geometry and optional per-vertex deformation weights before
+#' rendering. Geometry is prepared once and display scale stays fixed across frames. Custom meshes
+#' are limited to 5000 vertices and 2000 untextured triangles. Consistent winding and simple surfaces
+#' are expected: the painter's algorithm has no z-buffer and cannot resolve arbitrary intersections.
+#' Model-file import, textures and skeletal rigs are outside this interface.
+#'
 #' ## Composition, encoding and temporary files
 #'
 #' Beside mode retains the source height and adds `panel.width` to its width. Overlay mode preserves both
@@ -198,7 +244,7 @@
 #' @seealso [getVideoMetadata()] and [getVideoClockCorrections()] for video timing;
 #'   [processTagData()] for deriving the displayed sensor metrics; [reconstructTrack()] for producing the
 #'   pseudo-trajectory columns; [reviewTagMapping()] and [findValidationSegments()] for sensor-axis
-#'   validation.
+#'   validation; [overlayModel()] for custom geometry and [overlayMotionControl()] for schematic motion.
 #'
 #' @examples
 #' \dontrun{
@@ -219,6 +265,15 @@
 #'                    metrics = c("orientation", "depth", "vedba"),
 #'                    composition = "overlay",
 #'                    side = "right",
+#'                    video.start = video_metadata$start[1])
+#'
+#' # Animate the model using estimated tail-beat frequency and amplitude.
+#' # tag must include the paired tbf_hz_* and tbf_amplitude_* columns.
+#' renderOverlayVideo(video = video_metadata$file[1],
+#'                    data = tag,
+#'                    output = "./overlay/PIN_CAM_01_animated.mp4",
+#'                    composition = "overlay",
+#'                    animate = TRUE,
 #'                    video.start = video_metadata$start[1])
 #'
 #' # Replace the combined orientation model with separate gauges.
@@ -253,12 +308,12 @@ renderOverlayVideo <- function(video,
                                metrics = NULL,
                                composition = c("beside", "overlay"),
                                orientation = c("model", "dials"),
-                               orientation.model = c("shark", "cetacean", "turtle", "fish", "manta"),
+                               orientation.model = "shark",
                                video.start = NULL,
                                start = NULL,
                                end = NULL,
                                side = c("right", "left"),
-                               overlay.fps = 5,
+                               overlay.fps = NULL,
                                panel.width = NULL,
                                depth.window = 300,
                                activity.window = 30,
@@ -269,17 +324,36 @@ renderOverlayVideo <- function(video,
                                crf = 23,
                                codec = c("hevc", "h264"),
                                keep.temp = FALSE,
-                               verbose = "detailed") {
+                               verbose = "detailed",
+                               motion = NULL,
+                               max.sensor.gap = 1,
+                               overwrite = FALSE,
+                               animate = NULL) {
 
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
   dashboard <- match.arg(dashboard)
   composition <- match.arg(composition)
   orientation <- match.arg(orientation)
-  orientation.model <- match.arg(orientation.model)
   side <- match.arg(side)
   codec <- match.arg(codec)
-  .assert_number(overlay.fps, "overlay.fps", min = 0.1)
+  if (!is.null(animate)) {
+    .assert_flag(animate, "animate")
+    if (!animate) motion <- NULL
+    else if (is.null(motion)) motion <- overlayMotionControl()
+  }
+  .assert_number(overlay.fps, "overlay.fps", min = 0.1, null_ok = TRUE)
+  .assert_number(max.sensor.gap, "max.sensor.gap", min = .Machine$double.eps)
+  .assert_flag(overwrite, "overwrite")
+  .assert_flag(keep.temp, "keep.temp")
+  .assert_string(video, "video")
+  .assert_writable_file(output, "output", null_ok = FALSE)
+  if (file.exists(output) && !overwrite)
+    .abort("Output already exists. Choose a separate {.arg output} path or explicitly set {.code overwrite = TRUE}.")
+  if (identical(normalizePath(video, mustWork = FALSE), normalizePath(output, mustWork = FALSE)))
+    .abort("The output path must differ from the source video.")
+  if (!is.null(motion) && dashboard %in% c("validation", "validation-compare"))
+    .abort("Schematic motion is disabled for axis-validation dashboards; use a presentation dashboard.")
   .assert_number(crf, "crf", min = 0)
   .assert_number(depth.window, "depth.window", min = 0.1)
   .assert_number(activity.window, "activity.window", min = 0.1)
@@ -311,8 +385,15 @@ renderOverlayVideo <- function(video,
                              "i" = "Pass the output of {.fn processTagData} (general) or use {.fn reviewTagMapping} (validation)."))
   data.table::setorder(data, datetime)
   if (!inherits(data$datetime, "POSIXct")) .abort("{.field datetime} in {.arg data} must be POSIXct.")
-  if (!nrow(data) || !any(is.finite(as.numeric(data$datetime))))
-    .abort("{.arg data} contains no finite timestamps to align with the video.")
+  if (!nrow(data) || any(!is.finite(as.numeric(data$datetime))) ||
+      any(diff(as.numeric(data$datetime)) <= 0))
+    .abort("Sensor timestamps must be finite and unique; resolve duplicate timestamps before rendering.")
+  has.model <- dashboard %in% c("validation", "validation-compare") || "orientation" %in% plan$metrics
+  if (!is.null(motion) && (!has.model || (dashboard == "focus" && plan$metrics[1L] != "orientation")))
+    .abort("Schematic motion requires a full orientation model module in the dashboard.")
+  max.angle <- if (inherits(motion, "nautilus_overlay_motion") && is.list(motion)) motion$max.angle else 0
+  prepared.model <- .prepareOverlayModel(orientation.model, max.angle)
+  motion <- .resolveOverlayMotion(motion, data, prepared.model)
 
   # heavy dependencies (checked only once the inputs are known good)
   if (!requireNamespace("av", quietly = TRUE)) .abort("The {.pkg av} package is required: {.code install.packages('av')}.")
@@ -327,6 +408,8 @@ renderOverlayVideo <- function(video,
   if (v_h < 360)
     .abort(c("The source video is too short (height {v_h}px) for the dashboard panel.",
              "i" = "{.fn renderOverlayVideo} needs a video at least 360px tall."))
+
+  if (is.null(overlay.fps)) overlay.fps <- if (is.null(motion)) 5 else v_fps
 
   # sync anchor: sensor datetime of the video's first frame
   if (is.null(video.start)) {
@@ -351,7 +434,7 @@ renderOverlayVideo <- function(video,
     .abort("The requested window does not overlap the video/sensor coverage.")
   seek_secs <- as.numeric(difftime(clip_lo, video.start, units = "secs"))   # offset into the source video
 
-  .log_header(lvl, "renderOverlayVideo", "Compositing the sensor dashboard onto the video",
+  .log_header(lvl, "renderOverlayVideo", "Rendering the sensor dashboard",
               bullets = c(sprintf("Source: %s (%dx%d, %g fps)", basename(video), v_w, v_h, v_fps),
                           sprintf("Clip: %s for %s", format(clip_lo, "%H:%M:%S"), .fmt_duration(clip_dur))),
               arrow = sprintf("Dashboard: %s \u00b7 %s \u00b7 %g fps \u00b7 %s",
@@ -364,11 +447,15 @@ renderOverlayVideo <- function(video,
   context <- .prepareOverlayContext(clip, plan)
   clip <- context$clip
 
-  # one dashboard frame per overlay step; map each to its nearest sensor row (precomputed, vectorised)
+  # Prepare the dashboard clock and interpolated orientation/motion before drawing.
   n_frames <- max(1L, as.integer(ceiling(clip_dur * overlay.fps)))
   frame_times <- clip_lo + (seq_len(n_frames) - 1) / overlay.fps
-  idx <- findInterval(as.numeric(frame_times), as.numeric(clip$datetime))
-  idx <- pmin(pmax(idx, 1L), nrow(clip))
+  # Full deployment integration preserves phase when start/end or plot windows change.
+  pitch.cols <- unique(c("pitch", candidates$pitch))
+  roll.cols <- unique(c("roll", candidates$roll))
+  frame.state <- .prepareOverlayFrameState(data, frame_times, motion, max.sensor.gap,
+                                           pitch.cols, roll.cols)
+  .checkOverlayMotionRate(frame.state, overlay.fps, v_fps)
 
   if (identical(dashboard, "ribbon")) {
     panel_w <- as.integer(v_w)
@@ -401,8 +488,9 @@ renderOverlayVideo <- function(video,
     tryCatch(av::av_capture_graphics(
       expr = {
         for (i in seq_len(n_frames)) {
-          .drawDashboard(dashboard, clip[idx[i]], clip, frame_times[i], depth.window, activity.window,
-                         theme, caption, candidates, plan = plan, context = context)
+          fd <- .overlayFrameData(frame.state, i, data)
+          .drawPreparedOverlayDashboard(fd, clip, frame_times[i], depth.window, activity.window,
+                                        theme, caption, candidates, plan, context, prepared.model, motion)
           .log_progress_step(frame_pb)
         }
       },
@@ -425,8 +513,9 @@ renderOverlayVideo <- function(video,
     device_open <- TRUE
     tryCatch({
       for (i in seq_len(n_frames)) {
-        .drawDashboard(dashboard, clip[idx[i]], clip, frame_times[i], depth.window, activity.window,
-                       theme, caption, candidates, plan = plan, context = context)
+        fd <- .overlayFrameData(frame.state, i, data)
+        .drawPreparedOverlayDashboard(fd, clip, frame_times[i], depth.window, activity.window,
+                                      theme, caption, candidates, plan, context, prepared.model, motion)
         .log_progress_step(frame_pb)
       }
     }, finally = {
@@ -622,73 +711,6 @@ renderOverlayVideo <- function(video,
   list(clip = clip, ranges = ranges, trajectory = trajectory)
 }
 
-#' Dispatch one dashboard frame to its drawer.
-#' @keywords internal
-#' @noRd
-.drawDashboard <- function(dashboard, fd, clip, current_time, depth.window, activity.window, theme,
-                           caption, candidates, plan = NULL, context = NULL) {
-  theme <- .completeOverlayTheme(theme)
-  fd <- as.list(fd)
-  if (dashboard == "validation")
-    return(.drawDashboardValidation(fd, clip, current_time, depth.window, activity.window, theme, caption,
-                                    model = if (is.null(plan)) "shark" else plan$orientation.model))
-  if (dashboard == "validation-compare")
-    return(.drawDashboardCompare(fd, clip, current_time, depth.window, theme, candidates, caption,
-                                 model = if (is.null(plan)) "shark" else plan$orientation.model))
-  if (is.null(plan))
-    plan <- .resolveDashboardPlan(dashboard, depth.window = depth.window, activity.window = activity.window)
-  if (is.null(context)) context <- .prepareOverlayContext(clip, plan)
-  .drawPresentationDashboard(fd, context$clip, current_time, theme, plan, context)
-}
-
-#' Draw a presentation dashboard from its resolved module plan.
-#' @keywords internal
-#' @noRd
-.drawPresentationDashboard <- function(fd, clip, current_time, theme, plan, context) {
-  metrics <- plan$metrics
-  if (plan$dashboard == "ribbon") {
-    n <- length(metrics)
-    graphics::layout(rbind(seq_len(n), rep(n + 1L, n)), heights = c(1, 0.22))
-    op <- graphics::par(bg = theme$canvas, oma = c(0, 0, 0, 0))
-    on.exit(graphics::par(op), add = TRUE)
-    for (metric in metrics) .drawMetricModule(metric, fd, clip, current_time, theme, plan, context)
-    graphics::par(mar = c(0, 0, 0, 0)); .drawTimestamp(fd$datetime, theme)
-    return(invisible())
-  }
-
-  groups <- .presentationGroups(metrics, plan$dashboard)
-  mats <- list(); heights <- numeric(); next_id <- 1L
-  for (i in seq_along(groups$metrics)) {
-    group <- groups$metrics[[i]]
-    ids <- next_id + seq_along(group) - 1L
-    next_id <- next_id + length(group)
-    mats[[i]] <- rep(ids, each = 6L / length(ids))
-    heights[i] <- if (groups$tiles[i]) 0.72 else max(vapply(group, .moduleHeight, numeric(1)))
-  }
-  mats[[length(mats) + 1L]] <- rep(next_id, 6L)
-  heights <- c(heights, 0.22)
-  lower_gap <- isTRUE(theme$overlay) && identical(plan$dashboard, "general")
-  if (lower_gap) {
-    mats[[length(mats) + 1L]] <- rep(next_id + 1L, 6L)
-    heights <- c(heights, 0.34)
-  }
-  graphics::layout(do.call(rbind, mats), heights = heights)
-  op <- graphics::par(bg = theme$canvas, oma = c(0, 0, 0, 0))
-  on.exit(graphics::par(op), add = TRUE)
-  for (i in seq_along(groups$metrics)) {
-    for (metric in groups$metrics[[i]]) {
-      if (groups$tiles[i]) .drawMetricTile(metric, fd, theme) else
-        .drawMetricModule(metric, fd, clip, current_time, theme, plan, context)
-    }
-  }
-  graphics::par(mar = c(0, 3.1, 0, 0.8)); .drawTimestamp(fd$datetime, theme)
-  if (lower_gap) {
-    graphics::par(mar = c(0, 0, 0, 0))
-    .drawTransparentSpacer()
-  }
-  invisible()
-}
-
 #' Arrange modules into rows; dial trios share a row and focus support modules become tiles.
 #' @keywords internal
 #' @noRd
@@ -724,15 +746,13 @@ renderOverlayVideo <- function(video,
 #' Draw one registered module.
 #' @keywords internal
 #' @noRd
-.drawMetricModule <- function(metric, fd, clip, current_time, theme, plan, context) {
+.drawMetricModule <- function(metric, fd, clip, current_time, theme, plan, context, model, motion) {
   spec <- .overlayMetricRegistry()[[metric]]
   if (spec$type %in% c("orientation", "dial")) graphics::par(mar = c(0.5, 3.1, 1.3, 0.8)) else
     if (spec$type == "trajectory") graphics::par(mar = c(0.5, 0.5, 1.3, 0.5)) else
     graphics::par(mar = c(1.2, 3.1, 1.9, 0.8))
   if (spec$type == "orientation")
-    return(.drawAttitudeModel3D(.scalarValue(fd, "pitch"), .scalarValue(fd, "roll"), theme,
-                                heading = .scalarValue(fd, "heading"), show.heading = TRUE,
-                                label = spec$label, model = plan$orientation.model))
+    return(.drawPreparedAttitudeModel(fd, theme, model, motion, label = spec$label))
   if (spec$type == "dial") return(.drawDial(metric, .scalarValue(fd, metric), theme))
   if (spec$type == "trajectory")
     return(.drawPseudoTrajectory(context$trajectory, current_time, plan$windows[[metric]],
@@ -770,47 +790,6 @@ renderOverlayVideo <- function(video,
   invisible()
 }
 
-#' Axis-validation dashboard: a large attitude indicator (the handedness cue) + the roll-rate gyro trace
-#' + depth + guidance caption. The heading compass was dropped: the lite-orientation heading (uncalibrated
-#' magnetometer, and a wrong mapping is exactly what is under review) is unreliable AND heading is not the
-#' handedness cue - the ROLL is.
-#' @keywords internal
-#' @noRd
-.drawDashboardValidation <- function(fd, clip, current_time, depth.window, activity.window, theme, caption,
-                                     model = "shark") {
-  graphics::layout(matrix(c(1, 2, 3, 4), ncol = 1), heights = c(2.8, 1.3, 1.2, 0.5))
-  op <- graphics::par(bg = theme$canvas, mar = c(1, 1, 2.2, 1), oma = c(0, 0, 0.3, 0))
-  on.exit(graphics::par(op), add = TRUE)
-  .drawAttitudeModel3D(fd$pitch, fd$roll, theme, model = model)
-  graphics::par(mar = c(1.6, 3.2, 2.0, 1))
-  .drawTriTrace(clip, current_time, activity.window, c("gx", "gy", "gz"),
-                c("roll-rate", "pitch-rate", "yaw-rate"), "Gyroscope (body)", theme, fd)
-  .drawSeriesPanel(clip, current_time, depth.window, "depth", "Depth", "m", fd$depth, theme, invert = TRUE, fill = "#1f4e8c")
-  graphics::par(mar = c(0, 0, 0, 0))
-  .drawCaption(fd$datetime, caption, theme)
-}
-
-#' Multi-candidate comparison dashboard: N attitude indicators side by side + depth + legend.
-#' @keywords internal
-#' @noRd
-.drawDashboardCompare <- function(fd, clip, current_time, depth.window, theme, candidates, caption,
-                                  model = "shark") {
-  N <- nrow(candidates)
-  pal <- .candidatePalette(N)
-  # a prominent guidance HEADER spanning the top, then the N attitude indicators, depth, and timestamp
-  m <- rbind(rep(1L, N), 1L + seq_len(N), rep(N + 2L, N), rep(N + 3L, N))
-  graphics::layout(m, heights = c(0.55, 2.7, 1.0, 0.32))
-  op <- graphics::par(bg = theme$canvas, oma = c(0, 0, 0.3, 0)); on.exit(graphics::par(op), add = TRUE)
-  graphics::par(mar = c(0, 1, 0, 1)); .drawHeader(caption, theme)
-  graphics::par(mar = c(1, 1, 2.4, 1))
-  for (k in seq_len(N))
-    .drawAttitudeModel3D(fd[[candidates$pitch[k]]], fd[[candidates$roll[k]]], theme,
-                         label = candidates$label[k], body.col = pal[k], model = model)
-  graphics::par(mar = c(1.6, 3.2, 2.0, 1))
-  .drawSeriesPanel(clip, current_time, depth.window, "depth", "Depth", "m", fd$depth, theme, invert = TRUE, fill = "#1f4e8c")
-  graphics::par(mar = c(0, 0, 0, 0)); .drawTimestamp(fd$datetime, theme)
-}
-
 #' A prominent, auto-sized guidance header (the "what to look for" instruction) spanning the panel top.
 #' @keywords internal
 #' @noRd
@@ -827,262 +806,6 @@ renderOverlayVideo <- function(video,
 ################################################################################
 # Panel drawers (internal) #####################################################
 ################################################################################
-
-#' Configuration registry for the schematic orientation models.
-#'
-#' Each entry defines the longitudinal body envelope, appendage polygons and optional surface-detail
-#' lines in the common animal frame (x forward, y right, z down). The shark entry is deliberately kept
-#' unchanged; the other entries are recognizable, generic representatives rather than species models.
-#' @keywords internal
-#' @noRd
-.orientationModelRegistry <- local({
-  appendage <- function(...) list(...)
-  models <- list(
-    shark = list(
-      stations = c(-1.00, -0.55, -0.10, 0.35, 0.70, 0.95, 1.05),
-      width = c(0.015, 0.16, 0.24, 0.26, 0.20, 0.10, 0.012),
-      height = c(0.015, 0.13, 0.19, 0.21, 0.16, 0.09, 0.012),
-      appendages = appendage(
-        cbind(c(0.42, 0, -0.20), c(0.02, 0, -0.20), c(0.22, 0, -0.62)),
-        cbind(c(0.42, 0.22, 0.05), c(0.16, 0.22, 0.09), c(0.34, 0.56, 0.20)),
-        cbind(c(0.42, -0.22, 0.05), c(0.16, -0.22, 0.09), c(0.34, -0.56, 0.20)),
-        cbind(c(-0.90, 0, -0.03), c(-1.34, 0, -0.34), c(-1.10, 0, 0.01)),
-        cbind(c(-0.90, 0, 0.03), c(-1.30, 0, 0.26), c(-1.10, 0, 0.01))
-      )),
-    cetacean = list(
-      # Dolphin-like odontocete: distinct melon and beak, swept dorsal/pectoral fins, horizontal flukes.
-      sections = 12L,
-      stations = c(-1.09, -0.88, -0.55, -0.14, 0.30, 0.67, 0.91, 1.06, 1.29),
-      width = c(0.025, 0.07, 0.15, 0.27, 0.29, 0.23, 0.15, 0.065, 0.012),
-      height = c(0.025, 0.06, 0.12, 0.21, 0.22, 0.18, 0.12, 0.055, 0.010),
-      appendages = appendage(
-        cbind(c(0.08, 0, -0.21), c(-0.26, 0, -0.18), c(-0.12, 0, -0.48), c(-0.02, 0, -0.43)),
-        cbind(c(0.22, 0.26, 0.03), c(-0.16, 0.25, 0.04), c(-0.36, 0.64, 0.07),
-              c(-0.08, 0.57, 0.04), c(0.15, 0.36, 0.02)),
-        cbind(c(0.22, -0.26, 0.03), c(-0.16, -0.25, 0.04), c(-0.36, -0.64, 0.07),
-              c(-0.08, -0.57, 0.04), c(0.15, -0.36, 0.02)),
-        cbind(c(-1.07, 0.00, 0.00), c(-1.20, 0.30, 0.00), c(-1.38, 0.72, 0.01),
-              c(-1.51, 0.40, 0.02), c(-1.38, 0.08, 0.02)),
-        cbind(c(-1.07, 0.00, 0.00), c(-1.20, -0.30, 0.00), c(-1.38, -0.72, 0.01),
-              c(-1.51, -0.40, 0.02), c(-1.38, -0.08, 0.02))
-      ),
-      details = appendage(
-        rbind(c(0.89, 0.96, 1.05), c(-0.10, 0, 0.10), c(-0.105, -0.115, -0.07))
-      ),
-      eyes = rbind(c(0.87, 0.87), c(0.14, -0.14), c(-0.08, -0.08))),
-    turtle = list(
-      # Hard-shelled sea turtle: domed oval carapace, short neck/head, long foreflippers, small hind pair.
-      sections = 12L,
-      stations = c(-0.79, -0.66, -0.43, -0.08, 0.28, 0.52, 0.67, 0.80, 0.98, 1.10, 1.25),
-      width = c(0.018, 0.23, 0.40, 0.48, 0.44, 0.31, 0.11, 0.13, 0.18, 0.16, 0.025),
-      height = c(0.012, 0.10, 0.19, 0.26, 0.25, 0.16, 0.07, 0.07, 0.10, 0.09, 0.015),
-      appendages = appendage(
-        cbind(c(0.52, 0.30, 0.02), c(0.20, 0.46, 0.04), c(-0.06, 0.77, 0.05),
-              c(-0.33, 1.04, 0.06), c(-0.08, 0.99, 0.07), c(0.27, 0.66, 0.03)),
-        cbind(c(0.52, -0.30, 0.02), c(0.20, -0.46, 0.04), c(-0.06, -0.77, 0.05),
-              c(-0.33, -1.04, 0.06), c(-0.08, -0.99, 0.07), c(0.27, -0.66, 0.03)),
-        cbind(c(-0.49, 0.35, 0.04), c(-0.72, 0.27, 0.05), c(-0.90, 0.62, 0.05),
-              c(-0.62, 0.55, 0.05)),
-        cbind(c(-0.49, -0.35, 0.04), c(-0.72, -0.27, 0.05), c(-0.90, -0.62, 0.05),
-              c(-0.62, -0.55, 0.05)),
-        cbind(c(-0.76, 0, 0.02), c(-0.98, 0, 0.03), c(-0.79, 0, 0.08))
-      ),
-      details = appendage(
-        # Midline vertebral scutes and paired costal sutures on the dorsal carapace.
-        rbind(c(-0.65, -0.42, -0.10, 0.22, 0.49, 0.62),
-              c(0, 0, 0, 0, 0, 0), c(-0.12, -0.205, -0.265, -0.255, -0.18, -0.10)),
-        rbind(c(-0.44, -0.35, -0.22, -0.10), c(0, 0.14, 0.29, 0.39),
-              c(-0.205, -0.19, -0.14, -0.07)),
-        rbind(c(-0.44, -0.35, -0.22, -0.10), c(0, -0.14, -0.29, -0.39),
-              c(-0.205, -0.19, -0.14, -0.07)),
-        rbind(c(-0.08, -0.03, 0.01, 0.04), c(0, 0.17, 0.34, 0.46),
-              c(-0.265, -0.24, -0.14, -0.05)),
-        rbind(c(-0.08, -0.03, 0.01, 0.04), c(0, -0.17, -0.34, -0.46),
-              c(-0.265, -0.24, -0.14, -0.05)),
-        rbind(c(0.27, 0.29, 0.29, 0.29), c(0, 0.16, 0.31, 0.42),
-              c(-0.255, -0.23, -0.14, -0.06)),
-        rbind(c(0.27, 0.29, 0.29, 0.29), c(0, -0.16, -0.31, -0.42),
-              c(-0.255, -0.23, -0.14, -0.06))
-      ),
-      eyes = rbind(c(1.07, 1.07), c(0.14, -0.14), c(-0.09, -0.09))),
-    fish = list(
-      # Generic ray-finned fish, not one species: deeper trunk, rounded head/operculum, symmetric tail.
-      sections = 12L,
-      stations = c(-1.02, -0.86, -0.60, -0.24, 0.18, 0.53, 0.80, 1.03, 1.15),
-      width = c(0.020, 0.075, 0.14, 0.23, 0.28, 0.25, 0.18, 0.10, 0.025),
-      height = c(0.020, 0.07, 0.19, 0.33, 0.36, 0.33, 0.25, 0.13, 0.025),
-      appendages = appendage(
-        cbind(c(0.33, 0, -0.34), c(-0.19, 0, -0.32), c(-0.52, 0, -0.22),
-              c(-0.31, 0, -0.51), c(0.10, 0, -0.57)),
-        cbind(c(-0.24, 0, 0.32), c(-0.69, 0, 0.16), c(-0.54, 0, 0.38), c(-0.38, 0, 0.45)),
-        cbind(c(0.55, 0.22, 0.07), c(0.23, 0.26, 0.08), c(0.12, 0.54, 0.11),
-              c(0.43, 0.46, 0.06)),
-        cbind(c(0.55, -0.22, 0.07), c(0.23, -0.26, 0.08), c(0.12, -0.54, 0.11),
-              c(0.43, -0.46, 0.06)),
-        cbind(c(-0.22, 0.20, 0.24), c(-0.42, 0.18, 0.26), c(-0.35, 0.39, 0.31)),
-        cbind(c(-0.22, -0.20, 0.24), c(-0.42, -0.18, 0.26), c(-0.35, -0.39, 0.31)),
-        cbind(c(-1.01, 0, -0.01), c(-1.24, 0, -0.42), c(-1.52, 0, -0.53),
-              c(-1.39, 0, 0), c(-1.52, 0, 0.53), c(-1.24, 0, 0.42), c(-1.01, 0, 0.01))
-      ),
-      details = appendage(
-        rbind(c(0.58, 0.64, 0.62, 0.54), c(0.21, 0.22, 0.20, 0.17),
-              c(-0.18, -0.11, -0.04, 0.02)),
-        rbind(c(0.58, 0.64, 0.62, 0.54), c(-0.21, -0.22, -0.20, -0.17),
-              c(-0.18, -0.11, -0.04, 0.02))
-      ),
-      eyes = rbind(c(0.92, 0.92), c(0.14, -0.14), c(-0.10, -0.10))),
-    manta = list(
-      # Mobulid disc: wing-like pectorals form the wide diamond; two cephalic lobes and a whip tail.
-      sections = 12L,
-      stations = c(-1.45, -0.77, -0.49, -0.17, 0.23, 0.57, 0.79, 0.88),
-      width = c(0.005, 0.018, 0.15, 0.29, 0.38, 0.33, 0.19, 0.075),
-      height = c(0.004, 0.014, 0.035, 0.06, 0.08, 0.07, 0.045, 0.012),
-      appendages = appendage(
-        cbind(c(0.75, 0.19, 0.015), c(0.49, 0.40, 0.02), c(0.14, 0.86, 0.03),
-              c(-0.12, 1.29, 0.04), c(-0.22, 1.34, 0.04), c(-0.41, 0.79, 0.02),
-              c(-0.53, 0.29, 0.01)),
-        cbind(c(0.75, -0.19, 0.015), c(0.49, -0.40, 0.02), c(0.14, -0.86, 0.03),
-              c(-0.12, -1.29, 0.04), c(-0.22, -1.34, 0.04), c(-0.41, -0.79, 0.02),
-              c(-0.53, -0.29, 0.01)),
-        cbind(c(0.78, 0.12, -0.015), c(1.15, 0.11, -0.005), c(1.13, 0.24, 0.005),
-              c(0.85, 0.25, 0.01)),
-        cbind(c(0.78, -0.12, -0.015), c(1.15, -0.11, -0.005), c(1.13, -0.24, 0.005),
-              c(0.85, -0.25, 0.01)),
-        cbind(c(-0.52, 0, -0.025), c(-0.73, 0, -0.025), c(-0.61, 0, -0.10))
-      ),
-      details = appendage(
-        rbind(c(0.78, 0.86), c(-0.11, 0.11), c(-0.048, -0.048))
-      ),
-      eyes = rbind(c(0.75, 0.75), c(0.27, -0.27), c(-0.03, -0.03)))
-  )
-  function() models
-})
-
-#' Build a low-poly 3-D body model from the orientation-model registry.
-#'
-#' Returned as a list of faces (each a 3 x k matrix of vertex coordinates), matching part labels
-#' (`"body"` or `"fin"`) for styling, optional surface-detail polylines and eye positions.
-#' @keywords internal
-#' @noRd
-.tagModel3D <- function(model = "shark") {
-  spec <- .orientationModelRegistry()[[model]]
-  if (is.null(spec)) .abort("Unknown orientation model: {.val {model}}.")
-  stn <- spec$stations
-  ry <- spec$width
-  rz <- spec$height
-  nt  <- if (is.null(spec$sections)) 8L else spec$sections
-  ang <- utils::head(seq(0, 2 * pi, length.out = nt + 1L), nt)
-  rings <- lapply(seq_along(stn), function(i) rbind(rep(stn[i], nt), ry[i] * cos(ang), rz[i] * sin(ang)))
-  faces <- list(); part <- character(0)
-  add <- function(m, p) { faces[[length(faces) + 1L]] <<- m; part[length(part) + 1L] <<- p }
-  for (i in seq_len(length(stn) - 1L)) {                      # tube: quad faces between adjacent rings
-    A <- rings[[i]]; B <- rings[[i + 1L]]
-    for (j in seq_len(nt)) { k <- if (j == nt) 1L else j + 1L; add(cbind(A[, j], A[, k], B[, k], B[, j]), "body") }
-  }
-  for (fin in spec$appendages) add(fin, "fin")
-  list(faces = faces, part = part, details = spec$details, eyes = spec$eyes)
-}
-
-#' Outward-ish unit normal of a face (first three vertices), for flat shading.
-#' @keywords internal
-#' @noRd
-.faceNormal <- function(w) {
-  e1 <- w[, 2] - w[, 1]; e2 <- w[, 3] - w[, 1]
-  n  <- c(e1[2] * e2[3] - e1[3] * e2[2], e1[3] * e2[1] - e1[1] * e2[3], e1[1] * e2[2] - e1[2] * e2[1])
-  nn <- sqrt(sum(n^2)); if (is.finite(nn) && nn > 0) n / nn else c(0, 0, 1)
-}
-
-#' Multiply a base colour by a shading intensity (clamped to the 0-1 range).
-#' @keywords internal
-#' @noRd
-.shadeColor <- function(col, s) {
-  s <- max(0, min(1, s)); rgb <- grDevices::col2rgb(col)[, 1] / 255
-  grDevices::rgb(rgb[1] * s, rgb[2] * s, rgb[3] * s)
-}
-
-#' Attitude indicator: a low-poly 3-D body model, viewed from behind and above (a chase-cam), banking
-#' and pitching with the animal. In presentation mode a small heading compass completes the orientation
-#' complication. Validation mode deliberately omits it because its lightweight orientation is not
-#' magnetometer-calibrated and roll handedness is the cue under review.
-#'
-#' Conventions (validated): body frame x forward, y right, z down; body -> world rotation is
-#' \eqn{R = R_y(\text{pitch}) R_x(\text{roll})} (yaw omitted); the camera looks forward and ~24 deg down
-#' with screen-right = world +y, so the animal's right maps to the viewer's right and the handedness
-#' matches the underlying tilt convention (roll > 0 = right side down, pitch > 0 = nose up).
-#' @keywords internal
-#' @noRd
-.drawAttitudeModel3D <- function(pitch, roll, theme, label = NULL, body.col = "#ff453a",
-                                 heading = NA_real_, show.heading = FALSE, model = "shark") {
-  plot(0, 0, type = "n", xlim = c(-1.35, 1.35), ylim = c(-1.55, 1.55), axes = FALSE, ann = FALSE, asp = 1)
-  .drawPanelBackground(theme)
-  graphics::symbols(0, 0, circles = 1.05, inches = FALSE, add = TRUE,
-                    bg = grDevices::adjustcolor("black", 0.58), fg = theme$border)
-  graphics::segments(-0.94, 0, 0.94, 0, col = grDevices::adjustcolor("#64d2ff", 0.35), lwd = 1)  # level reference
-
-  th <- (if (is.finite(pitch)) pitch else 0) * pi / 180
-  ro <- (if (is.finite(roll))  roll  else 0) * pi / 180
-  Rx <- matrix(c(1, 0, 0,  0, cos(ro), -sin(ro),  0, sin(ro), cos(ro)), 3, byrow = TRUE)
-  Ry <- matrix(c(cos(th), 0, sin(th),  0, 1, 0,  -sin(th), 0, cos(th)), 3, byrow = TRUE)
-  R  <- Ry %*% Rx                                            # body -> world (yaw omitted)
-
-  a   <- 24 * pi / 180                                       # camera look-down angle
-  rr  <- c(0, 1, 0)                                          # screen-right = world +y (animal's right)
-  uu  <- c(sin(a), 0, -cos(a))                               # screen-up
-  dd  <- c(cos(a), 0, sin(a))                                # into-screen (depth, for painter's order)
-  Lto <- c(0.25, -0.30, -0.92); Lto <- Lto / sqrt(sum(Lto^2))  # light from up / slightly left+front
-
-  m <- .tagModel3D(model)
-  polys <- lapply(m$faces, function(f) {
-    w <- R %*% f
-    list(xs = as.numeric(rr %*% w), ys = as.numeric(uu %*% w),
-         depth = mean(as.numeric(dd %*% w)), light = 0.40 + 0.60 * abs(sum(.faceNormal(w) * Lto)))
-  })
-  depth <- vapply(polys, function(p) p$depth, numeric(1))
-  dn    <- if (diff(range(depth)) > 0) (depth - min(depth)) / diff(range(depth)) else depth * 0    # 0 near, 1 far
-  scl   <- 0.84
-  for (k in order(depth, decreasing = TRUE)) {                # painter's: far -> near
-    p <- polys[[k]]
-    col  <- .shadeColor(body.col, p$light * (0.72 + 0.28 * (1 - dn[k])))   # + gentle far-dimming for depth
-    bord <- if (identical(m$part[k], "fin")) grDevices::adjustcolor("grey10", 0.85) else grDevices::adjustcolor(col, 0.5)
-    graphics::polygon(p$xs * scl, p$ys * scl, col = col, border = bord, lwd = 0.6)
-  }
-  # The simple painter has no z-buffer. Do not paint dorsal scutes/eyes across the underside when an
-  # animal rolls over; the underlying body and fin faces remain visible from either side.
-  dorsal_visible <- as.numeric(dd %*% R %*% c(0, 0, -1)) < 0
-  if (dorsal_visible) {
-    if (length(m$details)) for (line in m$details) {
-      w <- R %*% line
-      graphics::lines(as.numeric(rr %*% w) * scl, as.numeric(uu %*% w) * scl,
-                      col = .shadeColor(body.col, 0.42), lwd = 1.1)
-    }
-    if (!is.null(m$eyes)) {
-      w <- R %*% m$eyes
-      graphics::points(as.numeric(rr %*% w) * scl, as.numeric(uu %*% w) * scl,
-                       pch = 21, cex = 0.62, bg = "#11161a", col = .shadeColor(body.col, 0.48), lwd = 0.7)
-    }
-  }
-
-  if (isTRUE(show.heading)) {
-    cx <- 0.91; cy <- 0.93; radius <- 0.25
-    graphics::symbols(cx, cy, circles = radius, inches = FALSE, add = TRUE,
-                      bg = grDevices::adjustcolor("black", 0.72), fg = theme$muted)
-    graphics::text(cx, cy + radius + 0.08, "N", cex = 0.55, font = 2, col = theme$text)
-    if (is.finite(heading)) {
-      rad <- (90 - heading) * pi / 180
-      graphics::arrows(cx, cy, cx + cos(rad) * radius * 0.72, cy + sin(rad) * radius * 0.72,
-                       length = 0.08, lwd = 2, col = "#ff453a")
-    }
-  }
-
-  if (!is.null(label)) graphics::text(0, 1.38, label, cex = 1.35, font = 2, col = theme$text, xpd = NA)
-  values <- if (isTRUE(show.heading))
-    sprintf("H %s\u00b0   P %s\u00b0   R %s\u00b0",
-            .formatOverlayValue(heading, 0), .formatOverlayValue(pitch, 0), .formatOverlayValue(roll, 0)) else
-    sprintf("Roll %s\u00b0  Pitch %s\u00b0",
-            .formatOverlayValue(roll, 0, signed = TRUE), .formatOverlayValue(pitch, 0, signed = TRUE))
-  graphics::text(0, -1.38, values, cex = 1.05, col = theme$value, xpd = NA, font = 2)
-  invisible()
-}
 
 #' Circular orientation gauge for heading / pitch / roll.
 #' @keywords internal

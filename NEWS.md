@@ -151,6 +151,14 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
   the source dimensions, plus compact, expanded pseudo-trajectory, lower-ribbon and focus layouts. VeDBA
   and signed vertical velocity have dedicated displays with clip-stable scales; the pseudo-trajectory is
   projected and bounded once per clip rather than recomputed with a moving camera every frame.
+* `renderOverlayVideo()` now prepares model geometry and interpolated orientation once per render,
+  with symmetric positive/negative pitch cues in the original rear view. Optional `animate = TRUE`
+  (or `motion = overlayMotionControl(...)`) adds schematic tail/flipper motion and a matching TBF
+  readout. `overlayModel()` supplies validated custom triangle geometry and motion weights. Models
+  remain rigid by default; the existing positional arguments are preserved. `overlay.fps = NULL`
+  uses 5 fps for rigid models and the source rate for animation. Existing outputs now require
+  `overwrite = TRUE`; the source video cannot be overwritten. The experimental entry point has been
+  consolidated into the production function.
 
 ## Notes
 
