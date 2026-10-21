@@ -15,7 +15,9 @@ buildTagData(
   sensor.mapping = NULL,
   timezone = "UTC",
   required.sensors = NULL,
-  verbose = TRUE
+  verbose = TRUE,
+  time.mode = c("instant", "clock"),
+  ambiguous = c("error", "earliest", "latest")
 )
 }
 \arguments{
@@ -43,14 +45,22 @@ step.}
 \item{sensor.mapping}{How your column names map onto the canonical sensor names, for example
 \code{c(ax = "X", ay = "Y", az = "Z")}. Needed only when the columns are not already canonically named.}
 
-\item{timezone}{The time zone the timestamps are recorded in (default \code{"UTC"}). This records what
-the timestamps mean; it does not shift them.}
+\item{timezone}{Output display zone (default \code{"UTC"}), or the source logger zone when explicitly
+reinterpreting with \code{time.mode = "clock"}. Use an Olson name or a fixed UTC offset such as
+\code{"+01:00"}. Fixed-offset results are displayed in UTC and retain their source basis in metadata.}
 
 \item{required.sensors}{Which sensor channels a tag must carry to be built. \code{NULL} (default)
 requires only a timestamp and at least one recognised channel. Name the channels your analysis
 depends on to have an incomplete tag rejected here rather than later.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}.}
+
+\item{time.mode}{\code{"instant"} (default) preserves existing POSIXct instants. \code{"clock"} explicitly
+reinterprets their calendar readings in \code{timezone}. This is an opt-in compatibility path for
+incorrectly labelled logger clocks, not a clock-drift correction.}
+
+\item{ambiguous}{How to resolve repeated civil times during explicit clock interpretation:
+\code{"error"} (default), \code{"earliest"}, or \code{"latest"}. Nonexistent DST times always error.}
 }
 \value{
 A validated \code{nautilus_tag}: a data.table carrying the sensor data together with the
@@ -82,8 +92,15 @@ recorded in the tag's metadata. Columns under other names can be renamed on the 
 
 Either supply a POSIXct column naming the time of each sample, or - for loggers that record only a
 start time and a fixed rate - supply \code{start} and \code{sampling.rate}, and the timestamps are generated
-as \code{start + (0:(n - 1)) / sampling.rate}. Timestamps are taken as given in \code{timezone} and are never
-silently reinterpreted.
+as \code{start + (0:(n - 1)) / sampling.rate}. Existing POSIXct values and \code{start} are absolute instants:
+\code{timezone} changes their display, preserving seconds since the epoch. Existing timestamps take
+precedence over \code{start} and \code{sampling.rate}; redundant generation arguments are ignored with a warning.
+
+To repair POSIXct values that were incorrectly labelled while parsing a logger clock, explicitly use
+\code{time.mode = "clock"}. This preserves their calendar readings and interprets them in \code{timezone}, changing
+the instants. For generated series, only \code{start} is reinterpreted, then elapsed seconds are added.
+The input zone, interpretation and shift range are recorded in \code{getTagMetadata(tag)$sensors$clock}.
+Missing DST times are rejected; repeated times require \code{ambiguous} or a correctly parsed instant.
 }
 
 \subsection{Deployment metadata}{

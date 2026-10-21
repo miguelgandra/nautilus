@@ -358,7 +358,7 @@ read_cats <- function(folder,
                       timezone,
                       import.sidecar = TRUE,
                       exclude.channels = character(0),
-                      verbose = FALSE) {
+                      verbose = FALSE, ambiguous = "error") {
 
   # ---- locate, probe and assemble the deployment's sensor CSVs -------------------------------------
   # probe every candidate CSV, keep the schema group of the largest usable file, and merge it using a
@@ -368,7 +368,7 @@ read_cats <- function(folder,
     folder = folder, sensor.subdirectory = sensor.subdirectory,
     active_mapping = active_mapping, active_mapping_norm = active_mapping_norm,
     temp_blacklist_norm = temp_blacklist_norm,
-    required.sensors = required.sensors, timezone = timezone, verbose = verbose)
+    required.sensors = required.sensors, timezone = timezone, verbose = verbose, ambiguous = ambiguous)
 
   # nothing usable: hand the reason back verbatim (the caller string-matches it to tell a pre-flighted
   # "no sensor CSV" folder from a genuine failure, so these strings are part of the contract)
@@ -405,8 +405,7 @@ read_cats <- function(folder,
   clock <- .catsClockStatus(file_mapping, sidecar_info, timezone, sensor_data$datetime[1])
 
   # ---- convert every sensor group to its canonical unit --------------------------------------------
-  # Note: `datetime` was already parsed to POSIXct during assembly (.addDatetime), where a tiny +0.0001 s
-  # offset is added as a floating-point safeguard against off-by-one-second rounding downstream.
+  # `datetime` was resolved during assembly; unit conversion does not change its instants.
   sensor_groups <- list(
     accel = list(cols = c("ax", "ay", "az"), standard_unit = "g", label = "accel"),
     gyro  = list(cols = c("gx", "gy", "gz"), standard_unit = "rad/s", label = "gyro"),
@@ -454,5 +453,5 @@ read_cats <- function(folder,
        device_utc_offset = clock$device_utc_offset,
        suggested_video_shift_h = clock$suggested_video_shift_h,
        recording_utc_offset = clock$recording_utc_offset,
-       unit_notes = unit_notes)
+       unit_notes = unit_notes, clock = assembly$clock)
 }

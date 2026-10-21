@@ -247,6 +247,16 @@ Returned datasets also own their nested metadata, so editing an output does not 
 input. File inputs are read one deployment at a time and are never overwritten unless an
 output path explicitly targets them.
 
+POSIXct timestamps and recording starts represent absolute instants. `buildTagData()` preserves
+them when changing the display timezone; existing timestamp columns take precedence over
+`start` and `sampling.rate`. To reinterpret incorrectly labelled logger timestamps deliberately,
+use `time.mode = "clock"` and supply the actual logger zone. This operation records its source
+zone and time shift in metadata. Raw imports interpret unqualified clock strings in `timezone`
+and honor explicit timestamp offsets. A fixed logger offset such as `"+01:00"` stays fixed all
+year; a civil zone such as `"Europe/Lisbon"` follows DST. Missing DST times are rejected, and
+repeated times require explicit offsets or `ambiguous = "earliest"`/`"latest"`. Source-clock
+provenance is stored separately from the display zone in `getTagMetadata(tag)$sensors$clock`.
+
 Settings are grouped into named control objects (for example `orientationControl()`,
 `integrityControl()`, `diveControl()`) rather than long argument lists, so a study's
 processing choices can be defined once, stored, and reused across every deployment.

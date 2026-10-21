@@ -15,7 +15,8 @@
 #   $ tag          list(model, type, package_id, logger_id, paddle_wheel, axis_config)
 #   $ biometrics   list of passive animal traits (sex, length, species, ...); imported via metadataColumns(traits=)
 #   $ sensors      list(present, excluded, sampling_hz_original, sampling_hz_processed, timezone,
-#                       recording_utc_offset)
+#                       recording_utc_offset, clock). `timezone` is the display zone; `clock` separately
+#                  records source interpretation. NULL clock provenance means unknown, including legacy tags.
 #   $ span         list(first_datetime, last_datetime, original_rows)
 #   $ sidecar      parsed device, logging and calibration metadata paired with the primary export, or
 #                  NULL. Calibration values are provenance for firmware corrections already present in
@@ -50,7 +51,7 @@
     biometrics   = list(),                                 # passive animal traits (sex, length, species, ...); roles ACT, traits RIDE
     sensors      = list(present = character(0), excluded = character(0), sampling_hz_original = NA_real_,
                         sampling_hz_processed = NA_real_, timezone = "UTC",
-                        recording_utc_offset = NA_real_),
+                        recording_utc_offset = NA_real_, clock = NULL),
     span         = list(first_datetime = as.POSIXct(NA), last_datetime = as.POSIXct(NA),
                         original_rows = NA_integer_),
     sidecar      = NULL,

@@ -116,13 +116,19 @@ test_that("sensor.mapping rejects a target that collides with an existing column
   expect_error(buildTagData(d2, id = "C", sensor.mapping = c(ax = "P", ax = "Q"), verbose = FALSE), "same target")
 })
 
-test_that("the datetime column's tzone matches meta$sensors$timezone (clock interpreted, not shifted)", {
+test_that("the display zone matches metadata while existing POSIXct instants are preserved", {
   d <- .mkdf(n = 200)
   d$datetime <- as.POSIXct("2025-06-01 08:00:00", tz = "America/New_York") + (seq_len(200) - 1) / 20
   tag <- buildTagData(d, id = "TZ1", timezone = "UTC", verbose = FALSE)
   expect_identical(attr(tag$datetime, "tzone"), "UTC")                    # invariant: column tz == meta tz
   expect_identical(nautilus:::.getMeta(tag)$sensors$timezone, "UTC")
-  expect_identical(format(tag$datetime[1], "%H:%M:%S", tz = "UTC"), "08:00:00")  # wall-clock preserved
+  expect_identical(as.numeric(tag$datetime), as.numeric(d$datetime))
+  expect_identical(format(tag$datetime[1], "%H:%M:%S", tz = "UTC"), "12:00:00")
+  # The old recorded-clock behavior remains available as an explicit, recorded operation.
+  clock <- buildTagData(d, id = "TZ1", timezone = "UTC", time.mode = "clock", verbose = FALSE)
+  expect_identical(format(clock$datetime[1], "%H:%M:%S", tz = "UTC"), "08:00:00")
+  expect_identical(getTagMetadata(clock)$sensors$clock$input_timezone, "America/New_York")
+  expect_equal(getTagMetadata(clock)$sensors$clock$reinterpretation$min_shift_seconds, -4 * 3600)
 })
 
 test_that("a mapped trait is recorded even when NA, matching the importTagData path", {

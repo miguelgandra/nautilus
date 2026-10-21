@@ -22,13 +22,15 @@ explicitly to the \code{clock.corrections} argument of \code{\link[=getVideoMeta
 }
 \details{
 A correction is derived only for the unambiguous CATS sidecar case: \verb{[logging]} explicitly states that
-the sensor stream is UTC, the sensor object was imported in a fixed UTC-equivalent time zone, and
+the sensor stream is UTC, source-clock provenance is compatible with UTC, and
 \verb{[device] utc_offset} is finite and non-zero. The device clock is converted to UTC by adding
 \code{-utc_offset * 3600} seconds. Thus a device offset of \code{-1} produces a video-clock correction of \code{+3600}
 seconds.
 
 A non-zero device offset without an explicit UTC logging declaration is reported but omitted. The
 function deliberately does not infer corrections from ambiguous or non-UTC logging metadata.
+A UTC display alone does not establish a UTC source clock. Legacy objects without separate clock
+provenance retain the conservative fixed-UTC display-zone guard.
 }
 \examples{
 \dontrun{

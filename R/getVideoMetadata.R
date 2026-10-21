@@ -14,13 +14,15 @@
 #'
 #' @details
 #' A correction is derived only for the unambiguous CATS sidecar case: `[logging]` explicitly states that
-#' the sensor stream is UTC, the sensor object was imported in a fixed UTC-equivalent time zone, and
+#' the sensor stream is UTC, source-clock provenance is compatible with UTC, and
 #' `[device] utc_offset` is finite and non-zero. The device clock is converted to UTC by adding
 #' `-utc_offset * 3600` seconds. Thus a device offset of `-1` produces a video-clock correction of `+3600`
 #' seconds.
 #'
 #' A non-zero device offset without an explicit UTC logging declaration is reported but omitted. The
 #' function deliberately does not infer corrections from ambiguous or non-UTC logging metadata.
+#' A UTC display alone does not establish a UTC source clock. Legacy objects without separate clock
+#' provenance retain the conservative fixed-UTC display-zone guard.
 #'
 #' @return A data frame with one row per suggested deployment correction and columns `ID`,
 #'   `clock_correction_s`, `clock_correction_source`, `device_utc_offset_h`, and
@@ -73,7 +75,28 @@ getVideoClockCorrections <- function(data) {
       next
     }
 
-    sensor_timezone <- meta$sensors$timezone
+    # Displaying a resolved stream in UTC does not establish a UTC source clock. New objects carry
+    # their interpretation separately; legacy objects retain the older conservative zone guard.
+    clock <- meta$sensors$clock
+    if (!is.null(clock)) {
+      fixed_utc <- function(tz) {
+        if (is.na(tz)) return(FALSE)
+        spec <- tryCatch(.timeZoneSpec(tz), error = function(e) NULL)
+        !is.null(spec) && (toupper(tz) %in% utc_zones || (!is.null(spec$offset) && spec$offset == 0))
+      }
+      zones <- clock$source_timezone
+      zones <- zones[!is.na(zones)]
+      offsets <- clock$explicit_offsets
+      source_known <- length(zones) + length(offsets) > 0L
+      source_utc <- identical(clock$mode, "instant") ||
+        (source_known && all(vapply(zones, fixed_utc, logical(1))) &&
+           all(vapply(offsets, function(x) identical(x, "Z") || fixed_utc(x), logical(1))))
+      if (!source_utc) {
+        ambiguous <- c(ambiguous, sprintf("%s (source clock is not established as fixed UTC)", id))
+        next
+      }
+    }
+    sensor_timezone <- if (!is.null(clock)) "UTC" else meta$sensors$timezone
     sensor_timezone <- if (length(sensor_timezone) == 1L && !is.na(sensor_timezone))
       toupper(as.character(sensor_timezone)) else NA_character_
     if (is.na(sensor_timezone) || !sensor_timezone %in% utc_zones) {

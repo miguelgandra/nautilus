@@ -180,11 +180,30 @@ by your own reader), skip the file reader and build the `nautilus_tag` directly 
 # mx/my/mz, gx/gy/gz, depth, temp). Columns under other names are renamed via `sensor.mapping`.
 tag <- buildTagData(
   my_sensor_df, id = "LL01",
-  start = as.POSIXct("2025-07-21 22:33:00", tz = "UTC"),   # only needed if there is no datetime column
-  sampling.rate = 100,                                     # Hz
-  metadata = my_deployments_row                            # optional: a checkDeploymentMetadata() row
+  metadata = my_deployments_row  # optional: a checkDeploymentMetadata() row
 )
+
+# Only when the table has no timestamp column, generate samples from an absolute start.
+tag <- buildTagData(my_clockless_sensor_df, id = "LL02",
+                    start = as.POSIXct("2025-07-21 22:33:00", tz = "UTC"),
+                    sampling.rate = 100)
 ```
+
+Existing POSIXct timestamps identify absolute instants, so changing `timezone` changes their display
+without moving the observations in time. The same applies to `start` and the import metadata role
+`data_start`. Existing timestamp columns win over redundant start/rate arguments.
+
+Raw clock strings need an interpretation before they identify an instant. For import, choose the
+logger's actual `timezone`: a fixed `"+01:00"` offset stays fixed all year, while a civil zone such as
+`"Europe/Lisbon"` follows daylight-saving transitions. Explicit offsets in source timestamps are honored.
+Nonexistent civil times are rejected; repeated times need per-row offsets or an explicit
+`ambiguous = "earliest"`/`"latest"` choice. A choice applies to every repeated reading, so per-row
+offsets are needed to distinguish both occurrences in a recording spanning the repeated hour.
+
+If a logger clock was already parsed into POSIXct with the wrong zone label, deliberately reinterpret it
+with `buildTagData(..., time.mode = "clock", timezone = "Europe/Lisbon")`. This changes the instants and
+records the interpretation and shift in `getTagMetadata(tag)$sensors$clock`. It does not correct clock
+drift. Old saved objects keep their epochs and unknown clock provenance.
 
 The result is an ordinary `nautilus_tag`, so it feeds the same pipeline
 (`processTagData()`, `checkTagMapping()`, ...) from here on. **Magnetometer- and gyroscope-free tags are

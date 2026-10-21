@@ -134,7 +134,7 @@
 #'   when absent (Little Leonardo exports usually sit directly in the deployment folder).
 #' @param start POSIXct. The instant the logger began recording (the raw carries no clock). Comes from
 #'   the deployment metadata; without it the record cannot be placed in time and the read is refused.
-#' @param timezone Time zone `start` is expressed in / the record is placed in.
+#' @param timezone Display time zone; the POSIXct `start` always preserves its absolute instant.
 #' @param sampling.rate Optional override (Hz); by default it is read from the file header.
 #' @param exclude.channels Channels to drop (resolved from metadata by the caller).
 #' @param verbose Unused; present for reader-contract symmetry with read_cats().
@@ -181,7 +181,7 @@ read_little_leonardo <- function(folder,
   }
 
   # the raw has no clock (START DATE 0000/00/00): the absolute start must be supplied
-  if (is.null(start) || !inherits(start, "POSIXct") || length(start) != 1L || is.na(start)) {
+  if (is.null(start) || !inherits(start, "POSIXct") || length(start) != 1L || !is.finite(as.numeric(start))) {
     return(fail("no recording start time: Little Leonardo files carry no clock, so a `data_start` is required"))
   }
 
@@ -204,9 +204,11 @@ read_little_leonardo <- function(folder,
 
   n <- nrow(acc)
   dt <- acc
-  # timestamps synthesised from the supplied start + the declared rate, then interpreted in `timezone`
-  dt[, datetime := start + (seq_len(.N) - 1L) / hz]
-  dt[, datetime := lubridate::force_tz(datetime, timezone)]
+  # Resolve the supplied instant once; elapsed seconds preserve cadence through DST transitions.
+  resolved <- .resolveTagTime(start, timezone)
+  resolved$clock$generated <- TRUE
+  dt[, datetime := resolved$datetime + (seq_len(.N) - 1L) / hz]
+  .validateInstants(dt$datetime)
 
   # ---- depth / temperature (lower rate, separate file) ---------------------------------------------
   # expanded onto the acceleration grid by whole-second index, which is how the two streams relate: the
@@ -288,7 +290,8 @@ read_little_leonardo <- function(folder,
        timezone_mismatch = FALSE, timezone_note = NULL,
        device_clock_mismatch = FALSE, logging_utc_offset = NA_real_,
        device_utc_offset = NA_real_, suggested_video_shift_h = NA_real_,
-       recording_utc_offset = .tzOffsetHours(timezone, dt$datetime[1]),
+       recording_utc_offset = .tzOffsetHours(resolved$clock$source_timezone, start),
+       clock = resolved$clock,
        ancillary = if (!is.null(video_anc)) list(video = video_anc) else NULL,
        unread_columns = unread_columns,
        unit_notes = sprintf("timestamps synthesised from data_start + %g Hz (header)", hz))

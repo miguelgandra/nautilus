@@ -6,6 +6,18 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Deployment metadata and import
 
+* POSIXct timestamps and recording starts now preserve their absolute instants when the display
+  timezone changes. This deliberately replaces the constructor's former implicit wall-clock
+  reinterpretation. Use `buildTagData(time.mode = "clock")` for an explicit reinterpretation, with
+  its input zone, source zone and shift range recorded separately in sensor clock metadata.
+* Existing timestamp columns take precedence over `start` and `sampling.rate`, as documented;
+  redundant generation arguments warn and are ignored. Fixed-rate samples are generated from one
+  resolved start using elapsed seconds, preserving cadence and row order across DST transitions.
+* Raw imports honor ISO timestamp offsets, accept fixed logger UTC offsets, and reject partial parses
+  and unresolved DST clock readings. Repeated times can be resolved with `ambiguous`; nonexistent times
+  fail import. The historical 0.0001-second timestamp adjustment has been removed. Invalid selected
+  sensor fragments fail their deployment rather than silently discarding samples. Legacy saved times
+  are not rewritten, and video-clock correction keeps source clocks separate from display zones.
 * `checkDeploymentMetadata()` validates and normalises the deployment table before import, with
   `metadataColumns()` mapping arbitrary column names onto canonical roles and selecting passive traits.
 * `getTagMetadata()` replaces `tagMetadata()` and returns an independent metadata list with a compact

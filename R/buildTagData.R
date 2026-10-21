@@ -27,8 +27,15 @@
 #' ## Timestamps
 #' Either supply a POSIXct column naming the time of each sample, or - for loggers that record only a
 #' start time and a fixed rate - supply `start` and `sampling.rate`, and the timestamps are generated
-#' as `start + (0:(n - 1)) / sampling.rate`. Timestamps are taken as given in `timezone` and are never
-#' silently reinterpreted.
+#' as `start + (0:(n - 1)) / sampling.rate`. Existing POSIXct values and `start` are absolute instants:
+#' `timezone` changes their display, preserving seconds since the epoch. Existing timestamps take
+#' precedence over `start` and `sampling.rate`; redundant generation arguments are ignored with a warning.
+#'
+#' To repair POSIXct values that were incorrectly labelled while parsing a logger clock, explicitly use
+#' `time.mode = "clock"`. This preserves their calendar readings and interprets them in `timezone`, changing
+#' the instants. For generated series, only `start` is reinterpreted, then elapsed seconds are added.
+#' The input zone, interpretation and shift range are recorded in `getTagMetadata(tag)$sensors$clock`.
+#' Missing DST times are rejected; repeated times require `ambiguous` or a correctly parsed instant.
 #'
 #' ## Deployment metadata
 #' Optional. Metadata is read using the role names from [metadataColumns()] - where and when the tag
@@ -65,8 +72,14 @@
 #'   step.
 #' @param sensor.mapping How your column names map onto the canonical sensor names, for example
 #'   `c(ax = "X", ay = "Y", az = "Z")`. Needed only when the columns are not already canonically named.
-#' @param timezone The time zone the timestamps are recorded in (default `"UTC"`). This records what
-#'   the timestamps mean; it does not shift them.
+#' @param timezone Output display zone (default `"UTC"`), or the source logger zone when explicitly
+#'   reinterpreting with `time.mode = "clock"`. Use an Olson name or a fixed UTC offset such as
+#'   `"+01:00"`. Fixed-offset results are displayed in UTC and retain their source basis in metadata.
+#' @param time.mode `"instant"` (default) preserves existing POSIXct instants. `"clock"` explicitly
+#'   reinterprets their calendar readings in `timezone`. This is an opt-in compatibility path for
+#'   incorrectly labelled logger clocks, not a clock-drift correction.
+#' @param ambiguous How to resolve repeated civil times during explicit clock interpretation:
+#'   `"error"` (default), `"earliest"`, or `"latest"`. Nonexistent DST times always error.
 #' @param required.sensors Which sensor channels a tag must carry to be built. `NULL` (default)
 #'   requires only a timestamp and at least one recognised channel. Name the channels your analysis
 #'   depends on to have an incomplete tag rejected here rather than later.
@@ -102,9 +115,14 @@ buildTagData <- function(data,
                          sensor.mapping = NULL,
                          timezone = "UTC",
                          required.sensors = NULL,
-                         verbose = TRUE) {
+                         verbose = TRUE,
+                         time.mode = c("instant", "clock"),
+                         ambiguous = c("error", "earliest", "latest")) {
 
   lvl <- .verbosity(verbose)
+  time.mode <- match.arg(time.mode)
+  ambiguous <- match.arg(ambiguous)
+  .timeZoneSpec(timezone)
 
   # ---- input + a private working copy (never mutate the caller's object) ----
   if (!is.data.frame(data)) .abort("{.arg data} must be a {.cls data.frame} or {.cls data.table}.")
@@ -135,19 +153,23 @@ buildTagData <- function(data,
   }
 
   # ---- timestamps: an existing POSIXct column, or synthesised from start + sampling.rate ----
-  synth <- !is.null(start) || !is.null(sampling.rate)
+  synth <- !datetime.col %in% names(dt)
   if (synth) {
+    if (is.null(start) && is.null(sampling.rate)) {
+      .abort(c("{.arg data} has no {.val {datetime.col}} column.",
+               "i" = "Supply a POSIXct column, or generate timestamps with start + sampling.rate."))
+    }
+    if (!identical(datetime.col, "datetime") && "datetime" %in% names(dt))
+      .abort("{.arg datetime.col} names an absent column while {.val datetime} exists; select the existing timestamp column explicitly.")
     if (is.null(start) || is.null(sampling.rate)) {
       .abort("Supply BOTH {.arg start} (a POSIXct) and {.arg sampling.rate} (Hz) to synthesise timestamps.")
     }
     if (!inherits(start, "POSIXct") || length(start) != 1L) .abort("{.arg start} must be a single POSIXct value.")
     .assert_number(sampling.rate, "sampling.rate", min = .Machine$double.eps)
-    dt[, datetime := start + (seq_len(.N) - 1L) / sampling.rate]
+    resolved <- .resolveTagTime(start, timezone, time.mode, ambiguous)
+    resolved$clock$generated <- TRUE
+    dt[, datetime := resolved$datetime + (seq_len(.N) - 1L) / sampling.rate]
   } else {
-    if (!datetime.col %in% names(dt)) {
-      .abort(c("{.arg data} has no {.val {datetime.col}} column.",
-               "i" = "Rename it via {.arg datetime.col}, or synthesise timestamps with {.arg start} + {.arg sampling.rate}."))
-    }
     if (!inherits(dt[[datetime.col]], "POSIXct")) {
       .abort(c("Column {.val {datetime.col}} must be {.cls POSIXct}.",
                "i" = "Convert it first, e.g. {.code as.POSIXct(x, tz = \"{timezone}\")}."))
@@ -156,11 +178,12 @@ buildTagData <- function(data,
       if ("datetime" %in% names(dt)) dt[, datetime := NULL]      # avoid a name clash on rename
       data.table::setnames(dt, old = datetime.col, new = "datetime")
     }
+    if (!is.null(start) || !is.null(sampling.rate))
+      cli::cli_warn("Existing timestamps take precedence: {.arg start} and {.arg sampling.rate} are ignored.")
+    resolved <- .resolveTagTime(dt$datetime, timezone, time.mode, ambiguous)
+    dt[, datetime := resolved$datetime]
   }
-  if (any(is.na(dt$datetime))) .abort("The timestamp column contains {.val NA} values; every sample needs a time.")
-  # interpret the recorded clock IN `timezone` (never shift it), so the column's tzone always equals
-  # meta$sensors$timezone - the same invariant importTagData guarantees via .addDatetime()
-  dt[, datetime := lubridate::force_tz(datetime, timezone)]
+  .validateInstants(dt$datetime)
   data.table::setorderv(dt, "datetime")                          # imported tags are time-sorted
 
   # ---- deployment ID: argument > metadata > an existing ID column ----
@@ -203,12 +226,12 @@ buildTagData <- function(data,
   n <- nrow(dt)
   samp_hz <- if (synth) sampling.rate else .estimateHz(dt$datetime)
   meta <- .assembleTagMeta(dt, id = id, metadata = md, traits = traits, timezone = timezone,
-                           sampling.hz = samp_hz)
+                           sampling.hz = samp_hz, clock = resolved$clock)
   meta <- .appendProcessing(meta, "buildTagData",
                             source = "in-memory data.frame", rows = n,
                             channels = paste(present, collapse = ", "),
                             timestamps = if (synth) "synthesised (start + rate)" else "supplied",
-                            timezone = timezone)
+                            timezone = meta$sensors$timezone, clock = resolved$clock)
 
   # lightweight "assembled by nautilus" marker (parallels importTagData)
   data.table::setattr(dt, "nautilus.version", utils::packageVersion("nautilus"))
@@ -240,19 +263,23 @@ buildTagData <- function(data,
 #' @param id Deployment ID.
 #' @param metadata A flattened role-named metadata row (\code{metadataColumns()} roles), or NULL.
 #' @param traits Names in `metadata` to carry through as passive biometric traits.
-#' @param timezone Time zone the tag recorded its clock in.
+#' @param timezone Display zone, when the data have no declared zone.
+#' @param clock Source-clock interpretation record supplied by the ingestion boundary, or NULL for
+#'   unknown/legacy provenance. Never infer an old object's clock interpretation from its display zone.
 #' @param sampling.hz Original sampling rate, or NULL to leave it NA (importTagData does not persist a
 #'   rate - it is inferred from the timestamps downstream).
 #' @return A nautilus metadata list, without a processing record.
 #' @keywords internal
 #' @noRd
 .assembleTagMeta <- function(data, id, metadata = NULL, traits = NULL, timezone = "UTC",
-                             sampling.hz = NULL) {
+                             sampling.hz = NULL, clock = NULL) {
   meta <- .newNautilusMeta()
   meta$id <- as.character(id)
   meta <- .applyDeploymentMetadata(meta, metadata, traits)
   meta$sensors$present  <- intersect(.sensorChannels(), names(data))
-  meta$sensors$timezone <- timezone
+  meta$sensors$timezone <- .declaredTimeZone(data$datetime)
+  if (is.na(meta$sensors$timezone)) meta$sensors$timezone <- .timeZoneSpec(timezone)$display
+  meta$sensors["clock"] <- list(clock)
   if (!is.null(sampling.hz)) meta$sensors$sampling_hz_original <- sampling.hz
   meta$span$first_datetime <- min(data$datetime)
   meta$span$last_datetime  <- max(data$datetime)

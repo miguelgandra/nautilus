@@ -70,7 +70,8 @@
 #'   loggers whose files carry no clock - Little Leonardo tags, whose headers read
 #'   `START DATE 0000/00/00`, are the common case - where timestamps are generated from it and the
 #'   sampling rate. This is not the deployment datetime: recording normally starts before the animal is
-#'   released, and using the wrong one shifts the whole record. Default `NULL`.
+#'   released, and using the wrong one shifts the whole record. POSIXct denotes an absolute instant:
+#'   import preserves it even when the requested display timezone differs. Default `NULL`.
 #' @param traits Column names holding passive biological attributes of the animal, for example
 #'   `c("sex", "length", "maturity", "species")`. Unlike the roles above, traits drive no processing:
 #'   they are carried through unchanged and stored with each tag, so they remain available for grouping,

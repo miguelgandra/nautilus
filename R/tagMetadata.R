@@ -332,7 +332,12 @@ print.nautilus_metadata <- function(x, ...) {
   line("heading", compact(x$deployment$heading_reference))
   device <- x$sidecar$device$utc_offset
   logging <- x$sidecar$logging$utc_offset
-  line("clocks", paste0("sensor ", compact(x$sensors$timezone),
+  source_clock <- x$sensors$clock$source_timezone
+  if (all(is.na(source_clock)) && length(x$sensors$clock$explicit_offsets))
+    source_clock <- x$sensors$clock$explicit_offsets
+  line("clocks", paste0("display ", compact(x$sensors$timezone),
+                        if (!is.null(x$sensors$clock)) paste0("; source ", compact(source_clock),
+                                                             " (", compact(x$sensors$clock$mode), ")") else "",
                         if (!is.null(logging)) paste0("; logging ", compact(logging), "h") else "",
                         if (!is.null(device)) paste0("; device ", compact(device), "h") else ""))
   if (length(x$ancillary)) {
