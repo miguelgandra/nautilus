@@ -106,7 +106,8 @@ filterVideoPeriod <- function(data,
     }
     if (!any(keep)) { .log_skip(lvl, "no data within the annotation intervals"); next }
 
-    out[[i]] <- d[keep]
+    # Row subsetting allocates columns but can retain nested metadata tables by reference.
+    out[[i]] <- data.table::copy(d[keep])
     if (lvl >= 2L) {
       span <- as.numeric(difftime(max(t[keep]), min(t[keep]), units = "secs"))
       .log_detail(lvl, sprintf("retained %s rows \u00b7 ~%s", .formatLargeNumber(sum(keep)), .fmt_duration(span)))

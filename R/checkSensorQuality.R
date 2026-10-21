@@ -97,12 +97,13 @@
 #'
 #' Review \code{issues} before enabling repairs. Its messages describe the proposed treatment even
 #' when \code{apply = FALSE}; neither the name \code{curated_data} nor a message stating
-#' \code{"interpolated"} confirms that sensor values were changed. Use [processingHistory()] to inspect
-#' the recorded \code{applied} flag.
+#' \code{"interpolated"} confirms that sensor values were changed. Report-only runs add no processing
+#' history. Caller-owned sensor data and metadata are never modified; returned datasets are independent
+#' copies, ordered by timestamp, so later edits to them cannot change the input.
 #'
-#' Each checked, non-empty deployment receives a history entry recording the screened channels,
-#' detector count, application mode and interpolation setting. The full channel controls and a
-#' sample-level anomaly mask are not stored in that entry. No deployment-exclusion log is written.
+#' With \code{apply = TRUE}, each checked, non-empty deployment receives a history entry recording the
+#' screened channels, detector count, application mode and interpolation setting. The full channel controls
+#' and a sample-level anomaly mask are not stored in that entry. No deployment-exclusion log is written.
 #'
 #' ## Diagnostic report
 #'
@@ -229,7 +230,7 @@ checkSensorQuality <- function(data,
   n_flagged <- 0L
 
   for (i in seq_len(r$n)) {
-    x <- r$get(i)
+    x <- r$get(i, writable = apply || return.data)
     id <- tryCatch(as.character(unique(x[[id.col]])[1]), error = function(e) NA_character_)
     if (is.na(id)) id <- as.character(r$ids[i])
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, r$n))
@@ -239,15 +240,11 @@ checkSensorQuality <- function(data,
       all_issues[[i]] <- .emptyQualityIssues()
       if (return.data) { results[[i]] <- x; names(results)[i] <- id }; next
     }
-    if (!data.table::is.data.table(x)) x <- data.table::as.data.table(x)
-    # `setorderv()` and `:=` mutate BY REFERENCE. On a list input that means reordering and overwriting the
-    # CALLER's own object - so a report-only run would silently reorder the user's data (breaking the
-    # documented "passes through unchanged" promise) and an apply run would write the repairs into their
-    # input as well as the output. Copy before any edit, lazily: an already-sorted deployment with nothing
-    # to repair (the common case) costs nothing, so a large high-rate tag is not duplicated for free.
-    copied <- FALSE
+    # Report-only scans that discard the dataset may borrow it, but sorting still needs a private table.
+    # Returned datasets and apply runs are already owned, including nested metadata and no-op results.
+    copied <- apply || return.data || r$is_filepaths
     if (is.unsorted(x[[datetime.col]], na.rm = TRUE)) {
-      x <- data.table::copy(x); copied <- TRUE
+      if (!copied) x <- .workingTable(x)
       data.table::setorderv(x, cols = datetime.col)
     }
 
@@ -264,7 +261,6 @@ checkSensorQuality <- function(data,
         tag_issues <- rbind(tag_issues, .qualityIssue(id, ch, res, interpolate))
         if (make_plots) panels[[length(panels) + 1L]] <- .qualityChannelPanel(x, ch, datetime.col, res)
         if (apply) {
-          if (!copied) { x <- data.table::copy(x); copied <- TRUE }
           x[, (ch) := res$repaired]
         }
       }
@@ -280,12 +276,14 @@ checkSensorQuality <- function(data,
         payloads[[length(payloads) + 1L]] <- list(id = id, summary = .qualityVerdict(tag_issues), panels = panels)
     }
 
-    # restore attributes + audit trail (records whether the repairs were actually applied)
-    for (a in names(keep_attrs)) attr(x, a) <- keep_attrs[[a]]
-    meta <- .getMeta(x)
-    if (!is.null(meta)) x <- .restoreMeta(x, .appendProcessing(meta, "checkSensorQuality",
+    # Report-only checks return findings without changing processing history.
+    if (apply) {
+      for (a in names(keep_attrs)) attr(x, a) <- keep_attrs[[a]]
+      meta <- .getMeta(x)
+      if (!is.null(meta)) x <- .restoreMeta(x, .appendProcessing(meta, "checkSensorQuality",
                                           channels = paste(channels, collapse = ","),
                                           n_anomalies = sum(tag_issues$n_corrected), applied = apply, interpolate = interpolate))
+    }
 
     saved[i] <- list(.saveOutput(x, id, output.dir = output.dir, output.suffix = output.suffix, compress = compress))
 

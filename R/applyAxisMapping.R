@@ -265,8 +265,7 @@ applyAxisMapping <- function(data,
   for (i in seq_len(r$n)) {
 
     id <- r$ids[i]
-    x  <- r$get(i)
-    if (!data.table::is.data.table(x)) x <- data.table::as.data.table(x)
+    x  <- r$get(i, writable = TRUE)
     meta <- .getMeta(x)
 
     # the deployment id used for routing: prefer the data's own ID column (robust to file basenames),

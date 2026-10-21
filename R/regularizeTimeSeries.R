@@ -350,8 +350,8 @@ regularizeTimeSeries <- function(data,
       next
     }
 
-    # convert to data.table if not already
-    if (!data.table::is.data.table(individual_data)) individual_data <- data.table::as.data.table(individual_data)
+    # All subsequent sorting, helper columns and metadata writes belong to this working table.
+    individual_data <- .workingTable(individual_data, owned = is_filepaths)
 
     # ensure the consolidated nautilus metadata is present (migrating legacy attrs)
     individual_data <- .ensureMeta(individual_data)

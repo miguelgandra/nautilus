@@ -27,6 +27,12 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Cleaning, quality control and orientation
 
+* Public processing and diagnostic functions preserve caller-owned tables, classes and nested
+  metadata. Mutable working tables are acquired per deployment, keeping aliased batch entries
+  independent while avoiding redundant copies of fresh file reads. Returned datasets are independent
+  of their inputs, including no-op results and video subsets with nested metadata.
+* Report-only `checkSensorIntegrity()` and `checkSensorQuality()` runs leave processing history
+  unchanged. `apply = TRUE` records curation only in the returned or explicitly saved dataset.
 * `filterDeploymentData()` trims each record to the on-animal deployment period and
   `regularizeTimeSeries()` places the data on a regular time grid.
 * `checkSensorIntegrity()` and `checkSensorQuality()` detect and optionally repair sensor faults

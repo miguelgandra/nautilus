@@ -68,6 +68,8 @@ test_that(".abort interpolates in the caller frame and supports cli bullets", {
 })
 
 test_that(".assert_parallel is a no-op for <= 1 core and validates otherwise", {
+  # Core detection can return NA in restricted runners. Test the guard against a known machine size.
+  testthat::local_mocked_bindings(detectCores = function(...) 2L, .package = "parallel")
   expect_invisible(nautilus:::.assert_parallel(1))
   expect_invisible(nautilus:::.assert_parallel(NULL))
   big <- parallel::detectCores() + 10L

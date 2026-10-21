@@ -48,7 +48,9 @@ whale-shark deployments).}
 \item{apply}{Logical. Whether to act on the findings. If \code{FALSE} (default) the function only reports
 and the data passes through unchanged. If \code{TRUE}, the channels of every finding at or above
 \code{apply.severity} are dropped from the returned data and recorded in the tag metadata
-(\code{meta$sensors$excluded}); the per-channel reasons remain in \code{issues}.}
+(\code{meta$sensors$excluded}); the per-channel reasons remain in \code{issues}. Caller-owned data and metadata
+are never modified. Report-only runs add no processing history; returned datasets are independent
+copies, so later edits to them cannot change the input.}
 
 \item{apply.severity}{The severity from which \code{apply} intervenes: \code{"error"} (default - only findings
 graded error) or \code{"warning"} (also drop warning-level findings, for a cautious run). Kept separate

@@ -177,7 +177,9 @@
 #' @param apply Logical. Whether to act on the findings. If `FALSE` (default) the function only reports
 #'   and the data passes through unchanged. If `TRUE`, the channels of every finding at or above
 #'   `apply.severity` are dropped from the returned data and recorded in the tag metadata
-#'   (`meta$sensors$excluded`); the per-channel reasons remain in `issues`.
+#'   (`meta$sensors$excluded`); the per-channel reasons remain in `issues`. Caller-owned data and metadata
+#'   are never modified. Report-only runs add no processing history; returned datasets are independent
+#'   copies, so later edits to them cannot change the input.
 #' @param apply.severity The severity from which `apply` intervenes: `"error"` (default - only findings
 #'   graded error) or `"warning"` (also drop warning-level findings, for a cautious run). Kept separate
 #'   from `apply` so the diagnostic classification and the action stay independent concepts.
@@ -290,14 +292,13 @@ checkSensorIntegrity <- function(data,
   error_items <- character(0)   # one bullet per deployment with an error-severity finding (warned at the end)
 
   for (i in seq_len(r$n)) {
-    x <- r$get(i)
-    if (!data.table::is.data.table(x)) x <- data.table::as.data.table(x)
+    x <- r$get(i, writable = apply || return.data)
     id <- tryCatch(as.character(unique(x[[id.col]])[1]), error = function(e) NA_character_)
     if (is.na(id)) id <- as.character(r$ids[i])
     fs <- tryCatch(.tagFs(x, datetime.col), error = function(e) NA_real_)
 
     # metadata (paddle-wheel context + provenance), then run the requested checks
-    meta <- .getMeta(.ensureMeta(x))
+    meta <- .getMeta(x)
     iss <- .runIntegrityChecks(x, fs, checks, control, paddle_wheel = if (!is.null(meta)) meta$tag$paddle_wheel else NA)
     if (nrow(iss)) iss$id <- id
     all_issues[[i]] <- iss
@@ -348,16 +349,12 @@ checkSensorIntegrity <- function(data,
         payloads[[length(payloads) + 1L]] <- .integrityPayload(x, id, iss, fs, control)
     }
 
-    # ---- apply (drop the channels graded at or above apply.severity) + record provenance ----
-    # `:=` deletes by reference, so on a list input that would delete the columns from the CALLER's own
-    # object - silently destroying sensor data the function only ever promised to withhold from its
-    # RETURN value. Copy first: the exclusion belongs to the curated output, not to the user's input.
+    # Only apply mode changes data or processing history; the resolver already owns that table.
     if (apply && length(err_chans)) {
-      x <- data.table::copy(x)
       x[, (err_chans) := NULL]
       if (!is.null(meta)) meta$sensors$excluded <- unique(c(meta$sensors$excluded, err_chans))
     }
-    if (!is.null(meta)) {
+    if (apply && !is.null(meta)) {
       meta <- .appendProcessing(meta, "checkSensorIntegrity", checks = paste(checks, collapse = ","),
                                 n_issues = nrow(iss), excluded = if (apply) paste(err_chans, collapse = ",") else "")
       x <- .restoreMeta(x, meta)

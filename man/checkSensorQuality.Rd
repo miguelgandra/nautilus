@@ -148,12 +148,13 @@ Irregular sampling, duplicate timestamps and existing gaps require particular ca
 
 Review \code{issues} before enabling repairs. Its messages describe the proposed treatment even
 when \code{apply = FALSE}; neither the name \code{curated_data} nor a message stating
-\code{"interpolated"} confirms that sensor values were changed. Use \code{\link[=processingHistory]{processingHistory()}} to inspect
-the recorded \code{applied} flag.
+\code{"interpolated"} confirms that sensor values were changed. Report-only runs add no processing
+history. Caller-owned sensor data and metadata are never modified; returned datasets are independent
+copies, ordered by timestamp, so later edits to them cannot change the input.
 
-Each checked, non-empty deployment receives a history entry recording the screened channels,
-detector count, application mode and interpolation setting. The full channel controls and a
-sample-level anomaly mask are not stored in that entry. No deployment-exclusion log is written.
+With \code{apply = TRUE}, each checked, non-empty deployment receives a history entry recording the
+screened channels, detector count, application mode and interpolation setting. The full channel controls
+and a sample-level anomaly mask are not stored in that entry. No deployment-exclusion log is written.
 }
 
 \subsection{Diagnostic report}{

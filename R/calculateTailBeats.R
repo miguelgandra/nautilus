@@ -584,6 +584,9 @@ calculateTailBeats <- function(data,
       individual_data <- data[[i]]
     }
 
+    # Both the no-motion schema and the analytical backends write columns by reference.
+    individual_data <- .workingTable(individual_data, owned = is_filepaths)
+
     # get ID
     id <- unique(individual_data[[id.col]])[1]
     co_id[i] <- id

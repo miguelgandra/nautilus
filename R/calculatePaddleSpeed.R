@@ -383,7 +383,7 @@ calculatePaddleSpeed <- function(data,
   unknown_range_ids <- character(0)
 
   for (i in seq_len(src$n)) {
-    x <- data.table::as.data.table(src$get(i))
+    x <- src$get(i, writable = TRUE)
     id <- as.character(.getMeta(x)$id %||% src$ids[i]); ids[i] <- id
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, src$n))
     # the slope a deployment uses is its own row: under `in-situ-deployment` it can differ from the

@@ -1004,8 +1004,7 @@ calibrateMagnetometer <- function(data,
 
   # ---- write back + report ----
   for (i in seq_len(r$n)) {
-    x <- r$get(i)
-    if (!data.table::is.data.table(x)) x <- data.table::as.data.table(x)
+    x <- r$get(i, writable = TRUE)
     meta <- .getMeta(x)
     who <- info[[i]]$id
     .log_h2(lvl, sprintf("%s (%d/%d)", who, i, r$n))

@@ -235,7 +235,7 @@ detectDives <- function(data,
   pb <- .log_progress_start(lvl, src$n, "Scanning")
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
-    x <- data.table::as.data.table(src$get(i))
+    x <- src$get(i)
     scan[[i]] <- .diveScanOne(x, id.col, datetime.col, depth.col, src$ids[i])
   }
   .log_progress_done(pb)
@@ -259,7 +259,7 @@ detectDives <- function(data,
   diag_bundles <- vector("list", src$n)
 
   for (i in seq_len(src$n)) {
-    x <- data.table::as.data.table(src$get(i))
+    x <- src$get(i, writable = TRUE)
     id <- as.character(.getMeta(x)$id %||% src$ids[i]); ids[i] <- id
     # a blank line BETWEEN blocks, but not before the first: the header already closes with one
     if (lvl >= 2L) { if (i > 1L) cli::cli_text(""); .log_h2(lvl, sprintf("%s (%d/%d)", id, i, src$n)) }

@@ -40,7 +40,8 @@ render_pdf_lines <- function(expr) {
   on.exit({ if (grDevices::dev.cur() != 1L) grDevices::dev.off(); unlink(pf) }, add = TRUE)
   force(expr)
   grDevices::dev.off()
-  readLines(pf, warn = FALSE)
+  # Decode the binary marker explicitly; the PDF commands inspected below are ASCII and stay unchanged.
+  iconv(readLines(pf, warn = FALSE), from = "latin1", to = "UTF-8")
 }
 pdf_text_sizes <- function(lines) {
   hit <- regmatches(lines, regexpr("Tf +-?[0-9.]+ +-?[0-9.]+", lines))

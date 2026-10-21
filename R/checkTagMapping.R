@@ -549,8 +549,8 @@ checkTagMapping <- function(data,
       next
     }
 
-    # convert to data.table if not already
-    if (!data.table::is.data.table(individual_data)) individual_data <- data.table::as.data.table(individual_data)
+    # Diagnostic helper columns and sorting must not reach the caller's sensor table.
+    individual_data <- .workingTable(individual_data, owned = is_filepaths)
 
     # ensure data is ordered by datetime
     data.table::setorderv(individual_data, cols = datetime.col)

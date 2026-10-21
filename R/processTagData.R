@@ -582,7 +582,7 @@ processTagData <- function(data,
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals))
 
     # ensure data.table (split() of a single data.frame yields data.frames)
-    if (!data.table::is.data.table(individual_data)) individual_data <- data.table::as.data.table(individual_data)
+    individual_data <- .workingTable(individual_data, owned = is_filepaths)
 
     # ensure the consolidated nautilus metadata is present (migrating legacy attrs)
     individual_data <- .ensureMeta(individual_data)

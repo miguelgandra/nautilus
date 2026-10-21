@@ -512,10 +512,8 @@ extractFeatures <- function(data,
 
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, n_animals), min_level = 1L)
 
-    # Convert to data.table
-    if (!data.table::is.data.table(individual_data)) {
-      individual_data <- data.table::setDT(individual_data)
-    }
+    # Feature workers may use reference operations; acquire ownership before dispatching them.
+    individual_data <- .workingTable(individual_data, owned = is_filepaths)
 
     # Store original attributes
     discard_attrs <- c("row.names", "class", ".internal.selfref", "names")

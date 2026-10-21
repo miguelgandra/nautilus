@@ -469,10 +469,8 @@ filterDeploymentData <- function(data,
     # skip NULL or empty elements in the list
     if (is.null(individual_data) || length(individual_data) == 0) next
 
-    # convert data.table to data.frame for processing
-    if (inherits(individual_data, "data.frame")) {
-      individual_data <- data.table::setDT(individual_data)
-    }
+    # Own the table before sorting, clamping depth or migrating metadata.
+    individual_data <- .workingTable(individual_data, owned = is_filepaths)
 
     # ensure the consolidated nautilus metadata is present (migrating legacy attrs)
     individual_data <- .ensureMeta(individual_data)

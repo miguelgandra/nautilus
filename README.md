@@ -238,6 +238,15 @@ package, and with which settings. A saved dataset therefore describes itself: yo
 recover the exact parameters that produced it months later, and write a methods section
 from the file rather than from memory.
 
+Public analysis and processing functions preserve caller-owned sensor tables and metadata,
+including `data.table` objects supplied inside lists. Transformations work on independent
+datasets; assign their return value to keep a change. Repeated references to the same table
+in a batch are processed independently. Report-only sensor checks return findings without
+adding processing history; `apply = TRUE` records curation in the returned dataset.
+Returned datasets also own their nested metadata, so editing an output does not change its
+input. File inputs are read one deployment at a time and are never overwritten unless an
+output path explicitly targets them.
+
 Settings are grouped into named control objects (for example `orientationControl()`,
 `integrityControl()`, `diveControl()`) rather than long argument lists, so a study's
 processing choices can be defined once, stored, and reused across every deployment.

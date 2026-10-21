@@ -309,7 +309,7 @@ filterLocations <- function(data,
   for (i in seq_len(r$n)) {
 
     # load / access the individual (metadata ensured / migrated by .resolveInput)
-    x  <- r$get(i)
+    x  <- r$get(i, writable = TRUE)
     id <- r$ids[i]
     .log_h2(lvl, sprintf("%s (%d/%d)", id, i, r$n))
 

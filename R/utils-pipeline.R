@@ -40,7 +40,11 @@
 #'
 #' @param data The user-supplied `data` argument.
 #' @param id.col Name of the ID column (used when splitting a single table).
-#' @return A list with `n`, `ids`, `is_filepaths`, `paths` (or NULL), and `get(i)` accessor.
+#' @return A list with `n`, `ids`, `is_filepaths`, `paths` (or NULL), and
+#'   `get(i, writable = FALSE)`. The default accessor is read-only: a canonical in-memory tag may be
+#'   borrowed. Request `writable = TRUE` before changing columns, class or attributes, or returning a
+#'   dataset that the caller may edit. Each writable access is independent, including aliased list slots.
+#'   Files are loaded lazily into owned tables and do not need another copy.
 #' @keywords internal
 #' @noRd
 
@@ -59,7 +63,7 @@
     }
     ids <- tools::file_path_sans_ext(basename(data))
     return(list(n = length(data), ids = ids, is_filepaths = TRUE, paths = data,
-                get = function(i) .ensureMeta(readRDS(data[i]))))
+                get = function(i, writable = FALSE) .ensureMeta(.workingTable(readRDS(data[i]), owned = TRUE))))
   }
 
   # (ii) single data.frame/data.table -> split by id.col
@@ -82,7 +86,23 @@
   ids <- names(data)
   if (is.null(ids)) ids <- as.character(seq_along(data))
   list(n = length(data), ids = ids, is_filepaths = FALSE, paths = NULL,
-       get = function(i) .ensureMetaSafely(data[[i]]))
+       get = function(i, writable = FALSE) {
+         if (writable) .ensureMeta(.workingTable(data[[i]])) else .ensureMetaSafely(data[[i]])
+       })
+}
+
+#' Acquire an owned table before editing a public input
+#'
+#' Copy borrowed tables, including nested mutable metadata, once per active deployment. `owned = TRUE`
+#' is reserved for fresh file reads or private intermediates, never inferred from class or list names.
+#' Low-level helpers may then use setDT/setattr/set/`:=` without reaching a caller's aliases. This helper
+#' does not add metadata: older entry points decide separately when to migrate their legacy attributes.
+#' @keywords internal
+#' @noRd
+.workingTable <- function(x, owned = FALSE) {
+  if (!owned) x <- data.table::copy(x)
+  if (!data.table::is.data.table(x)) data.table::setDT(x)
+  x
 }
 
 #' `.ensureMeta()` for CALLER-SUPPLIED tables: same result, without modifying the caller's object.
@@ -93,11 +113,12 @@
 #' could behave differently (or fail) for no visible reason.
 #'
 #' A copy is made only when a mutation would actually happen, so the common pipeline case - data.tables
-#' already carrying metadata from `importTagData()` - still costs nothing.
+#' already carrying metadata from `importTagData()` - still costs nothing. The result is read-only;
+#' this helper protects migration, not subsequent edits. Use a writable resolver access for those.
 #' @keywords internal
 #' @noRd
 .ensureMetaSafely <- function(x) {
-  if (!data.table::is.data.table(x)) return(.ensureMeta(data.table::as.data.table(x)))   # as.data.table copies
+  if (!data.table::is.data.table(x)) return(.ensureMeta(.workingTable(x)))
   if (is.null(attr(x, "nautilus", exact = TRUE))) return(.ensureMeta(data.table::copy(x)))
   x                                                                                      # nothing to do
 }
