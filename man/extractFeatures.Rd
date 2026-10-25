@@ -24,257 +24,202 @@ extractFeatures(
   output.suffix = NULL,
   compress = TRUE,
   n.cores = 1,
-  verbose = "normal"
+  verbose = "normal",
+  step.size = NULL,
+  segment.col = NULL,
+  min.coverage = 0
 )
 }
 \arguments{
-\item{data}{A list of tables/data frames (one per individual), a single aggregated data table/data frame,
-or a character vector of file paths to RDS files containing sensor data.}
+\item{data}{A list of tables/data frames (one per deployment), a single table/data frame with an
+identifier column, or a character vector of paths to sensor \code{.rds} files.}
 
-\item{variables}{Which columns to summarise. Every metric in \code{metrics} is computed for every
-variable named here, so the two together define a full grid; use \code{parameter.grid} instead when you
-want particular pairings. Ignored when \code{parameter.grid} is supplied.}
+\item{variables}{Character vector of channels. Together with \code{metrics}, defines a full grid.
+Ignored when \code{parameter.grid} is supplied.}
 
-\item{metrics}{Which summaries to compute over each window. The available metrics differ between
-linear and circular variables, listed below.}
+\item{metrics}{Character vector of summaries; see Details. Ignored with \code{parameter.grid}.}
 
-\item{parameter.grid}{An explicit table of \code{variable} and \code{metric} pairs, and optionally a
-\code{window_seconds} per row. Use it in place of \code{variables} and \code{metrics} when the full grid would
-be wasteful, or when different variables want different window lengths - a tail beat and a dive
-are not described on the same timescale. Rows without \code{window_seconds} use \code{window.size}.}
+\item{parameter.grid}{A data frame of \code{variable} and \code{metric} pairs, optionally with a positive
+\code{window_seconds} per row. Missing durations use \code{window.size}. Output names must be unique.}
 
-\item{enhanced.features}{Whether to add the composite ecological descriptors listed below (default
-\code{FALSE}; requires the \pkg{zoo} package). They are more interpretable than raw moments but most
-apply to one variable only, and one of them can cost every row of a short deployment.}
+\item{enhanced.features}{Logical. Enable the composite descriptors listed in Details.}
 
-\item{id.col}{Which column identifies the animal (default \code{"ID"}).}
+\item{id.col}{Identifier column, default \code{"ID"}.}
 
-\item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}).}
+\item{datetime.col}{POSIXct timestamp column, default \code{"datetime"}.}
 
-\item{window.size}{The default window length, in seconds. Choose it from the timescale of the
-behaviour you are trying to separate: too short and the summary is dominated by noise, too long
-and two different behaviours are averaged into one row.}
+\item{window.size}{Default window duration in seconds, also used for response aggregation.}
 
-\item{aggregate}{Whether to tile the record into non-overlapping windows (\code{TRUE}) rather than
-sliding one sample at a time. Tiling gives far fewer rows, and rows that are statistically
-independent of each other - which matters if you intend to cross-validate.}
+\item{aggregate}{Logical. With \code{FALSE} (default), use centred sliding windows. With \code{TRUE}, each
+output timestamp is the start of its window. The default stride then equals \code{window.size}.}
 
-\item{downsample.to}{Target output rate in Hz (e.g. \code{1} for one feature row per second), or \code{NULL}
-(default) to leave the feature rows at their native rate. It is a frequency, matching
-\code{\link[=processTagData]{processTagData()}}, so the row interval is \code{1/downsample.to} seconds. Feature columns are
-averaged within each output bin.}
+\item{downsample.to}{Optional output frequency in Hz for averaging already computed features into
+bins. Circular means and medians are averaged as unit vectors; other features use arithmetic
+means. Bins start at the first input timestamp of each segment, including when edge rows are
+omitted. Use \code{step.size} to compute features directly at a coarser cadence without averaging them.}
 
-\item{response.col}{(Optional) A character string specifying the column containing response labels.}
+\item{response.col}{Optional column of binary response labels (numeric, logical, or factor 0/1).}
 
-\item{response.aggregation}{Method to aggregate \code{response.col}: "majority" or "any".}
+\item{response.aggregation}{\code{"majority"} (mean of observed labels greater than 0.5) or \code{"any"}
+(at least one observed 1). Entirely unlabelled windows and output bins remain \code{NA}.}
 
-\item{missing.features}{How to handle feature rows containing \code{NA}. \code{"omit"} (default) removes
-incomplete rows, producing a complete-case feature matrix; a deployment with an entirely
-unavailable requested stream consequently contributes zero rows. \code{"keep"} retains the rows and
-their \code{NA} values for inspection or a downstream model that explicitly supports missing inputs.
-Neither option imputes unavailable measurements.}
+\item{missing.features}{\code{"omit"} (default) drops rows containing missing features or responses;
+\code{"keep"} retains them. Neither option imputes unavailable measurements.}
 
-\item{circular.variables}{Character vector specifying variables that should be treated as circular.}
+\item{circular.variables}{Channels interpreted as angles in degrees, default \code{c("heading", "roll")}.
+Applies to basic summaries and to differences in movement and orientation descriptors.}
 
-\item{return.data}{Logical. Return the processed data in memory (default \code{TRUE}). When \code{FALSE}, the
-function instead returns the paths of the \code{.rds} files it wrote, which feed directly into the next
-step's \code{data} argument -- so a large fleet can be processed without ever holding it all in memory.
-\code{return.data = FALSE} therefore requires an \code{output.dir}.}
+\item{return.data}{Logical. Return a named list of feature tables (default \code{TRUE}); \code{FALSE} returns
+paths to saved \code{.rds} files and requires \code{output.dir}.}
 
-\item{output.dir}{Character. Directory in which to write one \verb{<id>.rds} file per deployment. Providing
-a directory is what triggers saving; \code{NULL} (default) writes nothing. The directory must already exist.}
+\item{output.dir}{Existing directory for one \verb{<id>.rds} file per deployment, or \code{NULL} to skip saving.}
 
-\item{output.suffix}{Character. Optional suffix appended to each saved file name (before \code{.rds}), e.g.
-to tag a processing run or avoid clashes. Only used when \code{output.dir} is set. Default \code{NULL}.}
+\item{output.suffix}{Optional file name suffix before \code{.rds}.}
 
-\item{compress}{Compression for the saved \code{.rds} files (only used when \code{output.dir} is set): \code{TRUE}
-(default, gzip), \code{FALSE}, or one of \code{"gzip"}/\code{"bzip2"}/\code{"xz"}. See \code{\link[base]{saveRDS}}.}
+\item{compress}{Compression passed to \code{\link[base:saveRDS]{base::saveRDS()}}, default \code{TRUE}.}
 
-\item{n.cores}{Number of processor cores for parallel computation.}
+\item{n.cores}{Number of processor cores, default 1.}
 
-\item{verbose}{Controls console output: \code{FALSE}/\code{0} (quiet - warnings and errors only), \code{TRUE}/\code{1}
-(\code{"normal"}: header, one line per deployment, and a summary), or \code{2}/\code{"detailed"} (adds a progress
-bar over the feature grid and per-deployment diagnostics). Defaults to \code{"normal"}.}
+\item{verbose}{\code{FALSE}/0 (quiet), \code{TRUE}/1/\code{"normal"} (default), or 2/\code{"detailed"} (progress and diagnostics).}
+
+\item{step.size}{Optional positive stride in seconds, independent of window duration. Defaults to
+one sample for sliding windows and \code{window.size} for start-anchored windows. Both widths and
+stride are rounded to the nearest whole number of samples, with a minimum of one sample.}
+
+\item{segment.col}{Optional column identifying contiguous segments. A change of label starts a new
+segment, even if a previous label reappears later. Missing segment labels produce \code{NA} features.
+Windows, derivatives and downsampling bins never combine segments. The column is kept in output.}
+
+\item{min.coverage}{Minimum fraction of finite samples per input channel in a window, either a
+scalar for all channels or a named numeric vector (e.g. \code{c(heading = 0.8, depth = 0.9)}). Unnamed
+channels in a named vector default to 0. The default 0 accepts any observed data; entirely missing
+channels always return \code{NA}. Composite features must meet the threshold for every required channel.
+Coverage uses the requested width, including for truncated start-anchored windows.}
 }
 \value{
-If \code{return.data = TRUE}, a named list with one \code{data.table} per deployment: the identifier
-and datetime columns followed by one \verb{<variable>_<metric>} column per grid row. Rows carrying
-\code{NA} are omitted by default or retained with \code{missing.features = "keep"} (see \emph{Which rows survive}).
-Each table carries an \code{extractFeatures} entry in its
-processing history recording the grid, window and row count. If \code{return.data = FALSE}, a character
-vector of the written \code{.rds} file paths instead.
+A named list of \code{data.table}s, one per deployment, or paths to saved files when
+\code{return.data = FALSE}. A deployment with no complete requested features has zero rows under
+\code{missing.features = "omit"}; use \code{"keep"} to inspect its timeline.
 }
 \description{
-A classifier cannot learn a behaviour from one sample. What distinguishes a burst of feeding from
-steady swimming is not the acceleration at any instant but its character over a few seconds - how
-variable it is, how fast it changes, how directed the animal's heading stays.
-
-This function turns the sample-by-sample record into that description: it summarises the variables
-you choose over rolling time windows, producing one column per variable-and-metric pair. The result
-is the feature matrix a behavioural classifier is trained on, with the labels from \code{\link[=annotateData]{annotateData()}}
-supplying the response.
-
-Windows either slide sample by sample, keeping the input's temporal resolution, or tile the record
-without overlap.
+Summarise sensor channels over time windows to build a feature matrix for behavioural inference.
+Features at different scales share output timestamps. Windows may slide at an independent stride
+or start at regularly spaced anchors, with optional segment boundaries and channel coverage checks.
 }
 \details{
-\subsection{Windows}{
+\subsection{Window alignment and segments}{
 
-\code{window.size} is a duration in seconds, converted per deployment to a whole number of samples from
-that deployment's own sampling rate. The same call therefore gives comparable features across
-records sampled at different rates - but the number of samples per window, and hence the variance
-of every metric, differs between them.
+Input must have finite, strictly increasing POSIXct timestamps on a regular sampling grid within
+each segment. Sampling rate comes from metadata, falling back to the median timestamp interval.
+A timestamp gap greater than 1.5 sample intervals automatically starts a new segment. Use
+\code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}} first for irregular records.
 
-Sliding windows are centred, so roughly half a window at each end of a record has no complete span
-and yields \code{NA}. By default those rows are removed, as described below, so the leading and trailing
-half-window of every deployment is systematically absent from the output. With \code{aggregate = TRUE}
-the record is tiled instead, and each output row is timestamped at the start of its window.
+Anchors begin at the first sample of each segment and advance by \code{step.size}. Every grid row is
+evaluated at these same anchors, regardless of its width; no positional padding or truncation of
+feature vectors is applied. With sliding windows, a width of \code{w} samples at row \code{i} spans
+\code{i - floor((w - 1)/2)} through \code{i + ceiling((w - 1)/2)}. Thus a four-sample window spans
+\code{(i-1):(i+2)}. All metrics and responses use this convention. Incomplete sliding spans at segment
+edges return \code{NA}.
+
+With \code{aggregate = TRUE}, widths extend forward from each anchor. The last window is clipped to
+the segment end; increase \code{min.coverage} to reject short final spans. At the default stride, the
+default-width windows tile the record. Different widths or an explicit stride can overlap or leave
+gaps. Response labels always use \code{window.size}, with the same alignment and stride as features.
 }
 
-\subsection{Which metrics apply to which variables}{
+\subsection{Basic metrics}{
 
-Variables named in \code{circular.variables} are angles in degrees and are summarised with circular
-statistics; everything else is treated linearly. The two sets are not interchangeable - the mean of
-350 and 10 degrees is 0, not 180 - so requesting a linear-only metric for a circular variable is an
-error rather than a silent miscalculation:
-\itemize{
-\item \strong{linear}: \code{mean}, \code{median}, \code{sd}, \code{range}, \code{min}, \code{max}, \code{iqr}, \code{mad}, \code{sum}, \code{rate},
-\code{energy}, \code{skewness}, \code{kurtosis}, \code{entropy}
-\item \strong{circular}: \code{mean}, \code{median}, \code{sd}, \code{range}, \code{iqr}, \code{mrl}, \code{rate}
-}
-A circular \code{mean} or \code{median} reports an absolute direction and is therefore affected by whether the
-heading is referenced to magnetic or geographic north; the remaining circular metrics are built from
-angle differences and are unaffected. See \code{\link[=processTagData]{processTagData()}} for that distinction.
-}
+Linear channels support \code{mean}, \code{median}, \code{sd}, \code{range}, \code{min}, \code{max}, \code{iqr}, \code{mad}, \code{sum}, \code{rate},
+\code{energy}, \code{skewness}, \code{kurtosis} and \code{entropy}. Circular channels support \code{mean}, \code{median}, \code{sd},
+\code{range}, \code{iqr}, \code{mrl} and \code{rate}. Incompatible basic pairs are rejected before processing.
 
-\subsection{Output schema}{
+Circular spread uses angles modulo 360. Circular IQR is the type-7 linear IQR after cutting the
+circle in its largest empty arc; tied largest gaps use the smallest resulting IQR. This definition
+is rotationally invariant, including across north. Circular means use \code{atan2(sum(sin), sum(cos))};
+a vanishing resultant has no defined mean or circular SD and returns \code{NA}. Means report degrees
+in \verb{[-180, 180]}, while medians report an observed direction modulo 360. Only absolute heading
+means and medians depend on magnetic versus geographic north; see \code{\link[=processTagData]{processTagData()}}.
 
-One row per retained window and one column per grid row, with the identifier and datetime columns
-first. A column is named \verb{<variable>_<metric>} - \code{depth_mean}, \code{heading_mrl} - except where the
-metric already carries its variable's name, in which case the repetition is stripped: the enhanced
-metrics listed below give their exact column names for that reason.
+Non-finite sensor values are treated as unavailable. Empty windows return \code{NA}, including sums,
+energy and extrema. Rate features use only consecutive observed samples: missing observations are
+never deleted before differencing. Rates are expressed per second; angles use shortest signed
+steps, including roll by default. \code{energy} is the sum of squared samples, not a time integral.
 
-A window is appended to the name only where that grid row's \code{window_seconds} \strong{differs from}
-\code{window.size}, so that the same metric at several scales stays distinguishable. A row whose
-\code{window_seconds} happens to equal \code{window.size} is not suffixed, even though the grid named it
-explicitly - so build expected column names from that rule rather than from the presence of a
-\code{window_seconds} column.
-}
-
-\subsection{Which rows survive}{
-
-By default, any row still carrying an \code{NA} in a feature or response column is dropped. This keeps
-the matrix complete for learners that reject missing inputs, but the loss is concentrated at record
-edges and data gaps rather than random. \code{missing.features = "keep"} retains those rows instead; this
-does not make them suitable for every learner. In either mode, an unavailable input stream produces
-\code{NA} features, never zero-valued activity. The number of affected rows is reported per deployment
-and summarised in a warning. Under \code{"omit"}, a deployment shorter than the widest requested window
-has zero rows in its output table.
-}
-
-\subsection{Surface substitution}{
-
-Where \code{depth == 0}, the distribution-shape metrics are replaced with their neutral values -
-\code{skewness = 0}, \code{kurtosis = 3}, \code{entropy = 0} - rather than left as the undefined results a
-constant or near-constant signal produces. This is a deliberate assumption, that a stationary tag
-at the surface is not a distribution worth describing, and not a computation.
-
-It reaches only the columns named exactly \verb{depth_<metric>} and \verb{vertical_speed_<metric>}. A
-distribution-shape metric on any other variable is left undefined, and so is one on depth itself
-if the grid gave that row a non-default window, since the column is then named with a window
-suffix. Because undefined values are dropped with their rows, that can cost a surfaced deployment
-every row.
+For observed, constant depth or vertical-speed windows entirely at the surface (\code{depth == 0}),
+undefined shape summaries use \code{skewness = 0}, \code{kurtosis = 3}, \code{entropy = 0}. This applies at every
+scale and never replaces missing channels, insufficient coverage or incomplete sliding spans.
 }
 
 \subsection{Enhanced features}{
 
-With \code{enhanced.features = TRUE}, which requires the \pkg{zoo} package. These are composite
-descriptors rather than standard summary statistics, and most apply to one variable only.
-
-Two of them, \code{posture_stability} and \code{activity_index}, are unusual: the variable you pair them with
-in the grid is a \strong{sentinel name, not an input}. Name them against a variable called exactly
-\code{posture} and \code{activity} respectively - a column of that name must exist, or the run aborts - but the
-values in that column are never read. Both descriptors are computed from the orientation channels
-instead, as noted below.
-
-The output column names are given here because several differ from the metric name: where a metric
-already carries its variable, the redundancy is stripped, so \code{net_heading_change} on \code{heading}
-becomes \code{heading_net_change} rather than \code{heading_net_heading_change}.
-
+Enable with \code{enhanced.features = TRUE}. Heading-specific metrics require variable \code{heading};
+depth-specific metrics require \code{depth}. The composite descriptors use sentinel variables called
+\code{posture} and \code{activity}: those columns must exist, but their values are ignored.
 \describe{
-\item{\code{net_heading_change} -> \code{heading_net_change}}{Absolute angular difference between the
-window's leading and lagging halves, in degrees. Heading only.}
-\item{\code{cumulative_heading_change} -> \code{heading_cumulative_change}}{Sum of absolute wrap-corrected
-step changes, in degrees. Heading only.}
-\item{\code{circular_variance_heading} -> \code{heading_circular_variance}}{\code{1 - R}, where \code{R} is the mean
-resultant length: 0 for a perfectly held course, 1 for uniformly scattered headings. Heading
-only.}
-\item{\code{turning_rate_variability} -> \code{heading_turning_variability}}{Coefficient of variation of the
-absolute turning rate. Heading only.}
-\item{\code{circling_behavior} -> \code{heading_circling}}{Total absolute heading change divided by the net
-change over the window, as \code{total / (net + 1)}. It is a dimensionless ratio, not an angle, and it
-is \strong{large when the net rotation is small} - which is the point: an animal that turns a great
-deal while ending up where it started is circling. A straight transit scores near 1. Heading
-only, and note that the numerator is not wrap-corrected, so each 360-degree crossing inside a
-window adds to it.}
-\item{\code{uturn_flag} -> \code{heading_uturn}}{1 where the heading reverses by more than 120 degrees within
-the window, else 0. Heading only. The cut-off is fixed, not a parameter.}
+\item{\code{net_heading_change} -> \code{heading_net_change}}{Absolute shortest angular difference between
+the window's first and last headings, in degrees.}
+\item{\code{cumulative_heading_change} -> \code{heading_cumulative_change}}{Sum of absolute shortest steps,
+in degrees, between adjacent observed headings within the window.}
+\item{\code{circular_variance_heading} -> \code{heading_circular_variance}}{\code{1 - R}, with mean resultant length \code{R}.}
+\item{\code{turning_rate_variability} -> \code{heading_turning_variability}}{Coefficient of variation (CV)
+of absolute heading rates. Zero for at least two identical rates, \code{NA} for fewer than two.}
+\item{\code{circling_behavior} -> \code{heading_circling}}{Sum of absolute shortest steps divided by
+\verb{(absolute shortest endpoint change + 1 degree)}. The dimensionless index is high for repeated
+turning with small endpoint change, including alternating turns. It is not an event detector;
+use \code{\link[=detectCircling]{detectCircling()}} for sustained directional rotations.}
+\item{\code{uturn_flag} -> \code{heading_uturn}}{1 if shortest endpoint change exceeds 120 degrees, otherwise 0.}
 \item{\code{heading_autocorr_avg} -> \code{heading_autocorr_avg}}{Mean autocorrelation over lags 1 to 5 of
-the \emph{unwrapped} heading, so the result does not depend on the animal's absolute bearing. Heading
-only.}
-\item{\code{oscillation_regularity}}{Coefficient of variation of the interval between peaks within the
-window; low values indicate metronomic oscillation. \strong{Requires at least three peaks inside a
-single window}: where the window is shorter than about three cycles of the signal the result is
-\code{NA} throughout, and the deployment can lose every row.}
-\item{\code{movement_jerk}}{Windowed RMS of the input's first difference - its jerk, when the input is
-an acceleration channel. Distinct from the rotation-invariant \code{jerk} channel \code{\link[=processTagData]{processTagData()}}
-produces, which is computed at native rate before any downsampling.}
-\item{\code{movement_smoothness}}{Windowed RMS of the input's \emph{second} difference. Note the sense: a
-higher value means a \emph{less} smooth signal.}
-\item{\code{movement_predictability}}{Coefficient of variation of the \emph{rolling mean} series - that is,
-of the smoothed signal, not of the raw samples in the window. Note the sense: a higher value
-means \emph{more} variable, and so \emph{less} predictable.}
-\item{\code{movement_consistency}}{Coefficient of variation of the \emph{rolling standard deviation} series.
-It asks whether the signal's variability is itself steady, which is a different question from
-\code{movement_predictability} above; the two take different inputs.}
-\item{\code{posture_stability} -> \code{posture_stability}}{\verb{1 / (1 + rolling sd(pitch) + rolling sd(roll))},
-approaching 1 for a steadily held posture. Requires \code{pitch} and \code{roll} columns. Pair it with the
-sentinel variable \code{posture}, whose own values are ignored.}
-\item{\code{activity_index} -> \code{activity_index}}{Rolling mean of the summed absolute rates of change of
-\code{pitch}, \code{roll} and heading, the last wrap-corrected. Requires all three columns. Pair it with
-the sentinel variable \code{activity}, whose own values are ignored.}
-\item{\code{rolling_autocorrelation}}{Lag-1 autocorrelation within the window.}
-\item{\code{zero_crossing_rate}}{Proportion of consecutive samples that cross the window's own \strong{mean},
-not zero. That distinction matters, because the natural inputs here - VeDBA, ODBA, depth - are
-non-negative and would score exactly 0 under a true zero-crossing count.}
-\item{\code{depth_change_rate} -> \code{depth_change_rate}}{Absolute first difference of depth,
-\strong{per sample}. Unlike every other feature here it is not windowed and not divided by the sample
-interval, so its magnitude depends on the sampling rate and is not comparable between records
-sampled differently. Depth only.}
-\item{\code{depth_change_consistency} -> \code{depth_change_consistency}}{Coefficient of variation of that
-rate over the window. Depth only.}
+locally unwrapped headings, requiring at least ten observed samples and nonzero variation.
+Missing samples retain their lag positions; unwrapping resumes after a gap on the nearest branch.}
+\item{\code{oscillation_regularity}}{CV of inter-peak intervals; requires at least three peaks and ten
+observed samples in the window. Lower values indicate more regular oscillation.}
+\item{\code{movement_jerk}}{RMS first derivative, in input units per second. Applied to acceleration,
+this is per-channel jerk; the rotation-invariant native-rate \code{jerk} channel from \code{\link[=processTagData]{processTagData()}}
+is a distinct quantity.}
+\item{\code{movement_smoothness}}{RMS second derivative, in input units per second squared. Higher
+values indicate less smooth movement.}
+\item{\code{movement_predictability}}{CV of centred rolling means over the window, using
+\code{sd / (abs(mean) + 0.001)}. Higher values indicate less predictable movement.}
+\item{\code{movement_consistency}}{CV of centred rolling SDs, using \code{sd / (mean + 0.001)}.
+Both second-order descriptors need at least half a window of finite rolling inputs and can
+therefore lose additional rows near segment edges. Circular inputs are unwrapped per segment.}
+\item{\code{posture_stability} -> \code{posture_stability}}{\code{1 / (1 + sd(pitch) + circular_sd(roll))} by
+default; approaches 1 for steady posture. Requires pitch and roll. Pair with variable \code{posture}.}
+\item{\code{activity_index} -> \code{activity_index}}{Mean of the summed absolute pitch, roll and heading
+rates, in degrees per second. Requires all three channels at each contributing step.
+Pair with variable \code{activity}.}
+\item{\code{rolling_autocorrelation}}{Lag-1 autocorrelation. Circular inputs are locally unwrapped;
+missing samples keep their positions. Requires four observed samples and nonzero variation.}
+\item{\code{zero_crossing_rate}}{Number of consecutive observed samples crossing the window mean,
+divided by the number of samples in the window. This is a dimensionless proportion.}
+\item{\code{depth_change_rate} -> \code{depth_change_rate}}{Mean absolute first derivative of depth within
+the window, in depth units per second. Formerly an unwindowed per-sample difference.}
+\item{\code{depth_change_consistency} -> \code{depth_change_consistency}}{CV of those absolute depth rates.}
+}
 }
 
-The \code{movement_smoothness} and \code{movement_predictability} names describe the inverse of what they
-measure; they are kept for compatibility and the sense is stated above rather than silently assumed.
+\subsection{Output schema and compatibility}{
+
+One column per grid row, named \verb{<variable>_<metric>} (or the abbreviated enhanced name above).
+A \verb{_<seconds>s} suffix is appended only when that row's width differs from \code{window.size}.
+Identifier and timestamp come first, followed by the optional segment and response columns.
+Processing history records the resolved grid, sampling rate, stride and coverage controls.
+
+Default cadence, argument positions, feature names and complete-case filtering are preserved.
+Corrected circular, missing-data, alignment and rate calculations intentionally change affected
+feature values; models fitted to the former values should be retrained.
 }
 }
 \examples{
-# Minimal single deployment: one numeric sensor column sampled at 1 Hz. Pass a
-# named list of per-individual tables (a bare data.frame is read as columns).
 df <- data.frame(
-  ID = "shark01",
-  datetime = as.POSIXct("2024-05-30 12:00:00", tz = "UTC") + 0:19,
-  vedba = abs(sin(seq(0, 4, length.out = 20)))
-)
-# 5 s sliding-window mean and SD of VeDBA
-extractFeatures(list(shark01 = df), variables = "vedba",
-                metrics = c("mean", "sd"), window.size = 5)
-# Retain incomplete edge windows for inspection or a missing-aware learner.
-extractFeatures(list(shark01 = df), variables = "vedba", metrics = "mean",
-                window.size = 5, missing.features = "keep")
+  ID = "shark01", datetime = as.POSIXct("2024-05-30 12:00:00", tz = "UTC") + 0:19,
+  vedba = abs(sin(seq(0, 4, length.out = 20))))
+extractFeatures(list(shark01 = df), variables = "vedba", metrics = c("mean", "sd"),
+                window.size = 5, step.size = 1)
+grid <- data.frame(variable = "vedba", metric = "mean", window_seconds = c(3, 7))
+extractFeatures(list(shark01 = df), parameter.grid = grid, window.size = 3,
+                step.size = 1, min.coverage = 0.8, missing.features = "keep")
 }
 \seealso{
-\code{\link[=processTagData]{processTagData()}} for the derived channels most of these features summarise,
-\code{\link[=detectDives]{detectDives()}} and \code{\link[=diveMetrics]{diveMetrics()}} for dive-resolved descriptors.
+\code{\link[=processTagData]{processTagData()}}, \code{\link[=annotateData]{annotateData()}}, \code{\link[=detectCircling]{detectCircling()}}, \code{\link[=regularizeTimeSeries]{regularizeTimeSeries()}}.
 }

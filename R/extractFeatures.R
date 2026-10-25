@@ -5,225 +5,166 @@
 #' Extract windowed features from sensor data
 #'
 #' @description
-#' A classifier cannot learn a behaviour from one sample. What distinguishes a burst of feeding from
-#' steady swimming is not the acceleration at any instant but its character over a few seconds - how
-#' variable it is, how fast it changes, how directed the animal's heading stays.
+#' Summarise sensor channels over time windows to build a feature matrix for behavioural inference.
+#' Features at different scales share output timestamps. Windows may slide at an independent stride
+#' or start at regularly spaced anchors, with optional segment boundaries and channel coverage checks.
 #'
-#' This function turns the sample-by-sample record into that description: it summarises the variables
-#' you choose over rolling time windows, producing one column per variable-and-metric pair. The result
-#' is the feature matrix a behavioural classifier is trained on, with the labels from [annotateData()]
-#' supplying the response.
-#'
-#' Windows either slide sample by sample, keeping the input's temporal resolution, or tile the record
-#' without overlap.
-#'
-#' @param data A list of tables/data frames (one per individual), a single aggregated data table/data frame,
-#' or a character vector of file paths to RDS files containing sensor data.
-#' @param variables Which columns to summarise. Every metric in `metrics` is computed for every
-#'   variable named here, so the two together define a full grid; use `parameter.grid` instead when you
-#'   want particular pairings. Ignored when `parameter.grid` is supplied.
-#' @param metrics Which summaries to compute over each window. The available metrics differ between
-#'   linear and circular variables, listed below.
-#' @param parameter.grid An explicit table of `variable` and `metric` pairs, and optionally a
-#'   `window_seconds` per row. Use it in place of `variables` and `metrics` when the full grid would
-#'   be wasteful, or when different variables want different window lengths - a tail beat and a dive
-#'   are not described on the same timescale. Rows without `window_seconds` use `window.size`.
-#' @param enhanced.features Whether to add the composite ecological descriptors listed below (default
-#'   `FALSE`; requires the \pkg{zoo} package). They are more interpretable than raw moments but most
-#'   apply to one variable only, and one of them can cost every row of a short deployment.
-#' @param id.col Which column identifies the animal (default `"ID"`).
-#' @param datetime.col Which column holds the timestamps (default `"datetime"`).
-#' @param window.size The default window length, in seconds. Choose it from the timescale of the
-#'   behaviour you are trying to separate: too short and the summary is dominated by noise, too long
-#'   and two different behaviours are averaged into one row.
-#' @param aggregate Whether to tile the record into non-overlapping windows (`TRUE`) rather than
-#'   sliding one sample at a time. Tiling gives far fewer rows, and rows that are statistically
-#'   independent of each other - which matters if you intend to cross-validate.
-#' @param downsample.to Target output rate in Hz (e.g. `1` for one feature row per second), or `NULL`
-#'   (default) to leave the feature rows at their native rate. It is a frequency, matching
-#'   [processTagData()], so the row interval is `1/downsample.to` seconds. Feature columns are
-#'   averaged within each output bin.
-#' @param response.col (Optional) A character string specifying the column containing response labels.
-#' @param circular.variables Character vector specifying variables that should be treated as circular.
-#' @param response.aggregation Method to aggregate `response.col`: "majority" or "any".
-#' @param missing.features How to handle feature rows containing `NA`. `"omit"` (default) removes
-#'   incomplete rows, producing a complete-case feature matrix; a deployment with an entirely
-#'   unavailable requested stream consequently contributes zero rows. `"keep"` retains the rows and
-#'   their `NA` values for inspection or a downstream model that explicitly supports missing inputs.
-#'   Neither option imputes unavailable measurements.
-#' @param return.data Logical. Return the processed data in memory (default `TRUE`). When `FALSE`, the
-#'   function instead returns the paths of the `.rds` files it wrote, which feed directly into the next
-#'   step's `data` argument -- so a large fleet can be processed without ever holding it all in memory.
-#'   `return.data = FALSE` therefore requires an `output.dir`.
-#' @param output.dir Character. Directory in which to write one `<id>.rds` file per deployment. Providing
-#'   a directory is what triggers saving; `NULL` (default) writes nothing. The directory must already exist.
-#' @param output.suffix Character. Optional suffix appended to each saved file name (before `.rds`), e.g.
-#'   to tag a processing run or avoid clashes. Only used when `output.dir` is set. Default `NULL`.
-#' @param compress Compression for the saved `.rds` files (only used when `output.dir` is set): `TRUE`
-#'   (default, gzip), `FALSE`, or one of `"gzip"`/`"bzip2"`/`"xz"`. See \code{\link[base]{saveRDS}}.
-#' @param n.cores Number of processor cores for parallel computation.
-#' @param verbose Controls console output: `FALSE`/`0` (quiet - warnings and errors only), `TRUE`/`1`
-#'   (`"normal"`: header, one line per deployment, and a summary), or `2`/`"detailed"` (adds a progress
-#'   bar over the feature grid and per-deployment diagnostics). Defaults to `"normal"`.
+#' @param data A list of tables/data frames (one per deployment), a single table/data frame with an
+#'   identifier column, or a character vector of paths to sensor `.rds` files.
+#' @param variables Character vector of channels. Together with `metrics`, defines a full grid.
+#'   Ignored when `parameter.grid` is supplied.
+#' @param metrics Character vector of summaries; see Details. Ignored with `parameter.grid`.
+#' @param parameter.grid A data frame of `variable` and `metric` pairs, optionally with a positive
+#'   `window_seconds` per row. Missing durations use `window.size`. Output names must be unique.
+#' @param enhanced.features Logical. Enable the composite descriptors listed in Details.
+#' @param id.col Identifier column, default `"ID"`.
+#' @param datetime.col POSIXct timestamp column, default `"datetime"`.
+#' @param window.size Default window duration in seconds, also used for response aggregation.
+#' @param aggregate Logical. With `FALSE` (default), use centred sliding windows. With `TRUE`, each
+#'   output timestamp is the start of its window. The default stride then equals `window.size`.
+#' @param downsample.to Optional output frequency in Hz for averaging already computed features into
+#'   bins. Circular means and medians are averaged as unit vectors; other features use arithmetic
+#'   means. Bins start at the first input timestamp of each segment, including when edge rows are
+#'   omitted. Use `step.size` to compute features directly at a coarser cadence without averaging them.
+#' @param response.col Optional column of binary response labels (numeric, logical, or factor 0/1).
+#' @param circular.variables Channels interpreted as angles in degrees, default `c("heading", "roll")`.
+#'   Applies to basic summaries and to differences in movement and orientation descriptors.
+#' @param response.aggregation `"majority"` (mean of observed labels greater than 0.5) or `"any"`
+#'   (at least one observed 1). Entirely unlabelled windows and output bins remain `NA`.
+#' @param missing.features `"omit"` (default) drops rows containing missing features or responses;
+#'   `"keep"` retains them. Neither option imputes unavailable measurements.
+#' @param return.data Logical. Return a named list of feature tables (default `TRUE`); `FALSE` returns
+#'   paths to saved `.rds` files and requires `output.dir`.
+#' @param output.dir Existing directory for one `<id>.rds` file per deployment, or `NULL` to skip saving.
+#' @param output.suffix Optional file name suffix before `.rds`.
+#' @param compress Compression passed to [base::saveRDS()], default `TRUE`.
+#' @param n.cores Number of processor cores, default 1.
+#' @param verbose `FALSE`/0 (quiet), `TRUE`/1/`"normal"` (default), or 2/`"detailed"` (progress and diagnostics).
+#' @param step.size Optional positive stride in seconds, independent of window duration. Defaults to
+#'   one sample for sliding windows and `window.size` for start-anchored windows. Both widths and
+#'   stride are rounded to the nearest whole number of samples, with a minimum of one sample.
+#' @param segment.col Optional column identifying contiguous segments. A change of label starts a new
+#'   segment, even if a previous label reappears later. Missing segment labels produce `NA` features.
+#'   Windows, derivatives and downsampling bins never combine segments. The column is kept in output.
+#' @param min.coverage Minimum fraction of finite samples per input channel in a window, either a
+#'   scalar for all channels or a named numeric vector (e.g. `c(heading = 0.8, depth = 0.9)`). Unnamed
+#'   channels in a named vector default to 0. The default 0 accepts any observed data; entirely missing
+#'   channels always return `NA`. Composite features must meet the threshold for every required channel.
+#'   Coverage uses the requested width, including for truncated start-anchored windows.
 #'
 #' @details
-#' ## Windows
+#' ## Window alignment and segments
 #'
-#' `window.size` is a duration in seconds, converted per deployment to a whole number of samples from
-#' that deployment's own sampling rate. The same call therefore gives comparable features across
-#' records sampled at different rates - but the number of samples per window, and hence the variance
-#' of every metric, differs between them.
+#' Input must have finite, strictly increasing POSIXct timestamps on a regular sampling grid within
+#' each segment. Sampling rate comes from metadata, falling back to the median timestamp interval.
+#' A timestamp gap greater than 1.5 sample intervals automatically starts a new segment. Use
+#' [regularizeTimeSeries()] first for irregular records.
 #'
-#' Sliding windows are centred, so roughly half a window at each end of a record has no complete span
-#' and yields `NA`. By default those rows are removed, as described below, so the leading and trailing
-#' half-window of every deployment is systematically absent from the output. With `aggregate = TRUE`
-#' the record is tiled instead, and each output row is timestamped at the start of its window.
+#' Anchors begin at the first sample of each segment and advance by `step.size`. Every grid row is
+#' evaluated at these same anchors, regardless of its width; no positional padding or truncation of
+#' feature vectors is applied. With sliding windows, a width of `w` samples at row `i` spans
+#' `i - floor((w - 1)/2)` through `i + ceiling((w - 1)/2)`. Thus a four-sample window spans
+#' `(i-1):(i+2)`. All metrics and responses use this convention. Incomplete sliding spans at segment
+#' edges return `NA`.
 #'
-#' ## Which metrics apply to which variables
+#' With `aggregate = TRUE`, widths extend forward from each anchor. The last window is clipped to
+#' the segment end; increase `min.coverage` to reject short final spans. At the default stride, the
+#' default-width windows tile the record. Different widths or an explicit stride can overlap or leave
+#' gaps. Response labels always use `window.size`, with the same alignment and stride as features.
 #'
-#' Variables named in `circular.variables` are angles in degrees and are summarised with circular
-#' statistics; everything else is treated linearly. The two sets are not interchangeable - the mean of
-#' 350 and 10 degrees is 0, not 180 - so requesting a linear-only metric for a circular variable is an
-#' error rather than a silent miscalculation:
-#' \itemize{
-#'   \item **linear**: `mean`, `median`, `sd`, `range`, `min`, `max`, `iqr`, `mad`, `sum`, `rate`,
-#'         `energy`, `skewness`, `kurtosis`, `entropy`
-#'   \item **circular**: `mean`, `median`, `sd`, `range`, `iqr`, `mrl`, `rate`
-#' }
-#' A circular `mean` or `median` reports an absolute direction and is therefore affected by whether the
-#' heading is referenced to magnetic or geographic north; the remaining circular metrics are built from
-#' angle differences and are unaffected. See [processTagData()] for that distinction.
+#' ## Basic metrics
 #'
-#' ## Output schema
+#' Linear channels support `mean`, `median`, `sd`, `range`, `min`, `max`, `iqr`, `mad`, `sum`, `rate`,
+#' `energy`, `skewness`, `kurtosis` and `entropy`. Circular channels support `mean`, `median`, `sd`,
+#' `range`, `iqr`, `mrl` and `rate`. Incompatible basic pairs are rejected before processing.
 #'
-#' One row per retained window and one column per grid row, with the identifier and datetime columns
-#' first. A column is named `<variable>_<metric>` - `depth_mean`, `heading_mrl` - except where the
-#' metric already carries its variable's name, in which case the repetition is stripped: the enhanced
-#' metrics listed below give their exact column names for that reason.
+#' Circular spread uses angles modulo 360. Circular IQR is the type-7 linear IQR after cutting the
+#' circle in its largest empty arc; tied largest gaps use the smallest resulting IQR. This definition
+#' is rotationally invariant, including across north. Circular means use `atan2(sum(sin), sum(cos))`;
+#' a vanishing resultant has no defined mean or circular SD and returns `NA`. Means report degrees
+#' in `[-180, 180]`, while medians report an observed direction modulo 360. Only absolute heading
+#' means and medians depend on magnetic versus geographic north; see [processTagData()].
 #'
-#' A window is appended to the name only where that grid row's `window_seconds` **differs from**
-#' `window.size`, so that the same metric at several scales stays distinguishable. A row whose
-#' `window_seconds` happens to equal `window.size` is not suffixed, even though the grid named it
-#' explicitly - so build expected column names from that rule rather than from the presence of a
-#' `window_seconds` column.
+#' Non-finite sensor values are treated as unavailable. Empty windows return `NA`, including sums,
+#' energy and extrema. Rate features use only consecutive observed samples: missing observations are
+#' never deleted before differencing. Rates are expressed per second; angles use shortest signed
+#' steps, including roll by default. `energy` is the sum of squared samples, not a time integral.
 #'
-#' ## Which rows survive
-#'
-#' By default, any row still carrying an `NA` in a feature or response column is dropped. This keeps
-#' the matrix complete for learners that reject missing inputs, but the loss is concentrated at record
-#' edges and data gaps rather than random. `missing.features = "keep"` retains those rows instead; this
-#' does not make them suitable for every learner. In either mode, an unavailable input stream produces
-#' `NA` features, never zero-valued activity. The number of affected rows is reported per deployment
-#' and summarised in a warning. Under `"omit"`, a deployment shorter than the widest requested window
-#' has zero rows in its output table.
-#'
-#' ## Surface substitution
-#'
-#' Where `depth == 0`, the distribution-shape metrics are replaced with their neutral values -
-#' `skewness = 0`, `kurtosis = 3`, `entropy = 0` - rather than left as the undefined results a
-#' constant or near-constant signal produces. This is a deliberate assumption, that a stationary tag
-#' at the surface is not a distribution worth describing, and not a computation.
-#'
-#' It reaches only the columns named exactly `depth_<metric>` and `vertical_speed_<metric>`. A
-#' distribution-shape metric on any other variable is left undefined, and so is one on depth itself
-#' if the grid gave that row a non-default window, since the column is then named with a window
-#' suffix. Because undefined values are dropped with their rows, that can cost a surfaced deployment
-#' every row.
+#' For observed, constant depth or vertical-speed windows entirely at the surface (`depth == 0`),
+#' undefined shape summaries use `skewness = 0`, `kurtosis = 3`, `entropy = 0`. This applies at every
+#' scale and never replaces missing channels, insufficient coverage or incomplete sliding spans.
 #'
 #' ## Enhanced features
 #'
-#' With `enhanced.features = TRUE`, which requires the \pkg{zoo} package. These are composite
-#' descriptors rather than standard summary statistics, and most apply to one variable only.
-#'
-#' Two of them, `posture_stability` and `activity_index`, are unusual: the variable you pair them with
-#' in the grid is a **sentinel name, not an input**. Name them against a variable called exactly
-#' `posture` and `activity` respectively - a column of that name must exist, or the run aborts - but the
-#' values in that column are never read. Both descriptors are computed from the orientation channels
-#' instead, as noted below.
-#'
-#' The output column names are given here because several differ from the metric name: where a metric
-#' already carries its variable, the redundancy is stripped, so `net_heading_change` on `heading`
-#' becomes `heading_net_change` rather than `heading_net_heading_change`.
-#'
+#' Enable with `enhanced.features = TRUE`. Heading-specific metrics require variable `heading`;
+#' depth-specific metrics require `depth`. The composite descriptors use sentinel variables called
+#' `posture` and `activity`: those columns must exist, but their values are ignored.
 #' \describe{
-#'   \item{`net_heading_change` -> `heading_net_change`}{Absolute angular difference between the
-#'     window's leading and lagging halves, in degrees. Heading only.}
-#'   \item{`cumulative_heading_change` -> `heading_cumulative_change`}{Sum of absolute wrap-corrected
-#'     step changes, in degrees. Heading only.}
-#'   \item{`circular_variance_heading` -> `heading_circular_variance`}{`1 - R`, where `R` is the mean
-#'     resultant length: 0 for a perfectly held course, 1 for uniformly scattered headings. Heading
-#'     only.}
-#'   \item{`turning_rate_variability` -> `heading_turning_variability`}{Coefficient of variation of the
-#'     absolute turning rate. Heading only.}
-#'   \item{`circling_behavior` -> `heading_circling`}{Total absolute heading change divided by the net
-#'     change over the window, as `total / (net + 1)`. It is a dimensionless ratio, not an angle, and it
-#'     is **large when the net rotation is small** - which is the point: an animal that turns a great
-#'     deal while ending up where it started is circling. A straight transit scores near 1. Heading
-#'     only, and note that the numerator is not wrap-corrected, so each 360-degree crossing inside a
-#'     window adds to it.}
-#'   \item{`uturn_flag` -> `heading_uturn`}{1 where the heading reverses by more than 120 degrees within
-#'     the window, else 0. Heading only. The cut-off is fixed, not a parameter.}
+#'   \item{`net_heading_change` -> `heading_net_change`}{Absolute shortest angular difference between
+#'     the window's first and last headings, in degrees.}
+#'   \item{`cumulative_heading_change` -> `heading_cumulative_change`}{Sum of absolute shortest steps,
+#'     in degrees, between adjacent observed headings within the window.}
+#'   \item{`circular_variance_heading` -> `heading_circular_variance`}{`1 - R`, with mean resultant length `R`.}
+#'   \item{`turning_rate_variability` -> `heading_turning_variability`}{Coefficient of variation (CV)
+#'     of absolute heading rates. Zero for at least two identical rates, `NA` for fewer than two.}
+#'   \item{`circling_behavior` -> `heading_circling`}{Sum of absolute shortest steps divided by
+#'     `(absolute shortest endpoint change + 1 degree)`. The dimensionless index is high for repeated
+#'     turning with small endpoint change, including alternating turns. It is not an event detector;
+#'     use [detectCircling()] for sustained directional rotations.}
+#'   \item{`uturn_flag` -> `heading_uturn`}{1 if shortest endpoint change exceeds 120 degrees, otherwise 0.}
 #'   \item{`heading_autocorr_avg` -> `heading_autocorr_avg`}{Mean autocorrelation over lags 1 to 5 of
-#'     the *unwrapped* heading, so the result does not depend on the animal's absolute bearing. Heading
-#'     only.}
-#'   \item{`oscillation_regularity`}{Coefficient of variation of the interval between peaks within the
-#'     window; low values indicate metronomic oscillation. **Requires at least three peaks inside a
-#'     single window**: where the window is shorter than about three cycles of the signal the result is
-#'     `NA` throughout, and the deployment can lose every row.}
-#'   \item{`movement_jerk`}{Windowed RMS of the input's first difference - its jerk, when the input is
-#'     an acceleration channel. Distinct from the rotation-invariant `jerk` channel [processTagData()]
-#'     produces, which is computed at native rate before any downsampling.}
-#'   \item{`movement_smoothness`}{Windowed RMS of the input's *second* difference. Note the sense: a
-#'     higher value means a *less* smooth signal.}
-#'   \item{`movement_predictability`}{Coefficient of variation of the *rolling mean* series - that is,
-#'     of the smoothed signal, not of the raw samples in the window. Note the sense: a higher value
-#'     means *more* variable, and so *less* predictable.}
-#'   \item{`movement_consistency`}{Coefficient of variation of the *rolling standard deviation* series.
-#'     It asks whether the signal's variability is itself steady, which is a different question from
-#'     `movement_predictability` above; the two take different inputs.}
-#'   \item{`posture_stability` -> `posture_stability`}{`1 / (1 + rolling sd(pitch) + rolling sd(roll))`,
-#'     approaching 1 for a steadily held posture. Requires `pitch` and `roll` columns. Pair it with the
-#'     sentinel variable `posture`, whose own values are ignored.}
-#'   \item{`activity_index` -> `activity_index`}{Rolling mean of the summed absolute rates of change of
-#'     `pitch`, `roll` and heading, the last wrap-corrected. Requires all three columns. Pair it with
-#'     the sentinel variable `activity`, whose own values are ignored.}
-#'   \item{`rolling_autocorrelation`}{Lag-1 autocorrelation within the window.}
-#'   \item{`zero_crossing_rate`}{Proportion of consecutive samples that cross the window's own **mean**,
-#'     not zero. That distinction matters, because the natural inputs here - VeDBA, ODBA, depth - are
-#'     non-negative and would score exactly 0 under a true zero-crossing count.}
-#'   \item{`depth_change_rate` -> `depth_change_rate`}{Absolute first difference of depth,
-#'     **per sample**. Unlike every other feature here it is not windowed and not divided by the sample
-#'     interval, so its magnitude depends on the sampling rate and is not comparable between records
-#'     sampled differently. Depth only.}
-#'   \item{`depth_change_consistency` -> `depth_change_consistency`}{Coefficient of variation of that
-#'     rate over the window. Depth only.}
+#'     locally unwrapped headings, requiring at least ten observed samples and nonzero variation.
+#'     Missing samples retain their lag positions; unwrapping resumes after a gap on the nearest branch.}
+#'   \item{`oscillation_regularity`}{CV of inter-peak intervals; requires at least three peaks and ten
+#'     observed samples in the window. Lower values indicate more regular oscillation.}
+#'   \item{`movement_jerk`}{RMS first derivative, in input units per second. Applied to acceleration,
+#'     this is per-channel jerk; the rotation-invariant native-rate `jerk` channel from [processTagData()]
+#'     is a distinct quantity.}
+#'   \item{`movement_smoothness`}{RMS second derivative, in input units per second squared. Higher
+#'     values indicate less smooth movement.}
+#'   \item{`movement_predictability`}{CV of centred rolling means over the window, using
+#'     `sd / (abs(mean) + 0.001)`. Higher values indicate less predictable movement.}
+#'   \item{`movement_consistency`}{CV of centred rolling SDs, using `sd / (mean + 0.001)`.
+#'     Both second-order descriptors need at least half a window of finite rolling inputs and can
+#'     therefore lose additional rows near segment edges. Circular inputs are unwrapped per segment.}
+#'   \item{`posture_stability` -> `posture_stability`}{`1 / (1 + sd(pitch) + circular_sd(roll))` by
+#'     default; approaches 1 for steady posture. Requires pitch and roll. Pair with variable `posture`.}
+#'   \item{`activity_index` -> `activity_index`}{Mean of the summed absolute pitch, roll and heading
+#'     rates, in degrees per second. Requires all three channels at each contributing step.
+#'     Pair with variable `activity`.}
+#'   \item{`rolling_autocorrelation`}{Lag-1 autocorrelation. Circular inputs are locally unwrapped;
+#'     missing samples keep their positions. Requires four observed samples and nonzero variation.}
+#'   \item{`zero_crossing_rate`}{Number of consecutive observed samples crossing the window mean,
+#'     divided by the number of samples in the window. This is a dimensionless proportion.}
+#'   \item{`depth_change_rate` -> `depth_change_rate`}{Mean absolute first derivative of depth within
+#'     the window, in depth units per second. Formerly an unwindowed per-sample difference.}
+#'   \item{`depth_change_consistency` -> `depth_change_consistency`}{CV of those absolute depth rates.}
 #' }
 #'
-#' The `movement_smoothness` and `movement_predictability` names describe the inverse of what they
-#' measure; they are kept for compatibility and the sense is stated above rather than silently assumed.
+#' ## Output schema and compatibility
 #'
-#' @return If `return.data = TRUE`, a named list with one `data.table` per deployment: the identifier
-#'   and datetime columns followed by one `<variable>_<metric>` column per grid row. Rows carrying
-#'   `NA` are omitted by default or retained with `missing.features = "keep"` (see *Which rows survive*).
-#'   Each table carries an `extractFeatures` entry in its
-#'   processing history recording the grid, window and row count. If `return.data = FALSE`, a character
-#'   vector of the written `.rds` file paths instead.
-#' @seealso [processTagData()] for the derived channels most of these features summarise,
-#'   [detectDives()] and [diveMetrics()] for dive-resolved descriptors.
+#' One column per grid row, named `<variable>_<metric>` (or the abbreviated enhanced name above).
+#' A `_<seconds>s` suffix is appended only when that row's width differs from `window.size`.
+#' Identifier and timestamp come first, followed by the optional segment and response columns.
+#' Processing history records the resolved grid, sampling rate, stride and coverage controls.
+#'
+#' Default cadence, argument positions, feature names and complete-case filtering are preserved.
+#' Corrected circular, missing-data, alignment and rate calculations intentionally change affected
+#' feature values; models fitted to the former values should be retrained.
+#'
+#' @return A named list of `data.table`s, one per deployment, or paths to saved files when
+#'   `return.data = FALSE`. A deployment with no complete requested features has zero rows under
+#'   `missing.features = "omit"`; use `"keep"` to inspect its timeline.
+#' @seealso [processTagData()], [annotateData()], [detectCircling()], [regularizeTimeSeries()].
 #' @examples
-#' # Minimal single deployment: one numeric sensor column sampled at 1 Hz. Pass a
-#' # named list of per-individual tables (a bare data.frame is read as columns).
 #' df <- data.frame(
-#'   ID = "shark01",
-#'   datetime = as.POSIXct("2024-05-30 12:00:00", tz = "UTC") + 0:19,
-#'   vedba = abs(sin(seq(0, 4, length.out = 20)))
-#' )
-#' # 5 s sliding-window mean and SD of VeDBA
-#' extractFeatures(list(shark01 = df), variables = "vedba",
-#'                 metrics = c("mean", "sd"), window.size = 5)
-#' # Retain incomplete edge windows for inspection or a missing-aware learner.
-#' extractFeatures(list(shark01 = df), variables = "vedba", metrics = "mean",
-#'                 window.size = 5, missing.features = "keep")
+#'   ID = "shark01", datetime = as.POSIXct("2024-05-30 12:00:00", tz = "UTC") + 0:19,
+#'   vedba = abs(sin(seq(0, 4, length.out = 20))))
+#' extractFeatures(list(shark01 = df), variables = "vedba", metrics = c("mean", "sd"),
+#'                 window.size = 5, step.size = 1)
+#' grid <- data.frame(variable = "vedba", metric = "mean", window_seconds = c(3, 7))
+#' extractFeatures(list(shark01 = df), parameter.grid = grid, window.size = 3,
+#'                 step.size = 1, min.coverage = 0.8, missing.features = "keep")
 #' @export
 
 extractFeatures <- function(data,
@@ -245,7 +186,10 @@ extractFeatures <- function(data,
                             output.suffix = NULL,
                             compress = TRUE,
                             n.cores = 1,
-                            verbose = "normal") {
+                            verbose = "normal",
+                            step.size = NULL,
+                            segment.col = NULL,
+                            min.coverage = 0) {
 
   ##############################################################################
   # Initial checks and setup ###################################################
@@ -256,26 +200,11 @@ extractFeatures <- function(data,
   .assert_nonempty(data, "data")             # loud failure on empty input (e.g. a typo'd list.files() -> character(0))
   .assert_compress(compress)
 
-  # Check optional (Suggests) packages needed only by specific metrics
-  optional_packages <- list(
-    moments = c("skewness", "kurtosis"),
-    entropy = "entropy"
-  )
-
-  for (pkg in names(optional_packages)) {
-    if (!requireNamespace(pkg, quietly = TRUE)) {
-      needed_metrics <- optional_packages[[pkg]]
-      .abort(c("Package {.pkg {pkg}} is required for metric{?s} {.val {needed_metrics}} but is not installed.",
-               "i" = "Install it, or drop those metrics from {.arg metrics}."))
-    }
-  }
-
-  # Split data by id.col if not already a list or file paths
-  if (!is_filepaths && !is.list(data)) {
-    if (!id.col %in% names(data)) {
-      .abort("{.arg data} must contain the {.val {id.col}} column when not supplied as a list or file paths.")
-    }
-    data <- split(data, f = data[[id.col]])
+  # data.frames are lists too: distinguish tables from per-deployment collections.
+  if (!is_filepaths && is.data.frame(data)) {
+    if (!id.col %in% names(data))
+      .abort("{.arg data} must contain the {.val {id.col}} column.")
+    data <- split(data, f = data[[id.col]], drop = TRUE)
   }
 
   # Validate output parameters
@@ -304,14 +233,26 @@ extractFeatures <- function(data,
   if (window.size <= 0)
     .abort(c("{.arg window.size} must be greater than zero (it is a duration in seconds).",
              "x" = "Got {.val {window.size}}."))
-  .assert_number(n.cores, "n.cores", min = 1)
+  .assert_flag(aggregate, "aggregate")
+  .assert_number(step.size, "step.size", min = 0, null_ok = TRUE)
+  if (!is.null(step.size) && step.size <= 0)
+    .abort("{.arg step.size} must be greater than zero (seconds).")
+  if (!is.null(segment.col)) .assert_string(segment.col, "segment.col")
+  if (!is.null(segment.col) && segment.col %in% c(id.col, datetime.col, response.col))
+    .abort("{.arg segment.col} must differ from the identifier, datetime and response columns.")
+  if (!is.numeric(min.coverage) || !length(min.coverage) || any(!is.finite(min.coverage)) ||
+      any(min.coverage < 0 | min.coverage > 1) ||
+      (length(min.coverage) > 1L && is.null(names(min.coverage))) ||
+      (!is.null(names(min.coverage)) &&
+       (anyNA(names(min.coverage)) || any(!nzchar(names(min.coverage))) || anyDuplicated(names(min.coverage)))))
+    .abort("{.arg min.coverage} must be a fraction in [0, 1], or a uniquely named numeric vector of per-channel fractions.")
+  .assert_count(n.cores, "n.cores", min = 1)
   .assert_flag(enhanced.features, "enhanced.features")
   if (!is.null(circular.variables) && !is.character(circular.variables))
     .abort("{.arg circular.variables} must be a character vector of variable names, or {.code NULL}.")
   n_rows_out <- 0L                 # feature rows actually delivered, across the cohort
   dropped_items <- character(0)    # per-deployment NA-row losses (reported once, at the end)
   retained_missing_items <- character(0)
-  lowfs_items   <- character(0)    # deployments whose sampling rate could only be estimated
 
   # Define valid metrics
   valid_linear_metrics <- c("mean", "median", "sd", "range", "min", "max", "iqr",
@@ -349,6 +290,7 @@ extractFeatures <- function(data,
     if (!all(c("variable", "metric") %in% names(parameter.grid))) {
       .abort("{.arg parameter.grid} must contain {.field variable} and {.field metric} columns.")
     }
+    parameter.grid <- as.data.frame(data.table::copy(parameter.grid))
     parameter.grid$metric <- tolower(parameter.grid$metric)
 
     # Add window_seconds column if not present
@@ -357,6 +299,21 @@ extractFeatures <- function(data,
     }
     parameter_grid <- parameter.grid
   }
+
+  if (!nrow(parameter_grid) || anyNA(parameter_grid$variable) ||
+      any(!nzchar(as.character(parameter_grid$variable))))
+    .abort("{.arg parameter.grid} must contain nonempty variable and metric pairs.")
+  parameter_grid$variable <- as.character(parameter_grid$variable)
+  parameter_grid$metric <- tolower(as.character(parameter_grid$metric))
+  if (!is.numeric(parameter_grid$window_seconds))
+    .abort("{.arg parameter.grid} window_seconds must be numeric durations in seconds.")
+  parameter_grid$window_seconds[is.na(parameter_grid$window_seconds)] <- window.size
+  if (any(!is.finite(parameter_grid$window_seconds) | parameter_grid$window_seconds <= 0))
+    .abort("{.arg parameter.grid} window_seconds must contain positive finite durations.")
+  feature_names <- mapply(.create_feature_name, parameter_grid$variable, parameter_grid$metric,
+                          parameter_grid$window_seconds, window.size, USE.NAMES = FALSE)
+  if (anyDuplicated(feature_names) || any(feature_names %in% c(id.col, datetime.col, response.col, segment.col)))
+    .abort("{.arg parameter.grid} produces duplicate or reserved output column names.")
 
   # Validate metrics
   all_valid_metrics <- c(valid_linear_metrics, valid_circular_metrics)
@@ -394,6 +351,13 @@ extractFeatures <- function(data,
   # `downsample.to` is a FREQUENCY in Hz, matching processTagData - the roxygen used to say seconds,
   # so a user following it was wrong by the reciprocal, silently. Validate it like its sibling does.
   .assert_number(downsample.to, "downsample.to", min = 0, null_ok = TRUE)
+  if (!is.null(downsample.to) && downsample.to <= 0)
+    .abort("{.arg downsample.to} must be greater than zero (Hz).")
+  optional_packages <- list(moments = c("skewness", "kurtosis"), entropy = "entropy")
+  for (pkg in names(optional_packages)) {
+    if (any(parameter_grid$metric %in% optional_packages[[pkg]]) && !requireNamespace(pkg, quietly = TRUE))
+      .abort("Package {.pkg {pkg}} is required for the requested metrics.")
+  }
 
   # Check for enhanced features when enhanced.features = FALSE
   if (!enhanced.features && any(parameter_grid$metric %in% valid_enhanced_metrics)) {
@@ -426,7 +390,8 @@ extractFeatures <- function(data,
                  "i" = "Install it, or run serially with {.code n.cores = 1}."))
       }
     }
-    if (parallel::detectCores() < n.cores) {
+    available_cores <- parallel::detectCores()
+    if (!is.na(available_cores) && available_cores < n.cores) {
       .abort("{.arg n.cores} ({n.cores}) exceeds the number of available cores.")
     }
   }
@@ -447,15 +412,19 @@ extractFeatures <- function(data,
                                   if (length(unique(parameter_grid$metric)) != 1) "s" else ""),
                           if (!is.null(output.dir)) sprintf("Output: %s", output.dir)),
               arrow = c(sprintf("Window: %g s%s", window.size,
-                                if (aggregate) " (non-overlapping)" else " (sliding)"),
+                                if (aggregate) " (start-anchored)" else " (sliding)"),
                         if (enhanced.features) "Mode: enhanced features enabled",
                         if (n.cores > 1) sprintf("Cores: %d", n.cores)))
 
   # Initialize parallel backend if needed
   if (n.cores > 1) {
     cl <- parallel::makeCluster(n.cores)
+    on.exit(parallel::stopCluster(cl), add = TRUE)
+    # Evaluate in the workers' base namespace; serializing .libPaths itself
+    # copies its private library-location binding rather than updating theirs.
+    parallel::clusterCall(cl, eval, substitute(.libPaths(paths), list(paths = .libPaths())),
+                          envir = baseenv())
     doSNOW::registerDoSNOW(cl)
-    on.exit(parallel::stopCluster(cl))
     `%dopar%` <- foreach::`%dopar%`
   }
 
@@ -520,6 +489,18 @@ extractFeatures <- function(data,
     original_attributes <- attributes(individual_data)
     original_attributes <- original_attributes[!names(original_attributes) %in% discard_attrs]
 
+    if (!nrow(individual_data)) .abort("No sensor rows for ID {.val {id}}.")
+    if (!datetime.col %in% names(individual_data))
+      .abort("Missing timestamp column {.val {datetime.col}} for ID {.val {id}}.")
+    .validateInstants(individual_data[[datetime.col]], "Feature timestamps")
+    times <- as.numeric(individual_data[[datetime.col]])
+    if (any(diff(times) <= 0))
+      .abort("Feature timestamps must be strictly increasing for ID {.val {id}}.")
+    if (!is.null(segment.col) && !segment.col %in% names(individual_data))
+      .abort("Missing {.arg segment.col} column {.val {segment.col}} for ID {.val {id}}.")
+    if (!is.null(response.col) && !response.col %in% names(individual_data))
+      .abort("Missing {.arg response.col} column {.val {response.col}} for ID {.val {id}}.")
+
     # Calculate sampling frequency for this individual: prefer the rate recorded in the consolidated
     # metadata (set by processTagData), falling back to the legacy flat attribute, then to timestamps.
     m <- tryCatch(.getMeta(individual_data), error = function(e) NULL)
@@ -537,219 +518,51 @@ extractFeatures <- function(data,
       }
     }
 
-    # Calculate window steps (CRITICAL FIX)
-    window_steps <- round(window.size * sampling_freq)
-
-    # Initialize feature list
-    feature_list <- list()
-
-    # Process features (sequential or parallel)
+    # All scales share one set of anchors; no truncation, padding or positional joins.
+    window_steps <- max(1L, round(window.size * sampling_freq))
+    stride <- if (is.null(step.size)) { if (aggregate) window_steps else 1L } else
+      max(1L, round(step.size * sampling_freq))
+    layout <- .featureLayout(individual_data, times, sampling_freq, stride, segment.col)
+    anchors <- layout$anchors
+    calculate <- function(p) .calculateMetricEnhanced(
+      data = individual_data, var = parameter_grid$variable[p], metric = parameter_grid$metric[p],
+      sampling_freq = sampling_freq, window_seconds = parameter_grid$window_seconds[p],
+      aggregate = aggregate, circular_variables = circular.variables, enhanced = enhanced.features,
+      layout = layout, min_coverage = min.coverage)
+    pb <- .log_progress_start(lvl, nrow(parameter_grid), "Features", min.level = 2L)
     if (n.cores == 1) {
-      pb <- .log_progress_start(lvl, nrow(parameter_grid), "Features", min.level = 2L)
-      for (p in 1:nrow(parameter_grid)) {
-        var <- parameter_grid$variable[p]
-        metric <- parameter_grid$metric[p]
-        window_sec <- parameter_grid$window_seconds[p]
-
-        feature_list[[p]] <- .calculateMetricEnhanced(
-          data = individual_data,
-          var = var,
-          metric = metric,
-          sampling_freq = sampling_freq,
-          window_seconds = window_sec,
-          aggregate = aggregate,
-          circular_variables = circular.variables,
-          enhanced = enhanced.features
-        )
+      feature_list <- lapply(seq_len(nrow(parameter_grid)), function(p) {
+        value <- calculate(p)
         .log_progress_step(pb)
-      }
+        value
+      })
     } else {
-      # Parallel processing
-      pb <- .log_progress_start(lvl, nrow(parameter_grid), "Features", min.level = 2L)
+      p <- NULL # foreach iteration binding (NSE)
       opts <- list(progress = function(n) .log_progress_step(pb))
-
       feature_list <- foreach::foreach(
-        p = 1:nrow(parameter_grid),
-        .options.snow = opts,
-        # The helpers now live in the package namespace, so loading nautilus in each worker makes them
-        # available. The previous `.export` list hand-enumerated 21 names and had to be edited in
-        # lockstep with the helper roster - exactly the kind of parallel list that silently goes stale.
-        .packages = c("nautilus", "data.table", if (enhanced.features) "zoo")
-      ) %dopar% {
-        var <- parameter_grid$variable[p]
-        metric <- parameter_grid$metric[p]
-        window_sec <- parameter_grid$window_seconds[p]
-
-        .calculateMetricEnhanced(
-          data = individual_data,
-          var = var,
-          metric = metric,
-          sampling_freq = sampling_freq,
-          window_seconds = window_sec,
-          aggregate = aggregate,
-          circular_variables = circular.variables,
-          enhanced = enhanced.features
-        )
-      }
+        p = seq_len(nrow(parameter_grid)), .options.snow = opts,
+        .packages = "nautilus"
+      ) %dopar% { calculate(p) }
     }
-
-    # Close progress bar
     .log_progress_done(pb)
-
-    # Name features
-    feature_names <- mapply(.create_feature_name,
-                            parameter_grid$variable,
-                            parameter_grid$metric,
-                            parameter_grid$window_seconds,
-                            window.size,
-                            SIMPLIFY = TRUE)
-
     names(feature_list) <- feature_names
 
-
-    ############################################################################
-    # Validate feature lengths before combining ################################
-    ############################################################################
-
-    expected_length <- if (aggregate) {
-      length(seq(1, nrow(individual_data), by = window_steps))
-    } else {
-      nrow(individual_data)
-    }
-
-    # Check and fix feature lengths
-    feature_lengths <- sapply(feature_list, length)
-    if (length(unique(feature_lengths)) > 1) {
-      warning(paste("Features have different lengths for ID:", id,
-                    "- Expected:", expected_length,
-                    "- Found:", paste(unique(feature_lengths), collapse = ", ")))
-
-      # Standardize all features to expected length
-      feature_list <- lapply(feature_list, function(feat) {
-        if (length(feat) != expected_length) {
-          if (length(feat) > expected_length) {
-            return(feat[1:expected_length])
-          } else {
-            result <- rep(NA, expected_length)
-            result[1:length(feat)] <- feat
-            return(result)
-          }
-        }
-        return(feat)
-      })
-    }
-
-    ############################################################################
-    # Aggregate response column (if specified) #################################
-    ############################################################################
-
-    # if a response column was provided, process it according to the specified aggregation method
     if (!is.null(response.col)) {
-
-      # case 1: aggregate response values within each window (non-overlapping)
-      if (aggregate) {
-
-        # calculate window indices for aggregation
-        idx <- seq(1, nrow(individual_data), by = window_steps)
-
-        # assign 1 if the majority of values in the window are 1 (i.e., mean > 0.5), otherwise 0
-        if (response.aggregation == "majority") {
-          feature_list[[response.col]] <- sapply(idx, function(start_idx) {
-            end_idx <- min(start_idx + window_steps - 1, nrow(individual_data))
-            as.integer(mean(individual_data[[response.col]][start_idx:end_idx], na.rm = TRUE) > 0.5)
-          })
-          # assign 1 if any value in the window is 1, otherwise 0
-        } else if (response.aggregation == "any") {
-          feature_list[[response.col]] <- sapply(idx, function(start_idx) {
-            end_idx <- min(start_idx + window_steps - 1, nrow(individual_data))
-            as.integer(any(individual_data[[response.col]][start_idx:end_idx] == 1, na.rm = TRUE))
-          })
-        }
-        # case 2: use a sliding window across the entire sequence (overlapping)
-      } else {
-        # apply majority rule in a sliding window: assign 1 if >50% of values are 1
-        if (response.aggregation == "majority") {
-          feature_list[[response.col]] <- zoo::rollapply(
-            individual_data[[response.col]],
-            width = window_steps,
-            FUN = function(x) as.integer(mean(x, na.rm = TRUE) > 0.5),
-            align = "center", fill = NA
-          )
-          # assign 1 if any value in the window is 1
-        } else if (response.aggregation == "any") {
-          feature_list[[response.col]] <- zoo::rollapply(
-            individual_data[[response.col]],
-            width = window_steps,
-            FUN = function(x) as.integer(any(x == 1, na.rm = TRUE)),
-            align = "center", fill = NA
-          )
-        }
-      }
+      bounds <- .featureBounds(layout, window_steps, aggregate)
+      feature_list[[response.col]] <- vapply(seq_along(anchors), function(j) {
+        if (!bounds$valid[j]) return(NA_integer_)
+        .featureResponse(individual_data[[response.col]][seq.int(bounds$start[j], bounds$end[j])],
+                         response.aggregation)
+      }, integer(1))
     }
-
-
-    ############################################################################
-    # Combine features #########################################################
-    ############################################################################
-
-    # combine features into a single data.table
-    feature_data <- data.table::setDT(feature_list)
-
-    # Proper datetime assignment
-    if (!aggregate) {
-      feature_data[, (datetime.col) := individual_data[[datetime.col]]]
-    } else {
-      # ensure we don't exceed data bounds
-      idx <- seq(1, nrow(individual_data), by = window_steps)
-      # Ensure idx doesn't exceed data length
-      idx <- idx[idx <= nrow(individual_data)]
-
-      # Match the length of datetime to features
-      if (length(idx) != nrow(feature_data)) {
-        idx <- idx[1:nrow(feature_data)]
-      }
-
-      feature_data[, (datetime.col) := individual_data[[datetime.col]][idx]]
-    }
-
-    # write the identifier under the caller's own `id.col`. It used to be hard-coded to "ID" while every
-    # later step looked it up by `id.col`, so any non-default value aborted the run outright - a
-    # documented, exported argument that only worked at its default.
+    feature_data <- data.table::as.data.table(feature_list)
+    feature_data[, (datetime.col) := individual_data[[datetime.col]][anchors]]
     feature_data[, (id.col) := id]
-
-    # move the identifier and datetime.col to the first columns
-    data.table::setcolorder(feature_data, c(id.col, datetime.col))
-
-    # convert response col back to factor
-    if (!is.null(response.col)) {
-      feature_data[, (response.col) := as.factor(get(response.col))]
-    }
-
-    # Replace problematic metrics with defaults where appropriate
-    replacement_values <- list(skewness = 0, kurtosis = 3, entropy = 0)
-    target_prefixes <- c("depth", "vertical_speed")
-
-    # Only do replacement if depth column exists
-    if ("depth" %in% names(individual_data)) {
-      depth_zero <- !is.na(individual_data$depth) & individual_data$depth == 0
-      dt_flags <- data.table::data.table(datetime = individual_data[[datetime.col]], depth_zero = depth_zero)
-
-      feature_data <- merge(feature_data, dt_flags, by = datetime.col, all.x = TRUE)
-
-      for (prefix in target_prefixes) {
-        for (suffix in names(replacement_values)) {
-          pattern <- paste0("^", prefix, "_", suffix, "$")
-          matching_cols <- grep(pattern, names(feature_data), value = TRUE)
-          for (col in matching_cols) {
-            idx_replace <- which(is.na(feature_data[[col]]) | is.nan(feature_data[[col]]))
-            idx_replace <- idx_replace[which(feature_data$depth_zero[idx_replace] == TRUE)]
-            feature_data[[col]][idx_replace] <- replacement_values[[suffix]]
-          }
-        }
-      }
-
-      feature_data[, depth_zero := NULL]
-    }
+    if (!is.null(segment.col)) feature_data[, (segment.col) := individual_data[[segment.col]][anchors]]
+    # Kept internally through downsampling, so bins can never blend separate segments.
+    feature_data[, .feature_segment := layout$segment[anchors]]
+    data.table::setcolorder(feature_data, c(id.col, datetime.col, segment.col))
+    if (!is.null(response.col)) feature_data[, (response.col) := as.factor(get(response.col))]
 
     # Complete-case output remains the default, but a caller may retain NA rows for diagnostics or a
     # missing-aware learner. Do not conflate a missing stream with zero activity, and do not make a
@@ -776,78 +589,57 @@ extractFeatures <- function(data,
     # Downsample data ##########################################################
     ############################################################################
 
-    # if a downsampling rate is specified, aggregate the data to the defined frequency (in Hz)
-    if(!is.null(downsample.to) && nrow(feature_data) > 0L){
-
-      # check if the specified downsampling frequency matches the dataset's sampling frequency
-      if (downsample.to == sampling_freq) {
-        warning(paste(id, " - dataset sampling already", downsample.to, "Hz, downsampling skipped"), call. = FALSE)
-        final_data <- feature_data
-
-        # check if the specified downsampling frequency exceeds the dataset's sampling frequency
-      } else if(downsample.to > sampling_freq) {
-        warning(paste(id, " - dataset sampling (", sampling_freq, "Hz) lower than the specified downsampling rate, downsampling skipped"), call. = FALSE)
-        final_data <- feature_data
-
-        # start downsampling
+    final_data <- feature_data
+    binned <- FALSE
+    n_bins_missing <- 0L
+    if (!is.null(downsample.to) && nrow(feature_data)) {
+      output_rate <- sampling_freq / stride
+      if (downsample.to >= output_rate) {
+        .log_note(lvl, "Requested downsampling rate is at or above the feature rate; binning skipped.")
       } else {
-
-        # select columns to keep
-        feature_cols <- setdiff(colnames(feature_data), c(id.col, datetime.col))
-        if (!is.null(response.col)) feature_cols <- setdiff(feature_cols, response.col)
-
-        # convert the desired downsample rate to time interval in seconds
-        downsample_interval <- 1 / downsample.to
-
-        # round datetime to the nearest downsample interval
-        first_time <- feature_data[[datetime.col]][1]
-        feature_data[, (datetime.col) := first_time + floor(as.numeric(get(datetime.col) - first_time) / downsample_interval) * downsample_interval]
-
-        # (no output sink here: the one that used to wrap this block had no on.exit, so any error left
-        # the CALLER's console redirected to a temp file - and it suppressed nothing, because data.table
-        # `:=`/`[` and gc() do not auto-print inside a function and warnings go to stderr.)
-
-        # aggregate metrics using arithmetic mean
-        final_data <- feature_data[, lapply(.SD, mean, na.rm=TRUE), by = datetime.col, .SDcols = feature_cols]
-
-        # handle response column aggregation if present
+        binned <- TRUE
+        origins <- times[layout$starts]
+        # Work in explicit seconds (difftime otherwise auto-selects minutes/hours/days).
+        elapsed <- as.numeric(feature_data[[datetime.col]]) - origins[feature_data$.feature_segment]
+        bins <- floor(elapsed * downsample.to + 1e-7)
+        feature_data[, (datetime.col) := .POSIXct(origins[.feature_segment] + bins / downsample.to,
+                                                 attr(individual_data[[datetime.col]], "tzone"))]
+        circular_cols <- feature_names[parameter_grid$variable %in% circular.variables &
+                                         parameter_grid$metric %in% c("mean", "median")]
+        final_data <- feature_data[, lapply(names(.SD), function(cc) {
+          if (cc %in% circular_cols) .circularMetric(.SD[[cc]], "mean", sampling_freq)
+          else .featureFinite(mean(.SD[[cc]], na.rm = TRUE))
+        }), by = c(".feature_segment", datetime.col), .SDcols = feature_names]
+        data.table::setnames(final_data, tail(names(final_data), length(feature_names)), feature_names)
         if (!is.null(response.col)) {
-          if (response.aggregation == "majority") {
-            processed_response <- feature_data[, .(response = as.integer(mean(as.numeric(as.character(get(response.col))), na.rm = TRUE) > 0.5)),  by = c(datetime.col)]
-          } else if (response.aggregation == "any") {
-            processed_response <- feature_data[, .(response = as.integer(any(as.numeric(as.character(get(response.col))) == 1, na.rm = TRUE))),  by = c(datetime.col)]
-          }
-          # rename before merging
-          data.table::setnames(processed_response, "response", response.col)
-          # merge with downsampled features
-          final_data <- merge(final_data, processed_response, by = datetime.col, sort = FALSE)
+          processed_response <- feature_data[, list(value = .featureResponse(get(response.col), response.aggregation)),
+                                              by = c(".feature_segment", datetime.col)]
+          data.table::setnames(processed_response, "value", response.col)
+          final_data <- merge(final_data, processed_response, by = c(".feature_segment", datetime.col), sort = FALSE)
+          final_data[, (response.col) := as.factor(get(response.col))]
         }
-
-        # re-add ID column
+        if (!is.null(segment.col))
+          final_data[, (segment.col) := individual_data[[segment.col]][layout$starts[.feature_segment]]]
         final_data[, (id.col) := id]
-
-        # clean up
-        gc()
       }
-
-    } else{
-      # if no downsampling rate is defined, return the original sensor data
-      final_data <- feature_data
     }
-
-    # Means of all-NA bins are NaN in R. Only the NA-retaining path can carry them past the
-    # complete-case filter; avoid a needless full feature-table scan in the default path.
-    if (identical(missing.features, "keep")) {
-      numeric_feature_cols <- names(final_data)[vapply(final_data, is.numeric, logical(1))]
-      for (cc in numeric_feature_cols) {
-        bad <- is.nan(final_data[[cc]])
-        if (any(bad)) data.table::set(final_data, which(bad), cc, NA_real_)
+    final_data[, .feature_segment := NULL]
+    # A bin of opposing angular locations has no defined vector mean, even when
+    # all individual feature rows were observed. Honour the missing-row policy
+    # for values made undefined by binning as well.
+    if (binned) {
+      n_bins_missing <- sum(!stats::complete.cases(final_data))
+      if (identical(missing.features, "omit")) final_data <- stats::na.omit(final_data)
+      if (n_bins_missing && !n_missing) {
+        item <- sprintf("%s: %s output bins with undefined summaries", id, .formatNumber(n_bins_missing))
+        if (identical(missing.features, "omit")) dropped_items <- c(dropped_items, item)
+        else retained_missing_items <- c(retained_missing_items, item)
       }
     }
 
     # reorder columns
     feature_cols <- setdiff(colnames(final_data), c(id.col, datetime.col, response.col))
-    data.table::setcolorder(final_data, c(id.col, datetime.col, if(!is.null(response.col)) response.col, feature_cols))
+    data.table::setcolorder(final_data, c(id.col, datetime.col, segment.col, if(!is.null(response.col)) response.col, setdiff(feature_cols, segment.col)))
 
 
     ############################################################################
@@ -882,9 +674,16 @@ extractFeatures <- function(data,
                                  metrics      = paste(unique(parameter_grid$metric), collapse = ","),
                                  window_size  = window.size,
                                  aggregate    = aggregate,
+                                 step_size    = stride / sampling_freq,
+                                 step_size_requested = step.size %||% NA_real_,
+                                 segment_col  = segment.col,
+                                 min_coverage = min.coverage,
+                                 parameter_grid = parameter_grid,
+                                 sampling_hz = sampling_freq,
                                  enhanced     = enhanced.features,
                                  missing_features = missing.features,
                                  rows_missing = n_missing,
+                                 bins_missing = n_bins_missing,
                                  downsample_to = downsample.to %||% NA_real_,
                                  rows_out     = nrow(final_data))
       final_data <- .restoreMeta(final_data, fmeta)
@@ -957,323 +756,4 @@ extractFeatures <- function(data,
 
   # return results
   .collectOutput(data_processed, saved, return.data, ids)
-}
-
-
-################################################################################
-# Enhanced metric calculation function #########################################
-################################################################################
-
-.calculateMetricEnhanced <- function(data, var, metric, sampling_freq, window_seconds,
-                                     aggregate, circular_variables, enhanced = FALSE) {
-
-  window_steps <- round(window_seconds * sampling_freq)
-  x <- data[[var]]
-
-  # A stream can be absent from one deployment or retained as an all-NA typed column after QC.
-  # `sum(..., na.rm = TRUE)` and `energy` would otherwise turn that absence into a false zero.
-  # Composite posture/activity metrics use sentinel variables; inspect their real dependencies.
-  n_result <- if (aggregate) length(seq(1L, nrow(data), by = window_steps)) else nrow(data)
-  deps <- switch(metric, posture_stability = c("pitch", "roll"),
-                 activity_index = c("pitch", "roll", "heading"), var)
-  unavailable <- !all(deps %in% names(data)) ||
-    any(vapply(deps, function(v) {
-      z <- data[[v]]
-      all(is.na(z)) || (is.numeric(z) && !any(is.finite(z)))
-    }, logical(1)))
-  if (unavailable) return(rep(NA_real_, n_result))
-
-  # Enhanced features
-  if (enhanced && metric %in% c("net_heading_change", "cumulative_heading_change",
-                                "circular_variance_heading", "oscillation_regularity",
-                                "movement_predictability", "movement_consistency",
-                                "movement_smoothness", "movement_jerk", "posture_stability",
-                                "turning_rate_variability", "activity_index",
-                                "rolling_autocorrelation", "zero_crossing_rate",
-                                "circling_behavior",
-                                "depth_change_rate", "depth_change_consistency",
-                                "uturn_flag", "heading_autocorr_avg")) {
-
-    return(.calculateEnhancedFeature(data, var, metric, window_steps, aggregate))
-  }
-
-  ##############################################################################
-  # CIRCULAR VARIABLES #########################################################
-  ##############################################################################
-
-  if (var %in% circular_variables) {
-    # sliding window for circular
-    if (!aggregate) {
-      return(zoo::rollapply(
-        x,
-        width = window_steps,
-        FUN = function(w) .circularMetric(w, metric = metric, sampling_freq = sampling_freq),
-        align = "center",
-        fill = NA
-      ))
-      # aggregate for circular
-    } else {
-      n <- length(x)
-      starts <- seq(1, n, by = window_steps)
-      ends <- pmin(starts + window_steps - 1, n)
-      result <- sapply(seq_along(starts), function(i) {
-        window_data <- x[starts[i]:ends[i]]
-        .circularMetric(window_data, metric = metric, sampling_freq = sampling_freq)
-      })
-      return(result)
-    }
-
-    ##############################################################################
-    # LINEAR VARIABLES ###########################################################
-    ##############################################################################
-
-  } else {
-
-    if (!aggregate) {
-      # Use data.table's frollapply for efficient sliding window calculations
-      switch(metric,
-             mean = data.table::frollmean(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
-             median = data.table::frollapply(x, window_steps, median, na.rm = TRUE, align = "center", fill = NA),
-             sd = data.table::frollapply(x, window_steps, sd, na.rm = TRUE, align = "center", fill = NA),
-             min = data.table::frollapply(x, window_steps, min, na.rm = TRUE, align = "center", fill = NA),
-             max = data.table::frollapply(x, window_steps, max, na.rm = TRUE, align = "center", fill = NA),
-             sum = data.table::frollsum(x, window_steps, na.rm = TRUE, align = "center", fill = NA),
-             # For more complex metrics, still use the original approach but with faster functions
-             range = zoo::rollapply(x, window_steps, function(x) diff(range(x, na.rm = TRUE)), fill = NA, align = "center", partial = FALSE),
-             iqr = zoo::rollapply(x, window_steps, IQR, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-             mad = zoo::rollapply(x, window_steps, mad, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-             rate = zoo::rollapply(x, width = window_steps, function(x) {
-               if (length(x) < 2 || all(is.na(x))) return(NA)
-               mean(abs(diff(x)), na.rm = TRUE) * sampling_freq
-             }, fill = NA, align = "center", partial = FALSE),
-             energy = data.table::frollapply(x^2, window_steps, sum, na.rm = TRUE, align = "center", fill = NA),
-             skewness = zoo::rollapply(x, window_steps, moments::skewness, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-             kurtosis = zoo::rollapply(x, window_steps, moments::kurtosis, na.rm = TRUE, fill = NA, align = "center", partial = FALSE),
-             entropy = zoo::rollapply(x, window_steps, function(x) {
-               x <- x[!is.na(x)]
-               if(length(unique(x)) <= 1) return(NA)
-               tryCatch({
-                 hist_data <- hist(x, breaks = "Sturges", plot = FALSE)
-                 p <- hist_data$density / sum(hist_data$density)
-                 entropy::entropy(p)
-               }, error = function(e) NA)
-             }, fill = NA, align = "center", partial = FALSE),
-             # Default case for unknown metrics
-             stop(paste("Unknown metric:", metric))
-      )
-
-      # Aggregate data into distinct windows - use vectorized operations where possible
-    } else {
-      n <- length(x)
-      starts <- seq(1, n, by = window_steps)
-      ends <- pmin(starts + window_steps - 1, n)
-
-      # Use vectorized operations for simple metrics
-      switch(metric,
-             mean = vapply(seq_along(starts), function(i) mean(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             median = vapply(seq_along(starts), function(i) median(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             sd = vapply(seq_along(starts), function(i) sd(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             min = vapply(seq_along(starts), function(i) min(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             max = vapply(seq_along(starts), function(i) max(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             sum = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             # For complex metrics, keep original approach
-             range = vapply(seq_along(starts), function(i) diff(range(x[starts[i]:ends[i]], na.rm = TRUE)), numeric(1)),
-             iqr = vapply(seq_along(starts), function(i) IQR(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             mad = vapply(seq_along(starts), function(i) mad(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             rate = vapply(seq_along(starts), function(i) {
-               segment <- x[starts[i]:ends[i]]
-               if (length(segment) < 2 || all(is.na(segment))) return(NA_real_)
-               mean(abs(diff(segment)), na.rm = TRUE) * sampling_freq
-             }, numeric(1)),
-             energy = vapply(seq_along(starts), function(i) sum(x[starts[i]:ends[i]]^2, na.rm = TRUE), numeric(1)),
-             skewness = vapply(seq_along(starts), function(i) moments::skewness(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             kurtosis = vapply(seq_along(starts), function(i) moments::kurtosis(x[starts[i]:ends[i]], na.rm = TRUE), numeric(1)),
-             entropy = vapply(seq_along(starts), function(i) {
-               segment <- x[starts[i]:ends[i]]
-               segment <- segment[!is.na(segment)]
-               if(length(unique(segment)) <= 1) return(NA)
-               tryCatch({
-                 hist_data <- hist(segment, breaks = "Sturges", plot = FALSE)
-                 p <- hist_data$density / sum(hist_data$density)
-                 entropy::entropy(p)
-               }, error = function(e) NA)
-             }, numeric(1)),
-             # Default case for unknown metrics
-             stop(paste("Unknown metric:", metric))
-      )
-    }
-  }
-}
-
-
-################################################################################
-# Define helper function for circular metrics ##################################
-################################################################################
-
-.circularMetric <- function(x_window, metric, sampling_freq) {
-
-  # remove NAs and ensure sufficient data
-  x_window <- x_window[!is.na(x_window)]
-  if (length(x_window) == 0) return(NA)
-  if (metric %in% c("sd", "range", "iqr") && length(x_window) < 2) return(NA)
-
-  # convert to radians
-  radians <- x_window * pi / 180
-
-  # small helper function for angular difference
-  .angular_diff <- function(a, b) {
-    diff <- abs(a - b) %% 360
-    pmin(diff, 360 - diff)
-  }
-
-  switch(metric,
-         mean = {
-           C <- mean(cos(radians))
-           S <- mean(sin(radians))
-           atan2(S, C) * 180 / pi
-         },
-         median = {
-           # The circular median is the observed angle MINIMISING the sum of angular distances to all
-           # others. The previous expression summed (pi - distance) and minimised that, i.e. it
-           # MAXIMISED total distance and returned a point roughly antipodal to the data: for headings
-           # clustered at 90 degrees it answered 270. Use the angular distance directly.
-           sorted <- sort(x_window)
-           tot <- vapply(sorted, function(y) sum(.angular_diff(x_window, y), na.rm = TRUE), numeric(1))
-           sorted[which.min(tot)]
-         },
-         sd = {
-           C <- mean(cos(radians))
-           S <- mean(sin(radians))
-           R <- sqrt(C^2 + S^2)
-           sqrt(-2 * log(R)) * 180 / pi
-         },
-         range = {
-           if (length(x_window) < 2) return(NA)
-           sorted <- sort(x_window)
-           gaps <- c(diff(sorted), 360 - (sorted[length(sorted)] - sorted[1]))
-           360 - max(gaps)
-         },
-         iqr = {
-           if (length(x_window) < 2) return(NA)
-           q <- quantile(x_window, probs = c(0.25, 0.75))
-           diff <- (q[2] - q[1]) %% 360
-           min(diff, 360 - diff)
-         },
-         mrl = {
-           C <- mean(cos(radians))
-           S <- mean(sin(radians))
-           sqrt(C^2 + S^2)
-         },
-         rate = {
-           diffs <- .angular_diff(x_window[-1], x_window[-length(x_window)])
-           mean(diffs, na.rm = TRUE) * sampling_freq
-         }
-  )
-}
-
-
-################################################################################
-# Enhanced feature calculation function (COMPLETE VERSION) ####################
-################################################################################
-
-.calculateEnhancedFeature <- function(data, var, metric, window_steps, aggregate) {
-
-  n_rows <- nrow(data)
-
-  result <- switch(metric,
-                   # Heading-specific features
-                   "net_heading_change" = {
-                     if (var != "heading") stop("net_heading_change can only be applied to heading variable")
-                     .net_heading_change(data$heading, window = window_steps)
-                   },
-                   "cumulative_heading_change" = {
-                     if (var != "heading") stop("cumulative_heading_change can only be applied to heading variable")
-                     .cumulative_heading_change(data$heading, window = window_steps)
-                   },
-                   "circular_variance_heading" = {
-                     if (var != "heading") stop("circular_variance_heading can only be applied to heading variable")
-                     .circular_variance_heading(data$heading, window = window_steps)
-                   },
-                   "uturn_flag" = {
-                     if (var != "heading") stop("uturn_flag can only be applied to heading variable")
-                     .uturn_flag(data$heading, window = window_steps)
-                   },
-                   "heading_autocorr_avg" = {
-                     if (var != "heading") stop("heading_autocorr_avg can only be applied to heading variable")
-                     .heading_autocorr_avg(data$heading, window = window_steps)
-                   },
-                   "turning_rate_variability" = {
-                     if (var != "heading") stop("turning_rate_variability can only be applied to heading variable")
-                     .turning_rate_variability(data$heading, window = window_steps)
-                   },
-                   "circling_behavior" = {
-                     if (var != "heading") stop("circling_behavior can only be applied to heading variable")
-                     .circling_behavior(data$heading, window = window_steps)
-                   },
-
-                   # Composite features requiring specific variable names
-                   "posture_stability" = {
-                     if (var != "posture") stop("posture_stability should use variable = 'posture'")
-                     .posture_stability_from_sd(data, window = window_steps)
-                   },
-                   "activity_index" = {
-                     if (var != "activity") stop("activity_index should use variable = 'activity'")
-                     .activity_index(data, window = window_steps)
-                   },
-
-                   # Movement features that can apply to any variable
-                   "oscillation_regularity" = {
-                     .oscillation_regularity(data[[var]], window = window_steps)
-                   },
-                   "movement_jerk" = {
-                     .movement_jerk(data[[var]], window = window_steps)
-                   },
-                   "movement_smoothness" = {
-                     .movement_smoothness(data[[var]], window = window_steps)
-                   },
-                   "rolling_autocorrelation" = {
-                     .rolling_autocorrelation(data[[var]], window = window_steps)
-                   },
-                   "zero_crossing_rate" = {
-                     .zero_crossing_rate(data[[var]], window = window_steps)
-                   },
-
-                   # Movement predictability and consistency (calculate from raw data)
-                   "movement_predictability" = {
-                     # Calculate rolling mean and sd from raw variable data
-                     signal <- data[[var]]
-                     rolling_mean <- zoo::rollapply(signal, width = window_steps, FUN = mean,
-                                                    na.rm = TRUE, fill = NA, align = "center")
-                     rolling_sd <- zoo::rollapply(signal, width = window_steps, FUN = sd,
-                                                  na.rm = TRUE, fill = NA, align = "center")
-                     .movement_predictability(rolling_mean, rolling_sd, window = window_steps)
-                   },
-                   "movement_consistency" = {
-                     # Calculate rolling sd from raw variable data
-                     signal <- data[[var]]
-                     rolling_sd <- zoo::rollapply(signal, width = window_steps, FUN = sd,
-                                                  na.rm = TRUE, fill = NA, align = "center")
-                     .movement_consistency(rolling_sd, window = window_steps)
-                   },
-
-                   # Depth-specific features
-                   "depth_change_rate" = {
-                     if (var != "depth") stop("depth_change_rate can only be applied to depth variable")
-                     depth_metrics <- .depth_change_metrics(data$depth, window = window_steps)
-                     depth_metrics$rate
-                   },
-                   "depth_change_consistency" = {
-                     if (var != "depth") stop("depth_change_consistency can only be applied to depth variable")
-                     depth_metrics <- .depth_change_metrics(data$depth, window = window_steps)
-                     depth_metrics$consistency
-                   },
-
-                   # Default case
-                   {
-                     stop(paste("Unknown enhanced metric:", metric))
-                   }
-  )
-
-  # Ensure result has correct length
-  return(.ensure_length(result, n_rows))
 }

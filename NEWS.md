@@ -4,6 +4,23 @@ First public release. `nautilus` provides an end-to-end pipeline for processing 
 high-resolution multi-sensor archival tag data (depth, temperature, tri-axial acceleration,
 magnetometer and gyroscope), with optional integration of onboard camera video.
 
+## Behavioural feature extraction
+
+* `extractFeatures()` supports independent `step.size` (seconds), explicit contiguous segments via
+  `segment.col`, and scalar or named per-channel `min.coverage` thresholds. All scales share output
+  anchors, even-width alignment and segment boundaries; timestamp gaps split segments automatically.
+* Circular IQR is rotationally invariant; heading changes and circling use shortest angular steps.
+  Angular locations use vector means during output downsampling. Roll continuity is respected in
+  movement derivatives, posture stability and activity. Heading autocorrelation recovers after gaps
+  and preserves missing samples in their lag positions.
+* Empty or insufficiently covered channels return `NA` for every metric, including energy and extrema.
+  Entirely unlabelled response windows stay `NA`, including with `response.aggregation = "any"` and
+  downsampling. Surface shape defaults cannot overwrite missing streams or coverage failures.
+* Kinematic derivatives use seconds: activity and mean depth-change rate are per second, movement jerk
+  is the RMS first derivative, and movement smoothness is the RMS second derivative. Depth-change
+  rate is now windowed. These numerical corrections require retraining models fitted to old features.
+  Existing argument positions, default cadence, column naming and complete-case defaults are preserved.
+
 ## Deployment metadata and import
 
 * POSIXct timestamps and recording starts now preserve their absolute instants when the display

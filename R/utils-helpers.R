@@ -1114,10 +1114,13 @@ NULL
 #' @noRd
 .unwrapDegrees <- function(x) {
   if (!length(x)) return(x)
-  r <- x * pi / 180
-  d <- diff(r)
-  d <- ((d + pi) %% (2 * pi)) - pi          # shortest signed step between consecutive angles
-  out <- cumsum(c(r[1], d)) * 180 / pi
-  out[is.na(x)] <- NA_real_
+  # Accumulate only observed headings, then restore their original positions.
+  # This chooses the nearest branch after a gap without inventing observations
+  # or letting cumsum(NA) poison the rest of a deployment.
+  valid <- which(is.finite(x))
+  out <- rep(NA_real_, length(x))
+  if (!length(valid)) return(out)
+  delta <- (diff(x[valid]) + 180) %% 360 - 180
+  out[valid] <- x[valid[1L]] + c(0, cumsum(delta))
   out
 }

@@ -3,7 +3,7 @@
 # flags as "no visible binding for global variable". Declaring those names here silences the NOTE; "."
 # is data.table's .() helper, likewise used unquoted.
 utils::globalVariables(c(
-  ".", ".bucket", "accel", "ax", "ay", "az", "corr_e", "corr_n", "datetime", "depth",
+  ".", ".bucket", ".feature_segment", "accel", "ax", "ay", "az", "corr_e", "corr_n", "datetime", "depth",
   "depth_baseline", "disp_e", "disp_n", "dive_id", "dive_phase", "gx", "gy", "gz", "heading",
   "heave", "horizontal_sum_in_window", "ID", "idx", "is_horizontal", "is_stable_horizontal",
   "jerk", "mx", "my", "mz", "obs_datetime", "odba", "paddle_freq",

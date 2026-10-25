@@ -1,526 +1,322 @@
-#######################################################################################################
-# Internal helpers for extractFeatures() ##############################################################
-#######################################################################################################
-#
-# The windowed feature primitives. They were top-level, UN-DOT-PREFIXED functions in extractFeatures.R -
-# the only file in the package that exposed internals that way - which made them look like part of the
-# public surface and forced the parallel path to hand-enumerate 21 names in a foreach `.export` list
-# that had to be edited in lockstep with this roster. Dot-prefixed and gathered here, the export list
-# is unnecessary: the workers load the package namespace and find them.
+# Internal window planning and statistics for extractFeatures().
+# Bounds are shared by every channel, metric and response at a given scale.
 
-################################################################################
-# 1. HEADING CHANGE FEATURES (Enhanced) ########################################
-################################################################################
+.featureFinite <- function(x) if (length(x) != 1L || !is.finite(x)) NA_real_ else as.numeric(x)
 
-# Net change in heading over a centered window
-.net_heading_change <- function(heading, window = 10) {
-  n <- length(heading)
-  if (n < window * 2) return(rep(NA, n))  # Need enough data for lead/lag
-  h <- heading   # (circular::circular() was a no-op here - see the note in DESCRIPTION/docs)
-  # Use smaller shifts - the original was using full window size
-  half_window <- window %/% 2
-  h_lead <- data.table::shift(h, n = half_window, type = "lead")
-  h_lag  <- data.table::shift(h, n = half_window, type = "lag")
-  diff_heading <- abs(as.numeric(h_lead) - as.numeric(h_lag))
-  idx <- !is.na(diff_heading) & diff_heading > 180
-  diff_heading[idx] <- 360 - diff_heading[idx]
-  return(diff_heading)
-}
-
-# Cumulative sum of absolute heading changes
-.cumulative_heading_change <- function(heading, window = 10) {
-  n <- length(heading)
-  if (n < 2) return(rep(NA, n))
-  h <- heading   # (circular::circular() was a no-op here - see the note in DESCRIPTION/docs)
-  diffs <- diff(h)
-  diffs <- as.numeric(diffs)
-  diffs[diffs > 180] <- diffs[diffs > 180] - 360
-  diffs[diffs < -180] <- diffs[diffs < -180] + 360
-  diffs <- abs(diffs)
-  # Ensure we don't use a window larger than available data
-  actual_window <- min(window, length(diffs))
-  if (actual_window < 1) return(rep(NA, n))
-  cum_change <- zoo::rollapply(diffs, width = actual_window, FUN = sum,
-                               fill = NA, align = "center", partial = TRUE)
-  return(c(NA, cum_change))
-}
-
-# Fixed circular variance of heading function
-.circular_variance_heading <- function(heading, window = 60) {
-  n <- length(heading)
-  if (n < window) return(rep(NA, n))
-
-  # Convert to radians once
-  h_rad <- heading * pi / 180
-
-  # Pre-allocate result vector
-  result <- rep(NA_real_, n)
-
-  # Calculate for each position
-  half_window <- window %/% 2
-  for (i in (half_window + 1):(n - half_window)) {
-    start_idx <- i - half_window
-    end_idx <- start_idx + window - 1
-
-    # Get window data
-    window_data <- h_rad[start_idx:end_idx]
-    valid_data <- window_data[!is.na(window_data)]
-
-    if (length(valid_data) >= window/2) {
-      # Calculate mean resultant length directly
-      cos_sum <- sum(cos(valid_data))
-      sin_sum <- sum(sin(valid_data))
-      rho <- sqrt(cos_sum^2 + sin_sum^2) / length(valid_data)
-      result[i] <- 1 - rho
-    }
+.featureLayout <- function(data, times, sampling_freq, stride, segment_col = NULL) {
+  n <- length(times)
+  breaks <- c(TRUE, diff(times) > 1.5 / sampling_freq)
+  available <- rep(TRUE, n)
+  if (!is.null(segment_col)) {
+    key <- data[[segment_col]]
+    available <- !is.na(key)
+    changed <- c(TRUE, is.na(key[-1L]) | is.na(key[-n]) | key[-1L] != key[-n])
+    breaks <- breaks | changed
   }
-
-  return(result)
+  segment <- cumsum(breaks)
+  starts <- which(breaks)
+  ends <- c(starts[-1L] - 1L, n)
+  anchors <- unlist(Map(function(a, b) seq.int(a, b, by = stride), starts, ends), use.names = FALSE)
+  list(anchors = anchors, segment = segment, starts = starts, ends = ends, available = available)
 }
 
-# U-turn detection flag
-.uturn_flag <- function(heading, window = 60) {
-  # Handle edge cases but still return 0s/1s where possible
-  n <- length(heading)
-  if (n < 10) return(rep(0, n))  # Too little data - assume no U-turns
-  # Adjust window if needed but don't make it too small
-  actual_window <- min(window, n)
-  if (actual_window < 5) actual_window <- min(5, n)
-  h <- heading   # (circular::circular() was a no-op here - see the note in DESCRIPTION/docs)
-  # Calculate net heading change over window
-  net_changes <- zoo::rollapply(h, width = actual_window, FUN = function(x) {
-    # Remove NAs first
-    x_clean <- x[!is.na(x)]
-    if (length(x_clean) < 2) return(0)
-    start_heading <- as.numeric(x_clean[1])
-    end_heading <- as.numeric(x_clean[length(x_clean)])
-    # Handle potential NA values
-    if (is.na(start_heading) || is.na(end_heading)) return(0)
-    # Calculate angular difference
-    diff_heading <- abs(end_heading - start_heading)
-    if (diff_heading > 180) diff_heading <- 360 - diff_heading
-    # Flag as U-turn if net change > 120 degrees - return 1 or 0, never NA
-    return(as.numeric(diff_heading > 120))
-  }, fill = 0, align = "center", partial = TRUE)
-  # Ensure correct length and fill with 0s if needed
-  if (length(net_changes) != n) {
-    result <- rep(0, n)  # Default to 0, not NA
-    if (length(net_changes) > 0) {
-      copy_length <- min(length(net_changes), n)
-      # Handle the centering offset
-      if (actual_window > 1) {
-        offset <- (actual_window - 1) %/% 2
-        start_idx <- offset + 1
-        end_idx <- min(start_idx + copy_length - 1, n)
-        result[start_idx:end_idx] <- net_changes[1:(end_idx - start_idx + 1)]
-      } else {
-        result[1:copy_length] <- net_changes[1:copy_length]
+.featureBounds <- function(layout, width, aggregate = FALSE) {
+  a <- layout$anchors
+  segment_start <- layout$starts[layout$segment[a]]
+  segment_end <- layout$ends[layout$segment[a]]
+  # Same convention as zoo: for width 4, the window at row i is (i-1):(i+2).
+  start <- if (aggregate) a else a - (width - 1L) %/% 2L
+  end <- start + width - 1L
+  valid <- layout$available[a] & start >= segment_start
+  if (aggregate) end <- pmin(end, segment_end) else valid <- valid & end <= segment_end
+  list(start = start, end = end, valid = valid)
+}
+
+.featureCoverage <- function(channel, thresholds) {
+  if (is.null(names(thresholds))) return(thresholds)
+  if (channel %in% names(thresholds)) thresholds[[channel]] else 0
+}
+
+.featureResponse <- function(x, method) {
+  if (is.factor(x)) x <- as.character(x)
+  x <- as.numeric(x)
+  x <- x[is.finite(x)]
+  if (!length(x)) return(NA_integer_)
+  as.integer(if (method == "any") any(x == 1) else mean(x) > 0.5)
+}
+
+.featureSteps <- function(x, circular = FALSE, sampling_freq = 1) {
+  dx <- diff(x)
+  if (circular) dx <- (dx + 180) %% 360 - 180
+  dx * sampling_freq
+}
+
+.featureCV <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2L) return(NA_real_)
+  m <- mean(x)
+  if (m == 0) 0 else stats::sd(x) / m
+}
+
+.featureAutocorr <- function(x, circular = FALSE, average = FALSE) {
+  if (circular) x <- .unwrapDegrees(x)
+  n_valid <- sum(is.finite(x))
+  if (n_valid < if (average) 10L else 4L) return(NA_real_)
+  if (length(unique(x[is.finite(x)])) < 2L) return(NA_real_)
+  # Retain NA positions: deleting them changes which observations are one lag apart.
+  lag_max <- if (average) min(5L, length(x) - 1L) else 1L
+  ans <- stats::acf(x, plot = FALSE, lag.max = lag_max, na.action = stats::na.pass)$acf[-1L]
+  .featureFinite(mean(ans, na.rm = TRUE))
+}
+
+.circularMetric <- function(x_window, metric, sampling_freq = 1) {
+  x_window[!is.finite(x_window)] <- NA_real_
+  # Rates use only adjacent observed samples; never join across a missing sample.
+  if (metric == "rate")
+    return(.featureFinite(mean(abs(.featureSteps(x_window, TRUE, sampling_freq)), na.rm = TRUE)))
+  x <- x_window[is.finite(x_window)] %% 360
+  if (!length(x) || (metric %in% c("sd", "range", "iqr") && length(x) < 2L)) return(NA_real_)
+  radians <- x * pi / 180
+  C <- mean(cos(radians)); S <- mean(sin(radians))
+  R <- min(1, sqrt(C^2 + S^2))
+  switch(metric,
+    mean = if (R < 1e-12) NA_real_ else atan2(S, C) * 180 / pi,
+    median = {
+      distance <- function(y) sum(abs((x - y + 180) %% 360 - 180))
+      # Order of observations resolves ties without privileging an absolute bearing.
+      x[which.min(vapply(x, distance, numeric(1)))]
+    },
+    sd = if (R < 1e-12) NA_real_ else sqrt(-2 * log(R)) * 180 / pi,
+    range = {
+      y <- sort(x)
+      360 - max(c(diff(y), 360 - (tail(y, 1L) - y[1L])))
+    },
+    iqr = {
+      # Cut within the largest empty arc before taking type-7 linear quartiles.
+      # A tied cut is resolved by the minimum IQR over all tied arcs, which is
+      # invariant to rotations even for symmetric or multimodal observations.
+      y <- sort(x)
+      gaps <- c(diff(y), 360 - (tail(y, 1L) - y[1L]))
+      cuts <- which(abs(gaps - max(gaps)) < 1e-8)
+      min(vapply(cuts, function(k) {
+        origin <- y[k %% length(y) + 1L]
+        stats::IQR((x - origin) %% 360, type = 7)
+      }, numeric(1)))
+    },
+    mrl = R,
+    stop(paste("Unknown circular metric:", metric))
+  )
+}
+
+.featureLinearMetric <- function(x, metric, sampling_freq = 1) {
+  observed <- x[is.finite(x)]
+  if (!length(observed)) return(NA_real_)
+  result <- switch(metric,
+    mean = mean(observed), median = stats::median(observed), sd = stats::sd(observed),
+    range = diff(range(observed)), min = min(observed), max = max(observed),
+    iqr = stats::IQR(observed), mad = stats::mad(observed), sum = sum(observed),
+    energy = sum(observed^2),
+    rate = mean(abs(.featureSteps(x, FALSE, sampling_freq)), na.rm = TRUE),
+    skewness = moments::skewness(observed), kurtosis = moments::kurtosis(observed),
+    entropy = {
+      if (length(unique(observed)) < 2L) return(NA_real_)
+      h <- graphics::hist(observed, breaks = "Sturges", plot = FALSE)
+      entropy::entropy(h$density / sum(h$density))
+    },
+    stop(paste("Unknown metric:", metric))
+  )
+  .featureFinite(result)
+}
+
+# Retain native rolling kernels for dense sliding output. Sparse strides evaluate
+# only their requested windows below, so a 1 Hz prediction grid need not build
+# every overlapping native-rate window first.
+.featureFastSummary <- function(x, metric, width, bounds, coverage, circular, sampling_freq) {
+  n <- length(x)
+  answer <- rep(NA_real_, length(bounds$valid))
+  if (width > n) return(answer)
+  observed <- data.table::frollsum(as.numeric(is.finite(x)), width, align = "left")
+  rows <- which(bounds$valid)
+  rows <- rows[observed[bounds$start[rows]] > 0 & observed[bounds$start[rows]] / width >= coverage]
+  if (!length(rows)) return(answer)
+  if (circular) {
+    radians <- (x %% 360) * pi / 180
+    C <- data.table::frollmean(cos(radians), width, na.rm = TRUE, align = "left")
+    S <- data.table::frollmean(sin(radians), width, na.rm = TRUE, align = "left")
+    R <- pmin(1, sqrt(C^2 + S^2))
+    value <- switch(metric,
+      mean = ifelse(R < 1e-12, NA_real_, atan2(S, C) * 180 / pi),
+      sd = ifelse(R < 1e-12 | observed < 2, NA_real_, sqrt(-2 * log(R)) * 180 / pi),
+      mrl = R, circular_variance_heading = 1 - R)
+  } else {
+    value <- switch(metric,
+      mean = data.table::frollmean(x, width, na.rm = TRUE, align = "left"),
+      sum = data.table::frollsum(x, width, na.rm = TRUE, align = "left"),
+      energy = data.table::frollsum(x^2, width, na.rm = TRUE, align = "left"),
+      rate = if (width < 2L) rep(NA_real_, n) else
+        c(data.table::frollmean(abs(diff(x)) * sampling_freq, width - 1L, na.rm = TRUE, align = "left"), NA_real_))
+  }
+  answer[rows] <- value[bounds$start[rows]]
+  answer[!is.finite(answer)] <- NA_real_
+  answer
+}
+
+.calculateMetricEnhanced <- function(data, var, metric, sampling_freq, window_seconds,
+                                     aggregate, circular_variables, enhanced = FALSE,
+                                     layout = NULL, min_coverage = 0) {
+  width <- max(1L, round(window_seconds * sampling_freq))
+  if (is.null(layout)) layout <- .featureLayout(data, seq_len(nrow(data)) / sampling_freq,
+                                                sampling_freq, if (aggregate) width else 1L)
+  bounds <- .featureBounds(layout, width, aggregate)
+  deps <- switch(metric, posture_stability = c("pitch", "roll"),
+                 activity_index = c("pitch", "roll", "heading"), var)
+  if (!all(deps %in% names(data))) return(rep(NA_real_, length(layout$anchors)))
+  numeric_channel <- vapply(deps, function(v) {
+    z <- data[[v]]
+    is.numeric(z) || is.logical(z) || all(is.na(z))
+  }, logical(1))
+  if (!all(numeric_channel)) .abort("Feature channels must be numeric: {.val {deps}}.")
+  heading_metrics <- c("net_heading_change", "cumulative_heading_change", "circular_variance_heading",
+                       "uturn_flag", "heading_autocorr_avg", "turning_rate_variability", "circling_behavior")
+  if (metric %in% heading_metrics && var != "heading")
+    .abort("Metric {.val {metric}} can only be applied to heading.")
+  if ((metric == "posture_stability" && var != "posture") ||
+      (metric == "activity_index" && var != "activity") ||
+      (metric %in% c("depth_change_rate", "depth_change_consistency") && var != "depth"))
+    .abort("Metric {.val {metric}} has an incompatible variable {.val {var}}.")
+  channels <- lapply(deps, function(v) {
+    x <- as.numeric(data[[v]]); x[!is.finite(x)] <- NA_real_; x
+  })
+  names(channels) <- deps
+
+  fast_metrics <- if (var %in% circular_variables) c("mean", "sd", "mrl", "circular_variance_heading") else
+    c("mean", "sum", "energy", "rate")
+  if (!aggregate && length(layout$anchors) >= nrow(data) / 4 && metric %in% fast_metrics)
+    return(.featureFastSummary(channels[[var]], metric, width, bounds,
+                              .featureCoverage(var, min_coverage), var %in% circular_variables, sampling_freq))
+
+  # The two legacy second-order descriptors summarise rolling means/SDs.
+  # Compute their input on each segment using the same centred bounds.
+  smoothed <- NULL
+  if (metric %in% c("movement_predictability", "movement_consistency")) {
+    inner_layout <- layout; inner_layout$anchors <- seq_len(nrow(data))
+    inner <- .featureBounds(inner_layout, width)
+    signal <- channels[[var]]
+    if (var %in% circular_variables) {
+      signal <- rep(NA_real_, nrow(data))
+      for (k in seq_along(layout$starts)) {
+        ii <- seq.int(layout$starts[k], layout$ends[k])
+        signal[ii] <- .unwrapDegrees(channels[[var]][ii])
       }
     }
-    return(result)
+    smoothed <- vapply(seq_len(nrow(data)), function(i) {
+      if (!inner$valid[i]) return(NA_real_)
+      x <- signal[seq.int(inner$start[i], inner$end[i])]
+      if (!any(is.finite(x)) || sum(is.finite(x)) / width < .featureCoverage(var, min_coverage))
+        return(NA_real_)
+      if (metric == "movement_predictability") mean(x, na.rm = TRUE) else stats::sd(x, na.rm = TRUE)
+    }, numeric(1))
   }
 
-  return(net_changes)
+  vapply(seq_along(layout$anchors), function(i) {
+    if (!bounds$valid[i]) return(NA_real_)
+    ii <- seq.int(bounds$start[i], bounds$end[i])
+    supported <- vapply(deps, function(v) {
+      valid <- sum(is.finite(channels[[v]][ii]))
+      valid > 0L && valid / width >= .featureCoverage(v, min_coverage)
+    }, logical(1))
+    if (!all(supported)) return(NA_real_)
+    x <- channels[[1L]][ii]
+    circular <- var %in% circular_variables
+    turns <- function() abs(.featureSteps(x, TRUE, sampling_freq = 1))
+    rate <- function() abs(.featureSteps(x, circular, sampling_freq))
+    result <- switch(metric,
+      net_heading_change = if (length(x) < 2L) NA_real_ else abs((tail(x, 1L) - x[1L] + 180) %% 360 - 180),
+      cumulative_heading_change = if (any(is.finite(turns()))) sum(turns(), na.rm = TRUE) else NA_real_,
+      circular_variance_heading = 1 - .circularMetric(x, "mrl"),
+      uturn_flag = if (length(x) < 2L) NA_real_ else as.numeric(abs((tail(x, 1L) - x[1L] + 180) %% 360 - 180) > 120),
+      heading_autocorr_avg = .featureAutocorr(x, circular = TRUE, average = TRUE),
+      turning_rate_variability = .featureCV(turns() * sampling_freq),
+      circling_behavior = {
+        total <- if (any(is.finite(turns()))) sum(turns(), na.rm = TRUE) else NA_real_
+        net <- abs((tail(x, 1L) - x[1L] + 180) %% 360 - 180)
+        total / (net + 1)
+      },
+      posture_stability = {
+        pitch_sd <- stats::sd(channels$pitch[ii], na.rm = TRUE)
+        roll_sd <- if ("roll" %in% circular_variables) .circularMetric(channels$roll[ii], "sd") else
+          stats::sd(channels$roll[ii], na.rm = TRUE)
+        1 / (1 + pitch_sd + roll_sd)
+      },
+      activity_index = {
+        rates <- lapply(deps, function(v) abs(.featureSteps(channels[[v]][ii], v %in% circular_variables, sampling_freq)))
+        mean(Reduce(`+`, rates), na.rm = TRUE)
+      },
+      movement_jerk = sqrt(mean(rate()^2, na.rm = TRUE)),
+      movement_smoothness = sqrt(mean(diff(.featureSteps(x, circular, sampling_freq))^2, na.rm = TRUE)) * sampling_freq,
+      rolling_autocorrelation = .featureAutocorr(x, circular),
+      zero_crossing_rate = {
+        if (circular) x <- .unwrapDegrees(x)
+        signs <- sign(x - mean(x, na.rm = TRUE))
+        if (!any(is.finite(diff(signs)))) NA_real_ else sum(diff(signs) != 0, na.rm = TRUE) / length(x)
+      },
+      oscillation_regularity = .featurePeakCV(if (circular) .unwrapDegrees(x) else x),
+      movement_predictability = {
+        z <- smoothed[ii]
+        if (sum(is.finite(z)) < width / 2) NA_real_ else stats::sd(z, na.rm = TRUE) / (abs(mean(z, na.rm = TRUE)) + 0.001)
+      },
+      movement_consistency = {
+        z <- smoothed[ii]
+        if (sum(is.finite(z)) < width / 2) NA_real_ else stats::sd(z, na.rm = TRUE) / (mean(z, na.rm = TRUE) + 0.001)
+      },
+      depth_change_rate = mean(rate(), na.rm = TRUE),
+      depth_change_consistency = .featureCV(rate()),
+      if (circular) .circularMetric(x, metric, sampling_freq) else .featureLinearMetric(x, metric, sampling_freq)
+    )
+    # Neutral shape values apply only to observed constant surface channels.
+    # Never overwrite absent data or coverage failures.
+    if (!is.finite(result) && var %in% c("depth", "vertical_speed") &&
+        metric %in% c("skewness", "kurtosis", "entropy") && "depth" %in% names(data) &&
+        any(is.finite(data$depth[ii])) && all(data$depth[ii][is.finite(data$depth[ii])] == 0) &&
+        length(unique(x[is.finite(x)])) == 1L)
+      result <- switch(metric, skewness = 0, kurtosis = 3, entropy = 0)
+    .featureFinite(result)
+  }, numeric(1))
 }
 
-
-
-# Heading autocorrelation average
-.heading_autocorr_avg <- function(heading, window = 60) {
-  n <- length(heading)
-  if (n < window) {
-    if (n < 10) return(rep(NA, n))
-    window <- max(10, n %/% 2)  # Use smaller window
-  }
-  # UNWRAP before correlating. The previous code built a circular::circular object and then discarded
-  # it with as.numeric() on the next line, so acf() ran LINEARLY on degrees in [0, 360): an animal
-  # holding a steady heading near north oscillates 358 -> 2, which reads as a 356-degree excursion and
-  # destroys the correlation, while identical behaviour near south is unaffected. Measured on the same
-  # wobble: 0.49 near north vs 0.65 near south. Unwrapping to a continuous angle removes the dependence
-  # on where the branch cut happens to fall (verified: both give 0.6457).
-  h <- .unwrapDegrees(heading)
-  autocorr_values <- zoo::rollapply(h, width = window, FUN = function(x) {
-    # Remove NAs and check for sufficient valid data
-    x_clean <- x[!is.na(x)]
-    if (length(unique(x_clean)) <= 1 || length(x_clean) < 10) return(NA)
-    tryCatch({
-      # Calculate autocorrelation for lags 1-5 and take mean
-      max_lag <- min(5, length(x_clean) %/% 4)  # Adjust max lag based on data
-      if (max_lag < 1) return(NA)
-      acf_result <- acf(x_clean, plot = FALSE, lag.max = max_lag, na.action = na.pass)
-      if (length(acf_result$acf) < 2) return(NA)
-      mean(acf_result$acf[2:min(6, length(acf_result$acf))], na.rm = TRUE)
-    }, error = function(e) NA)
-  }, fill = NA, align = "center", partial = TRUE)
-
-  # Ensure correct length
-  if (length(autocorr_values) != n) {
-    result <- rep(NA, n)
-    if (length(autocorr_values) > 0) {
-      copy_length <- min(length(autocorr_values), n)
-      result[1:copy_length] <- autocorr_values[1:copy_length]
-    }
-    return(result)
-  }
-
-  return(autocorr_values)
+.featurePeakCV <- function(x) {
+  if (length(x) < 10L || sum(is.finite(x)) < 10L) return(NA_real_)
+  x <- zoo::rollmean(x, k = 3, fill = "extend")
+  peaks <- which(diff(sign(diff(x))) == -2) + 1L
+  if (length(peaks) < 3L) return(NA_real_)
+  .featureCV(diff(peaks))
 }
 
-
-################################################################################
-# 2. OSCILLATION REGULARITY FEATURES (Adapted for 1Hz) #########################
-################################################################################
-
-# Simplified oscillation regularity using existing means/SDs
-.oscillation_regularity <- function(signal, window = 60) {
-  # This is a WINDOWED feature and used to return a single scalar for the entire deployment, silently
-  # recycled across every row - `window` was consulted only as a minimum-length gate, so a "rolling"
-  # feature never rolled and could not distinguish a regularly-beating period from an erratic one.
-  n <- length(signal)
-  if (n < window || sum(!is.na(signal)) < 10) return(rep(NA_real_, n))
-
-  # CV of the inter-peak interval within each window: low = metronomic, high = irregular.
-  cv_of_peaks <- function(x) {
-    x <- zoo::rollmean(x, k = 3, fill = "extend")
-    pk <- which(diff(sign(diff(x))) == -2) + 1
-    if (length(pk) < 3) return(NA_real_)
-    iv <- diff(pk)
-    if (length(iv) < 2) return(NA_real_)
-    m <- mean(iv, na.rm = TRUE)
-    if (!is.finite(m) || m == 0) return(NA_real_)
-    stats::sd(iv, na.rm = TRUE) / m
-  }
-  as.numeric(zoo::rollapply(signal, width = window, FUN = cv_of_peaks,
-                            fill = NA_real_, align = "center", partial = FALSE))
+# Internal rolling primitives retained for package callers and direct regression tests.
+.featureRoll <- function(x, window, FUN) {
+  if (length(x) < window) return(rep(NA_real_, length(x)))
+  as.numeric(zoo::rollapply(x, window, FUN, align = "center", fill = NA_real_))
+}
+.net_heading_change <- function(heading, window = 10) .featureRoll(heading, window, function(x)
+  if (length(x) < 2L) NA_real_ else abs((tail(x, 1L) - x[1L] + 180) %% 360 - 180))
+.heading_autocorr_avg <- function(heading, window = 60) .featureRoll(heading, window, function(x)
+  .featureAutocorr(x, circular = TRUE, average = TRUE))
+.oscillation_regularity <- function(signal, window = 60) .featureRoll(signal, window, .featurePeakCV)
+.movement_jerk <- function(signal, window = 30, sampling_freq = 1) {
+  if (length(signal) < 2L) return(rep(NA_real_, length(signal)))
+  # Legacy internal primitive returns a value at every observed derivative; the public
+  # extractor uses complete, correctly aligned sensor windows instead.
+  dx <- .featureSteps(signal, sampling_freq = sampling_freq)
+  c(NA_real_, sqrt(zoo::rollapply(dx^2, min(window, length(dx)), function(z)
+    .featureFinite(mean(z, na.rm = TRUE)), fill = "extend", align = "center")))
 }
 
-################################################################################
-# 3. MOVEMENT PREDICTABILITY AND CONSISTENCY ###################################
-################################################################################
-
-# Movement predictability using ratio of rolling SD to mean
-.movement_predictability <- function(signal_mean, signal_sd, window = 60) {
-
-  if (length(signal_mean) < window) return(NA)
-  rolling_cv <- zoo::rollapply(signal_mean, width = window,
-                               FUN = function(x) {
-                                 if (sum(!is.na(x)) < window/2) return(NA)
-                                 sd(x, na.rm = TRUE) / (abs(mean(x, na.rm = TRUE)) + 0.001)
-                               }, fill = "extend", align = "center")
-  return(rolling_cv)
-}
-
-# Movement consistency using existing SD metrics
-.movement_consistency <- function(signal_sd, window = 60) {
-
-  rolling_cv_sd <- zoo::rollapply(signal_sd, width = window,
-                                  FUN = function(x) {
-                                    if (sum(!is.na(x)) < window/2) return(NA)
-                                    sd(x, na.rm = TRUE) / (mean(x, na.rm = TRUE) + 0.001)
-                                  }, fill = "extend", align = "center")
-  return(rolling_cv_sd)
-}
-
-################################################################################
-# 4. SMOOTHNESS FEATURES (Adapted for 1Hz) #####################################
-################################################################################
-
-# Movement smoothness using rate of change
-.movement_smoothness <- function(signal, window = 30) {
-  n <- length(signal)
-  if (n < 3) return(rep(NA, n))
-
-  velocity <- diff(signal)  # First derivative
-  acceleration <- diff(velocity)  # Second derivative
-
-  # Rolling RMS of acceleration
-  acc_squared <- acceleration^2
-
-  if (window > length(acc_squared)) {
-    # If window is larger than available data, return constant value
-    rms_val <- sqrt(mean(acc_squared, na.rm = TRUE))
-    return(rep(rms_val, n))
-  }
-
-  rms_acc <- sqrt(zoo::rollapply(acc_squared, width = window,
-                                 FUN = mean, na.rm = TRUE, fill = NA, align = "center"))
-
-  # Pad to match original length
-  result <- rep(NA, n)
-  result[3:(length(rms_acc) + 2)] <- rms_acc
-
-  return(result)
-}
-
-
-
-# Windowed RMS "jerk" of a movement signal: the root-mean-square of its FIRST difference (rate of change)
-# over a rolling window. Applied to an acceleration-like input (ODBA, VeDBA, surge/sway/heave) this is a
-# per-variable jerkiness feature for behavioural classification. It is DISTINCT from - and should not be
-# confused with - the core `jerk` channel that processTagData() computes as the rotation-invariant
-# norm-jerk ||d a / dt|| at the native sampling rate; use that channel for physical jerk. (This previously
-# took a triple difference, i.e. the third derivative of the input, which for an acceleration signal is two
-# derivative orders too high; corrected to a single difference here.)
-.movement_jerk <- function(signal, window = 30) {
-  if (length(signal) < 2) return(rep(NA, length(signal)))
-
-  jerk <- diff(signal)                 # first difference: rate of change (jerk when the input is acceleration)
-  jerk_squared <- jerk^2
-
-  rms_jerk <- sqrt(zoo::rollapply(jerk_squared, width = min(window, length(jerk_squared)),
-                                  FUN = mean, na.rm = TRUE, fill = "extend", align = "center"))
-
-  # Pad to match original length (a first difference loses one leading sample)
-  result <- rep(NA, length(signal))
-  result[2:length(result)] <- rms_jerk
-  return(result)
-}
-
-
-################################################################################
-# 5. POSTURE STABILITY (Using existing SD metrics) #############################
-################################################################################
-
-.posture_stability_from_sd <- function(data, window = 60) {
-  # Check for required columns - use raw pitch and roll data
-  if (!all(c("pitch", "roll") %in% names(data))) {
-    stop("posture_stability_from_sd requires pitch and roll columns in data")
-  }
-
-  n <- nrow(data)
-  if (n < window) {
-    return(rep(NA, n))
-  }
-
-  # Calculate rolling standard deviations
-  pitch_instability <- zoo::rollapply(data$pitch, width = window, FUN = sd,
-                                      na.rm = TRUE, fill = NA, align = "center")
-  roll_instability <- zoo::rollapply(data$roll, width = window, FUN = sd,
-                                     na.rm = TRUE, fill = NA, align = "center")
-
-  # Combined stability (inverse of instability)
-  stability <- 1 / (1 + pitch_instability + roll_instability)
-
-  # Ensure result has same length as input
-  if (length(stability) != n) {
-    result <- rep(NA, n)
-    valid_indices <- !is.na(stability)
-    result[valid_indices] <- stability[valid_indices]
-    return(result)
-  }
-
-  return(stability)
-}
-
-
-
-################################################################################
-# 6. TURNING BEHAVIOR ##########################################################
-################################################################################
-
-.turning_rate_variability <- function(heading, window = 60) {
-
-  h <- heading   # (circular::circular() was a no-op here - see the note in DESCRIPTION/docs)
-  turning_rates <- abs(diff(as.numeric(h)))
-  turning_rates[turning_rates > 180] <- 360 - turning_rates[turning_rates > 180]
-
-  cv_turning <- zoo::rollapply(turning_rates, width = window,
-                               FUN = function(x) {
-                                 if (sum(!is.na(x)) < 2) return(NA)
-                                 mean_val <- mean(x, na.rm = TRUE)
-                                 if (mean_val == 0) return(0)
-                                 sd(x, na.rm = TRUE) / mean_val
-                               },
-                               fill = "extend", align = "center")
-  return(c(NA, cv_turning))
-}
-
-################################################################################
-# 7. ACTIVITY INDICES (Enhanced) ###############################################
-################################################################################
-
-# Activity index using existing rate metrics
-.activity_index <- function(data, window = 60) {
-  # Check for required columns - use raw sensor data
-  required_cols <- c("pitch", "roll", "heading")
-  if (!all(required_cols %in% names(data))) {
-    stop(paste("activity_index requires columns:", paste(required_cols, collapse = ", ")))
-  }
-
-  n <- nrow(data)
-  if (n < 2) {
-    return(rep(NA, n))
-  }
-
-  # Calculate rates from raw data
-  pitch_rate <- abs(c(NA, diff(data$pitch)))
-  roll_rate <- abs(c(NA, diff(data$roll)))
-
-  # For heading, handle circular differences
-  heading_diffs <- diff(data$heading)
-  heading_diffs[heading_diffs > 180] <- heading_diffs[heading_diffs > 180] - 360
-  heading_diffs[heading_diffs < -180] <- heading_diffs[heading_diffs < -180] + 360
-  heading_rate <- abs(c(NA, heading_diffs))
-
-  # Combine rates (simple approach - avoid standardization issues)
-  combined_rate <- pitch_rate + roll_rate + heading_rate
-
-  # Calculate rolling mean activity level
-  if (window > n) {
-    return(rep(mean(combined_rate, na.rm = TRUE), n))
-  }
-
-  activity_level <- zoo::rollapply(combined_rate, width = window, FUN = mean,
-                                   na.rm = TRUE, fill = NA, align = "center")
-
-  # Ensure result has same length as input
-  if (length(activity_level) != n) {
-    result <- rep(NA, n)
-    valid_length <- min(length(activity_level), n)
-    result[1:valid_length] <- activity_level[1:valid_length]
-    return(result)
-  }
-
-  return(activity_level)
-}
-
-################################################################################
-# 8. ADDITIONAL UTILITY FEATURES ###############################################
-################################################################################
-
-# Rolling autocorrelation
-.rolling_autocorrelation <- function(signal, window = 60) {
-  zoo::rollapply(signal, width = window, FUN = function(x) {
-    if (length(unique(x)) > 1 && sum(!is.na(x)) > 3) {
-      tryCatch({
-        acf(x, plot = FALSE, lag.max = 1, na.action = na.pass)$acf[2]
-      }, error = function(e) NA)
-    } else NA
-  }, fill = NA, align = "center")
-}
-
-# Zero-crossing rate
-.zero_crossing_rate <- function(signal, window = 60) {
-  zoo::rollapply(signal, width = window, FUN = function(x) {
-    if (sum(!is.na(x)) < window/2) return(NA)
-    x_centered <- x - mean(x, na.rm = TRUE)
-    signs <- sign(x_centered)
-    sum(diff(signs) != 0, na.rm = TRUE) / length(x)
-  }, fill = NA, align = "center")
-}
-
-# Depth change patterns
-.depth_change_metrics <- function(depth_mean, window = 60) {
-  depth_change_rate <- abs(c(NA, diff(depth_mean)))
-  depth_change_consistency <- zoo::rollapply(depth_change_rate, width = window,
-                                             FUN = function(x) {
-                                               if (sum(!is.na(x)) < window/2) return(NA)
-                                               mean_val <- mean(x, na.rm = TRUE)
-                                               if (mean_val == 0) return(0)
-                                               sd(x, na.rm = TRUE) / mean_val
-                                             },
-                                             fill = "extend", align = "center")
-  return(list(rate = depth_change_rate, consistency = depth_change_consistency))
-}
-
-
-################################################################################
-# 9. FEEDING-SPECIFIC FEATURES #################################################
-################################################################################
-
-# Circling behavior detection
-.circling_behavior <- function(heading, window = 120) {
-  h <- heading   # (circular::circular() was a no-op here - see the note in DESCRIPTION/docs)
-
-  # Calculate net rotation over window
-  net_rotation <- zoo::rollapply(h, width = window, FUN = function(x) {
-    if (length(x) < window/2) return(NA)
-    total_change <- sum(abs(diff(as.numeric(x))), na.rm = TRUE)
-    net_change <- abs(as.numeric(x[length(x)]) - as.numeric(x[1]))
-    if (net_change > 180) net_change <- 360 - net_change
-
-    # High total change with low net change indicates circling
-    if (total_change == 0) return(0)
-    circling_index <- total_change / (net_change + 1)
-    return(circling_index)
-  }, fill = "extend", align = "center")
-
-  return(net_rotation)
-}
-
-
-################################################################################
-################################################################################
-################################################################################
-
-# Helper function to ensure consistent vector lengths
-.ensure_length <- function(result_vector, target_length) {
-  if (length(result_vector) == target_length) {
-    return(result_vector)
-  } else if (length(result_vector) == 1) {
-    # If single value, replicate it
-    return(rep(result_vector, target_length))
-  } else if (length(result_vector) > target_length) {
-    # If too long, truncate
-    return(result_vector[1:target_length])
-  } else {
-    # If too short, pad with NAs
-    result <- rep(NA, target_length)
-    result[1:length(result_vector)] <- result_vector
-    return(result)
-  }
-}
-
-################################################################################
-################################################################################
-################################################################################
-
-# Add this helper function to avoid redundant naming
 .create_feature_name <- function(variable, metric, window_seconds, default_window_size) {
-
-  # Define metrics that already contain the variable name and their clean versions
-  metric_name_mapping <- list(
-    "depth_change_rate" = "change_rate",
-    "depth_change_consistency" = "change_consistency",
-    "posture_stability" = "stability",
-    "activity_index" = "index",
-    "net_heading_change" = "net_change",
-    "cumulative_heading_change" = "cumulative_change",
-    "circular_variance_heading" = "circular_variance",
-    "turning_rate_variability" = "turning_variability",
-    "circling_behavior" = "circling",
-    "uturn_flag" = "uturn",
-    "heading_autocorr_avg" = "autocorr_avg"
-  )
-
-  # Clean the metric name if it's redundant
-  if (metric %in% names(metric_name_mapping)) {
-    clean_metric <- metric_name_mapping[[metric]]
-    base_name <- paste0(variable, "_", clean_metric)
-  } else {
-    # For regular metrics, combine variable + metric normally
-    base_name <- paste0(variable, "_", metric)
-  }
-
-  # Check if metric already contains the variable name
-  if (metric %in% names(metric_name_mapping)) {
-    clean_metric <- metric_name_mapping[[metric]]
-    base_name <- paste0(variable, "_", clean_metric)
-  } else {
-    # For regular metrics, combine variable + metric
-    base_name <- paste0(variable, "_", metric)
-  }
-
-  # Add window suffix if different from default
-  if (window_seconds != default_window_size) {
-    final_name <- paste0(base_name, "_", window_seconds, "s")
-  } else {
-    final_name <- base_name
-  }
-
-  return(final_name)
+  mapping <- c(depth_change_rate = "change_rate", depth_change_consistency = "change_consistency",
+               posture_stability = "stability", activity_index = "index", net_heading_change = "net_change",
+               cumulative_heading_change = "cumulative_change", circular_variance_heading = "circular_variance",
+               turning_rate_variability = "turning_variability", circling_behavior = "circling",
+               uturn_flag = "uturn", heading_autocorr_avg = "autocorr_avg")
+  clean <- if (metric %in% names(mapping)) mapping[[metric]] else metric
+  paste0(variable, "_", clean, if (window_seconds != default_window_size) paste0("_", window_seconds, "s"))
 }
-
-#######################################################################################################
-#######################################################################################################
-#######################################################################################################
