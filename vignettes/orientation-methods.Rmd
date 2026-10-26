@@ -62,6 +62,12 @@ and it may be rotated about the animal's vertical axis. These are continuous off
 (controlled by `correct.pitch` and `correct.roll` in `orientationControl()`). The two offsets use
 different estimators, and knowing which is which explains what they can and cannot see.
 
+Vertical velocity is estimated directly from corrected depth using centred local linear slopes
+(`smoothingControl(depth = 5)` by default), followed by a one-second rate mean. The same slope
+estimator serves axis mapping and dive analysis. Windows truncate at continuous-segment edges and
+require three observations; missing data and timestamp gaps are not bridged. The rate post-mean
+requires complete windows, so its edge values remain missing. Stored depth is not smoothed.
+
 **Pitch** uses the Kawatsu method: regress pitch (in radians) on the smoothed vertical velocity
 and take the **intercept** - that is, the pitch the tag reports when the animal is not going up or
 down. A correctly-mounted tag reads zero there; a nose-down mounting reads its own offset. The

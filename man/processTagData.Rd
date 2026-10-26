@@ -224,8 +224,9 @@ greater caution than the other orientation variables.
 \item{\code{depth}}{Depth (m), corrected for sensor drift. The returned series is not smoothed, so short
 vertical excursions retain their true amplitude.}
 \item{\code{vertical_velocity}}{Rate of change of depth (m/s), positive during descent and negative
-during ascent. It is derived from a smoothed copy of the depth record, since differentiating the
-raw pressure trace amplifies its quantisation noise; the window is set by \code{smoothing$depth}.}
+during ascent. Estimated by centred local linear regression of corrected depth against actual
+timestamps, using \code{smoothing$depth} (default 5 s), followed by the centred rolling mean in
+\code{smoothing$vertical} (default 1 s). No preliminary depth smoother is applied.}
 \item{\code{paddle_freq}}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
 carrying a paddle wheel. A window is retained only when its dominant component is an interior
 spectral peak below the Nyquist guard and exceeds \code{paddle$min.prominence} times the median
@@ -234,7 +235,18 @@ longer intervals remain \code{NA}. This is a rotation rate, not a speed: convert
 speed requires a tag-specific calibration and is done by \code{\link[=calculatePaddleSpeed]{calculatePaddleSpeed()}}.}
 }
 
-Depth drift is corrected before vertical velocity is calculated.
+Depth drift is corrected before vertical velocity is calculated, at native sampling rate before
+output downsampling. Local fits truncate at segment edges and require at least three finite
+observations. Missing depth/time, non-increasing timestamps and gaps longer than 1.5 sampling
+intervals split segments; missing samples remain \code{NA}. Rate post-smoothing requires a full window
+and leaves incomplete edge windows \code{NA}. See \code{\link[=smoothingControl]{smoothingControl()}} for window discretisation.
+
+The same slope estimator is used by \code{\link[=checkTagMapping]{checkTagMapping()}}, \code{\link[=detectDives]{detectDives()}} and \code{\link[=diveMetrics]{diveMetrics()}}.
+Their results need not be identical: phase classification uses signed reference-relative depth,
+dive windows may adapt to duration and noise, and dive rates omit velocity post-smoothing.
+Processing history records \code{vertical_rate_estimator = "local_linear"} alongside both windows.
+This replaces the earlier central difference of boxcar-smoothed depth; reprocess source records
+consistently when combining old and new analyses.
 }
 
 \subsection{Geographic and magnetic heading}{
@@ -349,6 +361,9 @@ reappraisal using Gundog.Tracks. \emph{Animal Biotelemetry} 9:23. \doi{10.1186/s
 Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, \emph{et al.} (2010) A new method to calibrate
 attachment angles of data loggers in swimming sharks. \emph{EURASIP Journal on Advances in Signal
 Processing} 2010:732586. \doi{10.1155/2010/732586}
+
+Savitzky A, Golay MJE (1964) Smoothing and differentiation of data by simplified least squares
+procedures. \emph{Analytical Chemistry} 36:1627-1639. \doi{10.1021/ac60214a047}
 
 Ydesen KS, Wisniewska DM, Hansen JD, Beedholm K, Johnson M, Madsen PT (2014) What a jerk: prey
 engulfment revealed by high-rate, super-cranial accelerometry on a harbour seal. \emph{Journal of

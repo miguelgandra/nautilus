@@ -88,6 +88,9 @@
 #' negative decreasing depth, irrespective of the excursion's phase labels. The
 #' \code{descent_rate_q90} and \code{ascent_rate_q90} columns are fixed 90th percentiles of
 #' absolute slope magnitude, not maximum rates.
+#' The underlying slope estimator is shared with [processTagData()] and [checkTagMapping()].
+#' Fits truncate at record and gap edges, require three observations, and do not bridge missing
+#' depth/time, non-increasing timestamps or gaps longer than 1.5 deployment sampling intervals.
 #'
 #' The slope window uses the nominal \code{phase_window_s} recorded by [detectDives()], limited
 #' by dive duration and the deployment sampling interval. Without usable window provenance,

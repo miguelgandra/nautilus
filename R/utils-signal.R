@@ -302,49 +302,74 @@
        dynamic = list(x = ax - sx, y = ay - sy, z = az - sz))
 }
 
-#' Vertical speed (m/s, positive downward following the depth convention) from a depth series.
+#' Centred local least-squares depth rate, shared by processing, mapping and dive analysis.
 #'
-#' @param depth Numeric depth (m).
-#' @param datetime POSIXct timestamps.
-#' @return Numeric vector (same length; first element NA).
+#' Fits z = intercept + rate * time directly to depth, without a preceding depth smoother. On a
+#' complete regular grid this is a first-degree Savitzky-Golay derivative. The radius is
+#' max(1, floor(window_s / (2 * dt))) samples; actual timestamps determine the fitted slope.
+#' Truncate windows at record/segment edges, require three observations, and leave missing centres
+#' missing. Non-finite depth/time, non-increasing time and gaps > 1.5 * dt split the record, so a fit
+#' never joins observations across a dropout or clock discontinuity.
+#'
+#' Overlapping blocks bound cumulative-sum cancellation on long high-rate records. Centre both axes
+#' within each block; the overlap preserves full windows at computational block boundaries. Optional
+#' rate post-smoothing uses the existing centred rolling mean, independently within each segment.
+#' It requires a full window, so its boundary values remain NA. No depth values are modified.
+#' @param z Numeric depth (m), or signed reference-relative depth for phase classification.
+#' @param tnum Numeric timestamps in seconds.
+#' @param window_s Slope window in seconds. NULL or zero uses the minimum three-point stencil.
+#' @param dt Sampling interval in seconds; inferred from positive finite time steps if NULL.
+#' @param post_s Optional centred rolling-mean window in seconds, applied to the fitted rate.
+#' @return Numeric vector of length(z), in m/s; NA where fewer than three observations support a fit.
 #' @keywords internal
 #' @noRd
-.verticalSpeed <- function(depth, datetime) {
-  dt <- as.numeric(diff(datetime), units = "secs")
-  c(NA_real_, diff(depth) / dt)
-}
+.depthRate <- function(z, tnum, window_s = 5, dt = NULL, post_s = NULL) {
+  n <- length(z)
+  out <- rep(NA_real_, n)
+  if (n < 3L) return(out)
+  steps <- diff(tnum)
+  if (is.null(dt) || !is.finite(dt) || dt <= 0) {
+    dt <- stats::median(steps[is.finite(steps) & steps > 0])
+    if (!is.finite(dt) || dt <= 0) return(out)
+  }
+  k <- min(n - 1L, max(1L, floor((window_s %||% 0) / (2 * dt))))
+  # Bound the prefix-sum baseline relative to the fitted span, including minimum-size stencils.
+  block_n <- min(100000L, 1000 * (2 * k + 1))
+  ok <- is.finite(z) & is.finite(tnum)
+  boundary <- c(TRUE, !head(ok, -1L) | !tail(ok, -1L) |
+                  !is.finite(steps) | steps <= 0 | steps > 1.5 * dt)
+  starts <- which(ok & boundary)
+  ends <- which(ok & c(tail(boundary, -1L), TRUE))
+  post_n <- if (is.null(post_s)) 1L else max(1L, round(post_s / dt))
 
-#' Vertical velocity (m/s) via a central difference on (optionally smoothed) depth.
-#'
-#' Differentiating a quantized depth series with a one-sample forward difference produces a coarse
-#' staircase (steps of depth_resolution / dt) that swamps the true low-frequency vertical motion.
-#' Low-passing depth before a centered difference (and optionally smoothing the velocity) removes
-#' that artefact. Shared by processTagData() (orientation / VV) and checkTagMapping() (the surge
-#' anchor) so both see the same vertical-velocity estimate.
-#'
-#' @param depth Numeric depth (m).
-#' @param datetime POSIXct timestamps.
-#' @param fs Sampling frequency (Hz), used to convert the smoothing windows (seconds) to samples.
-#' @param depth.smoothing,velocity.smoothing Smoothing windows in seconds, or `NULL` to disable.
-#' @return A list with `depth` (the possibly-smoothed depth) and `velocity` (vertical velocity).
-#' @keywords internal
-#' @noRd
-.verticalVelocity <- function(depth, datetime, fs, depth.smoothing = NULL, velocity.smoothing = NULL) {
-  if (!is.null(depth.smoothing)) {
-    depth <- data.table::frollmean(depth, n = max(1L, round(fs * depth.smoothing)), fill = NA, align = "center")
+  for (seg in seq_along(starts)) {
+    a <- starts[seg]; b <- ends[seg]
+    if (b - a < 2L) next
+    for (first in seq.int(a, b, by = block_n)) {
+      last <- min(b, first + block_n - 1L)
+      left <- max(a, first - k); right <- min(b, last + k)
+      j <- left:right
+      tt <- tnum[j] - tnum[floor((left + right) / 2)]
+      zz <- z[j] - stats::median(z[j])
+      cs <- function(v) c(0, cumsum(v))
+      St <- cs(tt); Stt <- cs(tt * tt); Sz <- cs(zz); Stz <- cs(tt * zz)
+      i <- first:last
+      lo <- pmax(a, i - k) - left + 1L
+      hi <- pmin(b, i + k) - left + 1L
+      g <- function(S) S[hi + 1L] - S[lo]
+      N <- hi - lo + 1L
+      T1 <- g(St); Z1 <- g(Sz)
+      den <- g(Stt) - T1 * T1 / N
+      rate <- (g(Stz) - T1 * Z1 / N) / den
+      rate[N < 3L | !is.finite(rate) | !is.finite(den) | den <= 0] <- NA_real_
+      out[i] <- rate
+    }
+    if (post_n > 1L) {
+      j <- a:b
+      out[j] <- data.table::frollmean(out[j], n = post_n, fill = NA, align = "center")
+    }
   }
-  n <- length(depth)
-  if (n < 2L) return(list(depth = depth, velocity = rep(NA_real_, n)))
-  dz <- data.table::shift(depth, type = "lead") - data.table::shift(depth, type = "lag")
-  dt <- as.numeric(difftime(data.table::shift(datetime, type = "lead"),
-                            data.table::shift(datetime, type = "lag"), units = "secs"))
-  velocity <- dz / dt
-  velocity[1] <- (depth[2] - depth[1]) / as.numeric(difftime(datetime[2], datetime[1], units = "secs"))
-  velocity[n] <- (depth[n] - depth[n - 1]) / as.numeric(difftime(datetime[n], datetime[n - 1], units = "secs"))
-  if (!is.null(velocity.smoothing)) {
-    velocity <- data.table::frollmean(velocity, n = max(1L, round(fs * velocity.smoothing)), fill = NA, align = "center")
-  }
-  list(depth = depth, velocity = velocity)
+  out
 }
 
 #' Lightweight orientation pass from body-frame sensors (for axis-mapping validation).
@@ -362,7 +387,7 @@
 #'   `depth`).
 #' @param fs Sampling frequency (Hz).
 #' @param posture.window Static-acceleration averaging window (seconds) used to extract gravity.
-#' @param depth.smoothing Depth smoothing window (seconds) for the vertical-velocity estimate.
+#' @param depth.smoothing Local slope window (seconds) for the vertical-velocity estimate.
 #' @param low.latency If `TRUE` (default) and a gyroscope is present, fuse it into the pitch/roll with a
 #'   complementary filter so the displayed posture tracks quick banks tightly (see below).
 #' @param fusion.tau Complementary-filter time constant (seconds): the gyro is followed below this
@@ -370,7 +395,7 @@
 #' @return A list with `pitch`, `roll`, `heading`, `vertical_velocity` (each length `nrow(dt)`).
 #' @keywords internal
 #' @noRd
-.liteOrientation <- function(dt, fs, posture.window = 2, depth.smoothing = 3,
+.liteOrientation <- function(dt, fs, posture.window = 2, depth.smoothing = 5,
                              datetime.col = "datetime", low.latency = TRUE, fusion.tau = 1) {
   n <- nrow(dt)
   win <- max(1L, round(posture.window * fs))
@@ -418,7 +443,7 @@
   }
 
   vv <- if ("depth" %in% names(dt) && n >= 2L)
-    .verticalVelocity(dt[["depth"]], dt[[datetime.col]], fs, depth.smoothing = depth.smoothing)$velocity
+    .depthRate(dt[["depth"]], as.numeric(dt[[datetime.col]]), depth.smoothing, dt = 1 / fs)
   else rep(NA_real_, n)
 
   list(pitch = pitch, roll = roll, heading = heading, vertical_velocity = vv)

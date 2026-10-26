@@ -956,10 +956,10 @@ test_that(".tagSpanSeconds sums tracked time and never poisons a running total",
   expect_equal(nautilus:::.tagSpanSeconds(numeric(0)), 0)
 })
 
-test_that("the stored depth channel is NOT smoothed, while vertical velocity still is", {
-  # smoothing$depth conditions the series the DERIVATIVE is taken from. It used to also overwrite the
+test_that("stored depth stays unsmoothed while the local rate window controls vertical velocity", {
+  # smoothing$depth controls the local rate window. It used to also overwrite the
   # stored `depth` column, and a centred boxcar attenuates any excursion shorter than its window: at the
-  # 10 s default a 3 m / 8 s dive was stored as 1.2 m. Harmless for the minutes-long dives this package
+  # former 10 s default a 3 m / 8 s dive was stored as 1.2 m. Harmless for the minutes-long dives this package
   # was first used on, fatal for short-dive taxa - and invisible, because the trace still looks like a dive.
   fs <- 10; secs <- 600
   n <- fs * secs
@@ -983,7 +983,7 @@ test_that("the stored depth channel is NOT smoothed, while vertical velocity sti
 
   # the excursion keeps its amplitude: a 10 s boxcar would have left 3 * 8/(2*10) = 1.2 m
   expect_gt(max(out$depth, na.rm = TRUE), 2.5)
-  # and vertical velocity is still computed from a SMOOTHED copy, so it stays bounded and finite
+  # local regression conditions the rate without modifying stored depth
   expect_true(all(is.finite(out$vertical_velocity[!is.na(out$vertical_velocity)])))
   expect_lt(max(abs(out$vertical_velocity), na.rm = TRUE), 5)
 
@@ -992,6 +992,25 @@ test_that("the stored depth channel is NOT smoothed, while vertical velocity sti
                                           downsample.to = NULL, verbose = FALSE))[["A01"]]
   expect_equal(out$depth, out2$depth)
   expect_false(isTRUE(all.equal(out$vertical_velocity, out2$vertical_velocity)))
+})
+
+test_that("processTagData uses native five-second slopes before downsampling and records the estimator", {
+  fs <- 20
+  d <- .mk(secs = 60, rate = fs)
+  tt <- as.numeric(d$datetime)
+  d$depth <- round(20 + 3 * sin((tt - tt[1]) / 2), 2)
+  expected <- nautilus:::.depthRate(d$depth, tt, 5, dt = 1 / fs, post_s = 1)
+  native <- .run(d, depth.drift = depthDriftControl(method = "none"), downsample.to = NULL)[[1]]
+  expect_equal(native$vertical_velocity, round(expected, 3))
+  expect_equal(native$depth, d$depth)
+  rec <- .proc_rec(native)
+  expect_equal(rec$vertical_rate_estimator, "local_linear")
+  expect_equal(rec$depth_smoothing, 5)
+  expect_equal(rec$vertical_smoothing, 1)
+  binned <- .run(d, depth.drift = depthDriftControl(method = "none"), downsample.to = 2)[[1]]
+  bin <- floor(as.numeric(d$datetime - d$datetime[1], units = "secs") * 2)
+  reference <- data.table::data.table(bin = bin, v = expected)[, .(v = mean(v, na.rm = TRUE)), by = bin]$v
+  expect_equal(binned$vertical_velocity, round(reference, 3))
 })
 
 # ------------------------------------------------------------------------------------------------------

@@ -80,7 +80,9 @@ See Details for interpretation and limitations.}
 \item{phase.window}{Positive numeric local least-squares slope window in seconds for
 \code{phase.method = "vertical.rate"}. \code{NULL} (default) derives the larger of
 five seconds and three batch-level sampling intervals. Applied windows depend on each
-dive's duration, deployment sampling interval and depth noise; see Details.}
+dive's duration, deployment sampling interval and depth noise; see Details. The slope
+estimator is shared with \code{\link[=processTagData]{processTagData()}} and \code{\link[=checkTagMapping]{checkTagMapping()}}; phase classification
+uses signed reference-relative depth and does not apply velocity post-smoothing.}
 
 \item{min.phase.duration}{Positive numeric duration in seconds for which a qualifying pause
 must persist before ending a transit limb. \code{NULL} (default) uses twice the resolved

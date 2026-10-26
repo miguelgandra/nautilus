@@ -660,7 +660,7 @@ test_that("a whole missing limb is warned about, and a missing bottom is not", {
   expect_silent(nautilus:::.warnDivePhases(list(abst), ctl))
 })
 
-test_that(".diveSlope matches a direct least-squares fit and tolerates gaps", {
+test_that(".depthRate matches a direct least-squares fit and tolerates gaps", {
   set.seed(11)
   n <- 400; tv <- seq_len(n) * 0.5; z <- 0.03 * tv + stats::rnorm(n, 0, 0.2)
   W <- 10; k <- floor((W / 2) / 0.5)
@@ -668,11 +668,11 @@ test_that(".diveSlope matches a direct least-squares fit and tolerates gaps", {
     j <- max(1L, i - k):min(n, i + k)
     unname(stats::coef(stats::lm(z[j] ~ tv[j]))[2])
   }, numeric(1))
-  expect_equal(nautilus:::.diveSlope(z, tv, W), brute, tolerance = 1e-8)
+  expect_equal(nautilus:::.depthRate(z, tv, W), brute, tolerance = 1e-8)
 
   # NA depth carries no information and must not poison the whole window
   z2 <- z; z2[c(50:55, 200)] <- NA_real_
-  s2 <- nautilus:::.diveSlope(z2, tv, W)
+  s2 <- nautilus:::.depthRate(z2, tv, W)
   expect_true(all(is.finite(s2[100:150])))
   expect_equal(mean(s2, na.rm = TRUE), 0.03, tolerance = 0.02)
 
@@ -682,7 +682,7 @@ test_that(".diveSlope matches a direct least-squares fit and tolerates gaps", {
   err <- function(hz, how) {
     tt <- seq_len(round(600 * hz)) / hz
     zz <- round((0.37 * tt) / 0.05) * 0.05               # 5 cm quantum, 0.37 m/s, not a whole number of
-    r <- if (how == "slope") nautilus:::.diveSlope(zz, tt, 10)  # quanta per sample at any of these rates
+    r <- if (how == "slope") nautilus:::.depthRate(zz, tt, 10)  # quanta per sample at any of these rates
          else c(NA, diff(zz) / diff(tt))
     stats::sd(r, na.rm = TRUE)
   }

@@ -19,7 +19,7 @@ checkTagMapping(
   stable.horizontal.window = 10,
   g.value = 1,
   dba.window = 2.5,
-  depth.smoothing = 10,
+  depth.smoothing = 5,
   vertical.smoothing = 1,
   tie.tolerance = 2,
   use.dynamics = TRUE,
@@ -80,10 +80,11 @@ or no stable interval is found, individual horizontal observations are used inst
 \item{dba.window}{Non-negative centred rolling-mean window, in seconds, used to estimate
 static acceleration. Default \code{2.5}.}
 
-\item{depth.smoothing, vertical.smoothing}{Non-negative centred smoothing windows, in seconds,
-for depth and its derived vertical velocity. Defaults \code{10} and \code{1}, respectively.
-\code{NULL} disables the corresponding smoothing step. The estimator is shared with
-\code{\link[=processTagData]{processTagData()}}.}
+\item{depth.smoothing, vertical.smoothing}{Non-negative centred windows, in seconds, for the
+local linear depth slope (default 5) and its rolling-mean post-smoother (default 1).
+\code{NULL} or zero selects the minimum three-point slope stencil for \code{depth.smoothing}, or disables
+the rate post-smoother for \code{vertical.smoothing}. The estimator and edge/gap handling are shared
+with \code{\link[=processTagData]{processTagData()}}; see \code{\link[=smoothingControl]{smoothingControl()}}.}
 
 \item{tie.tolerance}{Non-negative numeric value retained in the API (default \code{2}).
 The current gravity-anchored implementation does not use this argument to select candidates

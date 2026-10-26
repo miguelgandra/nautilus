@@ -48,10 +48,11 @@
 #' @param g.value Expected acceleration magnitude under static conditions, in g. Default \code{1}.
 #' @param dba.window Non-negative centred rolling-mean window, in seconds, used to estimate
 #'   static acceleration. Default \code{2.5}.
-#' @param depth.smoothing,vertical.smoothing Non-negative centred smoothing windows, in seconds,
-#'   for depth and its derived vertical velocity. Defaults \code{10} and \code{1}, respectively.
-#'   \code{NULL} disables the corresponding smoothing step. The estimator is shared with
-#'   [processTagData()].
+#' @param depth.smoothing,vertical.smoothing Non-negative centred windows, in seconds, for the
+#'   local linear depth slope (default 5) and its rolling-mean post-smoother (default 1).
+#'   `NULL` or zero selects the minimum three-point slope stencil for `depth.smoothing`, or disables
+#'   the rate post-smoother for `vertical.smoothing`. The estimator and edge/gap handling are shared
+#'   with [processTagData()]; see [smoothingControl()].
 #' @param tie.tolerance Non-negative numeric value retained in the API (default \code{2}).
 #'   The current gravity-anchored implementation does not use this argument to select candidates
 #'   or resolve axes; changing it does not alter the inferred mapping.
@@ -253,7 +254,7 @@ checkTagMapping <- function(data,
                             stable.horizontal.window = 10,
                             g.value = 1,
                             dba.window = 2.5,
-                            depth.smoothing = 10,
+                            depth.smoothing = 5,
                             vertical.smoothing = 1,
                             tie.tolerance = 2,
                             use.dynamics = TRUE,
@@ -604,13 +605,11 @@ checkTagMapping <- function(data,
     # Extract horizontal swimming periods ######################################
     ############################################################################
 
-    # vertical speed via a centered difference on (optionally smoothed) depth - the same estimate
-    # processTagData uses. A raw one-sample difference of quantized depth is a coarse staircase that
-    # degrades the pitch / depth-rate relationship the surge anchor relies on; smoothing removes it.
-    individual_data[, vertical_speed := .verticalVelocity(individual_data[[depth.col]],
-                                                          individual_data[[datetime.col]], sampling_freq,
-                                                          depth.smoothing = depth.smoothing,
-                                                          velocity.smoothing = vertical.smoothing)$velocity]
+    # The same local depth slopes and optional rate post-mean used by processTagData().
+    individual_data[, vertical_speed := .depthRate(individual_data[[depth.col]],
+                                                  as.numeric(individual_data[[datetime.col]]),
+                                                  depth.smoothing, dt = 1 / sampling_freq,
+                                                  post_s = vertical.smoothing)]
 
     # snapshot the full (unfiltered) series for the dynamic anchors below (surge, gyro, mag): they
     # need the DIVING / manoeuvring periods that the horizontal filter is about to discard. Carry

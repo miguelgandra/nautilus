@@ -557,7 +557,7 @@ processTagData(
   calibration = calibrationControl(hard.iron = TRUE, soft.iron = TRUE, use.stored = TRUE),
   # Smoothing windows, in seconds. 'static' sets the gravity/movement split and can't be switched off;
   # the rest are optional post-smoothers (set any to NULL to disable it).
-  smoothing = smoothingControl(static = 5, orientation = 1, dba = 2, depth = 10, vertical = 1),
+  smoothing = smoothingControl(static = 5, orientation = 1, dba = 2, depth = 5, vertical = 1),
   # Paddle-frequency QC. A window is retained only when it contains an interior spectral peak whose
   # power is at least 20 times the median spectral background. Peaks near Nyquist are rejected, and
   # only short gaps between accepted windows are interpolated. This estimates frequency only; the

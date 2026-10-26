@@ -176,8 +176,9 @@
 #'   \item{`depth`}{Depth (m), corrected for sensor drift. The returned series is not smoothed, so short
 #'     vertical excursions retain their true amplitude.}
 #'   \item{`vertical_velocity`}{Rate of change of depth (m/s), positive during descent and negative
-#'     during ascent. It is derived from a smoothed copy of the depth record, since differentiating the
-#'     raw pressure trace amplifies its quantisation noise; the window is set by `smoothing$depth`.}
+#'     during ascent. Estimated by centred local linear regression of corrected depth against actual
+#'     timestamps, using `smoothing$depth` (default 5 s), followed by the centred rolling mean in
+#'     `smoothing$vertical` (default 1 s). No preliminary depth smoother is applied.}
 #'   \item{`paddle_freq`}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
 #'     carrying a paddle wheel. A window is retained only when its dominant component is an interior
 #'     spectral peak below the Nyquist guard and exceeds `paddle$min.prominence` times the median
@@ -186,7 +187,18 @@
 #'     speed requires a tag-specific calibration and is done by [calculatePaddleSpeed()].}
 #' }
 #'
-#' Depth drift is corrected before vertical velocity is calculated.
+#' Depth drift is corrected before vertical velocity is calculated, at native sampling rate before
+#' output downsampling. Local fits truncate at segment edges and require at least three finite
+#' observations. Missing depth/time, non-increasing timestamps and gaps longer than 1.5 sampling
+#' intervals split segments; missing samples remain `NA`. Rate post-smoothing requires a full window
+#' and leaves incomplete edge windows `NA`. See [smoothingControl()] for window discretisation.
+#'
+#' The same slope estimator is used by [checkTagMapping()], [detectDives()] and [diveMetrics()].
+#' Their results need not be identical: phase classification uses signed reference-relative depth,
+#' dive windows may adapt to duration and noise, and dive rates omit velocity post-smoothing.
+#' Processing history records `vertical_rate_estimator = "local_linear"` alongside both windows.
+#' This replaces the earlier central difference of boxcar-smoothed depth; reprocess source records
+#' consistently when combining old and new analyses.
 #'
 #' ## Geographic and magnetic heading
 #'
@@ -285,6 +297,9 @@
 #' Kawatsu S, Sato K, Watanabe Y, Hyodo S, Breves JP, Fox BK, *et al.* (2010) A new method to calibrate
 #' attachment angles of data loggers in swimming sharks. *EURASIP Journal on Advances in Signal
 #' Processing* 2010:732586. \doi{10.1155/2010/732586}
+#'
+#' Savitzky A, Golay MJE (1964) Smoothing and differentiation of data by simplified least squares
+#' procedures. *Analytical Chemistry* 36:1627-1639. \doi{10.1021/ac60214a047}
 #'
 #' Ydesen KS, Wisniewska DM, Hansen JD, Beedholm K, Johnson M, Madsen PT (2014) What a jerk: prey
 #' engulfment revealed by high-rate, super-cranial accelerometry on a harbour seal. *Journal of
@@ -1065,24 +1080,14 @@ processTagData <- function(data,
     ############################################################################
 
     ############################################################################
-    # Smooth depth + calculate vertical velocity ###############################
+    # Calculate vertical velocity #############################################
     ############################################################################
 
-    # The centered-difference vertical velocity is computed by the shared .verticalVelocity() helper, so
-    # processTagData and checkTagMapping use an identical estimate.
-    #
-    # `depth.smoothing` conditions the series the DERIVATIVE is taken from - differentiating a raw
-    # pressure trace amplifies its quantisation noise - and nothing more. The stored `depth` channel is
-    # deliberately left UNSMOOTHED (drift-corrected only): a centred boxcar attenuates any excursion
-    # shorter than its window, so overwriting depth with the smoothed series silently shrank short dives.
-    # For the shipped 10 s default a 3 m / 8 s dive was stored as 1.2 m and a 3 m / 20 s dive as 2.25 m
-    # (retention 1 - L/2T for a triangular profile), which is invisible in the deep, minutes-long dives
-    # this package was first used on and severe for short-dive taxa. Consumers that want a smoothed depth
-    # should smooth it themselves, at a window chosen for their own question.
-    .vv <- .verticalVelocity(individual_data$depth, individual_data$datetime, sampling_freq,
-                             depth.smoothing = depth.smoothing, velocity.smoothing = vertical.smoothing)
-    individual_data[, vertical_velocity := .vv$velocity]
-    rm(.vv)
+    # Fit directly to corrected depth with the same slope helper used by mapping and dive analysis.
+    # Keep depth unsmoothed and derive the rate at native cadence before output downsampling.
+    individual_data[, vertical_velocity := .depthRate(depth, as.numeric(datetime), depth.smoothing,
+                                                      dt = 1 / sampling_freq,
+                                                      post_s = vertical.smoothing)]
 
 
     ############################################################################
@@ -1761,6 +1766,7 @@ processTagData <- function(data,
                                 orientation_smoothing   = orientation.smoothing %||% NA_real_,
                                 vertical_smoothing      = vertical.smoothing %||% NA_real_,
                                 depth_smoothing         = depth.smoothing %||% NA_real_,
+                                vertical_rate_estimator = "local_linear",
                                 pitch_offset_deg        = pitch_offset_deg %||% NA_real_,
                                 pitch_offset_r2         = pitch_offset_r2 %||% NA_real_,
                                 roll_offset_deg         = roll_offset_deg %||% NA_real_,

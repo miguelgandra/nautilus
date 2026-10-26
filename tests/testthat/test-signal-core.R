@@ -215,14 +215,6 @@ test_that(".staticDynamicAccel splits into gravity + dynamic and sums back", {
   expect_lt(abs(mean(sd$static$z) - 1), 0.05)
 })
 
-test_that(".verticalSpeed is depth-rate in m/s", {
-  t <- as.POSIXct("2020-01-01", tz = "UTC") + (0:4) * 2  # 2-second steps
-  depth <- c(0, 2, 6, 6, 0)
-  vs <- nautilus:::.verticalSpeed(depth, t)
-  expect_true(is.na(vs[1]))
-  expect_equal(vs[2:5], c(1, 2, 0, -3))   # (diff depth) / 2 s
-})
-
 test_that(".tiltFromAccel returns level angles for a flat tag", {
   tilt <- nautilus:::.tiltFromAccel(0, 0, 1)
   expect_equal(tilt$pitch, 0)

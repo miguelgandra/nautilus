@@ -190,6 +190,10 @@ vertical velocity, turning angle and jerk. Heading can be derived by either of t
 established approaches, chosen to suit the deployment and compared in the orientation
 vignette.
 
+Vertical velocity uses local linear depth slopes with a five-second default window and a one-second
+rate post-mean. Processing, axis mapping and dive analysis share the slope estimator; dive analysis
+retains its duration- and noise-dependent windows. Stored depth remains unsmoothed.
+
 The result is an analysis-ready dataset that carries its own description and a complete
 record of how it was made.
 

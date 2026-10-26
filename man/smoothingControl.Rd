@@ -4,13 +4,7 @@
 \alias{smoothingControl}
 \title{Smoothing windows for processTagData()}
 \usage{
-smoothingControl(
-  static = 3,
-  orientation = 1,
-  dba = 2,
-  depth = 10,
-  vertical = 1
-)
+smoothingControl(static = 3, orientation = 1, dba = 2, depth = 5, vertical = 1)
 }
 \arguments{
 \item{static}{Window (s) setting the static/gravity separation: the acceleration is split into a
@@ -26,12 +20,17 @@ pitch/roll -- so this is not a cosmetic post-smoother: it defines what counts as
 -3 dB cutoff is the equivalent of this window (~\code{0.44 / dba} Hz; the default 2 s gives ~0.22 Hz).
 \code{NULL} disables the smoothing. Default 2.}
 
-\item{depth}{Window (s) used to condition the depth series that vertical velocity is
-differentiated from. Default 10. This does NOT smooth the stored \code{depth} channel, which is
-kept drift-corrected but unsmoothed - a centred boxcar attenuates any excursion shorter than
-its window, which would shrink short dives (a 3 m / 8 s dive reads 1.2 m at the 10 s default).}
+\item{depth}{Centred local linear regression window (s) for vertical velocity. Default 5.
+Slopes are fitted directly to corrected depth against actual timestamps, without a preceding
+depth smoother. The sample radius is the larger of one and the whole number of sampling
+intervals in half the requested window. \code{NULL} or zero selects the minimum three-point
+stencil. Fits truncate at segment edges and require at least three observations. Missing
+depth/time, non-increasing timestamps and gaps longer than 1.5 sampling intervals split
+segments. The stored \code{depth} channel remains drift-corrected and unsmoothed.}
 
-\item{vertical}{Window (s) applied to the vertical velocity derived from depth. Default 1.
+\item{vertical}{Centred rolling-mean window (s) applied to the fitted vertical velocity.
+Default 1; \code{NULL} or zero disables it. Applied independently within continuous segments;
+incomplete windows at edges or next to missing rates remain \code{NA}.
 Paddle-wheel speed is not smoothed here: that window belongs to
 \code{\link{calculatePaddleSpeed}}, which turns the recorded paddle frequency into a speed.}
 }
@@ -40,8 +39,8 @@ A validated \code{nautilus_smoothing} object for the \code{smoothing} argument o
 }
 \description{
 Groups the smoothing-window arguments of \code{\link{processTagData}} into one object, so the main
-call stays uncluttered. Each value is a window length in seconds; set any to \code{NULL} to disable that
-smoothing.
+call stays uncluttered. Each value is a window length in seconds. \code{NULL} disables optional
+post-smoothing; for \code{depth} it selects the minimum local slope window (see below).
 }
 \examples{
 smoothingControl(depth = 15, dba = NULL)   # 15 s depth window; disable DBA post-smoothing

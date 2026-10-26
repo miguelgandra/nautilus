@@ -381,7 +381,7 @@
 #' The boxcar that actually reached the STORED depth channel, in seconds (NA when none did).
 #'
 #' `smoothingControl(depth = )` does NOT: since nautilus stopped overwriting depth with the smoothed
-#' series it conditions only the series vertical velocity is differentiated from. What DOES reach depth
+#' series it sets only the local-regression window for vertical velocity. What DOES reach depth
 #' is `processTagData(downsample.to = )`, which mean-aggregates every numeric channel into bins - and
 #' bin-averaging IS a boxcar. Deriving either the duration floor or the attenuation from the smoothing
 #' window therefore charged a filter that was never applied, at ten to two hundred times its real width.
@@ -666,52 +666,6 @@
   out
 }
 
-#' Centred least-squares slope of `z` against `tnum`, over a window given in SECONDS.
-#'
-#' The vertical rate the phase rule needs is not `diff(z)/dt`. Depth arrives quantised, and a one-sample
-#' difference divides one quantum by one sampling interval: the apparent rate per quantum is `q/dt`, so
-#' the noise floor RISES with sampling rate. Measured consequence on a symmetric V-dive with identical
-#' true limb rates: ascent recovered perfectly at 1-50 Hz and not at all at 100-200 Hz, at fixed depth
-#' resolution. More samples per second made the estimator worse, which is the opposite of what a user
-#' expects and exactly wrong for the high-rate archival tags this package targets.
-#'
-#' A least-squares slope over a window of `window_s` SECONDS inverts that. For `N` samples spanning `W`
-#' seconds with per-sample noise `sigma`, the slope's standard error is `sigma * sqrt(12 / N) / W`, so
-#' the estimate improves with sampling rate and is governed by a physical span rather than a sample
-#' count. That is what makes the phase rule behave the same way on a 1 Hz PSAT and a 200 Hz archival tag.
-#'
-#' O(n) via cumulative sums rather than O(n*k), because this runs over every in-dive sample of a 20 Hz
-#' record. Both axes are centred first: the sums are differences of large cumulative quantities, and
-#' POSIX seconds squared exhaust the useful precision of a double long before the fit itself does.
-#' @param dt Median sampling interval, if already known; recomputed when `NULL`.
-#' @return Numeric of `length(z)`, in metres per second, NA where the window holds fewer than three
-#'   finite samples.
-#' @keywords internal
-#' @noRd
-.diveSlope <- function(z, tnum, window_s, dt = NULL) {
-  n <- length(z)
-  if (n < 2L) return(rep(NA_real_, n))
-  if (is.null(dt) || !is.finite(dt) || dt <= 0) {
-    dt <- suppressWarnings(stats::median(diff(tnum), na.rm = TRUE))
-    if (!is.finite(dt) || dt <= 0) dt <- 1
-  }
-  ok <- is.finite(z) & is.finite(tnum)
-  if (sum(ok) < 3L) return(rep(NA_real_, n))
-  k <- max(1L, floor((window_s / 2) / dt))
-  t0 <- tnum - stats::median(tnum[ok]); t0[!ok] <- 0
-  z0 <- z    - stats::median(z[ok]);    z0[!ok] <- 0
-  w  <- as.numeric(ok)
-  cs <- function(v) c(0, cumsum(v))
-  Sw <- cs(w); St <- cs(t0); Stt <- cs(t0 * t0); Sz <- cs(z0); Stz <- cs(t0 * z0)
-  i <- seq_len(n); lo <- pmax(1L, i - k); hi <- pmin(n, i + k)
-  g <- function(S) S[hi + 1L] - S[lo]
-  N <- g(Sw); T1 <- g(St); T2 <- g(Stt); Z1 <- g(Sz); TZ <- g(Stz)
-  den <- T2 - T1 * T1 / N
-  out <- (TZ - T1 * Z1 / N) / den
-  out[!is.finite(out) | N < 3 | !is.finite(den) | den <= 0] <- NA_real_
-  out
-}
-
 #' Start of EVERY run where `ok` holds continuously for at least `hold_s` seconds.
 #'
 #' The span is measured from the real timestamps, never from a sample count. A run length in samples is
@@ -827,7 +781,7 @@
 #' @section What the rate rule measures, and against what:
 #' Three properties, each fixing a measured failure of the sample-count rule that preceded it:
 #' \itemize{
-#'   \item The rate is a least-squares slope over `phase.window` SECONDS (`.diveSlope()`), not a
+#'   \item The rate is a least-squares slope over `phase.window` SECONDS (`.depthRate()`), not a
 #'     one-sample difference. A one-sample difference of a quantised depth channel has a noise floor of
 #'     one quantum per sampling interval, which grows with sampling rate.
 #'   \item The criterion is PER LIMB. `crit` is a fraction of that limb's own `rate.quantile` quantile,
@@ -915,7 +869,7 @@
   }
   limb_rates <- function(sv, floor_) c(qmov(sv[pre], floor_), qmov(-sv[post], floor_))
 
-  s <- .diveSlope(z, tnum, w_win, dt = dt)
+  s <- .depthRate(z, tnum, w_win, dt = dt)
   if (!any(is.finite(s))) return(out(rep("bottom", m)))
 
   # WIDEN THE WINDOW RATHER THAN RAISE THE BAR. When the depth channel is coarse or slow relative to the
@@ -942,7 +896,7 @@
         # about which one it obeyed.
         if (identical(settings$phase_duration_source, "user")) w_win  <- min(w_win, w_hold)
         else                                                   w_hold <- min(max(w_hold, w_win), dur / 4)
-        s <- .diveSlope(z, tnum, w_win, dt = dt)
+        s <- .depthRate(z, tnum, w_win, dt = dt)
       }
     }
   }
@@ -1219,7 +1173,7 @@
     # and is unchanged by the switch.
     phase_win <- max(min(phase_win0, if (is.finite(dur) && dur > 0) dur / 8 else phase_win0),
                      3 * dt_med)
-    rate <- .diveSlope(dd, tt, phase_win, dt = dt_med)
+    rate <- .depthRate(dd, tt, phase_win, dt = dt_med)
     rq <- function(q, f) { w <- which(pp == q & is.finite(rate)); if (!length(w)) NA_real_ else f(rate[w]) }
     q90 <- function(z) suppressWarnings(stats::quantile(abs(z), 0.90, na.rm = TRUE, names = FALSE))
 

@@ -4,7 +4,7 @@
 test_that("smoothingControl validates windows and allows NULL to disable", {
   s <- smoothingControl()
   expect_s3_class(s, "nautilus_smoothing")
-  expect_equal(s$depth, 10)
+  expect_equal(s$depth, 5)
   expect_null(smoothingControl(dba = NULL)$dba)
   # `vertical` conditions the vertical velocity only; paddle-wheel smoothing belongs to
   # calculatePaddleSpeed(), so one window no longer governs two unrelated quantities
@@ -79,7 +79,7 @@ test_that("orientationControl carries the offset corrections, fit gate + warning
 })
 
 test_that(".as_control accepts an object, a named list, or NULL", {
-  expect_equal(nautilus:::.as_control(NULL, smoothingControl, "nautilus_smoothing", "smoothing")$depth, 10)
+  expect_equal(nautilus:::.as_control(NULL, smoothingControl, "nautilus_smoothing", "smoothing")$depth, 5)
   s <- smoothingControl(depth = 15)
   expect_identical(nautilus:::.as_control(s, smoothingControl, "nautilus_smoothing", "smoothing"), s)
   fromlist <- nautilus:::.as_control(list(depth = 15, dba = NULL), smoothingControl, "nautilus_smoothing", "smoothing")

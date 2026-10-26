@@ -6,8 +6,8 @@
 #'
 #' @description
 #' Groups the smoothing-window arguments of \code{\link{processTagData}} into one object, so the main
-#' call stays uncluttered. Each value is a window length in seconds; set any to `NULL` to disable that
-#' smoothing.
+#' call stays uncluttered. Each value is a window length in seconds. `NULL` disables optional
+#' post-smoothing; for `depth` it selects the minimum local slope window (see below).
 #'
 #' @param static Window (s) setting the static/gravity separation: the acceleration is split into a
 #'   static (gravity/posture) and a dynamic (motion) part with a zero-phase Butterworth high-pass whose
@@ -19,11 +19,16 @@
 #' @param dba Window (s) for VeDBA/ODBA smoothing, applied as a zero-phase Butterworth low-pass whose
 #'   -3 dB cutoff is the equivalent of this window (~`0.44 / dba` Hz; the default 2 s gives ~0.22 Hz).
 #'   `NULL` disables the smoothing. Default 2.
-#' @param depth Window (s) used to condition the depth series that vertical velocity is
-#'   differentiated from. Default 10. This does NOT smooth the stored `depth` channel, which is
-#'   kept drift-corrected but unsmoothed - a centred boxcar attenuates any excursion shorter than
-#'   its window, which would shrink short dives (a 3 m / 8 s dive reads 1.2 m at the 10 s default).
-#' @param vertical Window (s) applied to the vertical velocity derived from depth. Default 1.
+#' @param depth Centred local linear regression window (s) for vertical velocity. Default 5.
+#'   Slopes are fitted directly to corrected depth against actual timestamps, without a preceding
+#'   depth smoother. The sample radius is the larger of one and the whole number of sampling
+#'   intervals in half the requested window. `NULL` or zero selects the minimum three-point
+#'   stencil. Fits truncate at segment edges and require at least three observations. Missing
+#'   depth/time, non-increasing timestamps and gaps longer than 1.5 sampling intervals split
+#'   segments. The stored `depth` channel remains drift-corrected and unsmoothed.
+#' @param vertical Centred rolling-mean window (s) applied to the fitted vertical velocity.
+#'   Default 1; `NULL` or zero disables it. Applied independently within continuous segments;
+#'   incomplete windows at edges or next to missing rates remain `NA`.
 #'   Paddle-wheel speed is not smoothed here: that window belongs to
 #'   \code{\link{calculatePaddleSpeed}}, which turns the recorded paddle frequency into a speed.
 #' @return A validated `nautilus_smoothing` object for the `smoothing` argument of \code{\link{processTagData}}.
@@ -31,7 +36,7 @@
 #' @examples
 #' smoothingControl(depth = 15, dba = NULL)   # 15 s depth window; disable DBA post-smoothing
 #' @export
-smoothingControl <- function(static = 3, orientation = 1, dba = 2, depth = 10, vertical = 1) {
+smoothingControl <- function(static = 3, orientation = 1, dba = 2, depth = 5, vertical = 1) {
   fields <- list(static = static, orientation = orientation, dba = dba, depth = depth, vertical = vertical)
   for (nm in names(fields)) if (!is.null(fields[[nm]])) .assert_number(fields[[nm]], paste0("smoothing$", nm), min = 0)
   if (is.null(fields$static) || fields$static <= 0)
@@ -1148,7 +1153,9 @@ reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddl
 #' @param phase.window Positive numeric local least-squares slope window in seconds for
 #'   \code{phase.method = "vertical.rate"}. \code{NULL} (default) derives the larger of
 #'   five seconds and three batch-level sampling intervals. Applied windows depend on each
-#'   dive's duration, deployment sampling interval and depth noise; see Details.
+#'   dive's duration, deployment sampling interval and depth noise; see Details. The slope
+#'   estimator is shared with [processTagData()] and [checkTagMapping()]; phase classification
+#'   uses signed reference-relative depth and does not apply velocity post-smoothing.
 #' @param min.phase.duration Positive numeric duration in seconds for which a qualifying pause
 #'   must persist before ending a transit limb. \code{NULL} (default) uses twice the resolved
 #'   \code{phase.window}. Applied holds are adjusted for each dive's duration and sampling

@@ -4,6 +4,21 @@ First public release. `nautilus` provides an end-to-end pipeline for processing 
 high-resolution multi-sensor archival tag data (depth, temperature, tri-axial acceleration,
 magnetometer and gyroscope), with optional integration of onboard camera video.
 
+## Vertical velocity
+
+* Processing, axis mapping, validation overlays and dive analysis now share one centred local
+  linear depth-rate estimator. `processTagData()` fits directly to drift-corrected depth instead of
+  taking central differences of boxcar-smoothed depth; the stored depth channel remains unsmoothed.
+* The default processing and mapping slope window is now 5 seconds (previously a 10-second depth
+  boxcar), retaining the 1-second velocity post-mean. Existing explicit window settings are honoured.
+  Dive analysis retains its duration/noise adaptations and omits velocity post-smoothing.
+* Fits truncate at segment edges, require three observations and never cross missing depth/time,
+  non-increasing timestamps or gaps longer than 1.5 sampling intervals. Missing centres remain `NA`;
+  optional rate post-means require full windows. Overlapping calculation blocks preserve precision
+  on long high-rate records. `NULL` or zero depth windows select the minimum three-point slope.
+* Processing history identifies the `local_linear` estimator and records the existing window controls.
+  Reprocess source records consistently before combining results from the old and new estimators.
+
 ## Behavioural feature extraction
 
 * `extractFeatures()` supports independent `step.size` (seconds), explicit contiguous segments via
