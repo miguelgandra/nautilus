@@ -652,6 +652,71 @@
 .tbBackends <- function() c("peaks", "wavelet")
 
 
+#######################################################################################################
+# Resolve which tail-beat backend's column to read #####################################################
+#######################################################################################################
+
+#' Find the tail-beat column to read
+#'
+#' @description
+#' [calculateTailBeats()] names its estimates after the backend that produced them - `tbf_hz_peaks`,
+#' `tbf_hz_wavelet`, and the matching `tbf_amplitude_*` columns - so that a value's provenance always
+#' travels with it. That naming raises an obvious question for anyone writing analysis code: given a
+#' table, which of those columns should I read?
+#'
+#' This helper answers it, so a script can stay backend-agnostic without giving up the provenance the
+#' names carry.
+#'
+#' @param x A tag object, data frame or data table carrying tail-beat columns, or simply a character
+#'   vector of column names.
+#' @param quantity Which quantity to resolve: `"hz"` (default) or `"amplitude"`.
+#' @param method Force a particular backend, for example `"wavelet"`. It is an error if that backend
+#'   produced nothing, and the message names what is available - so a typo fails loudly rather than
+#'   quietly resolving to the other backend.
+#'
+#' @details
+#' The answer is taken from the data itself: whichever `tbf_<quantity>_*` columns actually carry values.
+#' If exactly one backend produced this quantity, that is the answer. If several did, the documented
+#' order - peaks, then wavelet - breaks the tie. That order is a reporting convention, not a claim that
+#' one backend is better than the other; pass `method` to override it.
+#'
+#' Resolution deliberately ignores the object's processing metadata, which does not survive the
+#' operations a cohort analysis performs. Binding tables together, a round trip through CSV, and several
+#' common data-manipulation verbs all discard it, and pooling deployments keeps the *first* deployment's
+#' record and then applies it to rows produced by the other backend. Column contents survive all of that,
+#' and describe each row honestly.
+#'
+#' Because resolution happens per table, a pooled cohort whose deployments used different backends will
+#' have both columns populated and will fall to the tie-break. [summarizeTagData()] therefore reports
+#' `tbf_method` alongside `tbf_mean`, so a mixed cohort is visible rather than silently blended.
+#'
+#' @return The column name, as a string, or `NULL` where no backend produced this quantity - for
+#'   instance because [calculateTailBeats()] has not been run.
+#'
+#' @seealso [calculateTailBeats()] for producing the columns; [summarizeTagData()] for the cohort
+#'   summary that reports which backend each deployment used.
+#'
+#' @examples
+#' \dontrun{
+#' tags <- calculateTailBeats(processed)          # runs both backends by default
+#'
+#' # backend-agnostic: works whichever backend or backends were run
+#' col <- tailBeatColumn(tags[[1]])
+#' mean(tags[[1]][[col]], na.rm = TRUE)
+#'
+#' tailBeatColumn(tags[[1]])                       # "tbf_hz_peaks", by the documented tie-break
+#' tailBeatColumn(tags[[1]], method = "wavelet")   # "tbf_hz_wavelet"
+#' tailBeatColumn(tags[[1]], quantity = "amplitude")
+#' }
+#' @export
+tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
+  quantity <- match.arg(quantity)
+  if (!is.character(x)) .assert_nonempty(x, "x")
+  .tbfResolve(x, quantity = quantity, method = method)
+}
+
+
+
 #' Which backend's column should a downstream function read?
 #'
 #' Resolution is made FROM THE DATA -- which `tbf_<quantity>_*` columns actually carry values -- and never
@@ -716,4 +781,355 @@
 .tbfMethodOf <- function(col, quantity = "hz") {
   if (is.null(col) || !length(col) || is.na(col)) return(NA_character_)
   sub(paste0("^tbf_", quantity, "_"), "", col)
+}
+
+# Tail-beat analysis, wavelet execution and reporting helpers.
+
+# calculateTailBeats helpers ----
+
+#' Report one deployment's tail-beat results, grouped by backend.
+#'
+#' One renderer for every method combination, so the single-backend and cross-checked layouts cannot
+#' drift apart: each section prints only the statistics its backend actually produced, and a section
+#' whose backend produced nothing is omitted entirely rather than left as an empty heading.
+#'
+#' Values are aligned in a column (the labels differ in width by one character), which is what makes a
+#' 51-deployment log scannable down the page rather than only readable block by block.
+#'
+#' @param sections List of per-backend records, in report order (primary first). Each has `name`, `freq`,
+#'   `amp` (may be `NULL` -- only the primary backend retains one), `unresolved` and `units`.
+#' @param agree Fraction of samples where the two backends concur, or `NA` for a single-backend run.
+#' @param agree.diff Median absolute per-sample difference between the two estimates (Hz).
+#' @keywords internal
+#' @noRd
+.logTailBeatMethods <- function(lvl, sections, agree = NA_real_, agree.diff = NA_real_) {
+  if (lvl < 2L) return(invisible(NULL))
+  # pad label + colon to a common width so the values line up under each other
+  lab <- function(x) sprintf("%-12s", paste0(x, ":"))
+
+  for (s in sections) {
+    rows <- character(0)
+    if (!is.null(s$freq) && any(!is.na(s$freq))) {
+      r <- range(s$freq, na.rm = TRUE)
+      rows <- c(rows, paste0(lab("frequency"), sprintf("median %.2f Hz (%.2f \u2013 %.2f Hz)",
+                                                       stats::median(s$freq, na.rm = TRUE), r[1], r[2])))
+    }
+    if (!is.null(s$amp) && any(is.finite(s$amp))) {
+      r <- range(s$amp, na.rm = TRUE)
+      rows <- c(rows, paste0(lab("amplitude"), sprintf("median %.2f %s (%.2f \u2013 %.2f %s)",
+                                                       stats::median(s$amp, na.rm = TRUE), s$units,
+                                                       r[1], r[2], s$units)))
+    }
+    # Reported whenever the backend measured it, including 0%: in a per-backend block a missing row reads
+    # as "not measured" rather than "nothing withheld", and the withheld share is part of the estimate's
+    # coverage, not an exception to it.
+    if (isTRUE(is.finite(s$unresolved)))
+      rows <- c(rows, paste0(lab("unresolved"), sprintf("%.0f%%", 100 * s$unresolved)))
+
+    if (!length(rows)) next
+    .log_detail(lvl, s$name)
+    for (r in rows) .log_subdetail_aligned(lvl, r)
+  }
+
+  # the comparison itself, subordinate to neither backend: how often the two concur under the selected tolerance
+  # and, beneath it, the typical per-sample gap
+  if (isTRUE(is.finite(agree))) {
+    .log_detail(lvl, sprintf("agreement: %.0f%%", 100 * agree))
+    if (isTRUE(is.finite(agree.diff)))
+      .log_subdetail_aligned(lvl, sprintf("typical difference: %.2f Hz", agree.diff))
+  }
+  invisible(NULL)
+}
+
+#' Roll up a batch of tail-beat results into the final SUMMARY block.
+#'
+#' The outcome tally and the cohort frequency distribution are always shown; the axis-usage tally,
+#' swimming, and the QC-flag rollup appear only when they apply - so a clean run stays short and a messy
+#' one surfaces exactly what needs a look. Counts, not IDs: the grouped end-of-run warnings already name
+#' the affected tags, so this is the cohort overview, not a repeat.
+#'
+#' Grouped the same way as the per-deployment block: one frequency line per backend, then the
+#' cross-check beneath them, so the summary reads as the same shape at cohort scale.
+#'
+#' @param n_total Number of deployments the run was asked to process.
+#' @param freq,freq2 Per-deployment median frequency for the primary and the cross-check backend
+#'   (`freq2` all-NA for a single-backend run), NA where a deployment produced nothing.
+#' @param agree,diff,swim,edge Per-deployment numeric vectors (method-agreement fraction; median
+#'   per-sample frequency gap; swimming fraction; band-edge-occupancy fraction).
+#' @param axis,reason,harm Per-deployment character vectors: the selected axis, how it was chosen
+#'   ("consensus"/"power"), and a flagged 2f-harmonic alternative (NA when none).
+#' @param methods The requested method vector, primary first (its length decides whether the
+#'   cross-check block shows).
+#' @keywords internal
+#' @noRd
+.reportTailBeatCohort <- function(lvl, n_total, freq, freq2, axis, reason, harm, agree, diff,
+                                  swim, edge, methods) {
+  if (lvl < 1L) return(invisible(NULL))
+  b <- "\u00b7"                                        # middot separator
+  sep <- paste0(" ", b, " ")
+  has_est <- is.finite(freq)
+  n_est <- sum(has_est)
+
+  # outcome: how many tags yielded a tail-beat estimate
+  if (n_est == n_total) {
+    .log_done(lvl, sprintf("%d of %d tag%s processed", n_total, n_total, if (n_total != 1) "s" else ""))
+  } else {
+    .log_done(lvl, sprintf("%d tag%s processed %s %d with a tail-beat estimate (%d no signal)",
+                           n_total, if (n_total != 1) "s" else "", b, n_est, n_total - n_est))
+  }
+
+  # One cohort distribution per backend, labelled by the backend that produced it. Both lines are padded
+  # to a common width so the medians line up under each other, which is the only reason they go through
+  # the verbatim variant - cli_text would collapse the padding.
+  labs <- paste0(methods, " frequency:")
+  w <- max(nchar(labs))
+  for (k in seq_along(methods)) {
+    v <- if (k == 1L) freq else freq2
+    ok <- is.finite(v)
+    if (!any(ok)) next
+    lab <- sprintf("%-*s ", w, labs[k])
+    if (sum(ok) == 1L) {
+      .log_arrow_aligned(lvl, lab, sprintf("%.2f Hz", v[ok]))
+    } else {
+      q   <- stats::quantile(v[ok], c(0.25, 0.5, 0.75), names = FALSE)
+      rng <- range(v[ok])
+      .log_arrow_aligned(lvl, lab, sprintf("median %.2f Hz (IQR %.2f\u2013%.2f, range %.2f\u2013%.2f Hz)",
+                                           q[2], q[1], q[3], rng[1], rng[2]))
+    }
+  }
+
+  # axis usage - only when the cohort genuinely used more than one axis
+  ax <- axis[!is.na(axis)]
+  if (length(unique(ax)) > 1L) {
+    tb <- sort(table(ax), decreasing = TRUE)
+    .log_arrow(lvl, "axis used: ", paste(sprintf("%s %d", names(tb), as.integer(tb)), collapse = sep))
+  }
+
+  # the cross-check, beneath the two estimates it compares - only when two backends ran
+  if (length(methods) > 1L && (any(is.finite(agree)) || any(is.finite(diff)))) {
+    .log_arrow(lvl, "cross-check")
+    if (any(is.finite(agree)))
+      .log_subdetail(lvl, sprintf("agreement: median %.0f%%", 100 * stats::median(agree, na.rm = TRUE)),
+                     min_level = 1L)
+    if (any(is.finite(diff)))
+      .log_subdetail(lvl, sprintf("typical difference: median %.2f Hz", stats::median(diff, na.rm = TRUE)),
+                     min_level = 1L)
+  }
+
+  # swimming - only when classification was enabled (a min.amplitude was supplied)
+  if (any(is.finite(swim))) {
+    .log_arrow(lvl, sprintf("swimming: median %.0f%% across tags", 100 * stats::median(swim, na.rm = TRUE)))
+  }
+
+  # QC-flag rollup - counts of concerns already warned per deployment; only the non-zero ones, and the
+  # whole line is omitted on a clean batch
+  flags <- character(0)
+  n_edge <- sum(edge > 0.05, na.rm = TRUE)
+  if (n_edge > 0L) flags <- c(flags, sprintf("%d near band edge", n_edge))
+  n_harm <- sum(!is.na(harm))
+  if (n_harm > 0L) flags <- c(flags, sprintf("%d possible harmonic%s", n_harm, if (n_harm != 1) "s" else ""))
+  n_pow <- sum(reason == "power", na.rm = TRUE)
+  if (n_pow > 0L) flags <- c(flags, sprintf("%d axis chosen without consensus", n_pow))
+  if (length(flags)) .log_attention(lvl, "flags: ", paste(flags, collapse = sep))
+
+  invisible(NULL)
+}
+
+#######################################################################################################
+# Per-individual driver for the CWT method ############################################################
+#######################################################################################################
+
+#' Run the Morlet CWT tail-beat method on one individual; writes tbf_hz_<suffix> / tbf_amplitude_<suffix>, draws the
+#' diagnostic pages (if requested), and returns the data.table for the driver to save.
+#'
+#' The transform itself lives in `.cwtRidge` (R/utils-cwt.R), which batches internally with guard bands
+#' and is therefore invariant to its block size. This function is only the per-individual plumbing:
+#' band-pass, transform, smooth, interpolate short gaps, write columns, draw.
+#' @inheritParams calculateTailBeats
+#' @param dt Input data.table for one individual. @param animal_id ID of the current individual.
+#' @param draw.devices Open device numbers to draw on. @param lvl Verbosity level.
+#' @param suffix Backend name appended to the columns this run writes.
+#' @return The input data.table with `tbf_hz_<suffix>` and `tbf_amplitude_<suffix>` added.
+#' @keywords internal
+#' @noRd
+.runCWT <- function(dt, animal_id, id.col, datetime.col, motion.col, ridge.prominence = 2,
+                    min.freq.Hz, max.freq.Hz, bandpass.filter, filter.low.freq,
+                    filter.high.freq, filter.order, min.amplitude, smooth.window, max.interp.gap,
+                    plot.wavelet, plot.diagnostic, fs = NULL, suffix = "wavelet",
+                    draw.devices = integer(0), lvl = 1L) {
+
+  # `fs` is normally supplied by the driver, which has already resolved it from the deployment's
+  # metadata. It matters when this runs as the cross-check, where the input carries only the two columns
+  # the backend reads and so has no metadata to resolve it from.
+  if (is.null(fs)) fs <- .tagFs(dt, datetime.col)
+  motion <- dt[[motion.col]]
+
+  if (!any(is.finite(motion))) {
+    cli::cli_warn("No finite {.val {motion.col}} data for ID {.val {animal_id}}; returning NA.")
+    data.table::set(dt, j = paste0("tbf_hz_", suffix), value = NA_real_)
+    data.table::set(dt, j = paste0("tbf_amplitude_", suffix), value = NA_real_)
+    return(dt)
+  }
+
+  # Same band-pass primitive as the peak method: it filters within each finite run rather than
+  # interpolating gaps away first, and it carries the numerical-stability assert. The CWT is itself a
+  # constant-Q filter bank, but its out-of-band rejection is only ~-10 dB just outside the band, so the
+  # filter is not redundant: without it an out-of-band low-frequency component drags the ridge onto the
+  # band floor, and an out-of-band tonal one pins it to the ceiling on gliding rows.
+  # the analysis band (config, identical every deployment) is reported once in the header, and the wavelet
+  # internals (omega0, scale count, batches, COI masking) are diagnostics, not user-facing findings - so
+  # neither is echoed per deployment. The per-deployment findings (axis, frequency, amplitude, swimming)
+  # are logged by the driver.
+  bp <- if (bandpass.filter) .bandpassSegments(motion, fs, filter.low.freq, filter.high.freq, filter.order)
+        else motion - mean(motion, na.rm = TRUE)
+
+  want_spec <- isTRUE(plot.wavelet) && length(draw.devices) > 0
+  r <- .cwtRidge(bp, fs, min.freq.Hz, max.freq.Hz, prominence = ridge.prominence, spectrogram = want_spec)
+
+  # Band-placement QC travels on the UNMASKED ridge. An out-of-band beat leaks through the filter and
+  # pins the ridge to an edge; the prominence floor then (correctly) refuses to report it, so reading
+  # edge occupancy off the masked column would silently retire the band-placement check. Published as
+  # attributes rather than columns: they are per-deployment scalars, not per-sample data.
+  data.table::setattr(dt, "tb_ridge_edge", .tbEdgeOccupancy(r$freq_raw, min.freq.Hz, max.freq.Hz))
+  data.table::setattr(dt, "tb_unresolved", r$meta$pct_masked_prominence / 100)
+
+  # Undo the band-pass attenuation before smoothing, at each sample's own estimated frequency. The
+  # ridge is confined to [min.freq.Hz, max.freq.Hz], over which this correction is bounded, so it
+  # cannot amplify noise without limit.
+  amp_raw <- r$amp
+  if (bandpass.filter && any(!is.na(amp_raw))) {
+    gain_at <- seq(min.freq.Hz, max.freq.Hz, length.out = 512L)
+    gain <- .bandpassPowerGain(gain_at, fs, filter.low.freq, filter.high.freq, filter.order)
+    amp_raw <- amp_raw / stats::approx(gain_at, gain, xout = r$freq, rule = 2)$y
+  }
+  # .cwtRidge reports the SEMI-amplitude of the dominant oscillation (A in A*cos(wt)), which is the
+  # natural output of the transform. Peak detection reports the peak-to-trough excursion, which is 2A.
+  # Doubling here puts both backends on the same measurand, so `tbf_amplitude_peaks` and
+  # `tbf_amplitude_wavelet` are directly comparable. Measured before this line: a tone of semi-amplitude
+  # 2 gave 4.00 from peaks and 2.00 from the wavelet, under one column name whose meaning depended only
+  # on which backend the caller happened to name first. The conversion lives here rather than in
+  # .cwtRidge so that primitive stays a faithful CWT and keeps reporting what the transform measures.
+  amp_raw <- 2 * amp_raw
+
+  freq <- .smoothSeries(r$freq, smooth.window, fs)
+  amp <- .smoothSeries(amp_raw, smooth.window, fs)
+
+  # fill short gaps in the frequency track (e.g. single COI-masked samples between valid ones)
+  if (!is.null(max.interp.gap) && isTRUE(max.interp.gap * fs > 0) && any(!is.na(freq))) {
+    freq <- zoo::na.approx(freq, maxgap = max.interp.gap * fs, na.rm = FALSE)
+  }
+
+  # same activity classifier as the peak method, so the two agree on what "swimming" means (and, by
+  # default, both leave it unclassified -- see .classifyActivity). The outcome is reported once by the
+  # driver as the merged "swimming:" line, not here.
+  g <- .classifyActivity(bp, fs, min.amplitude = min.amplitude)
+
+  # null the frequency on not-swimming rows only when classification actually ran (see .runPeaks)
+  glide <- !is.na(g$swimming) & !g$swimming
+  freq[glide] <- NA_real_
+  amp[glide] <- NA_real_
+
+  # Backend-specific quantities carry the backend's name; tbf_swimming does not, because
+  # .classifyActivity() runs on the shared band-passed signal and is bit-identical whichever backend
+  # computed it - a suffix there would assert a dependence that does not exist.
+  data.table::set(dt, j = paste0("tbf_hz_", suffix), value = freq)
+  data.table::set(dt, j = paste0("tbf_amplitude_", suffix), value = amp)
+  data.table::set(dt, j = "tbf_swimming", value = g$swimming)
+
+  if (length(draw.devices) > 0) {
+    pd <- list(id = animal_id, t = dt[[datetime.col]], fs = fs, bandpassed = bp,
+               freq = freq, amp = amp, spec = r$meta$spectrogram,
+               min.freq = min.freq.Hz, max.freq = max.freq.Hz,
+               show.spec = isTRUE(plot.wavelet), show.diag = isTRUE(plot.diagnostic))
+    for (d in draw.devices) { grDevices::dev.set(d); .drawTailBeatsCWT(pd) }
+  }
+
+  dt
+}
+
+#' Draw the CWT diagnostic pages for one individual: a spectrogram with the estimated ridge overlaid,
+#' and a time-series panel of the band-passed signal, frequency and amplitude.
+#' @keywords internal
+#' @noRd
+.drawTailBeatsCWT <- function(pd) {
+  op <- graphics::par(no.readonly = TRUE)
+  on.exit(graphics::par(op), add = TRUE)
+
+  t_num <- as.numeric(pd$t)
+  t0 <- t_num[1]
+
+  # ---- page 1: spectrogram + ridge -------------------------------------------------------------
+  if (isTRUE(pd$show.spec) && !is.null(pd$spec)) {
+    P <- pd$spec$power
+    # Column-normalised power on a log scale, with FIXED breaks. Quantile-equalised breaks paint a
+    # fixed 1% of pixels in each colour by construction, so a record with no beat at all renders as
+    # vividly as a strong one -- the plot becomes unable to show absence of signal. Normalising each
+    # column by its own mean measures how PEAKED that column's spectrum is: flat (no beat) -> 0,
+    # sharply peaked -> large, and the scale means the same thing in every record.
+    cm <- colMeans(P, na.rm = TRUE)
+    cm[!is.finite(cm) | cm <= 0] <- NA_real_
+    Z <- log10(P / rep(cm, each = nrow(P)))
+    Z[!is.finite(Z)] <- NA_real_
+    brk <- seq(-1, 2, length.out = 101)
+    Z[] <- pmin(pmax(Z, brk[1]), brk[length(brk)])
+
+    graphics::par(mar = c(4.2, 5.2, 3.2, 7.5))
+    # Draw on seconds-from-start, not absolute time. Adding the POSIXct epoch (~1.6e9) to a grid spaced
+    # by fractions of a second loses the spacing to floating point, and image() rejects the result as
+    # irregular -- which errored on every real record while passing on a synthetic one starting at 0.
+    x_img <- pd$spec$time_s
+    y_img <- log2(1 / pd$spec$freqs)                    # log2 period: even spacing for a log freq axis
+    ord <- order(y_img)
+    graphics::image(x = x_img, y = y_img[ord], z = t(Z[ord, , drop = FALSE]),
+                    col = .viridis_pal(100), breaks = brk, xlab = "", ylab = "Frequency (Hz)",
+                    axes = FALSE, useRaster = TRUE)
+    ticks <- pretty(range(y_img), 6)
+    ticks <- ticks[ticks >= min(y_img) & ticks <= max(y_img)]
+    graphics::axis(2, at = ticks, labels = sprintf("%.2f", 1 / 2^ticks), las = 1)
+    .tbTimeAxis(t0 + x_img, offset = t0)                # labels stay absolute; the grid stays regular
+    graphics::box()
+
+    # The ridge is drawn on the SAME time base as the image, sampled at the image's own columns, so it
+    # cannot drift out of register with the surface it is describing.
+    if (any(!is.na(pd$freq))) {
+      idx <- pmax(1L, pmin(length(pd$freq), round(pd$spec$time_s * pd$fs) + 1L))
+      graphics::lines(x_img, log2(1 / pd$freq[idx]), col = "red", lwd = 1.4)
+    }
+    graphics::title(main = sprintf("%s \u00b7 wavelet power (column-normalised) and dominant frequency", pd$id))
+    .colorlegend(col = .viridis_pal(100), zlim = c(brk[1], brk[length(brk)]),
+                 zval = c(-1, 0, 1, 2), zlab = c("0.1", "1", "10", "100"),
+                 main = "peak / mean\npower", xpd = NA, posx = c(0.90, 0.92))
+  }
+
+  # ---- page 2: band-passed signal, frequency, amplitude ------------------------------------------
+  if (isTRUE(pd$show.diag)) {
+    graphics::par(mfrow = c(3, 1), mar = c(0.6, 5.2, 0.6, 7.5), oma = c(4.2, 0, 3.2, 0))
+
+    d1 <- .decimateForPlot(t_num, pd$bandpassed, 3000L)
+    graphics::plot(d1$x, d1$y, type = "l", col = "grey35", xlab = "", ylab = "Band-passed",
+                   xaxs = "i", axes = FALSE)
+    graphics::axis(2, las = 1); graphics::box()
+
+    d2 <- .decimateForPlot(t_num, pd$freq, 3000L)
+    graphics::plot(d2$x, d2$y, type = "l", col = "#1f78b4", xlab = "", ylab = "Frequency (Hz)",
+                   xaxs = "i", axes = FALSE, ylim = c(pd$min.freq, pd$max.freq))
+    graphics::axis(2, las = 1); graphics::box()
+
+    d3 <- .decimateForPlot(t_num, pd$amp, 3000L)
+    graphics::plot(d3$x, d3$y, type = "l", col = "#33a02c", xlab = "", ylab = "Amplitude",
+                   xaxs = "i", axes = FALSE)
+    graphics::axis(2, las = 1); .tbTimeAxis(t_num); graphics::box()
+
+    graphics::mtext(sprintf("%s \u00b7 CWT diagnostics", pd$id), outer = TRUE, line = 1, cex = 1.1)
+  }
+}
+
+#' Shared date axis for the CWT panels.
+#' @keywords internal
+#' @noRd
+.tbTimeAxis <- function(x, offset = 0) {
+  # the panel's x runs in shifted seconds, so the ticks are placed at `at - offset` while the labels
+  # name the instants `at`; the zone is stated rather than inherited (see .axisTime)
+  at <- pretty(range(x, na.rm = TRUE), 6)
+  .axisTime(.asPosix(at, "UTC"), at = at - offset, fmt = "%d/%b %H:%M", tz = "UTC", las = 1)
 }

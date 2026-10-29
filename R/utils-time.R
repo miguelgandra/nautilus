@@ -142,3 +142,106 @@
     ambiguous = if (any(!has_offset)) ambiguous else NULL,
     explicit_offsets = unique(suffix[has_offset]), reinterpretation = NULL))
 }
+
+# Additional shared time helpers
+
+#' Seconds-since-epoch for a user-supplied time column, or `NULL` if it is not a time at all.
+#'
+#' Elapsed-time arithmetic across the package assumes SECONDS. `as.numeric()` was applied blind, so a
+#' `Date` column - which counts DAYS - came out 86400x too small (a 300-day record drawn on a five-minute
+#' axis), and a character column came out all-`NA`, producing a complete but empty figure. Returning
+#' `NULL` for a non-time column lets each caller raise an error that names its own argument.
+#' @keywords internal
+#' @noRd
+.asTimeSeconds <- function(z) {
+  if (inherits(z, "POSIXct")) return(as.numeric(z))
+  if (inherits(z, "POSIXlt")) return(as.numeric(as.POSIXct(z)))
+  if (inherits(z, "Date")) return(as.numeric(z) * 86400)          # Date counts DAYS, not seconds
+  if (is.numeric(z)) return(as.numeric(z))                        # already epoch seconds
+  NULL
+}
+
+#' Is `z` usable as a time column at all? (cheap guard for callers that only need to reject.)
+#' @keywords internal
+#' @noRd
+.isTimeColumn <- function(z) !is.null(.asTimeSeconds(z))
+
+#' Tracked seconds spanned by one deployment's time column.
+#'
+#' The cohort figure reported by importTagData/processTagData is the SUM of these, i.e. total
+#' animal-time, not the calendar window the cohort covers - deployments overlap in time, so a span
+#' across the whole batch would be a different (and much larger) quantity.
+#'
+#' Returns 0 rather than NA for an unusable column, so a running total is never poisoned by one tag.
+#' @keywords internal
+#' @noRd
+.tagSpanSeconds <- function(z) {
+  t <- .asTimeSeconds(z)                                  # shared coercion contract (Date is in DAYS)
+  if (is.null(t)) return(0)
+  t <- t[is.finite(t)]
+  if (length(t) < 2L) return(0)
+  as.numeric(max(t) - min(t))
+}
+
+# Solar-event calculation for diel classification.
+
+# getDielPhase helpers ----
+
+#' Solar event times (sunrise / sunset / dawn / dusk) without the sf / GDAL stack
+#'
+#' Computes the time at which the sun crosses a given altitude on the day of each `datetime`, replacing
+#' `suntools::sunriset()` / `suntools::crepuscule()` (which now depend on `sf` and its GDAL/GEOS/PROJ system
+#' libraries). Implements the NOAA Solar Calculator equations (after Meeus, "Astronomical Algorithms";
+#' NOAA ESRL Global Monitoring Laboratory), with a two-pass refinement (solar parameters re-evaluated at the
+#' estimated event time). Verified against `suntools` 1.1.0: sub-second agreement for sunrise/sunset and
+#' within ~3 s for civil/nautical twilight.
+#'
+#' @param lon,lat Longitude / latitude in decimal degrees (East / North positive); length 1 or `length(datetimes)`.
+#' @param datetimes POSIXct instants; the event is returned for the UTC calendar date of each.
+#' @param solarDep Sun depression below the horizon (degrees): 0.833 for sunrise/sunset (refraction +
+#'   solar semidiameter), or 6 / 12 / 18 for civil / nautical / astronomical twilight.
+#' @param morning `TRUE` for the morning crossing (sunrise / dawn), `FALSE` for the evening (sunset / dusk).
+#' @return POSIXct (UTC) event times; `NA` where the sun never reaches that altitude (polar day / night).
+#' @keywords internal
+#' @noRd
+.solarEventTime <- function(lon, lat, datetimes, solarDep, morning) {
+  rad  <- pi / 180
+  n    <- length(datetimes)
+  lon  <- rep_len(lon, n); lat <- rep_len(lat, n)
+  day0 <- as.numeric(as.Date(datetimes, tz = "UTC"))          # days since 1970-01-01 (UTC calendar date)
+  jd0  <- day0 + 2440587.5                                     # Julian Day at 00:00 UTC
+
+  # solar declination (deg) + equation of time (min) at a Julian Day (NOAA Solar Calculator / Meeus)
+  .solpar <- function(jd) {
+    T  <- (jd - 2451545) / 36525
+    L0 <- (280.46646 + T * (36000.76983 + T * 0.0003032)) %% 360
+    M  <- 357.52911 + T * (35999.05029 - 0.0001537 * T); Mr <- M * rad
+    e  <- 0.016708634 - T * (0.000042037 + 0.0000001267 * T)
+    C  <- sin(Mr) * (1.914602 - T * (0.004817 + 0.000014 * T)) +
+          sin(2 * Mr) * (0.019993 - 0.000101 * T) + sin(3 * Mr) * 0.000289
+    lambda <- (L0 + C) - 0.00569 - 0.00478 * sin((125.04 - 1934.136 * T) * rad)
+    eps0 <- 23 + (26 + (21.448 - T * (46.815 + T * (0.00059 - T * 0.001813))) / 60) / 60
+    eps  <- eps0 + 0.00256 * cos((125.04 - 1934.136 * T) * rad)
+    decl <- asin(sin(eps * rad) * sin(lambda * rad)) / rad
+    y    <- tan(eps / 2 * rad)^2
+    eqt  <- 4 / rad * (y * sin(2 * L0 * rad) - 2 * e * sin(Mr) + 4 * e * y * sin(Mr) * cos(2 * L0 * rad) -
+                       0.5 * y^2 * sin(4 * L0 * rad) - 1.25 * e^2 * sin(2 * Mr))
+    list(decl = decl, eqt = eqt)
+  }
+  # event time (minutes from 00:00 UTC) for solar parameters evaluated at Julian Day `jd`
+  .eventMin <- function(jd) {
+    s    <- .solpar(jd)
+    cosH <- (cos((90 + solarDep) * rad) - sin(lat * rad) * sin(s$decl * rad)) /
+            (cos(lat * rad) * cos(s$decl * rad))
+    ha   <- ifelse(abs(cosH) > 1, NA_real_, acos(pmin(pmax(cosH, -1), 1)) / rad)  # hour angle (deg)
+    noon <- 720 - 4 * lon - s$eqt                             # solar noon (min UTC); lon East positive
+    if (morning) noon - 4 * ha else noon + 4 * ha             # 4 min per degree of hour angle
+  }
+  m <- .eventMin(jd0 + 0.5)                                   # first guess at 12:00 UTC
+  m <- .eventMin(jd0 + m / 1440)                             # refine at the estimated event time
+  as.POSIXct(day0 * 86400 + m * 60, origin = "1970-01-01", tz = "UTC")
+}
+
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################

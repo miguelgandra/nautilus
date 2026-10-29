@@ -52,7 +52,7 @@ previewOverlayModelAnimation <- function(output, data, models, fps = 20,
         graphics::plot.new()
         if(j==1L) {
           fd <- nautilus:::.overlayFrameData(states[[1]],i,data)
-          graphics::text(.5,.75,"Animation review",cex=1.5,col=theme$text,font=2)
+          graphics::text(.5,.75,"Overlay animation",cex=1.5,col=theme$text,font=2)
           graphics::text(.5,.55,sprintf("%.2f / %.0f seconds\n%d frames/s\n%s",
             as.numeric(times[i]-start,units="secs"),duration,fps,fd$.motion.status),col=theme$text)
           graphics::text(.5,.27,"Shared telemetry and phase\nOriginal production camera\nGliding and missing-estimate transitions",

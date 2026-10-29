@@ -6,7 +6,7 @@ test_that("the production catalog is explicit and keeps every mesh within budget
   catalog <- overlaySpeciesCatalog()
   expect_identical(catalog$model,
     c("blue_shark", "whale_shark", "mako", "hammerhead", "manta", "devil_ray", "turtle", "dolphin", "whale", "marlin", "tuna"))
-  expect_true(all(catalog$phase %in% 1:2))
+  expect_false("phase" %in% names(catalog))
   expect_true(all(catalog$triangles >= 200 & catalog$triangles <= 700))
   expect_true(all(catalog$vertices < 5000))
   expect_equal(catalog$motion, c(rep("lateral", 4), rep("flippers", 3), rep("vertical", 2), rep("lateral", 2)))
@@ -25,23 +25,22 @@ test_that("the production registry resolves the approved catalog without mutatin
   for(i in seq_along(ids)) {
     m <- nautilus:::.prepareOverlayModel(ids[i],20)
     expect_identical(m,nautilus:::.prepareOverlayModel(before[[i]],20))
-    expect_identical(m$metadata$review$status,"approved")
   }
   expect_identical(lapply(ids,overlaySpeciesModel),before)
   for(id in c("shark","cetacean","fish"))
     expect_error(nautilus:::.prepareOverlayModel(id),"must be one of")
 })
 
-test_that("metadata declares anatomical references and indexes complete components", {
+test_that("metadata contains only production identity and complete components", {
   for (id in overlaySpeciesCatalog()$model) {
     m <- overlaySpeciesModel(id)
     expect_s3_class(m, "nautilus_overlay_model")
     expect_identical(m$source, "custom")
     expect_identical(m$metadata$id, id)
-    expect_identical(m$metadata$schema.version, 3L)
-    expect_true(all(startsWith(m$metadata$references, "https://")))
-    expect_identical(m$metadata$rig$type, m$rig$type)
-    expect_equal(m$metadata$rig$normalised.pivot, m$rig$pivot)
+    .expect_overlay_production_metadata(m)
+    construction <- .overlay_test_construction(m)
+    expected.pivot <- (construction$spec$rig$pivot-construction$centre)*construction$scale
+    expect_equal(m$rig$pivot,expected.pivot)
     expect_length(m$metadata$vertex.region, nrow(m$vertices))
     expect_length(m$metadata$face.region, length(m$faces))
     expect_setequal(unique(m$metadata$vertex.region), m$metadata$components$region)
@@ -102,7 +101,7 @@ test_that("rig metadata selects deformation without species-name dispatch", {
     roles <- m$metadata$components$role[match(m$metadata$vertex.region, m$metadata$components$region)]
     expect_true(all(m$rig$weights[roles == "rigid"] == 0), info = id)
     expect_true(all(m$rig$weights[roles == "terminal"] == 1), info = id)
-    if (!identical(m$metadata$rig$flipper.mode, "rigid"))
+    if (!identical(.overlay_test_authored_rig(m)$flipper.mode, "rigid"))
       expect_true(any(m$rig$weights > 0 & m$rig$weights < 1), info = id)
     if (m$rig$type == "flippers")
       expect_true(all(roles[m$rig$weights > 0] == "flipper"), info = id)
@@ -179,7 +178,7 @@ test_that("the catalog follows the requested scientific species references", {
   expect_lt(max(head$stations[,3]), 4.5)
   raw <- function(id) {
     m <- overlaySpeciesModel(id)
-    sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+    .overlay_test_raw_vertices(m)
   }
   m <- overlaySpeciesModel("hammerhead")
   v <- raw("hammerhead")
@@ -312,10 +311,11 @@ test_that("named attachment pivots and sectional roots are finite and preserve s
     components <- model$metadata$components
     authored <- as.matrix(components[,c("pivot.x","pivot.y","pivot.z")])
     normalised <- as.matrix(components[,c("normalised.pivot.x","normalised.pivot.y","normalised.pivot.z")])
-    expected <- sweep(authored,2,model$metadata$geometry$centre,"-")*model$metadata$geometry$scale
+    construction <- .overlay_test_construction(model)
+    expected <- sweep(authored,2,construction$centre,"-")*construction$scale
     expect_equal(unname(normalised),unname(expected))
     expect_true(all(is.finite(normalised)))
-    expect_true(all(nzchar(components$allocation)))
+    expect_false("allocation" %in% names(components))
   }
   for (spec in nautilus:::.overlaySpeciesSpecs()) for (fin in spec$appendages) {
     if (fin$kind != "foil") next

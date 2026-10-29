@@ -1,16 +1,12 @@
 test_that("reference mako retains measured proportions and separate fin components", {
   m<-overlaySpeciesModel("mako")
-  expect_identical(m$metadata$revision,"mako-surface-v12")
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$measured.views,c("dorsal","lateral","anterior"))
-  expect_identical(m$metadata$references,character())
   expect_equal(length(m$faces),700L)
   expect_equal(nrow(m$vertices),374L)
   expect_equal(m$metadata$components$faces,c(260,84,84,48,24,24,24,24,56,56,8,8))
   expect_setequal(m$metadata$components$region,c("body","pectoral_right","pectoral_left",
     "dorsal","second_dorsal","pelvic_right","pelvic_left","anal",
     "caudal_upper","caudal_lower","keel_right","keel_left"))
-  raw<-sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw<-.overlay_test_raw_vertices(m)
   expect_equal(diff(range(raw[,1])),99.98,tolerance=1e-6)
   expect_equal(diff(range(raw[,2])),35.82,tolerance=1e-8)
   body<-raw[m$metadata$vertex.region=="body",]
@@ -48,8 +44,6 @@ test_that("mako appearance preserves approved geometry, pivots and rig", {
   m<-overlaySpeciesModel("mako")
   expect_identical(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v11")
   # Adjacent triangles within each trunk quad must not form a diagonal
   # countershade checkerboard. End caps are excluded from the quad sequence.
   body<-which(m$metadata$face.region=="body")
@@ -117,6 +111,4 @@ test_that("approved mako v12 retains its reviewed appearance and geometry", {
   m<-overlaySpeciesModel("mako")
   expect_identical(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v12")
 })

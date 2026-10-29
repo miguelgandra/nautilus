@@ -1,8 +1,8 @@
 # Production orientation models
 
-`renderOverlayVideo()` now uses the eleven approved species models directly.
-The default is `orientation.model = "blue_shark"`. Each name selects the same
-geometry, colours, markings, pivots and rig returned by `overlaySpeciesModel()`.
+`renderOverlayVideo()` uses eleven species models. The default is
+`orientation.model = "blue_shark"`. Each name selects the same geometry,
+colours, markings, pivots and rig returned by `overlaySpeciesModel()`.
 
 | Name | Species | Triangles | Motion |
 | --- | --- | ---: | --- |
@@ -26,51 +26,52 @@ renderOverlayVideo(video, data, output,
   animate = TRUE)
 ```
 
-Animation remains optional. It uses synchronized frequency and amplitude
-estimates, with the existing gliding and missing-frequency behavior. Rig
-metadata determines deformation; paired caudal lobes/flukes move together.
-Turtle foreflippers rotate rigidly at their shoulders. No telemetry column,
-orientation convention or video timing is changed by species selection.
+Animation is optional. It uses synchronized frequency and amplitude estimates,
+with the existing gliding and missing-frequency behavior. The rig determines
+deformation; paired caudal lobes/flukes move together. Turtle foreflippers
+rotate rigidly at their shoulders. Species selection does not change telemetry,
+orientation conventions or video timing.
 
-Custom `overlayModel()` geometry and `overlaySpeciesModel()` objects remain
-supported. All species have indexed, closed components with named parts and
-pivots. Countershading and sparse barycentric markings add no triangles; marks
-follow deformed faces and are hidden when covered. No runtime GLB/image import
-or new package dependency is required.
+Custom `overlayModel()` geometry and `overlaySpeciesModel()` objects are also
+supported. Species models have indexed, closed components with named parts and
+pivots. Countershading and barycentric markings add no triangles; markings follow
+deformed faces and are hidden when covered. No runtime GLB/image import or new
+package dependency is required.
 
-## Migration
+## Model objects
 
-The generic `shark`, `cetacean` and `fish` names are removed without aliases.
-Use `blue_shark`, choose `dolphin` or `whale`, and choose an explicit fish species
-such as `tuna` or `marlin`, respectively. Experimental wrapper functions are
-removed; use `overlaySpeciesModel()` and `overlaySpeciesCatalog()`.
+The model's top-level geometry, rig and appearance hold its operational state.
+`model$metadata` contains its identifier, label, taxon, axes, named components,
+and vertex/face region maps for inspection and customization. Geometry sizes
+can be read directly from `nrow(model$vertices)` and `length(model$faces)`.
 
-## Model interpretation
+Development revisions, review records, fitting descriptions, duplicated authored
+rig reports and normalization summaries are omitted. The catalog reports the
+species, mesh sizes and motion profile without a development-phase column.
 
-These are reference-guided schematic models. Approval records and component
-metadata remain accessible through `model$metadata`. Regression fixtures retain
-the approved geometry, appearance and complete rigs.
+```r
+model <- overlaySpeciesModel("tuna")
+model$rig
+model$metadata$components
+```
 
-- Blue shark uses traced lateral and ventral outlines; anterior shape is inferred.
-- Whale shark, manta and mako use neutral reference-asset sections, with mirrored
-  paired parts. Whale-shark spots are illustrative, not an identification pattern.
-- Smooth hammerhead adapts a scalloped-hammerhead reference with the median notch
-  removed, retaining the approved smooth-hammerhead identity.
-- Devil ray uses a dorsal drawing; depth, camber and lateral/anterior views are inferred.
-- Turtle reconstructs the incomplete reference flipper by mirroring the intact
-  side; its rigid flapping remains schematic.
-- Common dolphin and humpback fit their supplied species assets. Mouth closure,
-  surface lines and some embedded roots are simplified.
-- Marlin is striped marlin, matching the supplied asset; the earlier blue-marlin
-  identity is retired.
-- Tuna fits a lateral illustration, retaining its long-finned form and 95.5%
-  lateral silhouette overlap. Width is inferred as 0.76 times local body depth;
-  dorsal and anterior views remain inferred. Small auxiliary keels are omitted.
+## Code organization
 
-The painter's algorithm retains visible facets and can show intersecting-root
-seams. Motion is a frequency-driven schematic, not measured joint motion or
-hydrodynamics. Sparse colour cells and markings prioritize recognition at inset size.
+`R/utils-3d-engine.R` contains shared mesh construction and validation, rigging,
+appearance, projection and drawing functions. `R/utils-3d-models.R` contains
+species definitions, coordinates, fin controls, colour tables and marking data.
+The numerical model data and rendering calculations are unchanged by this layout.
 
 For equal-scale orthographic previews, source `preview-model-library.R` and call
 `previewModelLibrary()`. For synchronized inset clips, source
 `preview-overlay-model-animation.R` and supply your telemetry and model names.
+
+## Migration
+
+Use explicit species identifiers from the table. The generic `shark`, `cetacean`
+and `fish` names and experimental wrappers are removed without aliases. Use
+`overlaySpeciesModel()` and `overlaySpeciesCatalog()` for the model interface.
+
+The painter's algorithm retains visible facets and can show intersecting-root
+seams. Motion is a frequency-driven schematic rather than measured joint motion
+or hydrodynamics. Colours and markings prioritize recognition at inset size.

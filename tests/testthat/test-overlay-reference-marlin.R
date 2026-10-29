@@ -2,8 +2,6 @@ test_that("striped marlin keeps reference proportions within the named-part budg
   m <- overlaySpeciesModel("marlin")
   expect_identical(m$metadata$label,"Striped marlin")
   expect_identical(m$metadata$taxon,"Kajikia audax")
-  expect_identical(m$metadata$revision,"marlin-surface-v22")
-  expect_identical(m$metadata$review$status,"approved")
   expect_identical(m$rig$type,"lateral")
   expect_equal(length(m$faces),696L)
   expect_equal(nrow(m$vertices),376L)
@@ -13,7 +11,7 @@ test_that("striped marlin keeps reference proportions within the named-part budg
     "caudal_upper","caudal_lower","keel_right","keel_left"))
   expect_equal(length(m$appearance$surface$face),282L)
   expect_length(m$details,0)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   expect_gt(diff(range(raw[,1])),99)
   expect_lt(diff(range(raw[,1])),100.1)
   bill <- raw[m$metadata$vertex.region=="bill",,drop=FALSE]
@@ -38,7 +36,7 @@ test_that("striped marlin keeps reference proportions within the named-part budg
 
 test_that("marlin keeps bill and paired fins fixed and moves the whole caudal blade rigidly", {
   m <- nautilus:::.prepareOverlayModel(overlaySpeciesModel("marlin"),45)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   fixed <- m$metadata$vertex.region=="bill" | startsWith(m$metadata$vertex.region,"pectoral_") |
     startsWith(m$metadata$vertex.region,"pelvic_") | (m$metadata$vertex.region=="body" & raw[,1]>=0)
   tail <- startsWith(m$metadata$vertex.region,"caudal_")
@@ -59,9 +57,7 @@ test_that("marlin appearance preserves approved geometry and the complete latera
   approved <- readRDS(testthat::test_path("fixtures","approved-marlin-geometry-v21.rds"))
   m <- overlaySpeciesModel("marlin")
   expect_identical(c(m[c("vertices","faces","part","rig","details")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v21")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   rgb <- m$appearance$face.rgb
   expect_identical(dim(rgb),c(696L,3L))
   expect_true(all(is.finite(rgb) & rgb>=0 & rgb<=1))
@@ -148,7 +144,5 @@ test_that("approved marlin v22 preserves reviewed colour, markings and articulat
   approved <- readRDS(testthat::test_path("fixtures","approved-marlin-v22.rds"))
   m <- overlaySpeciesModel("marlin")
   expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v22")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

@@ -1,10 +1,6 @@
 test_that("yellowfin uses a traced lateral profile and explicitly inferred transverse geometry", {
   m <- overlaySpeciesModel("tuna")
   expect_identical(m$metadata$taxon,"Thunnus albacares")
-  expect_identical(m$metadata$revision,"tuna-surface-v24")
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$measured.views,"lateral")
-  expect_setequal(m$metadata$review$inferred.views,c("dorsal","anterior"))
   expect_equal(length(m$faces),700L)
   expect_equal(nrow(m$vertices),410L)
   expect_equal(nrow(m$metadata$components),30L)
@@ -14,13 +10,14 @@ test_that("yellowfin uses a traced lateral profile and explicitly inferred trans
   ids <- m$metadata$components$region
   expect_equal(sum(startsWith(ids,"dorsal_finlet_")),9L)
   expect_equal(sum(startsWith(ids,"ventral_finlet_")),9L)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   body <- raw[m$metadata$vertex.region=="body",,drop=FALSE]
   expect_gt(diff(range(body[,3])),25)
   expect_lt(diff(range(body[,3])),27)
   expect_gt(diff(range(body[,2])),19)
   expect_lt(diff(range(body[,2])),21)
-  expect_equal(m$metadata$landmarks$width.depth.ratio,.76)
+  b <- nautilus:::.overlaySpeciesSpecs()[["tuna"]]$body
+  expect_equal(2*b[,2]/(b[,3]+b[,4]),rep(.76,nrow(b)),tolerance=1e-8)
   tail <- raw[startsWith(m$metadata$vertex.region,"caudal_"),,drop=FALSE]
   expect_equal(diff(range(tail[,3])),613/1587*100,tolerance=1e-7)
   for(part in c("pectoral","pelvic","keel")) {
@@ -54,9 +51,7 @@ test_that("yellowfin appearance preserves approved geometry and a bilateral quad
   approved <- readRDS(testthat::test_path("fixtures","approved-tuna-geometry-v23.rds"))
   m <- overlaySpeciesModel("tuna")
   expect_identical(c(m[c("vertices","faces","part","rig","details")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v23")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   rgb <- m$appearance$face.rgb
   expect_identical(dim(rgb),c(700L,3L))
   expect_true(all(is.finite(rgb) & rgb>=0 & rgb<=1))
@@ -125,7 +120,5 @@ test_that("approved tuna v24 preserves reviewed colour, markings and articulatio
   approved <- readRDS(testthat::test_path("fixtures","approved-tuna-v24.rds"))
   m <- overlaySpeciesModel("tuna")
   expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v24")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

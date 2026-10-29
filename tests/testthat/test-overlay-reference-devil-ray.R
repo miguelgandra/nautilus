@@ -1,21 +1,16 @@
 test_that("devil ray declares the measured view and retains a named closed mesh", {
   m<-overlaySpeciesModel("devil_ray")
-  expect_identical(m$metadata$revision,"devil-ray-surface-v10")
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$measured.views,"dorsal")
-  expect_identical(m$metadata$review$inferred.views,c("lateral","anterior"))
-  expect_identical(m$metadata$references,character())
   expect_equal(length(m$faces),696L)
   expect_equal(nrow(m$vertices),366L)
   expect_equal(m$metadata$components$faces,c(144,144,144,60,60,72,24,24,24))
   expect_setequal(m$metadata$components$region,c("body","wing_right","wing_left",
     "cephalic_right","cephalic_left","tail","dorsal","pelvic_right","pelvic_left"))
-  raw<-sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw<-.overlay_test_raw_vertices(m)
   expect_equal(diff(range(raw[,1])),100,tolerance=1e-10)
   expect_gt(diff(range(raw[,2])),76)
   expect_lt(diff(range(raw[,2])),77)
   tail<-raw[m$metadata$vertex.region=="tail",]
-  expect_equal(diff(range(tail[,1])),m$metadata$landmarks$tail.length,tolerance=1e-8)
+  expect_equal(diff(range(tail[,1])),52.1077005378,tolerance=1e-8)
   expect_gt(diff(range(tail[,1])),50) # Visible reference tail retained, not the old stub.
   expect_lt(diff(range(tail[,2])),1)
   for(part in c("wing","cephalic","pelvic")) {
@@ -49,8 +44,6 @@ test_that("devil ray surface refinement preserves the approved v9 geometry and r
   m<-overlaySpeciesModel("devil_ray")
   fields<-setdiff(names(approved),"components")
   expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$geometry$checkpoint,"v9")
-  expect_identical(m$metadata$revision,"devil-ray-surface-v10")
   expect_identical(formals(renderOverlayVideo)$orientation.model,"blue_shark")
 })
 
@@ -119,6 +112,4 @@ test_that("approved v10 devil ray retains its reviewed appearance, geometry and 
   m<-overlaySpeciesModel("devil_ray")
   fields<-setdiff(names(approved),"components")
   expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v10")
 })

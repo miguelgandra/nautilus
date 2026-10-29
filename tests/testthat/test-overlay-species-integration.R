@@ -3,8 +3,6 @@ test_that("production names and constructors resolve identical approved models",
   for(id in ids) {
     m <- overlaySpeciesModel(id)
     expect_identical(nautilus:::.prepareOverlayModel(id),nautilus:::.prepareOverlayModel(m))
-    expect_identical(m$metadata$library,"species")
-    expect_identical(m$metadata$review$status,"approved")
   }
   expect_identical(nautilus:::.prepareOverlayModel(),nautilus:::.prepareOverlayModel("blue_shark"))
   expect_identical(formals(renderOverlayVideo)$orientation.model,"blue_shark")

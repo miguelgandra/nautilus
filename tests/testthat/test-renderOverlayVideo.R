@@ -165,7 +165,6 @@ test_that("all production orientation models use approved indexed triangle meshe
     expect_equal(length(m$faces),length(m$part))
     expect_true(all(vapply(m$faces,function(f)length(f)==3L && all(f>=1 & f<=nrow(m$vertices)),logical(1))))
     expect_true(all(is.finite(m$vertices)))
-    expect_identical(m$metadata$review$status,"approved")
   }
   expect_length(nautilus:::.prepareOverlayModel()$faces,696L)
   for(id in c("shark","cetacean","fish","penguin"))
@@ -176,7 +175,7 @@ test_that("production meshes retain diagnostic anatomy and deformation profiles"
   models <- setNames(lapply(overlaySpeciesCatalog()$model,overlaySpeciesModel),overlaySpeciesCatalog()$model)
   expect_identical(models$dolphin$rig$type,"vertical")
   expect_identical(models$whale$rig$type,"vertical")
-  expect_identical(models$turtle$metadata$rig$flipper.mode,"rigid")
+  expect_identical(.overlay_test_authored_rig(models$turtle)$flipper.mode,"rigid")
   expect_true(all(c("body","plastron") %in% models$turtle$metadata$components$region))
   expect_true("cephalofoil" %in% models$hammerhead$metadata$components$region)
   expect_true("bill" %in% models$marlin$metadata$components$region)

@@ -1,22 +1,3 @@
-#######################################################################################################
-# Plot theme (a shared, publication-ready visual style; one object customises every nautilus plot) ###
-#######################################################################################################
-
-#' Darken a colour toward black by a multiplicative factor.
-#'
-#' Used to give a filled bar an outline in its own hue rather than a contrasting one: a border drawn
-#' from the fill reads as definition, while a white or grey border reads as a separate element and
-#' fragments a stack of bars. 0.72 is dark enough to hold an edge against the fill at print size
-#' without turning into a black keyline.
-#' @param col Any colour R understands.
-#' @param factor Multiplier applied to each RGB channel; below 1 darkens.
-#' @keywords internal
-#' @noRd
-.darkenColor <- function(col, factor = 0.72) {
-  rgb <- grDevices::col2rgb(col, alpha = FALSE) / 255
-  grDevices::rgb(rgb[1, ] * factor, rgb[2, ] * factor, rgb[3, ] * factor)
-}
-
 #' Visual theme for nautilus plots
 #'
 #' @description
@@ -101,54 +82,4 @@ plotTheme <- function(preset = c("light", "minimal", "classic"),
   }
   th$preset <- preset
   structure(th, class = c("nautilus_theme", "list"))
-}
-
-#' Base field set for each theme preset.
-#' @keywords internal
-#' @noRd
-.themePreset <- function(preset) {
-  common <- list(palette = c("#2FA4A0", "#E7913B", "#3E86C0", "#8B6BB1", "#C25B56", "#7FA65E", "#5B7FBD", "#C77F9E"),
-                 # The ramp a mapped variable is drawn through. These stops are the package's original
-                 # depth-profile palette: the theme migration replaced them with a three-stop blue
-                 # sequential ramp, believing it was moving only the SOURCE of the colours, but for a
-                 # colour-mapped trace the base colours ARE the palette, and a page of profiles went
-                 # monochrome. Restored, and locked by a test.
-                 sequential = c("#020275", "#0808E5", "#4272CB", "#17E2E2", "#7FE07F", "#E2E207",
-                                "#DC7534", "#E50303", "#740101"),
-                 bar.alpha = 1, font.family = "", cex = 1)
-  switch(preset,
-    light   = c(list(panel = "grey97", grid = "grey88", ink = "#1B1F27", axis = "#586074",
-                     subtitle = "#9AA1B0", day = "#F6D2AE", night = "#294763",
-                     day.border = .darkenColor("#F6D2AE"), bar.border = "#FFFFFF"), common),
-    minimal = c(list(panel = "#FFFFFF", grid = "#E7E9EE", ink = "#1B1F27", axis = "#586074",
-                     subtitle = "#9AA1B0", day = "#F6D2AE", night = "#294763",
-                     day.border = .darkenColor("#F6D2AE"), bar.border = "#FFFFFF"), common),
-    classic = c(list(panel = "#EDEDED", grid = "#FFFFFF", ink = "#000000", axis = "#333333",
-                     subtitle = "#666666", day = "#FFFFFF", night = "#4D4D4D", day.border = "#333333",
-                     bar.border = "#4D4D4D"),
-                utils::modifyList(common, list(palette = grey.colors(6, 0.25, 0.75), bar.border = "#4D4D4D"))))
-}
-
-#' Is `x` a single, valid colour?
-#' @keywords internal
-#' @noRd
-.isColour <- function(x) {
-  # col2rgb(NA) SUCCEEDS - it returns white - so a bare tryCatch would accept NA as a valid colour and
-  # the element would silently draw transparent or white instead of aborting. A missing colour is a
-  # mistake to report, not a colour to honour.
-  if (length(x) != 1L || is.na(x)) return(FALSE)
-  isTRUE(tryCatch({ grDevices::col2rgb(x); TRUE }, error = function(e) FALSE))
-}
-
-#' Resolve a theme's `palette` field to exactly `n` colours (a colour vector, or an hcl.colors name).
-#' @keywords internal
-#' @noRd
-.themePalette <- function(spec, n) {
-  n <- max(1L, n)
-  if (length(spec) == 1L && is.character(spec) && !.isColour(spec)) {
-    ok <- tryCatch(grDevices::hcl.colors(max(n, 2L), spec), error = function(e) NULL)
-    if (!is.null(ok)) return(ok[seq_len(n)])
-    .abort("{.arg palette} {.val {spec}} is not a colour or a known {.fn hcl.colors} palette.")
-  }
-  rep(spec, length.out = n)[seq_len(n)]
 }

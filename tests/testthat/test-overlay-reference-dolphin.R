@@ -1,8 +1,6 @@
 test_that("dolphin neutral reference fit retains species, parts and proportions", {
   m <- overlaySpeciesModel("dolphin")
   expect_identical(m$metadata$taxon,"Delphinus delphis")
-  expect_identical(m$metadata$revision,"dolphin-surface-v20")
-  expect_identical(m$metadata$review$status,"approved")
   expect_identical(m$rig$type,"vertical")
   expect_equal(length(m$faces),688L)
   expect_equal(nrow(m$vertices),356L)
@@ -11,7 +9,7 @@ test_that("dolphin neutral reference fit retains species, parts and proportions"
     "dorsal","fluke_right","fluke_left"))
   expect_equal(length(m$appearance$surface$face),111L)
   expect_length(m$details,0)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   expect_gt(diff(range(raw[,1])),99.5)
   expect_lt(diff(range(raw[,1])),100.1)
   body <- raw[m$metadata$vertex.region=="body",,drop=FALSE]
@@ -37,7 +35,7 @@ test_that("dolphin neutral reference fit retains species, parts and proportions"
 
 test_that("dolphin keeps anchored pectorals and rigid whole flukes through vertical bends", {
   m <- nautilus:::.prepareOverlayModel(overlaySpeciesModel("dolphin"),45)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   fixed <- startsWith(m$metadata$vertex.region,"pectoral_") |
     (m$metadata$vertex.region=="body" & raw[,1]>=0)
   flukes <- startsWith(m$metadata$vertex.region,"fluke_")
@@ -59,14 +57,12 @@ test_that("dolphin appearance preserves the approved geometry and complete rig",
   approved <- readRDS(testthat::test_path("fixtures","approved-dolphin-geometry-v19.rds"))
   m <- overlaySpeciesModel("dolphin")
   expect_identical(c(m[c("vertices","faces","part","rig","details")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v19")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   rgb <- m$appearance$face.rgb
   expect_identical(dim(rgb),c(688L,3L))
   expect_true(all(is.finite(rgb) & rgb>=0 & rgb<=1))
   expect_equal(rgb[seq(1,299,2),],rgb[seq(2,300,2),])
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   f <- do.call(rbind,m$faces)
   p <- (raw[f[,1],]+raw[f[,2],]+raw[f[,3],])/3
   spec <- nautilus:::.referenceDolphinSpec()
@@ -148,7 +144,5 @@ test_that("approved dolphin v20 preserves reviewed colour, markings and articula
   approved <- readRDS(testthat::test_path("fixtures","approved-dolphin-v20.rds"))
   m <- overlaySpeciesModel("dolphin")
   expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v20")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

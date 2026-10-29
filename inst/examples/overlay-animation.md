@@ -3,10 +3,11 @@
 `renderOverlayVideo()` prepares indexed geometry and interpolated frame state once
 before drawing. Schematic motion is optional, and custom untextured geometry can be
 validated with `overlayModel()`. Video rendering uses optional **av** and FFmpeg;
-no new package dependencies are required. Model-file import and browser telemetry
-export are outside this interface.
+no new package dependencies are required. Shared 3D implementation and species
+data live in `utils-3d-engine.R` and `utils-3d-models.R`, respectively. Model-file
+import and browser telemetry export are outside this interface.
 
-The production renderer uses the eleven approved models in `overlaySpeciesCatalog()`.
+The production renderer uses the eleven species models in `overlaySpeciesCatalog()`.
 The default is `"blue_shark"`; pass a species name such as `"whale_shark"` or an
 `overlaySpeciesModel()` object. Named parts, pivots, countershading and rigs are
 shared by both routes. Generic `"shark"`, `"cetacean"` and `"fish"` names have been
@@ -57,9 +58,10 @@ Otherwise it uses 5 fps. Use matching explicit rates for a controlled comparison
 The full dashboard currently redraws at that rate. Higher rates therefore take
 longer and transparent composition can produce many temporary PNGs.
 
-Built-in motion profiles are lateral bending for shark/fish, vertical bending for
-cetacean, and paired flipper/wing bending for turtle/manta. These are schematic
-deformations of the existing silhouettes. Global attitude retains the production
+Built-in motion profiles are lateral bending for sharks, marlin and tuna,
+vertical bending for dolphin and humpback whale, flexible wing motion for manta
+and devil ray, and rigid shoulder-driven foreflipper motion for turtle. These
+are schematic deformations of the selected silhouettes. Global attitude retains the production
 body axes and pitch/roll signs; heading stays on its own compass.
 The camera uses the original straight rear alignment, without an
 oblique azimuth. A display-only pitch-zero rotation compensates the camera's
@@ -119,7 +121,7 @@ faces <- rbind(c(1, 2, 3), c(1, 4, 2), c(1, 3, 4), c(2, 4, 3))
 
 custom <- overlayModel(vertices, faces, name = "custom silhouette")
 
-# This deliberately simple shape demonstrates the motion metadata interface.
+# This deliberately simple shape demonstrates the custom motion interface.
 # Replace its geometry and weights with an appropriate species-specific schematic.
 custom_moving <- overlayModel(
   vertices, faces, name = "custom lateral schematic",

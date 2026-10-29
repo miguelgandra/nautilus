@@ -1,16 +1,13 @@
 test_that("reference hammerhead retains smooth species identity and named anatomy", {
   m<-overlaySpeciesModel("hammerhead")
   expect_identical(m$metadata$taxon,"Sphyrna zygaena")
-  expect_identical(m$metadata$revision,"hammerhead-surface-v14")
-  expect_identical(m$metadata$review$status,"approved")
-  expect_match(m$metadata$review$adaptation,"median cephalofoil notch removed")
   expect_equal(length(m$faces),696L)
   expect_equal(nrow(m$vertices),370L)
   expect_equal(m$metadata$components$faces,c(220,156,40,40,48,24,24,24,24,56,40))
   expect_setequal(m$metadata$components$region,c("body","cephalofoil",
     "pectoral_right","pectoral_left","dorsal","second_dorsal",
     "pelvic_right","pelvic_left","anal","caudal_upper","caudal_lower"))
-  raw<-sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw<-.overlay_test_raw_vertices(m)
   expect_gt(diff(range(raw[,1])),99.9)
   expect_equal(diff(range(raw[m$metadata$vertex.region=="cephalofoil",2])),26.88)
   for(part in c("pectoral","pelvic")) {
@@ -43,8 +40,6 @@ test_that("hammerhead appearance preserves approved geometry, pivots and rig", {
   m<-overlaySpeciesModel("hammerhead")
   expect_identical(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v13")
   # Adjacent triangles within each trunk quad must not form a diagonal
   # countershade checkerboard. End caps are excluded from the quad sequence.
   body<-which(m$metadata$face.region=="body")
@@ -114,6 +109,4 @@ test_that("approved hammerhead v14 retains reviewed geometry and appearance", {
   m<-overlaySpeciesModel("hammerhead")
   expect_identical(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v14")
 })

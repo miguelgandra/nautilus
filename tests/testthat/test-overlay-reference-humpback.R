@@ -1,8 +1,6 @@
 test_that("humpback neutral reference fit retains species, parts and proportions", {
   m <- overlaySpeciesModel("whale")
   expect_identical(m$metadata$taxon,"Megaptera novaeangliae")
-  expect_identical(m$metadata$revision,"humpback-surface-v18")
-  expect_identical(m$metadata$review$status,"approved")
   expect_identical(m$rig$type,"vertical")
   expect_equal(length(m$faces),696L)
   expect_equal(nrow(m$vertices),360L)
@@ -11,7 +9,7 @@ test_that("humpback neutral reference fit retains species, parts and proportions
     "dorsal","fluke_right","fluke_left"))
   expect_equal(length(m$appearance$surface$face),225L)
   expect_length(m$details,0)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   expect_gt(diff(range(raw[,1])),99.5)
   expect_lt(diff(range(raw[,1])),100.1)
   body <- raw[m$metadata$vertex.region=="body",,drop=FALSE]
@@ -37,7 +35,7 @@ test_that("humpback neutral reference fit retains species, parts and proportions
 
 test_that("humpback keeps anchored pectorals and rigid whole flukes through vertical bends", {
   m <- nautilus:::.prepareOverlayModel(overlaySpeciesModel("whale"),45)
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw <- .overlay_test_raw_vertices(m)
   fixed <- startsWith(m$metadata$vertex.region,"pectoral_") |
     (m$metadata$vertex.region=="body" & raw[,1]>=0)
   flukes <- startsWith(m$metadata$vertex.region,"fluke_")
@@ -58,9 +56,7 @@ test_that("humpback appearance preserves the approved geometry and complete rig"
   approved <- readRDS(testthat::test_path("fixtures","approved-humpback-geometry-v17.rds"))
   m <- overlaySpeciesModel("whale")
   expect_identical(c(m[c("vertices","faces","part","rig","details")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v17")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   expect_equal(range(m$appearance$belly),c(0,1))
   body <- which(m$metadata$face.region=="body")
   pairs <- matrix(m$appearance$belly[head(body,-20L)],ncol=2,byrow=TRUE)
@@ -129,7 +125,5 @@ test_that("approved humpback v18 preserves reviewed appearance and articulation"
   approved <- readRDS(testthat::test_path("fixtures","approved-humpback-v18.rds"))
   m <- overlaySpeciesModel("whale")
   expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
-    list(components=m$metadata$components,authored.rig=m$metadata$rig)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v18")
+    list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

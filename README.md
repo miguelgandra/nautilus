@@ -232,10 +232,13 @@ the sensor record, lets you score observed behaviours onto individual samples, a
 video with sensor traces overlaid.<br/>
 `getVideoMetadata()` &middot; `filterVideoPeriod()` &middot; `annotateData()` &middot; `renderOverlayVideo()`
 
-The renderer uses the approved species catalog, defaulting to `"blue_shark"`.
+The renderer uses the species catalog, defaulting to `"blue_shark"`.
 Select a species directly with `orientation.model = "whale_shark"`;
 `overlaySpeciesCatalog()` lists all 11 choices. Add `animate = TRUE` to use the
 selected model's motion profile. See the [species model guide](inst/examples/model-library.md).
+The implementation groups shared 3D logic in
+[`utils-3d-engine.R`](R/utils-3d-engine.R), and species definitions and numerical
+data in [`utils-3d-models.R`](R/utils-3d-models.R).
 
 <br/>
 

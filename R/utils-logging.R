@@ -416,3 +416,100 @@
   if (secs >= 60)    return(sprintf("%.0f m", secs / 60))
   sprintf("%.0f s", secs)
 }
+
+# Additional shared logging helpers
+
+
+#####################################################################################
+## Decimal Places ###################################################################
+#####################################################################################
+## Sourced from https://stackoverflow.com/questions/5173692/how-to-return-number-of-decimal-places-in-r
+
+#' Decimal Places
+#'
+#' @description Determines the number of decimal places in a numeric value.
+#' @note This function is intended for internal use within the 'nautilus' package.
+#' @keywords internal
+#' @noRd
+
+.decimalPlaces <- function(x) {
+  if(is.na(x)){return(NA)}
+  if (abs(x - round(x)) > .Machine$double.eps^0.5) {
+    nchar(strsplit(sub('0+$', '', format(x, scientific=FALSE)), ".", fixed = TRUE)[[1]][[2]])
+  } else {
+    return(0)
+  }
+}
+.decimalPlaces <- Vectorize(.decimalPlaces)
+
+
+#####################################################################################
+# Format durations ##################################################################
+#####################################################################################
+
+#' Format a duration in seconds into a human-readable string
+#'
+#' Converts a numeric value in seconds into a formatted string using
+#' appropriate units (seconds, minutes, or hours), rounded to two decimal places.
+#'
+#' @param seconds A numeric value representing a duration in seconds.
+#' @return A character string representing the formatted duration.
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.formatDuration <- function(seconds) {
+  if (seconds >= 3600) {
+    sprintf("%.2f hours", seconds / 3600)
+  } else if (seconds >= 60) {
+    sprintf("%.2f minutes", seconds / 60)
+  } else {
+    sprintf("%.2f seconds", seconds)
+  }
+}
+
+#####################################################################################
+# Format numbers ####################################################################
+#####################################################################################
+
+#' Format a number with thousands separators
+#'
+#' Converts a numeric value into a character string with comma as the
+#' thousands separator and no decimal places.
+#'
+#' @param x A numeric value to be formatted.
+#' @return A character string with formatted number.
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.formatNumber <- function(x) {
+  formatC(x, format = "f", big.mark = ",", digits = 0)
+}
+
+
+#####################################################################################
+# Format large counts with K/M suffixes #############################################
+#####################################################################################
+
+#' Format a count with K/M suffixes
+#'
+#' Converts an integer count into a compact string using "K" (thousands) or
+#' "M" (millions) suffixes, rounded to one decimal place.
+#'
+#' @param n A non-negative numeric count.
+#' @return A character string (e.g. "1.2 M", "3.4 K", "57").
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.formatLargeNumber <- function(n) {
+  if (length(n) == 0 || is.na(n)) return(NA_character_)
+  if (n >= 1e6) {
+    paste0(round(n / 1e6, 1), " M")
+  } else if (n >= 1e3) {
+    paste0(round(n / 1e3, 1), " K")
+  } else {
+    as.character(n)
+  }
+}

@@ -14,6 +14,20 @@
 * Temporary review artifacts, intermediate meshes, rendered samples and benchmark
   logs are removed. Production examples and approved regression fixtures remain.
 
+## Internal organization
+
+* Shared 3D geometry, rigging and rendering functions are consolidated in
+  `utils-3d-engine.R`; species definitions and numerical data are grouped in
+  `utils-3d-models.R`. Other private helpers are grouped by their processing domain.
+* Primary exported functions have function-named source files. The exported
+  `tailBeatColumn()` helper now lives with the tail-beat utilities, retaining its
+  arguments, help page and behavior.
+* Model objects retain species identity, axes, named components and region maps.
+  Development revisions, review records, fitting descriptions, reporting-only
+  geometry/rig copies and the catalog's development-phase column are removed.
+  Preview labels no longer carry development annotations. Geometry, colours,
+  animation calculations and production rendering are unchanged.
+
 # nautilus 0.1.0
 
 First public release. `nautilus` provides an end-to-end pipeline for processing and analysing

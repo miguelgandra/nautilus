@@ -2,12 +2,10 @@ test_that("reference manta retains measured sections, named parts and the triang
   m<-overlaySpeciesModel("manta");s<-nautilus:::.referenceMantaSpec()
   expect_equal(length(m$faces),696L)
   expect_equal(nrow(m$vertices),366L)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$geometry$status,"approved")
   expect_equal(m$metadata$components$faces,c(128,144,144,60,60,72,24,32,32))
   expect_setequal(m$metadata$components$region,c("body","wing_right","wing_left",
     "cephalic_right","cephalic_left","tail","dorsal","pelvic_right","pelvic_left"))
-  raw<-sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  raw<-.overlay_test_raw_vertices(m)
   expect_equal(diff(range(raw[,2])),96.3,tolerance=1e-10)
   for(part in c("wing","cephalic","pelvic")) {
     right<-raw[m$metadata$vertex.region==paste0(part,"_right"),]
@@ -59,8 +57,6 @@ test_that("manta surface refinement preserves the approved v7 geometry and rig",
   m<-overlaySpeciesModel("manta")
   fields<-setdiff(names(approved),"components")
   expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$geometry$checkpoint,"v7")
-  expect_identical(m$metadata$revision,"manta-surface-v8")
   expect_identical(formals(renderOverlayVideo)$orientation.model,"blue_shark")
 })
 
@@ -126,6 +122,4 @@ test_that("approved v8 manta retains its reviewed appearance, geometry and motio
   m<-overlaySpeciesModel("manta")
   fields<-setdiff(names(approved),"components")
   expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v8")
 })

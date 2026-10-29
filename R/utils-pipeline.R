@@ -299,3 +299,120 @@
     "i" = "Set the deployment position and re-run {.fn processTagData}; see {.code meta$deployment$heading_reference}."))
   invisible(NULL)
 }
+
+# Additional shared pipeline helpers
+
+
+
+#####################################################################################
+## Canonical sensor channels ########################################################
+#####################################################################################
+
+#' Canonical recognized sensor channel names
+#'
+#' @description Single source of truth for the sensor channels nautilus recognizes,
+#' in canonical column order. Used to order columns and to select which channels to
+#' check/interpolate, so partial sensor sets (e.g. accelerometer-only or TDR
+#' depth/temperature data) are handled consistently across functions.
+#' @return Character vector of channel names.
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.sensorChannels <- function() {
+  c("ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
+    "depth", "temp", "paddle_speed", "paddle_freq")
+}
+
+
+#' Transition (run-length) encode a state series, keeping only the rows where the state changes.
+#'
+#' Compact, lossless storage for a slowly-changing state (e.g. a wet/dry signal) carried in the tag
+#' metadata `ancillary` tier: each kept row's state holds from that timestamp until the next row.
+#'
+#' @param datetime POSIXct timestamps (assumed ordered).
+#' @param state Logical (or 0/1) state at each timestamp; NA is treated as FALSE.
+#' @return A data.frame with `datetime` and `state` (one row per run).
+#' @keywords internal
+#' @noRd
+.transitionEncode <- function(datetime, state) {
+  state <- as.logical(state); state[is.na(state)] <- FALSE
+  n <- length(state)
+  if (n == 0L) return(data.frame(datetime = datetime[0], state = logical(0)))
+  keep <- c(TRUE, state[-1] != state[-n])
+  data.frame(datetime = datetime[keep], state = state[keep])
+}
+
+
+#' Expand sensor family / channel tokens to canonical channel names.
+#'
+#' Accepts a comma-separated string of family names ("accel"/"gyro"/"mag") and/or individual channels
+#' ("mx", "gz", "depth", ...) - e.g. the value of an `exclude_sensors` metadata column - and returns the
+#' de-duplicated set of canonical channels. Aborts on an unrecognised token. `NA`/empty -> character(0).
+#' @keywords internal
+#' @noRd
+.expandSensorTokens <- function(x, arg = "sensors") {
+  if (is.null(x) || (length(x) == 1L && is.na(x)) || !nzchar(trimws(as.character(x)))) return(character(0))
+  families <- list(accel = c("ax", "ay", "az"), gyro = c("gx", "gy", "gz"), mag = c("mx", "my", "mz"))
+  channels <- .sensorChannels()
+  toks <- trimws(strsplit(as.character(x), ",", fixed = TRUE)[[1]])
+  toks <- toks[nzchar(toks)]
+  out <- character(0)
+  for (tk in toks) {
+    if (tk %in% names(families)) out <- c(out, families[[tk]])
+    else if (tk %in% channels)  out <- c(out, tk)
+    else .abort(c("{.arg {arg}} has an unrecognised sensor token {.val {tk}}.",
+                  "i" = "Use a family ({.val {names(families)}}) or a channel ({.val {channels}})."))
+  }
+  unique(out)
+}
+
+#' Collapse a set of channels to family names where a family is complete (mx,my,mz -> "mag").
+#' @keywords internal
+#' @noRd
+.channelsToFamilies <- function(chans) {
+  families <- list(accel = c("ax", "ay", "az"), gyro = c("gx", "gy", "gz"), mag = c("mx", "my", "mz"))
+  out <- character(0); remaining <- unique(chans)
+  for (fam in names(families)) {
+    if (all(families[[fam]] %in% remaining)) { out <- c(out, fam); remaining <- setdiff(remaining, families[[fam]]) }
+  }
+  c(out, remaining)
+}
+
+
+# ---------------------------------------------------------------------------------------------------
+# group.by: one consistent grouping-key API shared by every function that pools by metadata keys
+# (consensusAxisMapping, calibrateMagnetometer). A single interface: `group.by` is one or more of the
+# canonical tag keys, combined into a composite key.
+# ---------------------------------------------------------------------------------------------------
+
+#' Validate a `group.by` spec (one or more metadata field names) against the allowed keys.
+#'
+#' Coerces to character, aborts on empty input or unknown field names, and returns the vector. Shared by
+#' every `group.by` argument so they validate identically.
+#' @keywords internal
+#' @noRd
+.validateGroupBy <- function(group.by, allowed = c("package_id", "logger_id", "tag", "type"),
+                             arg = "group.by") {
+  group.by <- as.character(group.by)
+  bad <- setdiff(group.by, allowed)
+  if (!length(group.by) || length(bad))
+    .abort(c("{.arg {arg}} must be one or more of {.val {allowed}}.",
+             if (length(bad)) c("x" = "unknown field{?s}: {.val {bad}}") else NULL))
+  group.by
+}
+
+#' The composite grouping key for one item, from a field lookup `get(field)`.
+#'
+#' Any missing / blank / non-scalar value in ANY requested field yields `NA_character_`, so the item
+#' becomes its own standalone group (never silently pooled with others). Present fields are joined with
+#' `" | "`. Shared so a `group.by` composite key is assembled identically wherever it is used.
+#' @keywords internal
+#' @noRd
+.compositeGroupKey <- function(group.by, get) {
+  vals <- vapply(group.by, function(f) {
+    v <- get(f)
+    if (is.null(v) || length(v) != 1L || is.na(v) || !nzchar(as.character(v))) NA_character_ else as.character(v)
+  }, character(1))
+  if (anyNA(vals)) NA_character_ else paste(vals, collapse = " | ")
+}

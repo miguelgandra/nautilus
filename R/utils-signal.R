@@ -1165,3 +1165,224 @@
        max_gap_h = max_gap_h, low_confidence = low,
        outcome = list(offset_range_m = round(range(off), 3), residual_m = unname(round(resid, 3))))
 }
+
+# Additional shared signal helpers
+
+
+#####################################################################################
+## Standard Error ###################################################################
+#####################################################################################
+
+#' Standard Error
+#'
+#' @description Computes the standard error (SE) of a numeric vector, defined as
+#' the standard deviation divided by the square root of the sample size.
+#' @note This function is intended for internal use within the 'nautilus' package.
+#' @keywords internal
+#' @noRd
+
+.standardError <- function(x) {
+  sd(x, na.rm = TRUE) / sqrt(sum(!is.na(x)))
+}
+
+
+#####################################################################################
+## Mode #############################################################################
+#####################################################################################
+
+#' Compute the Mode of a Vector
+#'
+#' @note This function is intended for internal use within the 'nautilus' package.
+#' @keywords internal
+#' @noRd
+
+.mode <- function(x) {
+  uniq <- unique(x)
+  uniq[which.max(tabulate(match(x, uniq)))]
+}
+
+
+
+
+#####################################################################################
+## Match locations to nearest sensor timestamp ######################################
+#####################################################################################
+
+#####################################################################################
+# Centered rolling mean with edge padding ###########################################
+#####################################################################################
+
+#' Centered Rolling Mean with Edge Padding
+#'
+#' Calculates a centered rolling mean while avoiding edge artifacts through symmetric padding.
+#' Designed for time-series smoothing where maintaining data length and minimizing edge distortion
+#' is critical. Uses efficient \code{data.table} backend for large datasets.
+#'
+#' @param x Numeric vector to be smoothed (may contain \code{NA}s).
+#' @param window Integer width of the rolling window (in observations). For time-based windows,
+#'               use \code{window = sampling_rate * seconds}.
+#' @param pad_len Integer number of values to pad at each edge. Typically \code{ceiling(window/2)}.
+#'                Determines how many values are mirrored at the boundaries.
+#'
+#' @return Numeric vector of the same length as \code{x} containing smoothed values.
+#'         The first and last \code{pad_len} values are smoothed using mirrored padding.
+#' @note This function is intended for internal use within the `nautilus` package.
+#' @keywords internal
+#' @noRd
+
+.pad_rollmean <- function(x, window, pad_len) {
+  # symmetric padding using first/last values
+  padded <- c(rep(x[1], pad_len), x, rep(x[length(x)], pad_len))
+  # compute centered rolling mean on padded data
+  rolled <- data.table::frollmean(padded, n = window, align = "center", na.rm = TRUE)
+  # trim to original length
+  rolled[(pad_len + 1):(length(x) + pad_len)]
+}
+
+
+#####################################################################################
+## Calculate circular rolling mean  #################################################
+#####################################################################################
+
+#' Calculate circular/angular rolling mean
+#'
+#' @description This function calculates the rolling circular mean of a set of angles (in degrees).
+#' It accounts for the wrapping nature of angular data, ensuring correct averaging even when angles span
+#' discontinuities, such as those found in heading, roll, or pitch angles.
+#'
+#' @param angles A numeric vector of angles (in degrees). Missing values (NA) are ignored.
+#' @param window An integer specifying the size of the rolling window. It determines how many values
+#' to consider for each smoothing operation.
+#' @param range A numeric vector of length 2 specifying the desired range for the output
+#' (e.g., c(0, 360) or c(-180, 180)). The first element represents the lower bound,
+#' and the second represents the upper bound. The function adjusts the result to
+#'  ensure it falls within this specified range.
+#'
+#' @details
+#' The rolling circular mean is computed by first converting the angles to radians, calculating the mean sine
+#' and cosine values over a moving window, and then deriving the resulting angle using the `atan2` function.
+#' The result is returned in degrees and adjusted to fall within the specified range. This operation ensures that
+#' angular data wrapping (e.g., crossing 360 degrees or -180 degrees) is handled correctly.
+#'
+#' @note This function is intended for internal use within the `nautilus` package.
+#'
+#' @keywords internal
+#' @noRd
+
+.rollingCircularMean <- function(angles, window, range = c(-180, 180)) {
+
+  # validate input
+  if (!is.numeric(angles)) stop("Input 'angles' must be a numeric vector.", call. = FALSE)
+  if (!is.numeric(window) || window <= 0 || window != as.integer(window)) stop("'window' must be a positive integer.", call. = FALSE)
+  if (length(range) != 2 || !is.numeric(range)) stop("Input 'range' must be a numeric vector of length 2.", call. = FALSE)
+
+  # handle all-NA case early
+  if (all(is.na(angles))) return(rep(NA_real_, length(angles)))
+
+  # extract range info
+  lower_bound <- range[1]
+  upper_bound <- range[2]
+  range_width <- upper_bound - lower_bound
+
+  # convert angles to radians
+  angles_rad <- angles * pi / 180
+
+  # pad sin and cos signals separately
+  pad_len <- floor(window / 2)
+
+  sin_angles <- sin(angles_rad)
+  cos_angles <- cos(angles_rad)
+
+  pad_sin <- c(rep(sin_angles[!is.na(sin_angles)][1], pad_len), sin_angles, rep(sin_angles[!is.na(sin_angles)][length(sin_angles[!is.na(sin_angles)])], pad_len))
+  pad_cos <- c(rep(cos_angles[!is.na(cos_angles)][1], pad_len), cos_angles, rep(cos_angles[!is.na(cos_angles)][length(cos_angles[!is.na(cos_angles)])], pad_len))
+
+  # compute rolling sums on padded data
+  roll_sin_sum <- data.table::frollsum(pad_sin, n = window, align = "center", na.rm = TRUE)
+  roll_cos_sum <- data.table::frollsum(pad_cos, n = window, align = "center", na.rm = TRUE)
+
+  # trim to original length
+  roll_sin_sum <- roll_sin_sum[(pad_len + 1):(length(angles) + pad_len)]
+  roll_cos_sum <- roll_cos_sum[(pad_len + 1):(length(angles) + pad_len)]
+
+  # compute circular mean
+  mean_rad <- atan2(roll_sin_sum, roll_cos_sum)
+  mean_deg <- mean_rad * 180 / pi
+
+  # wrap to desired range
+  wrapped <- ((mean_deg - lower_bound) %% range_width) + lower_bound
+  # A rolling mean sitting exactly on the range discontinuity (e.g. 0 == 360 deg) can wrap to either end
+  # depending on the platform's floating-point rounding of sin/cos/atan2; snap the top-of-range epsilon
+  # back to the start so the result is deterministic across platforms (mirrors .circularMean).
+  top_eps <- !is.na(wrapped) & (upper_bound - wrapped < 1e-8)
+  wrapped[top_eps] <- lower_bound
+  return(wrapped)
+}
+
+
+#####################################################################################
+## Calculate  group-wise circular mean  #############################################
+#####################################################################################
+
+#' Calculate the circular (angular) mean of a set of angles
+#'
+#' @description
+#' Computes the mean direction of a numeric vector of angular data, expressed in degrees.
+#' This function accounts for the circular nature of angles (i.e., wrapping at 360 or 180 degrees),
+#' ensuring that values near discontinuities (e.g., -179 and 179 degrees) are averaged correctly.
+#'
+#' @param angles A numeric vector of angles (in degrees). Missing values (`NA`) are ignored in the computation.
+#' @param range A numeric vector of length 2 specifying the desired output range (e.g., `c(0, 360)` or `c(-180, 180)`).
+#' The first value defines the lower bound and the second the upper bound of the output interval.
+#'
+#' @details
+#' The circular mean is calculated by converting the input angles to radians, computing the mean sine and cosine values,
+#' and deriving the resulting angle using the `atan2` function. The result is returned in degrees and wrapped to fall
+#' within the user-specified range. If all values in `angles` are `NA`, the function returns `NA_real_`.
+#'
+#' @return A single numeric value representing the circular mean (in degrees), adjusted to the specified range.
+#'
+#' @note This function is intended for internal use within the `nautilus` package.
+#'
+#' @keywords internal
+#' @noRd
+
+
+.circularMean <- function(angles, range) {
+
+  # fast NA check and return
+  angles <- angles[!is.na(angles)]
+  if (!length(angles)) return(NA_real_)
+
+  # convert to radians, compute circular mean and wrap to specified range
+  angles_rad <- angles * pi / 180
+  mean_deg <- atan2(mean(sin(angles_rad)), mean(cos(angles_rad))) * 180 / pi
+  span    <- range[2] - range[1]
+  wrapped <- (mean_deg - range[1]) %% span
+  # A mean sitting exactly on the range discontinuity (e.g. 0 == 360 deg) can wrap to either end depending
+  # on the platform's floating-point rounding of sin/cos/atan2 (macOS returned 0, Windows/Linux ~360);
+  # snap the top-of-range epsilon back to the start so the result is deterministic across platforms.
+  if (span - wrapped < 1e-8) wrapped <- 0
+  wrapped + range[1]
+}
+
+#' Unwrap a wrapped angle (degrees) into a continuous series.
+#'
+#' A heading in [0, 360) jumps by ~360 whenever it crosses the branch cut, so any LINEAR operation on it
+#' - a correlation, a regression slope, a linear standard deviation - depends on where that cut happens
+#' to fall relative to the data rather than on the animal's behaviour. Unwrapping accumulates the
+#' shortest step between consecutive samples instead, giving a continuous angle on which linear
+#' operations mean what they appear to mean. NA-tolerant: gaps are carried, not filled.
+#' @keywords internal
+#' @noRd
+.unwrapDegrees <- function(x) {
+  if (!length(x)) return(x)
+  # Accumulate only observed headings, then restore their original positions.
+  # This chooses the nearest branch after a gap without inventing observations
+  # or letting cumsum(NA) poison the rest of a deployment.
+  valid <- which(is.finite(x))
+  out <- rep(NA_real_, length(x))
+  if (!length(valid)) return(out)
+  delta <- (diff(x[valid]) + 180) %% 360 - 180
+  out[valid] <- x[valid[1L]] + c(0, cumsum(delta))
+  out
+}

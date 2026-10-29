@@ -1,0 +1,177 @@
+#' Control settings for reconstructTrack()
+#'
+#' @description Groups the dead-reckoning and track-correction knobs of \code{\link{reconstructTrack}} into a
+#' single object: how the animal's swimming speed is set, the biological speed cap, and how the drifting
+#' reckoned path is reconciled with verified positions.
+#'
+#' @details
+#' Dead reckoning integrates a *speed* and a *heading* forward in time to reconstruct a movement path (see
+#' the "How the reconstruction proceeds" section of \code{\link{reconstructTrack}}). Heading is produced upstream by
+#' \code{\link{processTagData}}; this control object governs the two remaining ingredients - the **speed**
+#' used at each step, and the **Verified Position Correction (VPC)** that ties the path back to known fixes.
+#'
+#' ## Choosing a speed method
+#' Because the reckoning multiplies speed by heading, the *shape* of the track is set by heading while its
+#' *scale* is set by speed. The options trade off honesty against realism:
+#' \itemize{
+#'   \item `"constant"` (default) - a single nominal speed (`constant.speed`). The safest choice: it makes
+#'     no unsupported claim about moment-to-moment speed, so the track is shape-faithful but only nominally
+#'     scaled. Between-fix VPC still rescales each segment to the true fix-to-fix distance.
+#'   \item `"vedba"` - speed from a linear model `speed = intercept + slope x VeDBA`, where VeDBA
+#'     (Vectorial Dynamic Body Acceleration) is the rotation-invariant activity metric computed by
+#'     \code{\link{processTagData}}. Dynamic acceleration scales with locomotor effort, so VeDBA is a strong
+#'     proxy for through-water speed (Bidder et al. 2012; Gunner et al. 2021). Supply the model via
+#'     `vedba.model`, or leave it `NULL` to auto-calibrate from the deployment's own GPS fixes (see below).
+#'   \item `"paddle"` - speed from a `paddle_speed` column (a mechanical paddle-wheel rotation count).
+#'   \item `"depth_rate"` - horizontal speed inferred from vertical velocity and the dive geometry
+#'     (`horizontal = vertical_velocity / tan(pitch)`). This is reliable ONLY on steep glides: near
+#'     horizontal, `1 / tan(pitch)` explodes and a small pitch error yields a wildly wrong speed, so samples
+#'     shallower than `depth.rate.min.pitch` are dropped and back-filled with `constant.speed`
+#'     (Wensveen et al. 2015). Hence it is not the default.
+#' }
+#'
+#' ## VeDBA auto-calibration (`vedba.model = NULL`)
+#' When no model is supplied, `reconstructTrack` fits `speed = intercept + slope x VeDBA` from the
+#' deployment itself: for every pair of consecutive position fixes it forms the straight-line
+#' (great-circle) speed and the mean VeDBA over that interval, keeps only intervals during which the animal
+#' travelled in a near-straight line (so straight-line distance approximates the true path length), and
+#' regresses speed on VeDBA (Gunner et al. 2021). Sparse or tortuous fix sets rarely yield enough clean
+#' intervals; when the calibration is under-determined or non-physical (slope <= 0) the method **falls back
+#' to `constant.speed`** and records this in the processing log and metadata. For a definitive calibration,
+#' fit the model externally against high-rate GPS and pass it via `vedba.model`.
+#'
+#' ## Rest gating (`rest.quantile`)
+#' Reckoning drift accumulates whenever a non-zero speed is integrated, including while the animal is
+#' resting. Setting `rest.quantile` holds the speed at zero whenever VeDBA falls in its lowest quantile
+#' (e.g. `0.10` = the least-active 10% of samples), preventing spurious wandering during inactivity; Gunner
+#' et al. (2021) found such activity-gating reduced net reconstruction error. Requires a `vedba` column;
+#' `NULL` (default) disables it.
+#'
+#' @param speed.method How to set swimming speed for the reckoning: one of `"constant"` (default),
+#'   `"vedba"`, `"paddle"`, or `"depth_rate"`. See *Choosing a speed method*.
+#' @param constant.speed Numeric. Speed (m/s) for `speed.method = "constant"`, and the fallback used when
+#'   direct speed estimates are unavailable. A substantial proportion of the reconstructed track may
+#'   therefore rely on assumed rather than directly estimated speed. It is reached two different ways, and
+#'   the distinction matters when you judge a track:
+#'   \itemize{
+#'     \item \emph{Gap back-fill.} Any sample still lacking a finite speed is set to `constant.speed`. In
+#'       practice this bites hardest under `"depth_rate"`, where every sample pitched shallower than
+#'       `depth.rate.min.pitch` is dropped - often the majority of a record. Paddle gaps mostly do NOT
+#'       land here: interior gaps in `paddle_speed` are interpolated first, so only leading/trailing gaps
+#'       (or an essentially absent channel) fall through.
+#'     \item \emph{Whole-track fallback.} If the `"vedba"` calibration cannot be fitted, or a `"paddle"`
+#'       record carries no usable speed channel, the \emph{entire} track is set to `constant.speed` and
+#'       the reason is logged. The result is then a wholly assumed track, not a partially assumed one.
+#'   }
+#'   Check `speed_dr` for how much of the track is a single repeated value before interpreting fine-scale
+#'   track structure. Default 0.5.
+#' @param max.speed Numeric. Biological speed cap (m/s); any estimated speed above it is clipped. Default
+#'   2.5.
+#' @param vedba.model Speed-from-VeDBA calibration for `speed.method = "vedba"`. Either `NULL` (default;
+#'   auto-calibrate from the deployment's GPS fixes, see *VeDBA auto-calibration*) or a length-2 numeric
+#'   `c(intercept, slope)` giving `speed (m/s) = intercept + slope x VeDBA (g)`.
+#' @param depth.rate.min.pitch Numeric. Minimum absolute pitch (degrees) at which `speed.method =
+#'   "depth_rate"` is trusted; shallower samples are set NA and back-filled with `constant.speed`. Default
+#'   45.
+#' @param rest.quantile Numeric in \[0, 1\] or `NULL`. If set, the swimming speed is forced to zero wherever
+#'   VeDBA is below this quantile of the deployment (activity/rest gating). `NULL` (default) disables it.
+#'   Typical values are small (0.05-0.15).
+#' @param vpc.method Verified Position Correction, i.e. how the reckoned path is reconciled with the fixes:
+#'   \itemize{
+#'     \item `"error_weighted"` (default) - additively distributes the reckoning drift between anchors,
+#'       weighted by each fix's quality (via `anchor.error.radii`), so a noisy fix does not yank the track.
+#'     \item `"linear"` - additively distributes the drift, forcing the track exactly through every fix.
+#'     \item `"scale_rotate"` - the Gundog.Tracks correction (Gunner et al. 2021): per segment, rescales and
+#'       rotates the whole reckoned sub-path (a similarity transform) so its shape is preserved while its end
+#'       is pinned exactly onto the next fix. This is the more faithful correction for a \emph{systematic}
+#'       drift - a mis-calibrated speed (a pure scale error) or a constant heading bias (a pure rotation) -
+#'       whereas the additive methods are better suited to random/diffusive drift. It forces exactly through
+#'       every fix (treating fixes as error-free); when *placing the corrected path* it ignores
+#'       `anchor.error.radii`, `drift.rate` and `vpc.weighting` (as with `"linear"`, `anchor.error.radii` and
+#'       `drift.rate` still drive the reported `pseudo_error`; only `vpc.weighting` is ignored end-to-end).
+#'     \item `"none"` - leaves the raw reckoned path uncorrected.
+#'   }
+#' @param vpc.weighting How the drift between two fixes is spread across the intervening samples (applies to
+#'   the additive `"error_weighted"`/`"linear"` methods only; `"scale_rotate"` ignores it):
+#'   `"distance"` (default) in proportion to the reckoned distance travelled, `"time"` in proportion to
+#'   elapsed time. Distance weighting is usually more faithful because reckoning error accrues with travel,
+#'   not with clock time (an animal that rested then swam should absorb the drift while swimming); the two
+#'   coincide at constant speed (Gunner et al. 2021).
+#' @param drift.rate Numeric. Systematic (bias-like) dead-reckoning drift rate (m/s), growing linearly with
+#'   time. Used by `vpc.method = "error_weighted"` to weigh reckoning confidence against a fix (the Kalman
+#'   gain), and by every `vpc.method` to scale the reported `pseudo_error`. Default 0.5.
+#' @param drift.diffusion Numeric. Random-walk (diffusive) drift-variance rate (m^2/s), adding a `sqrt(time)`
+#'   term so the total reckoning error is `sqrt((drift.rate * t)^2 + drift.diffusion * t)`. This captures the
+#'   regime where short segments are dominated by random heading noise (grows as `sqrt(t)`) and long ones by
+#'   systematic bias (grows as `t`). Default 0 (reduces exactly to the linear `drift.rate * t` model).
+#' @param anchor.error.radii Named numeric vector mapping `quality` values to expected position error radii
+#'   (m). Defaults cover standard Argos/FastGPS classes plus deploy/pop-up.
+#' @param include.depth Logical. Attach the measured depth as the vertical axis, so the output is a 3-D
+#'   pseudo-track (`pseudo_lon`, `pseudo_lat`, `depth`). Default TRUE.
+#' @param reconstructability.min Numeric >= 0. A soft reliability gate for tracks that have \strong{no
+#'   interior fixes} (anchored only by the deployment and pop-up). It flags such a track as unreliable when
+#'   its *directedness* - the net deploy-to-pop-up displacement divided by the reckoned path length - falls
+#'   below this value, i.e. the animal's net progress was a small fraction of how far it swam, so the two
+#'   endpoints cannot constrain the wandering interior (validated against held-out error on real deployments;
+#'   see \code{\link{crossValidateTrack}}). On a flag, `reconstructTrack` issues a `warning()` and records the
+#'   verdict in `meta$sensors$reconstructability` - it never aborts, so a directed track is still returned.
+#'   Default 0.1; set to 0 to disable. This is a rough triage heuristic, not a hard rule: because the
+#'   denominator is the *reckoned* path, directedness is effectively net speed divided by the mean reckoned
+#'   speed, so a badly mis-set `constant.speed` (or a hot speed calibration) can mis-fire - the gate is only
+#'   as sound as the speed estimate.
+#' @references
+#' Bidder OR, Soresina M, Shepard ELC, *et al.* (2012) The need for speed: testing acceleration for
+#' estimating animal travel rates in terrestrial dead-reckoning systems. *Zoology*. 115:58-64.
+#' \doi{10.1016/j.zool.2011.09.003}
+#'
+#' Gunner RM, Holton MD, Scantlebury MD, *et al.* (2021) Dead-reckoning animal movements in R: a reappraisal
+#' using Gundog.Tracks. *Animal Biotelemetry*. 9:23. \doi{10.1186/s40317-021-00245-z}
+#'
+#' Wensveen PJ, Thomas L, Miller PJO (2015) A path reconstruction method integrating dead-reckoning and
+#' position fixes applied to humpback whales. *Movement Ecology*. 3:31. \doi{10.1186/s40462-015-0061-6}
+#' @return A validated `nautilus_reconstruct_track` control object, for the `control` argument of
+#'   [reconstructTrack()].
+#' @seealso \code{\link{reconstructTrack}}
+#' @examples
+#' reconstructTrackControl(speed.method = "paddle", vpc.method = "linear")
+#' # VeDBA speed with an externally fitted calibration (speed = 0.15 + 3.1 * VeDBA):
+#' reconstructTrackControl(speed.method = "vedba", vedba.model = c(0.15, 3.1))
+#' @export
+reconstructTrackControl <- function(speed.method = c("constant", "vedba", "paddle", "depth_rate"),
+                                    constant.speed = 0.5,
+                                    max.speed = 2.5,
+                                    vedba.model = NULL,
+                                    depth.rate.min.pitch = 45,
+                                    rest.quantile = NULL,
+                                    vpc.method = c("error_weighted", "linear", "scale_rotate", "none"),
+                                    vpc.weighting = c("distance", "time"),
+                                    drift.rate = 0.5,
+                                    drift.diffusion = 0,
+                                    anchor.error.radii = c("3" = 250, "2" = 500, "1" = 1500, "0" = 3000,
+                                      "A" = 5000, "B" = 10000, "Z" = 50000,
+                                      "FastGPS" = 50, "User" = 50, "Deploy" = 50, "Popup" = 50),
+                                    include.depth = TRUE,
+                                    reconstructability.min = 0.1) {
+  speed.method  <- match.arg(speed.method)
+  vpc.method    <- match.arg(vpc.method)
+  vpc.weighting <- match.arg(vpc.weighting)
+  .assert_number(constant.speed, "reconstructTrack$constant.speed", min = 0)
+  .assert_number(max.speed, "reconstructTrack$max.speed", min = constant.speed)
+  .assert_number(drift.rate, "reconstructTrack$drift.rate", min = 0)
+  .assert_number(drift.diffusion, "reconstructTrack$drift.diffusion", min = 0)
+  .assert_number(depth.rate.min.pitch, "reconstructTrack$depth.rate.min.pitch", min = 0, max = 90)
+  .assert_number(rest.quantile, "reconstructTrack$rest.quantile", min = 0, max = 1, null_ok = TRUE)
+  if (!is.null(vedba.model) && (!is.numeric(vedba.model) || length(vedba.model) != 2L || anyNA(vedba.model)))
+    .abort("{.arg reconstructTrack$vedba.model} must be NULL (auto-calibrate) or a length-2 numeric c(intercept, slope).")
+  .assert_flag(include.depth, "reconstructTrack$include.depth")
+  .assert_number(reconstructability.min, "reconstructTrack$reconstructability.min", min = 0)
+  if (!is.numeric(anchor.error.radii) || is.null(names(anchor.error.radii)) || anyNA(names(anchor.error.radii)))
+    .abort("{.arg reconstructTrack$anchor.error.radii} must be a NAMED numeric vector (quality label -> error radius, m).")
+  structure(list(speed.method = speed.method, constant.speed = constant.speed, max.speed = max.speed,
+                 vedba.model = vedba.model, depth.rate.min.pitch = depth.rate.min.pitch,
+                 rest.quantile = rest.quantile, vpc.method = vpc.method, vpc.weighting = vpc.weighting,
+                 drift.rate = drift.rate, drift.diffusion = drift.diffusion,
+                 anchor.error.radii = anchor.error.radii, include.depth = include.depth,
+                 reconstructability.min = reconstructability.min),
+            class = "nautilus_reconstruct_track")
+}

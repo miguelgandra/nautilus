@@ -56,9 +56,7 @@ test_that("reference-fitted shaders do not alter geometry or use random state", 
     m<-overlaySpeciesModel(id)
     expect_equal(length(m$faces),696L)
     expect_equal(nrow(m$vertices),372L)
-    expect_equal(m$metadata$revision,"reference-fit-v6")
     expect_true(any(m$appearance$belly>0 & m$appearance$belly<1))
-    expect_identical(m$metadata$references,character())
     expect_equal(sort(m$metadata$components$region),sort(c("body","pectoral_left","pectoral_right",
       "dorsal","second_dorsal","pelvic_left","pelvic_right","anal","caudal_upper","caudal_lower","keel_left","keel_right")))
   }
@@ -72,7 +70,5 @@ test_that("approved v6 sharks retain their reviewed geometry, rigs and appearanc
   for(id in names(approved)) {
     m<-overlaySpeciesModel(id)
     expect_equal(c(m[fields],list(components=m$metadata$components)),approved[[id]],tolerance=1e-13)
-    expect_identical(m$metadata$review$status,"approved")
-    expect_identical(m$metadata$review$checkpoint,"v6")
   }
 })

@@ -1,10 +1,6 @@
 test_that("reference turtle records reconstruction and a bounded named-part budget", {
   m <- overlaySpeciesModel("turtle")
   expect_identical(m$metadata$taxon,"Chelonia mydas")
-  expect_identical(m$metadata$revision,"turtle-surface-v16")
-  expect_identical(m$metadata$review$status,"approved")
-  expect_match(m$metadata$review$reconstruction,"intact positive lateral half mirrored")
-  expect_setequal(m$metadata$review$measured.views,c("dorsal","lateral","anterior"))
   expect_equal(length(m$faces),690L)
   expect_equal(nrow(m$vertices),361L)
   expect_equal(m$metadata$components$faces,c(260,84,84,48,48,112,48,6))
@@ -12,8 +8,8 @@ test_that("reference turtle records reconstruction and a bounded named-part budg
     "hindflipper_right","hindflipper_left","head_neck","plastron","tail"))
   expect_equal(length(m$appearance$surface$face),293L)
   expect_length(m$details,0)
-  expect_identical(m$metadata$rig$flipper.mode,"rigid")
-  raw <- sweep(m$vertices/m$metadata$geometry$scale,2,m$metadata$geometry$centre,"+")
+  expect_identical(.overlay_test_authored_rig(m)$flipper.mode,"rigid")
+  raw <- .overlay_test_raw_vertices(m)
   body <- raw[m$metadata$vertex.region=="body",,drop=FALSE]
   expect_gt(diff(range(body[,1])),80)
   expect_lt(diff(range(body[,1])),83)
@@ -23,7 +19,8 @@ test_that("reference turtle records reconstruction and a bounded named-part budg
   expect_lt(diff(range(body[,3])),28)
   # Flippers extend past the short tail; TL is explicitly snout-to-tail,
   # not the full posed axial bounding box or a view-specific fit.
-  expect_equal(m$metadata$landmarks$TL,100)
+  expect_equal(max(raw[m$metadata$vertex.region=="head_neck",1])-
+    min(raw[m$metadata$vertex.region=="tail",1]),99.96,tolerance=1e-8)
   expect_gt(diff(range(raw[,1])),106)
   expect_lt(diff(range(raw[,1])),109)
   expect_equal(diff(range(raw[,2])),93.2,tolerance=1e-7)
@@ -59,8 +56,6 @@ test_that("turtle appearance leaves the approved v15 geometry and rigid rig iden
   approved <- readRDS(testthat::test_path("fixtures","approved-turtle-geometry-v15.rds"))
   m <- overlaySpeciesModel("turtle")
   expect_identical(c(m[setdiff(names(approved),"components")],list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$geometry$status,"approved")
-  expect_identical(m$metadata$review$geometry$checkpoint,"v15")
   expect_equal(range(m$appearance$belly),c(0,1))
   expect_identical(m$appearance$dorsal,"#68583b")
   body <- which(m$metadata$face.region=="body")
@@ -136,6 +131,4 @@ test_that("approved turtle v16 retains reviewed appearance and articulation", {
   approved <- readRDS(testthat::test_path("fixtures","approved-turtle-v16.rds"))
   m <- overlaySpeciesModel("turtle")
   expect_identical(c(m[setdiff(names(approved),"components")],list(components=m$metadata$components)),approved)
-  expect_identical(m$metadata$review$status,"approved")
-  expect_identical(m$metadata$review$checkpoint,"v16")
 })

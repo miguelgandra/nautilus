@@ -63,9 +63,7 @@ previewModelLibrary <- function(output.dir, overwrite = FALSE,
         unit <- diff(range(model$vertices[,1]))*.2*model$display.scale
         segments(-.9,-.94,-.9+unit,-.94,col="#c8d9e3",lwd=2)
         text(-.9+unit/2,-1.01,"20% axial TL",cex=.65,col="#9bb2c0")
-        title(main = if (tolower(view) %in% model$metadata$review$inferred.views)
-          paste(view,"(inferred)") else view,
-          line = 1, cex.main = 1.1, col.main = "#deebf3")
+        title(main = view, line = 1, cex.main = 1.1, col.main = "#deebf3")
       }
       # Actual production drawer at inset size; no alternative camera or shader.
       par(mar = c(5, 2.2, 5, 2.2))

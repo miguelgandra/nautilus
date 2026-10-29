@@ -1,5 +1,5 @@
 .targetedRawVertices <- function(m) {
-  sweep(m$vertices/m$metadata$geometry$scale,2L,m$metadata$geometry$centre,"+")
+  .overlay_test_raw_vertices(m)
 }
 
 test_that("whale shark retains approved reference-fit proportions and part allocation", {
