@@ -101,14 +101,51 @@
   light <- c(.25, -.30, -.92); light <- light / sqrt(sum(light^2))
   view <- world %*% t(camera$view.rotation)
   projected <- view %*% cbind(camera$right, camera$up, camera$depth)
+  # Retain mean() exactly: changing summation can reorder coplanar faces on ties.
   face.depth <- vapply(model$faces, function(f) mean(projected[f, 3L]), numeric(1))
-  intensity <- vapply(model$faces, function(f) {
-    .40 + .60 * abs(sum(.faceNormal(t(world[f, , drop = FALSE])) * light))
-  }, numeric(1))
+  if (!is.null(model$triangles)) {
+    f <- model$triangles
+    e1 <- world[f[, 2L], , drop = FALSE] - world[f[, 1L], , drop = FALSE]
+    e2 <- world[f[, 3L], , drop = FALSE] - world[f[, 1L], , drop = FALSE]
+    normals <- cbind(e1[, 2L]*e2[, 3L] - e1[, 3L]*e2[, 2L],
+                     e1[, 3L]*e2[, 1L] - e1[, 1L]*e2[, 3L],
+                     e1[, 1L]*e2[, 2L] - e1[, 2L]*e2[, 1L])
+    lengths <- sqrt(rowSums(normals^2))
+    valid <- is.finite(lengths) & lengths > 0
+    normals[valid, ] <- normals[valid, , drop = FALSE] / lengths[valid]
+    normals[!valid, ] <- rep(c(0, 0, 1), each = sum(!valid))
+    intensity <- .40 + .60 * abs(as.vector(normals %*% light))
+  } else {
+    intensity <- vapply(model$faces, function(f) {
+      .40 + .60 * abs(sum(.faceNormal(t(world[f, , drop = FALSE])) * light))
+    }, numeric(1))
+    if (!is.null(model$appearance))
+      normals <- t(vapply(model$faces,function(f) .faceNormal(t(world[f,,drop=FALSE])),numeric(3)))
+  }
+  a <- model$appearance
+  visible <- rep(TRUE,length(model$faces))
+  if (!is.null(a)) {
+    if (a$smooth) {
+      f <- do.call(rbind,model$faces)
+      sums <- rowsum(normals[rep(seq_len(nrow(f)),3),,drop=FALSE],as.vector(f),reorder=FALSE)
+      vertex.normals <- matrix(0,nrow(world),3L)
+      vertex.normals[as.integer(rownames(sums)),] <- sums
+      smooth <- vertex.normals[f[,1],,drop=FALSE]+vertex.normals[f[,2],,drop=FALSE]+vertex.normals[f[,3],,drop=FALSE]
+      lengths <- sqrt(rowSums(smooth^2))
+      smooth.faces <- if (is.null(a$smooth.faces)) a$body.faces else a$smooth.faces
+      ok <- smooth.faces & is.finite(lengths) & lengths>0
+      smooth[ok,] <- smooth[ok,,drop=FALSE]/lengths[ok]
+      intensity[ok] <- .65+.35*abs(as.vector(smooth[ok,,drop=FALSE] %*% light))
+    }
+    visible <- !a$hidden.faces
+    if (a$cull) visible <- visible &
+      as.vector(normals %*% t(camera$view.rotation) %*% camera$depth) < -1e-10
+  }
   range.depth <- diff(range(face.depth))
   dimming <- if (range.depth > 0) (face.depth - min(face.depth)) / range.depth else face.depth * 0
+  order <- order(face.depth,decreasing=TRUE)
   list(points = projected[, 1:2, drop = FALSE] * model$display.scale,
-        order = order(face.depth, decreasing = TRUE), intensity = intensity * (.72 + .28 * (1 - dimming)))
+        order = order[visible[order]], intensity = intensity * (.72 + .28 * (1 - dimming)))
 }
 
 .drawPreparedAttitudeModel <- function(fd, theme, model, motion, label = NULL,
@@ -128,34 +165,55 @@
     .deformOverlayModel(model, fd$.motion.phase, fd$.motion.strength, motion$max.angle, motion$phase.lag)
   camera <- .overlayAttitudeCamera()
   projection <- .projectPreparedOverlayModel(model, vertices, rotation, camera)
+  use.appearance <- missing(body.col) && valid.attitude
+  if (use.appearance && !is.null(model$appearance)) body.col <- model$appearance$dorsal
   if (!valid.attitude) body.col <- theme$muted
-  rgb <- grDevices::col2rgb(body.col)[, 1L] / 255
-  colours <- grDevices::rgb(rgb[1]*projection$intensity, rgb[2]*projection$intensity,
-                            rgb[3]*projection$intensity)
+  colours <- .overlayFaceColours(model,projection$intensity,body.col,use.appearance)
   borders <- grDevices::adjustcolor(colours, alpha.f = .5)
   borders[model$part == "fin"] <- grDevices::adjustcolor("grey10", .85)
-  for (i in projection$order) {
-    p <- projection$points[model$faces[[i]], , drop = FALSE]
-    graphics::polygon(p[, 1], p[, 2], col = colours[i], border = borders[i], lwd = .6)
+  if (!is.null(model$appearance)) borders <- colours
+  if (!is.null(model$triangles)) {
+    # NA separates polygons. One graphics call preserves far-to-near painter order
+    # and supplies the same fill/border for each triangle without an R call per face.
+    indices <- as.vector(t(cbind(model$triangles[projection$order, , drop = FALSE], NA_integer_)))
+    graphics::polygon(projection$points[indices, 1L], projection$points[indices, 2L],
+      col = colours[projection$order], border = borders[projection$order], lwd = .6)
+  } else {
+    for (i in projection$order) {
+      p <- projection$points[model$faces[[i]], , drop = FALSE]
+      graphics::polygon(p[, 1], p[, 2], col = colours[i], border = borders[i], lwd = .6)
+    }
   }
+  if (use.appearance && !is.null(model$appearance$surface))
+    .drawOverlaySurface(model,vertices,rotation,camera,projection)
   dorsal.visible <- sum(camera$depth * (camera$view.rotation %*% rotation %*% c(0, 0, -1))) < 0
-  project.detail <- function(p) {
+  project.detail <- function(p, weights = NULL) {
+    if (!is.null(weights) && !is.null(motion) && valid.attitude) {
+      rig <- model$rig; rig$weights <- weights
+      p <- .deformOverlayModel(list(vertices=p,rig=rig),fd$.motion.phase,
+        fd$.motion.strength,motion$max.angle,motion$phase.lag)
+    }
     view <- p %*% t(rotation) %*% t(camera$view.rotation)
     view %*% cbind(camera$right, camera$up) * model$display.scale
   }
   if (dorsal.visible) {
-    for (line in model$details) {
-      p <- project.detail(line)
+    for (i in seq_along(model$details)) {
+      weights <- if (is.null(model$detail.weights)) NULL else model$detail.weights[[i]]
+      p <- project.detail(model$details[[i]],weights)
       graphics::lines(p[, 1], p[, 2], col = .shadeColor(body.col, .42), lwd = 1.1)
     }
     if (!is.null(model$eyes)) {
       p <- project.detail(model$eyes)
-      graphics::points(p[, 1], p[, 2], pch = 21, cex = .62, bg = "#11161a",
+      eye.cex <- if (is.null(model$appearance)) .62 else model$appearance$eye.cex
+      graphics::points(p[, 1], p[, 2], pch = 21, cex = eye.cex, bg = "#11161a",
                          col = .shadeColor(body.col, .48), lwd = .7)
     }
   }
   if (isTRUE(show.heading)) {
     cx <- .91; cy <- .93; radius <- .25
+    if (!is.null(model$appearance)) {
+      cx<-model$appearance$compass[1];cy<-model$appearance$compass[2];radius<-model$appearance$compass[3]
+    }
     graphics::symbols(cx, cy, circles = radius, inches = FALSE, add = TRUE,
                        bg = grDevices::adjustcolor("black", .72), fg = theme$muted)
     graphics::text(cx, cy + radius + .08, "N", cex = .55, font = 2, col = theme$text)

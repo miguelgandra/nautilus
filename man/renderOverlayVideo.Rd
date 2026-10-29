@@ -13,7 +13,7 @@ renderOverlayVideo(
   metrics = NULL,
   composition = c("beside", "overlay"),
   orientation = c("model", "dials"),
-  orientation.model = "shark",
+  orientation.model = "blue_shark",
   video.start = NULL,
   start = NULL,
   end = NULL,
@@ -71,14 +71,16 @@ draws a single three-dimensional attitude model with a heading compass and numer
 and roll. \code{"dials"} replaces it with three separate gauges. This argument does not change the fixed
 validation dashboards.}
 
-\item{orientation.model}{Schematic animal model used by three-dimensional orientation modules:
-\code{"shark"} (default), \code{"cetacean"}, \code{"turtle"}, \code{"fish"} or \code{"manta"}. The choice changes only the
-displayed silhouette; it does not alter the underlying orientation values or coordinate
-conventions. Presentation dashboards ignore it when \code{orientation = "dials"}; fixed validation
-dashboards always use the selected model. \code{"cetacean"} depicts a dolphin-like odontocete,
-\code{"turtle"} a hard-shelled sea turtle, and \code{"fish"} a generic ray-finned fish; these are not
-species-specific anatomical reconstructions. A validated \code{\link[=overlayModel]{overlayModel()}} object can supply
-custom untextured triangle geometry in the same body frame.}
+\item{orientation.model}{Species used by three-dimensional orientation modules:
+\code{"blue_shark"} (default), \code{"whale_shark"}, \code{"mako"}, \code{"hammerhead"}, \code{"manta"},
+\code{"devil_ray"}, \code{"turtle"}, \code{"dolphin"}, \code{"whale"}, \code{"marlin"} or \code{"tuna"}.
+Each name selects its approved geometry, appearance and motion profile.
+The choice does not alter sensor orientation values or coordinate conventions.
+Presentation dashboards ignore it when \code{orientation = "dials"}; fixed validation
+dashboards use the selected model. A validated \code{\link[=overlayModel]{overlayModel()}} or
+\code{\link[=overlaySpeciesModel]{overlaySpeciesModel()}} object can also be supplied. Use \code{\link[=overlaySpeciesCatalog]{overlaySpeciesCatalog()}}
+to list species and motion profiles. Retired generic names \code{"shark"}, \code{"cetacean"}
+and \code{"fish"} are not aliases; select an explicit species instead.}
 
 \item{video.start}{One finite \code{POSIXct} value giving the sensor-clock time represented by the first
 frame of \code{video}. \code{NULL} (default) attempts to read a UTC timestamp in \code{YYYYMMDD-HHMMSS} or
@@ -347,7 +349,7 @@ renderOverlayVideo(video = video_metadata$file[1],
 renderOverlayVideo(video = video_metadata$file[1],
                    data = tag,
                    output = "./overlay/PIN_CAM_01_cetacean.mp4",
-                   orientation.model = "cetacean",
+                   orientation.model = "dolphin",
                    video.start = video_metadata$start[1])
 
 # Give the reconstructed pseudo-trajectory priority in an expanded dashboard.

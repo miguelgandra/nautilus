@@ -1,3 +1,19 @@
+# nautilus 0.2.0
+
+## Production species models
+
+* The renderer now defaults to `"blue_shark"` and resolves all eleven approved
+  species names through the primary production registry. Named models and
+  `overlaySpeciesModel()` objects use identical geometry, appearance and rigs.
+* Generic `"shark"`, `"cetacean"` and `"fish"` identifiers and the experimental
+  wrapper functions are removed without aliases. Choose explicit species names;
+  `"marlin"` identifies striped marlin and `"whale"` identifies humpback whale.
+* Approved regression fixtures protect 688--700 triangle models, named parts,
+  pivots, countershading and mesh-attached markings. Animation stays optional;
+  synchronization, custom geometry and existing motion controls are retained.
+* Temporary review artifacts, intermediate meshes, rendered samples and benchmark
+  logs are removed. Production examples and approved regression fixtures remain.
+
 # nautilus 0.1.0
 
 First public release. `nautilus` provides an end-to-end pipeline for processing and analysing

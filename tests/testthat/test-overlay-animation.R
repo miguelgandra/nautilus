@@ -14,19 +14,21 @@
 
 .overlay_motion <- function(d, ...) {
   nautilus:::.resolveOverlayMotion(overlayMotionControl(...), d,
-                                   nautilus:::.prepareOverlayModel("shark"))
+                                   nautilus:::.prepareOverlayModel("blue_shark"))
 }
 
-test_that("prepared built-in models preserve production geometry and share vertices", {
-  for (name in c("shark", "cetacean", "turtle", "fish", "manta")) {
-    old <- nautilus:::.tagModel3D(name)
-    m <- nautilus:::.prepareOverlayModel(name, 20)
-    expect_equal(m$part, old$part)
-    expect_lt(nrow(m$vertices), sum(vapply(old$faces, ncol, integer(1))))
-    for (i in seq_along(m$faces))
-      expect_equal(t(m$vertices[m$faces[[i]], , drop = FALSE]), old$faces[[i]])
-    expect_true(any(m$rig$weights > 0))
-    expect_true(is.finite(m$display.scale) && m$display.scale > 0)
+test_that("prepared production models preserve approved geometry and share vertices", {
+  for(name in overlaySpeciesCatalog()$model) {
+    reference <- overlaySpeciesModel(name)
+    m <- nautilus:::.prepareOverlayModel(name,20)
+    expect_identical(m$part,reference$part)
+    expect_identical(m$vertices,reference$vertices)
+    expect_identical(m$faces,reference$faces)
+    expect_identical(m$rig,reference$rig)
+    expect_identical(m$appearance,reference$appearance)
+    expect_lt(nrow(m$vertices),3*length(m$faces))
+    expect_true(any(m$rig$weights>0))
+    expect_true(is.finite(m$display.scale) && m$display.scale>0)
   }
 })
 
@@ -55,7 +57,7 @@ test_that("custom models validate geometry, topology, weights and coordinate sca
 })
 
 test_that("deformation fixes zero-weight vertices and respects fixed display bounds", {
-  for (name in c("shark", "cetacean", "turtle", "fish", "manta")) {
+  for (name in overlaySpeciesCatalog()$model) {
     m <- nautilus:::.prepareOverlayModel(name, 30)
     rest <- m$vertices
     expect_equal(nautilus:::.deformOverlayModel(m, 1, 0, 30, pi/3), rest)
@@ -79,7 +81,7 @@ test_that("local deformation precedes the established attitude rotation", {
   expect_lt(sum(up * (nautilus:::.overlayAttitudeRotation(0, 30) %*% c(0, 1, 0))), 0)
   expect_gt(sum(up * (nautilus:::.overlayAttitudeRotation(30, 0) %*% c(1, 0, 0))),
             sum(up * c(1, 0, 0)))
-  m <- nautilus:::.prepareOverlayModel("shark", 20)
+  m <- nautilus:::.prepareOverlayModel("blue_shark", 20)
   v <- nautilus:::.deformOverlayModel(m, pi/2, 1, 20, 0)
   projected <- nautilus:::.projectPreparedOverlayModel(m, v, rotation)
   world <- v %*% t(rotation)
@@ -135,7 +137,7 @@ test_that("animated TBF readout follows the current driving frequency and withho
   # The readout must use the animation's interpolated state, not a raw sensor-column lookup.
   fd$.motion.frequency <- .437
   fd$tbf_hz_peaks <- 99
-  model <- nautilus:::.prepareOverlayModel("shark", 20)
+  model <- nautilus:::.prepareOverlayModel("blue_shark", 20)
   captured <- list()
   testthat::local_mocked_bindings(text = function(x, y, labels, ...) {
     captured[[length(captured) + 1L]] <<- c(list(y = y, label = labels), list(...))
@@ -266,7 +268,7 @@ test_that("motion rate checks consider both dashboard and output video rate", {
 
 test_that("prepared dashboards draw without media encoding for every existing layout", {
   d <- .overlay_fixture()
-  model <- nautilus:::.prepareOverlayModel("shark", 20)
+  model <- nautilus:::.prepareOverlayModel("blue_shark", 20)
   motion <- .overlay_motion(d)
   state <- nautilus:::.prepareOverlayFrameState(d, d$datetime[1] + .5, motion)
   fd <- nautilus:::.overlayFrameData(state, 1, d)
@@ -286,7 +288,7 @@ test_that("prepared dashboards draw without media encoding for every existing la
     expect_no_error(nautilus:::.drawPreparedOverlayDashboard(fd, d, fd$datetime, 300, 30,
       nautilus:::.overlayTheme(), NULL, candidates, plan, context, model, NULL))
   }
-  for (name in c("cetacean", "turtle", "fish", "manta"))
+  for (name in overlaySpeciesCatalog()$model)
     expect_no_error(nautilus:::.drawPreparedAttitudeModel(fd, nautilus:::.overlayTheme(),
       nautilus:::.prepareOverlayModel(name, 20), motion))
   expect_no_error(nautilus:::.drawPreparedAttitudeModel(fd, nautilus:::.overlayTheme(),

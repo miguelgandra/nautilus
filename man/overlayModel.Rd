@@ -59,3 +59,6 @@ vertices <- rbind(c(1, 0, 0), c(-1, .3, 0), c(-1, -.3, 0), c(-.5, 0, -.3))
 faces <- rbind(c(1, 2, 3), c(1, 4, 2), c(1, 3, 4), c(2, 4, 3))
 model <- overlayModel(vertices, faces, name = "schematic")
 }
+\seealso{
+\code{\link[=overlaySpeciesModel]{overlaySpeciesModel()}} for the production species catalog.
+}

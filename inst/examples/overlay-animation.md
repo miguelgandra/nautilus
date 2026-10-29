@@ -6,6 +6,19 @@ validated with `overlayModel()`. Video rendering uses optional **av** and FFmpeg
 no new package dependencies are required. Model-file import and browser telemetry
 export are outside this interface.
 
+The production renderer uses the eleven approved models in `overlaySpeciesCatalog()`.
+The default is `"blue_shark"`; pass a species name such as `"whale_shark"` or an
+`overlaySpeciesModel()` object. Named parts, pivots, countershading and rigs are
+shared by both routes. Generic `"shark"`, `"cetacean"` and `"fish"` names have been
+retired without aliases. See [the species guide](model-library.md).
+
+```r
+renderOverlayVideo(video, tag, "/path/to/whale-shark.mp4",
+  video.start = camera_start, start = clip_start, end = clip_end,
+  orientation.model = overlaySpeciesModel("whale_shark"),
+  animate = TRUE, overlay.fps = 20)
+```
+
 ## Render a short interval
 
 Load the development package in a fresh R session and supply your own footage,
@@ -26,14 +39,14 @@ clip_end <- clip_start + 15
 renderOverlayVideo(
   video, tag, "/path/to/rigid.mp4",
   video.start = video_start, start = clip_start, end = clip_end,
-  orientation.model = "shark", overlay.fps = 30, codec = "h264"
+  orientation.model = "blue_shark", overlay.fps = 30, codec = "h264"
 )
 
 # The same preparation with estimated-frequency schematic motion.
 renderOverlayVideo(
   video, tag, "/path/to/animated.mp4",
   video.start = video_start, start = clip_start, end = clip_end,
-  orientation.model = "shark",
+  orientation.model = "blue_shark",
   motion = overlayMotionControl(method = "peaks"),
   codec = "h264"
 )

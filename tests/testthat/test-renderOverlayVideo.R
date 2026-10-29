@@ -73,10 +73,10 @@ test_that(".dashboardColumns lists the right required columns per dashboard", {
 test_that("dashboard plans resolve presets, orientation alternatives, and metric windows", {
   model <- nautilus:::.resolveDashboardPlan("general")
   expect_equal(model$metrics, c("orientation", "depth", "vedba", "vertical_velocity"))
-  expect_equal(model$orientation.model, "shark")
+  expect_equal(model$orientation.model, "blue_shark")
 
-  cetacean <- nautilus:::.resolveDashboardPlan("general", orientation.model = "cetacean")
-  expect_equal(cetacean$orientation.model, "cetacean")
+  cetacean <- nautilus:::.resolveDashboardPlan("general", orientation.model = "dolphin")
+  expect_equal(cetacean$orientation.model, "dolphin")
 
   dials <- nautilus:::.resolveDashboardPlan("general", orientation = "dials")
   expect_equal(dials$metrics[1:3], c("heading", "pitch", "roll"))
@@ -102,7 +102,7 @@ test_that("all dashboards render a frame without error (including NA-tolerant mo
   clip <- .mk_sensor()
   clip$heading[1] <- NA_real_; clip$roll[2] <- NA_real_         # NAs must not break any panel
   pdf(NULL); on.exit(grDevices::dev.off())
-  model <- nautilus:::.prepareOverlayModel("shark")
+  model <- nautilus:::.prepareOverlayModel("blue_shark")
   draw <- function(dashboard, clip, candidates = NULL, plan = NULL) {
     if (is.null(plan)) plan <- nautilus:::.resolveDashboardPlan(dashboard, candidates = candidates)
     context <- nautilus:::.prepareOverlayContext(clip, plan)
@@ -124,14 +124,14 @@ test_that("all dashboards render a frame without error (including NA-tolerant mo
 
 test_that("the prepared attitude drawer is NA-tolerant and draws", {
   pdf(NULL); on.exit(grDevices::dev.off())
-  draw <- function(pitch, roll, model = "shark", ...) {
+  draw <- function(pitch, roll, model = "blue_shark", ...) {
     nautilus:::.drawPreparedAttitudeModel(list(pitch = pitch, roll = roll, heading = 270),
       nautilus:::.completeOverlayTheme(.theme), nautilus:::.prepareOverlayModel(model), NULL, ...)
   }
   expect_no_error(draw(NA_real_, NA_real_, label = "x"))
   expect_no_error(draw(15, -30, show.heading = FALSE))
   expect_no_error(draw(15, -30, show.heading = TRUE))
-  for (model in c("shark", "cetacean", "turtle", "fish", "manta")) {
+  for (model in overlaySpeciesCatalog()$model) {
     expect_no_error(draw(15, -30, model = model))
     expect_no_error(draw(0, 180, model = model))
   }
@@ -156,38 +156,32 @@ test_that("metric ranges are robust and vertical velocity is symmetric", {
   expect_equal(nautilus:::.overlayRange(c(0.1, 0.2), "vedba")[1], 0)
 })
 
-test_that("all configured orientation models are valid low-poly meshes", {
-  expect_setequal(names(nautilus:::.orientationModelRegistry()),
-                  c("shark", "cetacean", "turtle", "fish", "manta"))
-  for (model in names(nautilus:::.orientationModelRegistry())) {
-    m <- nautilus:::.tagModel3D(model)
-    expect_true(length(m$faces) > 20L)                     # a body tube + appendages
-    expect_equal(length(m$faces), length(m$part))
-    expect_true(all(vapply(m$faces, function(f) is.matrix(f) && nrow(f) == 3L && ncol(f) >= 3L, logical(1))))
-    expect_setequal(unique(m$part), c("body", "fin"))
-    if (!is.null(m$details))
-      expect_true(all(vapply(m$details, function(line) is.matrix(line) && nrow(line) == 3L &&
-                               ncol(line) >= 2L && all(is.finite(line)), logical(1))))
-    if (!is.null(m$eyes)) {
-      expect_equal(nrow(m$eyes), 3L)
-      expect_true(all(is.finite(m$eyes)))
-    }
+test_that("all production orientation models use approved indexed triangle meshes", {
+  expect_identical(names(nautilus:::.orientationModelRegistry()),overlaySpeciesCatalog()$model)
+  for(model in overlaySpeciesCatalog()$model) {
+    m <- nautilus:::.prepareOverlayModel(model)
+    expect_gte(length(m$faces),200L)
+    expect_lte(length(m$faces),700L)
+    expect_equal(length(m$faces),length(m$part))
+    expect_true(all(vapply(m$faces,function(f)length(f)==3L && all(f>=1 & f<=nrow(m$vertices)),logical(1))))
+    expect_true(all(is.finite(m$vertices)))
+    expect_identical(m$metadata$review$status,"approved")
   }
-  expect_length(nautilus:::.tagModel3D("shark")$faces, 53L) # shark geometry is unchanged
-  expect_null(nautilus:::.tagModel3D("shark")$details)
-  expect_null(nautilus:::.tagModel3D("shark")$eyes)
-  expect_error(nautilus:::.tagModel3D("penguin"), "Unknown orientation model")
+  expect_length(nautilus:::.prepareOverlayModel()$faces,696L)
+  for(id in c("shark","cetacean","fish","penguin"))
+    expect_error(nautilus:::.prepareOverlayModel(id),"must be one of")
 })
 
-test_that("refined animal meshes preserve distinguishing anatomical proportions", {
-  specs <- nautilus:::.orientationModelRegistry()
-  expect_gt(abs(specs$cetacean$appendages[[4]][2, 3]), 0.6)  # horizontal fluke span
-  expect_gt(max(specs$turtle$appendages[[1]][2, ]),
-            max(specs$turtle$appendages[[3]][2, ]))           # foreflipper exceeds hindflipper
-  expect_gt(length(specs$turtle$details), 4L)                # carapace scute sutures
-  expect_gt(max(specs$fish$height), max(specs$fish$width))    # laterally compressed bony fish
-  expect_gt(max(specs$manta$appendages[[1]][2, ]), 1.2)      # wide pectoral disc
-  expect_lt(min(specs$manta$height), 0.02)                   # flattened body/tail
+test_that("production meshes retain diagnostic anatomy and deformation profiles", {
+  models <- setNames(lapply(overlaySpeciesCatalog()$model,overlaySpeciesModel),overlaySpeciesCatalog()$model)
+  expect_identical(models$dolphin$rig$type,"vertical")
+  expect_identical(models$whale$rig$type,"vertical")
+  expect_identical(models$turtle$metadata$rig$flipper.mode,"rigid")
+  expect_true(all(c("body","plastron") %in% models$turtle$metadata$components$region))
+  expect_true("cephalofoil" %in% models$hammerhead$metadata$components$region)
+  expect_true("bill" %in% models$marlin$metadata$components$region)
+  expect_equal(sum(startsWith(models$tuna$metadata$components$region,"dorsal_finlet_")),9L)
+  expect_identical(models$manta$rig$type,"flippers")
 })
 
 test_that("presentation geometry shortens the orientation and timestamp rows", {
@@ -235,7 +229,7 @@ test_that("end-to-end: composites a dashboard panel beside a synthetic source vi
   expect_no_error(suppressWarnings(suppressMessages(
     # Existing positional arguments still map to the same sync anchor.
     renderOverlayVideo(src, .mk_sensor(t0 = t0, n = 10), out,
-                       "general", NULL, "beside", "model", "shark", t0,
+                       "general", NULL, "beside", "model", "blue_shark", t0,
                        codec = "h264", crf = 30, verbose = FALSE))))
   expect_true(file.exists(out))
   info <- av::av_video_info(out)

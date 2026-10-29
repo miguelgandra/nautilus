@@ -46,14 +46,16 @@
 #'   draws a single three-dimensional attitude model with a heading compass and numeric heading, pitch
 #'   and roll. `"dials"` replaces it with three separate gauges. This argument does not change the fixed
 #'   validation dashboards.
-#' @param orientation.model Schematic animal model used by three-dimensional orientation modules:
-#'   `"shark"` (default), `"cetacean"`, `"turtle"`, `"fish"` or `"manta"`. The choice changes only the
-#'   displayed silhouette; it does not alter the underlying orientation values or coordinate
-#'   conventions. Presentation dashboards ignore it when `orientation = "dials"`; fixed validation
-#'   dashboards always use the selected model. `"cetacean"` depicts a dolphin-like odontocete,
-#'   `"turtle"` a hard-shelled sea turtle, and `"fish"` a generic ray-finned fish; these are not
-#'   species-specific anatomical reconstructions. A validated [overlayModel()] object can supply
-#'   custom untextured triangle geometry in the same body frame.
+#' @param orientation.model Species used by three-dimensional orientation modules:
+#'   `"blue_shark"` (default), `"whale_shark"`, `"mako"`, `"hammerhead"`, `"manta"`,
+#'   `"devil_ray"`, `"turtle"`, `"dolphin"`, `"whale"`, `"marlin"` or `"tuna"`.
+#'   Each name selects its approved geometry, appearance and motion profile.
+#'   The choice does not alter sensor orientation values or coordinate conventions.
+#'   Presentation dashboards ignore it when `orientation = "dials"`; fixed validation
+#'   dashboards use the selected model. A validated [overlayModel()] or
+#'   [overlaySpeciesModel()] object can also be supplied. Use [overlaySpeciesCatalog()]
+#'   to list species and motion profiles. Retired generic names `"shark"`, `"cetacean"`
+#'   and `"fish"` are not aliases; select an explicit species instead.
 #' @param video.start One finite `POSIXct` value giving the sensor-clock time represented by the first
 #'   frame of `video`. `NULL` (default) attempts to read a UTC timestamp in `YYYYMMDD-HHMMSS` or
 #'   `YYMMDD-HHMMSS` form from the file name. A value returned by [getVideoMetadata()] is recommended.
@@ -287,7 +289,7 @@
 #' renderOverlayVideo(video = video_metadata$file[1],
 #'                    data = tag,
 #'                    output = "./overlay/PIN_CAM_01_cetacean.mp4",
-#'                    orientation.model = "cetacean",
+#'                    orientation.model = "dolphin",
 #'                    video.start = video_metadata$start[1])
 #'
 #' # Give the reconstructed pseudo-trajectory priority in an expanded dashboard.
@@ -308,7 +310,7 @@ renderOverlayVideo <- function(video,
                                metrics = NULL,
                                composition = c("beside", "overlay"),
                                orientation = c("model", "dials"),
-                               orientation.model = "shark",
+                               orientation.model = "blue_shark",
                                video.start = NULL,
                                start = NULL,
                                end = NULL,
@@ -621,7 +623,7 @@ renderOverlayVideo <- function(video,
 #' @keywords internal
 #' @noRd
 .resolveDashboardPlan <- function(dashboard, metrics = NULL, orientation = "model",
-                                  orientation.model = "shark", candidates = NULL,
+                                  orientation.model = "blue_shark", candidates = NULL,
                                   depth.window = 300, activity.window = 30, metric.windows = NULL) {
   if (dashboard %in% c("validation", "validation-compare"))
     return(list(dashboard = dashboard, metrics = character(), windows = numeric(),
