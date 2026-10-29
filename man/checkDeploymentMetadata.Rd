@@ -57,11 +57,14 @@ listed in the console output.
 Each check runs only when the roles it needs are available.
 
 \describe{
-\item{Identifiers}{Missing or duplicated animal identifiers, and identifiers that needed trimming
-or case normalisation to match.}
+\item{Identifiers}{Missing or duplicated deployment identifiers, and whitespace normalization of
+deployment, animal, package and logger identifiers. Case and leading zeros are preserved.}
 \item{Deployment records}{Missing deployment dates or positions; positions outside plausible
-geographic bounds; deployment dates further into the future than \code{future.tolerance} allows.}
-\item{Chronology}{Recovery or pop-up datetimes falling before the deployment datetime.}
+geographic bounds; malformed numeric text, non-finite coordinates and incomplete position pairs;
+deployment dates further into the future than \code{future.tolerance} allows. Factor coordinates use
+their labels rather than their integer codes.}
+\item{Chronology}{Non-finite event times, or recovery or pop-up datetimes falling before deployment.
+Event columns must already be POSIXct; their absolute instants are preserved.}
 \item{Hardware reuse}{The same tag package deployed on overlapping dates, which would make its
 axis orientation ambiguous; and the same logger appearing on more than one deployment.}
 \item{Declared sensor faults}{Sensor channels listed as known-bad, checked for spelling against the
@@ -75,7 +78,9 @@ window to intersect.
 \subsection{Reporting, not stopping}{
 
 Problems are reported and attached to the returned object rather than raised as errors, so you can
-see the whole picture at once and decide what to fix. Nothing is silently repaired. It is
+see the whole picture at once and decide what to fix. Identifier whitespace and numeric coordinate
+representations are normalized; invalid numeric text is reported before coercion to missing values.
+Structural problems such as a missing mapped column or a non-POSIXct event column stop the call. It is
 \code{\link[=importTagData]{importTagData()}} that refuses to proceed on unresolved errors, which keeps inspection and
 enforcement as separate steps.
 

@@ -1,4 +1,3 @@
-
 #' Import and standardise archival tag data
 #'
 #' @description
@@ -18,7 +17,10 @@
 #'
 #' This is the entry point to a \pkg{nautilus} analysis, used once at the start of a study. Deployment
 #' metadata should preferably be validated with [checkDeploymentMetadata()] beforehand, and the metadata
-#' schema can be specified with [metadataColumns()]. For data already in R, use [buildTagData()].
+#' schema can be specified with [metadataColumns()]. Normalized identifiers and factor/numeric-text
+#' coordinates are used for both validation and import. Current values are rechecked even when a QC
+#' stamp is present. Mapped recovery times are retained separately from pop-up times in tag metadata.
+#' For data already in R, use [buildTagData()].
 #'
 #' @param data.folders Character vector of paths to deployment folders, one per deployment to import.
 #' @param sensor.subdirectory Subdirectory within each deployment folder holding the primary sensor
@@ -120,7 +122,7 @@
 #' ## Metadata
 #'
 #' The `metadata` argument supplies deployment-level information associated with each imported dataset:
-#' the deployment identifier, tag information, deployment and pop-up times and locations, and any other
+#' the deployment identifier, tag information, deployment, recovery and pop-up events and locations, and any other
 #' fields defined through [metadataColumns()].
 #'
 #' Metadata are preferably supplied as an object returned by [checkDeploymentMetadata()], which carries
@@ -306,8 +308,7 @@ importTagData <- function(data.folders,
 
   # A QC'd metadata table (a nautilus_deployments from checkDeploymentMetadata) is authoritative about its
   # own column names and carries a QC verdict: adopt its embedded schema and keep the stamp (reported in
-  # the header; a FAILED verdict is rejected before the long read). A plain data.frame is screened
-  # inline further below by the same check engine, as a guard.
+  # the header; a FAILED verdict is rejected before the long read). Current values are also checked below.
   qc_stamp <- NULL
   if (is_nautilus_deployments(metadata)) {
     qc_stamp <- attr(metadata, "nautilus.qc")
@@ -317,10 +318,16 @@ importTagData <- function(data.folders,
 
   # resolve the metadata column schema, then unpack into the local names used below
   columns <- .as_metadata_columns(columns)
+  if (!is.data.frame(metadata)) .abort("{.arg metadata} must be a data.frame or data.table.")
+  # Use the normalized values for matching and assembly, not just for a discarded QC copy.
+  normalized_metadata <- .qcNormalizeMetadata(metadata, columns)
+  metadata <- normalized_metadata$data
+  columns <- normalized_metadata$schema
   id.col              <- columns$id
   tag.model.col       <- columns$tag_model
   tag.type.col        <- columns$tag_type
   deploy.date.col     <- columns$deploy_datetime
+  recovery.date.col   <- columns$recovery_datetime
   deploy.lon.col      <- columns$deploy_lon
   deploy.lat.col      <- columns$deploy_lat
   pop.date.col        <- columns$popup_datetime
@@ -445,45 +452,6 @@ importTagData <- function(data.folders,
     }
   }
 
-  # check that the configured metadata columns exist in metadata (NULL = optional column, skipped)
-  need_col <- function(col, field) {
-    if (!is.null(col) && !col %in% names(metadata)) {
-      .abort(c("Column {.val {col}} (set via {.code columns${field}}) was not found in {.arg metadata}.",
-               "i" = "Columns present: {.val {names(metadata)}}."))
-    }
-  }
-  need_col(id.col,              "id")
-  need_col(tag.model.col,       "tag_model")
-  need_col(deploy.date.col,     "deploy_datetime")
-  need_col(deploy.lon.col,      "deploy_lon")
-  need_col(deploy.lat.col,      "deploy_lat")
-  need_col(pop.date.col,        "popup_datetime")
-  need_col(pop.lon.col,         "popup_lon")
-  need_col(pop.lat.col,         "popup_lat")
-  need_col(tag.type.col,        "tag_type")
-  need_col(package.id.col,      "package_id")
-  need_col(logger.id.col,       "logger_id")
-  need_col(animal.id.col,       "animal_id")
-  need_col(deploy.site.col,     "deploy_site")
-  need_col(exclude.sensors.col, "exclude_sensors")
-  need_col(axis.config.col,     "axis_config")
-  need_col(attachment.site.col, "attachment_site")
-  need_col(deployment.type.col, "deployment_type")
-  for (tr in traits.cols) need_col(tr, "traits")             # every declared trait column must exist
-
-  # paddle-wheel column: if set, must be logical or numeric 0/1 (coerced to logical)
-  if (!is.null(paddle.wheel.col)) {
-    need_col(paddle.wheel.col, "paddle_wheel")
-    paddle_values <- metadata[[paddle.wheel.col]]
-    if (!is.logical(paddle_values)) {
-      if (is.numeric(paddle_values) && all(paddle_values %in% c(0, 1, NA))) {
-        metadata[[paddle.wheel.col]] <- as.logical(paddle_values)
-      } else {
-        .abort("Column {.val {paddle.wheel.col}} ({.code columns$paddle_wheel}) must be logical or numeric 0/1.")
-      }
-    }
-  }
-
   # Folder basenames are deployment identifiers throughout import. Keep them positional: two paths may
   # legitimately share a basename, and the reader/discovery state for one must never mask the other.
   folder_ids <- basename(data.folders)
@@ -499,14 +467,6 @@ importTagData <- function(data.folders,
   if (length(missing_deploy_ids) > 0) {
     .abort(c("Some IDs are missing deployment info (datetime, lon, or lat) in {.arg metadata}:",
              "x" = "{.val {missing_deploy_ids}}"))
-  }
-
-  # deployment / pop-up datetimes must be POSIXct
-  if (!inherits(metadata[[deploy.date.col]], "POSIXct")) {
-    .abort("Column {.val {deploy.date.col}} in {.arg metadata} must be of class {.cls POSIXct}.")
-  }
-  if (!is.null(pop.date.col) && !inherits(metadata[[pop.date.col]], "POSIXct")) {
-    .abort("Column {.val {pop.date.col}} in {.arg metadata} must be of class {.cls POSIXct}.")
   }
 
   # timezone
@@ -687,7 +647,7 @@ importTagData <- function(data.folders,
   # Specify columns to import and respective mappings ##########################
   ##############################################################################
 
-  # the built-in CATS + CEiiA dialects (R/read_cats.R - the reader owns its own header knowledge, and
+  # the built-in CATS + CEiiA dialects (R/utils-import.R - the reader owns its own header knowledge, and
   # `format = "auto"` resolves headers through this same table)
   default_mappings <- .defaultMappings()
 
@@ -734,14 +694,12 @@ importTagData <- function(data.folders,
   # metadata QC: a pre-QC'd nautilus_deployments carries a verdict (shown in the header, rejected here
   # if FAILED); a plain data.frame is screened inline by the same engine as checkDeploymentMetadata(),
   # restricted to the deployments being imported. Errors abort before the long read.
-  qc_guard_err <- .empty_issues(); qc_guard_inline <- is.null(qc_stamp)
-  if (qc_guard_inline) {
-    qc_norm <- tryCatch(.qcNormalizeMetadata(processing_metadata, columns), error = function(e) NULL)
-    if (!is.null(qc_norm)) {
-      g <- .runMetadataQC(qc_norm$data, qc_norm$roles)
-      qc_guard_err <- g[g$severity == "error", , drop = FALSE]
-    }
-  }
+  qc_guard_inline <- is.null(qc_stamp)
+  # Recheck current values even with a saved QC stamp: metadata tables may have been edited.
+  g <- rbind(normalized_metadata$notes,
+             .runMetadataQC(processing_metadata, normalized_metadata$roles))
+  in_scope <- is.na(g$id) | g$id %in% processing_ids
+  qc_guard_err <- g[g$severity == "error" & in_scope, , drop = FALSE]
 
   # header: a framed block, visually isolated from the per-individual sections that follow
   hdr_bullets <- sprintf("Input: %d folder%s", n_animals, if (n_animals != 1) "s" else "")
@@ -1013,7 +971,7 @@ importTagData <- function(data.folders,
     ############################################################################
 
     # A co-deployed WC tag is a separate DEVICE, not a format of this one: it gets its own reader and
-    # attaches to the assembled tag, so no primary reader ever learns about it (see R/read_wc.R). The
+    # attaches to the assembled tag, so no primary reader ever learns about it (see R/utils-import.R). The
     # complete TRACKING-fix record (FastGPS/Argos; the deploy/pop-up "User" rows are dropped - they live
     # in meta$deployment) is kept as an independent ancillary stream at its own cadence - NOT snapped to
     # sensor rows and NOT trimmed to the recording window - so the full fix history survives downstream
@@ -1104,6 +1062,7 @@ importTagData <- function(data.folders,
       package_id      = package_id %||% NA,
       paddle_wheel    = has_paddle %||% NA
     )
+    if (!is.null(recovery.date.col))   role_meta$recovery_datetime <- animal_info[[recovery.date.col]]
     if (!is.null(animal.id.col))       role_meta$animal_id       <- animal_info[[animal.id.col]]
     if (!is.null(deploy.site.col))     role_meta$deploy_site     <- animal_info[[deploy.site.col]]
     if (!is.null(pop.date.col))        role_meta$popup_datetime  <- animal_info[[pop.date.col]]

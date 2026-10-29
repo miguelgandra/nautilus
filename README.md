@@ -131,6 +131,18 @@ names. Use `metadataColumns()` to map your columns to the roles expected by naut
 biological attributes such as `size` are passed through its `traits` argument rather
 than mapped to a role.
 
+IDs name attachment episodes, independently of `animal_id`, package and logger identities.
+They are character keys: whitespace is normalized, while case and leading zeros are preserved.
+`buildTagData()` requires existing row IDs, metadata IDs and an explicit `id` to agree; it
+rejects mixed or missing row IDs rather than relabelling them. Correct the source identities
+before construction when a label needs to change.
+
+Construction, QC and import share metadata normalization. Factor coordinate labels and numeric
+text become geographic values, and supplied positions must be complete longitude/latitude pairs
+within valid bounds. Event times must already be POSIXct instants, with recovery and pop-up no
+earlier than deployment. Sensor-only construction can omit these fields. Recovery remains a
+separate event at `getTagMetadata(tag)$deployment$recovery_datetime`, also available in summaries.
+
 | ID | tag_model | attach_time | lon | lat | size | deployment_type |
 |----|-----------|-------------|-----|-----|------|-----------------|
 | PIN_01 | CATS | 2022-10-13 13:50 | -28.6 | 38.5 | 10 | towed |

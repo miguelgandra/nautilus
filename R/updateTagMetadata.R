@@ -1,5 +1,3 @@
-
-
 #' Update descriptive metadata on tag datasets
 #'
 #' @description
@@ -40,6 +38,7 @@
 #' For table updates, select traits with `metadataColumns(traits = c("sex", "length_cm"))`
 #' and optionally map `animal_id` and `deploy_site`. Column names within `traits` become field
 #' names within `biometrics`. Deployment IDs must be non-missing, non-empty, and unique.
+#' Matching keys use the same whitespace normalization as ingestion; case and leading zeros are preserved.
 #' Datasets without a matching row are retained unchanged and reported in a warning. They are
 #' also saved when `output.dir` is supplied.
 #'

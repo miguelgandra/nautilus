@@ -55,7 +55,9 @@ tag's metadata at import and reported by \code{\link[=summarizeTagData]{summariz
 
 \item{recovery_datetime}{Column holding the recovery (or detachment) datetime, POSIXct, or \code{NULL}.
 Mapping it enables the recovery-before-deployment check in \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}, and
-is also required by the package-overlap check. Default \code{NULL}.}
+is also required by the package-overlap check. Retained separately from pop-up time as
+\code{getTagMetadata(tag)$deployment$recovery_datetime}; neither event is inferred from recording end.
+Default \code{NULL}.}
 
 \item{popup_datetime, popup_lon, popup_lat}{Columns holding the pop-up (detachment) datetime /
 longitude / latitude. Supply all three to enable pop-up location integration. Default \code{NULL}.}

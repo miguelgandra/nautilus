@@ -844,6 +844,7 @@ format.nautilus_summary <- function(x, style = c("internal", "report", "concise"
   deploy_site     = list(get = function(m) m$deployment$site,            roster = "deploy_site",     type = "chr"),
   deploy_lon      = list(get = function(m) m$deployment$lon,             roster = "deploy_lon",      type = "num"),
   deploy_lat      = list(get = function(m) m$deployment$lat,             roster = "deploy_lat",      type = "num"),
+  recovery_datetime = list(get = function(m) m$deployment$recovery_datetime, roster = "recovery_datetime", type = "time"),
   popup_datetime  = list(get = function(m) m$deployment$popup_datetime,  roster = "popup_datetime",  type = "time"),
   popup_lon       = list(get = function(m) m$deployment$popup_lon,       roster = "popup_lon",       type = "num"),
   popup_lat       = list(get = function(m) m$deployment$popup_lat,       roster = "popup_lat",       type = "num"),

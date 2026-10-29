@@ -25,22 +25,8 @@
 
 # An identity check prevents a stale attribute from directing edits to the wrong deployment.
 .metadataTagId <- function(tag, meta, fallback, id.col = "ID") {
-  data_ids <- if (id.col %in% names(tag)) unique(as.character(tag[[id.col]])) else character(0)
-  if (length(data_ids) && (anyNA(data_ids) || any(!nzchar(trimws(data_ids))) || length(data_ids) != 1L)) {
-    .abort("Each tag dataset must contain one non-missing deployment ID in {.val {id.col}}.")
-  }
-  meta_id <- meta$id
-  if (length(meta_id) == 1L && !is.na(meta_id) && nzchar(trimws(as.character(meta_id)))) {
-    meta_id <- as.character(meta_id)
-    if (length(data_ids) && !identical(data_ids, meta_id)) {
-      .abort("Stored metadata ID {.val {meta_id}} does not match the dataset ID {.val {data_ids}}.")
-    }
-    return(meta_id)
-  }
-  if (length(data_ids)) return(data_ids)
-  .assert_string(fallback, "deployment ID")
-  if (!nzchar(trimws(fallback))) .abort("Each dataset needs a non-empty deployment ID.")
-  fallback
+  .resolveDeploymentId(if (id.col %in% names(tag)) tag[[id.col]] else NULL,
+                       stored = meta$id, fallback = fallback)
 }
 
 
@@ -66,7 +52,10 @@
   protected <- setdiff(names(updates), c("animal_id", "deployment", "biometrics", "user"))
   if (length(protected)) .abort("Metadata fields {.val {protected}} are protected or unsupported.")
   patch <- updates
-  if ("animal_id" %in% names(patch)) patch$animal_id <- scalar(patch$animal_id, "animal_id", text = TRUE)
+  if ("animal_id" %in% names(patch)) {
+    patch$animal_id <- .normalizeIdentifier(scalar(patch$animal_id, "animal_id", text = TRUE), "animal_id")
+    if (!is.na(patch$animal_id) && !nzchar(patch$animal_id)) patch$animal_id <- NA_character_
+  }
   for (block in intersect(c("deployment", "biometrics", "user"), names(patch))) {
     named_list(patch[[block]], block)
     if (block == "deployment" && any(names(patch[[block]]) != "site")) {
@@ -93,7 +82,7 @@
   }
   id_values <- updates[[columns$id]]
   if (!is.atomic(id_values) || !is.null(dim(id_values))) .abort("Update table deployment IDs must be a scalar column, not nested objects.")
-  ids <- as.character(id_values)
+  ids <- .normalizeIdentifier(id_values, "update table ID")
   if (!length(ids) || anyNA(ids) || any(!nzchar(trimws(ids))) || anyDuplicated(ids)) {
     .abort("Update table deployment IDs must be non-missing, non-empty, and unique.")
   }

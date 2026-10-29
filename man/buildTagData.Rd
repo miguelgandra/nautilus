@@ -25,7 +25,8 @@ buildTagData(
 \code{sampling.rate} instead - and one or more sensor columns.}
 
 \item{id}{The deployment identifier. \code{NULL} (default) takes it from an \code{ID} column in \code{data}, or
-from \code{metadata}. An error is raised if none is available, or if \code{data} mixes several animals.}
+from \code{metadata}. All supplied identities must agree. An error is raised if none is available,
+if row IDs are missing or mixed, or if an existing identity conflicts with \code{id}.}
 
 \item{datetime.col}{Which column holds the timestamps (default \code{"datetime"}). Set it when your
 table names that column something else; it is renamed on output so the rest of the pipeline sees
@@ -110,7 +111,15 @@ was deployed and recovered, the tag model and type, the attachment site, and so 
 object from \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} can be passed directly, since its columns already use those
 names. Columns named in \code{traits} are carried through unchanged as biometric traits, for example
 length or sex. Anything not supplied stays missing; none of it is needed to run an accelerometer
-analysis.
+analysis. Supplied fields are scalar values. Numeric text and factor coordinate labels are converted
+to geographic values; coordinates must be finite and within longitude/latitude bounds, with both
+members of a position supplied together. Event times must be POSIXct, and recovery and pop-up times
+cannot precede deployment. Recovery and pop-up remain separate events in the stored metadata.
+
+All known deployment IDs must agree: the argument, every row in \code{ID}, metadata \code{id}/\code{ID}, and any
+stored tag identity. IDs are character keys with normalized whitespace; case and leading zeros are
+preserved. Missing or mixed row IDs are rejected even with an explicit \code{id}. Correct identities in
+the source before construction; this constructor does not relabel an existing deployment.
 }
 
 \subsection{Tags without a magnetometer or gyroscope}{

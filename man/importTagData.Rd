@@ -125,7 +125,10 @@ dataset in memory.
 
 This is the entry point to a \pkg{nautilus} analysis, used once at the start of a study. Deployment
 metadata should preferably be validated with \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}} beforehand, and the metadata
-schema can be specified with \code{\link[=metadataColumns]{metadataColumns()}}. For data already in R, use \code{\link[=buildTagData]{buildTagData()}}.
+schema can be specified with \code{\link[=metadataColumns]{metadataColumns()}}. Normalized identifiers and factor/numeric-text
+coordinates are used for both validation and import. Current values are rechecked even when a QC
+stamp is present. Mapped recovery times are retained separately from pop-up times in tag metadata.
+For data already in R, use \code{\link[=buildTagData]{buildTagData()}}.
 }
 \details{
 \subsection{Data import and standardisation}{
@@ -174,7 +177,7 @@ with \code{\link[=checkTagMapping]{checkTagMapping()}}. Orientation metrics comp
 \subsection{Metadata}{
 
 The \code{metadata} argument supplies deployment-level information associated with each imported dataset:
-the deployment identifier, tag information, deployment and pop-up times and locations, and any other
+the deployment identifier, tag information, deployment, recovery and pop-up events and locations, and any other
 fields defined through \code{\link[=metadataColumns]{metadataColumns()}}.
 
 Metadata are preferably supplied as an object returned by \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}, which carries

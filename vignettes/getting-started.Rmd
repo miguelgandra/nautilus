@@ -79,7 +79,7 @@ tags/
   ...
 ```
 
-**2. A deployment metadata table**, one row per animal, describing each deployment. You do
+**2. A deployment metadata table**, one row per attachment episode, describing each deployment. You do
 not have to rename your columns: `metadataColumns()` maps your own column names onto the
 roles nautilus needs. Five roles are required -- an ID, the tag model, the deployment
 date-time, and the deployment longitude and latitude -- and many more are optional (recovery
@@ -144,10 +144,18 @@ tags <- importTagData(
 ```
 
 `importTagData()` standardises sensor names and units, folds in any Wildlife Computers
-locations, and returns a **named list -- one `nautilus_tag` per animal, keyed by ID**. Every
+locations, and returns a **named list -- one `nautilus_tag` per deployment, keyed by ID**. Every
 later pipeline function accepts that list, so you rarely index into it; but when you want to
 look at a single deployment, pull one element out. Each carries its own consolidated metadata
-and processing history:
+and processing history. A deployment ID identifies the attachment episode; an animal can have
+several deployments. IDs retain case and leading zeros, with whitespace normalized. Existing row
+IDs, metadata IDs and an explicit `buildTagData(id = )` must agree. Mixed or missing row IDs must
+be corrected in the source rather than hidden by a constructor argument.
+
+Factor coordinates are read from their labels. Supplied longitude/latitude pairs must be complete,
+finite and within geographic bounds; mapped recovery and pop-up times must not precede deployment.
+Recovery time is retained separately at `getTagMetadata(tag)$deployment$recovery_datetime`, and can
+be requested with `summarizeTagData(tags, metadata = "recovery_datetime")`. For example:
 
 ```{r inspect}
 tag1 <- tags[[1]]        # a single deployment (or tags[["PIN_01"]] by ID)

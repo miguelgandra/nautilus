@@ -44,8 +44,8 @@ deployment type, and the package, logger and axis-configuration identifiers. Alt
 fields and traits you want - \code{c("sex", "deploy_lon", "deploy_lat")} - and they are emitted in the
 package's canonical order, so two calls requesting the same set still bind together. A named trait
 is given a column even where no deployment carries it, with a warning, which is how a cohort that
-recorded different traits can still be combined. Fields not carried onto the tag object by
-\code{\link[=importTagData]{importTagData()}}, such as \code{recovery_datetime}, are deliberately not offered. A field requested
+recorded different traits can still be combined. Recovery time is available as
+\code{recovery_datetime} when mapped at ingestion; older tags report it as missing. A field requested
 here can also group the rendered table, via
 \code{\link[=format.nautilus_summary]{format}(x, group.by = )}.}
 

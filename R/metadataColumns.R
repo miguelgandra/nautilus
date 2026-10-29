@@ -31,7 +31,9 @@
 #'   (defaults `"deploy_lon"` / `"deploy_lat"`).
 #' @param recovery_datetime Column holding the recovery (or detachment) datetime, POSIXct, or `NULL`.
 #'   Mapping it enables the recovery-before-deployment check in [checkDeploymentMetadata()], and
-#'   is also required by the package-overlap check. Default `NULL`.
+#'   is also required by the package-overlap check. Retained separately from pop-up time as
+#'   `getTagMetadata(tag)$deployment$recovery_datetime`; neither event is inferred from recording end.
+#'   Default `NULL`.
 #' @param popup_datetime,popup_lon,popup_lat Columns holding the pop-up (detachment) datetime /
 #'   longitude / latitude. Supply all three to enable pop-up location integration. Default `NULL`.
 #' @param package_id Column holding the physical tag-package ID (the housing whose axis orientation is

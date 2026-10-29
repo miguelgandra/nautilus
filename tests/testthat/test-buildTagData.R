@@ -24,11 +24,13 @@ test_that("buildTagData builds a valid nautilus_tag with the expected meta", {
 
 test_that("buildTagData flows through processTagData accelerometer-only (heading NA, no abort)", {
   skip_if_not_installed("signal")
-  tag <- buildTagData(.mkdf(n = 4000), id = "A01", verbose = FALSE)
+  recovery <- as.POSIXct("2025-01-02", tz = "UTC")
+  tag <- buildTagData(.mkdf(n = 4000), id = "A01", metadata = list(recovery_datetime = recovery), verbose = FALSE)
   out <- suppressWarnings(processTagData(tag, downsample.to = NULL, verbose = "quiet"))
   if (is.list(out) && !data.table::is.data.table(out)) out <- out[[1]]
   expect_true(all(c("odba", "vedba", "pitch", "roll", "surge", "sway", "heave") %in% names(out)))
   expect_true(all(is.na(out$heading)))
+  expect_identical(getTagMetadata(out)$deployment$recovery_datetime, recovery)
 })
 
 test_that("start + sampling.rate synthesises timestamps when there is no datetime column", {
@@ -65,7 +67,7 @@ test_that("metadata maps role-named fields onto the meta schema, incl. traits", 
   md <- list(deploy_lon = -28.6, deploy_lat = 38.6, tag_model = "Little Leonardo", tag_type = "LL",
              attachment_site = "left pectoral fin", deployment_type = "rigid", logger_id = "LL07",
              TL = 125.5, Species = "S. zygaena")
-  tag <- buildTagData(.mkdf(), id = "LL01", metadata = md, traits = c("TL", "Species"), verbose = FALSE)
+  tag <- buildTagData(.mkdf(id = FALSE), id = "LL01", metadata = md, traits = c("TL", "Species"), verbose = FALSE)
   m <- nautilus:::.getMeta(tag)
   expect_equal(m$deployment$lon, -28.6);  expect_equal(m$deployment$lat, 38.6)
   expect_identical(m$deployment$attachment_site, "left pectoral fin")
@@ -101,7 +103,7 @@ test_that("buildTagData does not mutate the caller's data frame", {
 })
 
 test_that("a non-'datetime' timestamp column is renamed to datetime", {
-  d <- .mkdf(); names(d)[names(d) == "datetime"] <- "time_utc"
+  d <- .mkdf(id = FALSE); names(d)[names(d) == "datetime"] <- "time_utc"
   tag <- buildTagData(d, id = "R01", datetime.col = "time_utc", verbose = FALSE)
   expect_true("datetime" %in% names(tag))
   expect_false("time_utc" %in% names(tag))
@@ -117,7 +119,7 @@ test_that("sensor.mapping rejects a target that collides with an existing column
 })
 
 test_that("the display zone matches metadata while existing POSIXct instants are preserved", {
-  d <- .mkdf(n = 200)
+  d <- .mkdf(n = 200, id = FALSE)
   d$datetime <- as.POSIXct("2025-06-01 08:00:00", tz = "America/New_York") + (seq_len(200) - 1) / 20
   tag <- buildTagData(d, id = "TZ1", timezone = "UTC", verbose = FALSE)
   expect_identical(attr(tag$datetime, "tzone"), "UTC")                    # invariant: column tz == meta tz
@@ -132,7 +134,7 @@ test_that("the display zone matches metadata while existing POSIXct instants are
 })
 
 test_that("a mapped trait is recorded even when NA, matching the importTagData path", {
-  tag <- buildTagData(.mkdf(), id = "T1", metadata = list(TL = 125.5, Sex = NA_character_),
+  tag <- buildTagData(.mkdf(id = FALSE), id = "T1", metadata = list(TL = 125.5, Sex = NA_character_),
                       traits = c("TL", "Sex"), verbose = FALSE)
   b <- nautilus:::.getMeta(tag)$biometrics
   expect_equal(b$TL, 125.5)

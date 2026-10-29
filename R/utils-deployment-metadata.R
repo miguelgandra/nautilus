@@ -1,3 +1,117 @@
+# Shared ingestion contracts. These helpers return values; callers own any table they edit.
+
+.normalizeIdentifier <- function(x, field) {
+  if (!(is.character(x) || is.factor(x) || is.numeric(x) || (is.logical(x) && all(is.na(x)))) ||
+      inherits(x, c("Date", "POSIXt", "difftime")) || !is.null(dim(x)))
+    .abort("{.field {field}} must contain character or numeric identifiers, not nested objects.")
+  if (is.numeric(x) && any(!is.na(x) & !is.finite(x)))
+    .abort("{.field {field}} must not contain non-finite numeric identifiers.")
+  gsub("[[:space:]]+", " ", trimws(.toUTF8(as.character(x))))
+}
+
+# All known identity sources must agree. An argument supplies a missing identity; it is not a relabel.
+.resolveDeploymentId <- function(data.ids = NULL, id = NULL, metadata = NULL, stored = NULL,
+                                  fallback = NULL) {
+  candidates <- character(0)
+  add <- function(value, field, optional = TRUE) {
+    if (is.null(value)) return(invisible(NULL))
+    if (length(value) != 1L) .abort("{.field {field}} must be a single deployment ID.")
+    value <- .normalizeIdentifier(value, field)
+    if (optional && is.na(value)) return(invisible(NULL))
+    if (is.na(value) || !nzchar(value)) .abort("{.field {field}} must be one non-missing, non-empty deployment ID.")
+    candidates[field] <<- value
+  }
+  if (!is.null(data.ids)) {
+    values <- unique(.normalizeIdentifier(data.ids, "data ID"))
+    if (!length(values) || anyNA(values) || any(!nzchar(values)))
+      .abort("Each tag dataset must contain one non-missing, non-empty deployment ID in its ID column.")
+    if (length(values) > 1L)
+      .abort(c("Each tag dataset must contain one non-missing deployment ID; the dataset contains several IDs ({.val {values}}).",
+               "i" = "Build ONE deployment at a time; split the data by ID first."))
+    add(values, "data ID")
+  }
+  add(id, "id", optional = FALSE)
+  add(metadata[["id"]], "metadata$id")
+  add(metadata[["ID"]], "metadata$ID")
+  add(stored, "stored metadata ID")
+  if (length(unique(candidates)) > 1L)
+    .abort(c("A deployment ID does not match the other identity sources: {paste(names(candidates), candidates, sep = ' = ', collapse = '; ')}.",
+             "i" = "An explicit id cannot relabel existing data or metadata; correct the source identities first."))
+  if (length(candidates)) return(unname(candidates[1L]))
+  if (!is.null(fallback)) {
+    add(fallback, "deployment ID", optional = FALSE)
+    return(unname(candidates[1L]))
+  }
+  .abort("No deployment {.arg id}: pass {.arg id}, an {.val ID} column, or an {.code id} in {.arg metadata}.")
+}
+
+# Normalize only mapped roles; passive traits keep their scientific values and types.
+# Invalid numeric text is reported before coercion can conceal it as an ordinary missing value.
+.normalizeMetadataValues <- function(d, roles) {
+  notes <- .empty_issues()
+  for (r in roles) {
+    v <- d[[r]]
+    if (!is.atomic(v) || !is.null(dim(v)) || length(v) != nrow(d))
+      .abort("Metadata field {.val {r}} must contain one scalar value per deployment row.")
+  }
+  ids <- if ("id" %in% roles) .normalizeIdentifier(d$id, "id") else rep(NA_character_, nrow(d))
+  for (r in intersect(c("id", "animal_id", "package_id", "logger_id"), roles)) {
+    raw <- as.character(d[[r]])
+    value <- .normalizeIdentifier(d[[r]], r)
+    changed <- which(!is.na(raw) & raw != value)
+    if (r != "id") value[!is.na(value) & !nzchar(value)] <- NA_character_
+    d[[r]] <- value
+    if (length(changed))
+      notes <- rbind(notes, .issue(NA_character_, "identifier_normalized", "info",
+        sprintf("%s: %d value(s) normalised (whitespace trimmed)", r, length(changed))))
+  }
+  for (r in intersect(c("deploy_datetime", "recovery_datetime", "popup_datetime", "data_start"), roles)) {
+    if (!inherits(d[[r]], "POSIXct"))
+      .abort("Metadata field {.val {r}} must be of class {.cls POSIXct}; parse it before ingestion.")
+  }
+  for (r in intersect(c("deploy_lon", "deploy_lat", "popup_lon", "popup_lat"), roles)) {
+    raw <- d[[r]]
+    if (!(is.numeric(raw) || is.character(raw) || is.factor(raw) || (is.logical(raw) && all(is.na(raw)))) ||
+        inherits(raw, c("Date", "POSIXt", "difftime")) || !is.null(dim(raw)))
+      .abort("Metadata field {.val {r}} must contain numeric coordinates or numeric text.")
+    value <- .asNumericSafe(raw)
+    for (i in which(!is.na(raw) & is.na(value)))
+      notes <- rbind(notes, .issue(ids[i], "invalid_coordinate", "error",
+        sprintf("%s: %s is not a numeric coordinate (%s)", ids[i], r, as.character(raw[i]))))
+    d[[r]] <- value
+  }
+  if ("paddle_wheel" %in% roles) {
+    v <- d$paddle_wheel
+    if (!is.logical(v) && !(is.numeric(v) && all(is.na(v) | v %in% c(0, 1))))
+      .abort("Metadata field {.val paddle_wheel} must be logical or numeric 0/1.")
+    d$paddle_wheel <- as.logical(v)
+  }
+  text <- intersect(c("tag_model", "tag_type", "deploy_site", "axis_config", "attachment_site",
+                      "deployment_type", "tag_format", "exclude_sensors"), roles)
+  for (r in text) if (is.factor(d[[r]])) d[[r]] <- as.character(d[[r]])
+  for (cn in names(d)) if (is.character(d[[cn]])) d[[cn]] <- .toUTF8(d[[cn]])
+  list(data = d, notes = notes)
+}
+
+# A constructor row is partial metadata, not a required study roster. Supplied fields still obey
+# the same numeric, geographic and chronology rules as QC/import; absent fields stay unknown.
+.normalizeMetadataRow <- function(metadata, traits = NULL) {
+  md <- .asMetadataRow(metadata)
+  if (!is.null(traits) && (!is.character(traits) || anyNA(traits) || any(!nzchar(traits))))
+    .abort("{.arg traits} must be a character vector of metadata field names.")
+  missing <- setdiff(traits, names(md))
+  if (length(missing)) .abort("Trait fields {.val {missing}} were not found in {.arg metadata}.")
+  if (is.null(md)) return(NULL)
+  if ("ID" %in% names(md) && !"id" %in% names(md)) md$id <- md$ID
+  roles <- intersect(setdiff(names(formals(metadataColumns)), "traits"), names(md))
+  d <- as.data.frame(md, optional = TRUE, stringsAsFactors = FALSE)
+  norm <- .normalizeMetadataValues(d, roles)
+  iss <- rbind(norm$notes, .runMetadataQC(norm$data, roles, require.deployment = FALSE))
+  errors <- iss$message[iss$severity == "error"]
+  if (length(errors)) .abort(c("Invalid deployment metadata:", stats::setNames(errors, rep("x", length(errors)))))
+  as.list(norm$data)
+}
+
 #######################################################################################################
 # Normalisation #######################################################################################
 #######################################################################################################
@@ -12,6 +126,7 @@
 #' @keywords internal
 #' @noRd
 .qcNormalizeMetadata <- function(metadata, columns) {
+  if (anyDuplicated(names(metadata))) .abort("Metadata column names must be unique.")
   # `traits` is NOT a role: it names a SET of passive attribute columns carried through VERBATIM (under
   # their own names). Keep it out of the single-column role machinery; validate its columns separately.
   traits <- columns$traits
@@ -39,40 +154,9 @@
   passthrough <- setdiff(names(metadata), c(unlist(mapped), roles))
   for (cn in passthrough) d[[cn]] <- metadata[[cn]]
 
-  notes <- .empty_issues()
-
-  # Every character cell here came out of the user's spreadsheet, and field metadata carries accented
-  # text as a matter of course (site names, observer names, free-text notes). Readers hand those back
-  # with no declared encoding, so a value saved from one locale is ambiguous in another - warnings on
-  # read, or mojibake in a figure label. Normalise the whole table once, at the point it enters the
-  # package, so every consumer downstream sees unambiguous UTF-8.
-  for (cn in names(d)) if (is.character(d[[cn]])) d[[cn]] <- .toUTF8(d[[cn]])
-
-  # coerce / trim identifier-like roles, recording any value that was changed by trimming
-  for (r in intersect(c("id", "package_id", "logger_id"), roles)) {
-    raw <- as.character(d[[r]])
-    trimmed <- trimws(raw)
-    trimmed <- gsub("[[:space:]]+", " ", trimmed)
-    changed <- which(!is.na(raw) & raw != trimmed)
-    d[[r]] <- trimmed
-    if (length(changed)) {
-      notes <- rbind(notes, .issue(NA_character_, "identifier_normalized", "info",
-        sprintf("%s: %d value%s normalised (whitespace trimmed)", r, length(changed),
-                if (length(changed) != 1L) "s" else "")))
-    }
-  }
-
-  # datetime roles must be POSIXct (fail-fast, consistent with importTagData)
-  for (r in intersect(c("deploy_datetime", "recovery_datetime", "popup_datetime"), roles)) {
-    if (!inherits(d[[r]], "POSIXct")) {
-      .abort(c("Column {.val {mapped[[r]]}} ({.code columns${r}}) must be of class {.cls POSIXct}.",
-               "i" = "Parse it first, e.g. with {.fn as.POSIXct} or {.fn lubridate::ymd_hms}."))
-    }
-  }
-  # numeric coordinate roles
-  for (r in intersect(c("deploy_lon", "deploy_lat", "popup_lon", "popup_lat"), roles)) {
-    d[[r]] <- .asNumericSafe(d[[r]])          # factor coords became level codes (lon 1, lat 2)
-  }
+  norm <- .normalizeMetadataValues(d, roles)
+  d <- norm$data
+  notes <- norm$notes
 
   # chronological order (stable) by deployment datetime when available
   if ("deploy_datetime" %in% roles) d <- d[order(d[["deploy_datetime"]], method = "radix"), , drop = FALSE]
@@ -100,7 +184,7 @@
 #' source of truth for both checkDeploymentMetadata() and importTagData()'s pre-flight guard.
 #' @keywords internal
 #' @noRd
-.runMetadataQC <- function(d, roles, future.tolerance = 1) {
+.runMetadataQC <- function(d, roles, future.tolerance = 1, require.deployment = TRUE) {
   iss <- .empty_issues()
   has <- function(...) all(c(...) %in% roles)
   ids <- if ("id" %in% roles) d[["id"]] else rep(NA_character_, nrow(d))
@@ -119,7 +203,7 @@
   if ("deploy_datetime" %in% roles) {
     dep <- d[["deploy_datetime"]]
     na_dep <- is.na(dep)
-    for (i in which(na_dep))
+    for (i in which(na_dep & require.deployment))
       iss <- rbind(iss, .issue(ids[i], "missing_deploy", "error",
         sprintf("%s: missing deployment datetime", ids[i] %||% "<row>")))
     future_cut <- Sys.time() + future.tolerance * 86400
@@ -128,23 +212,43 @@
         sprintf("%s: deployment datetime is in the future (%s)", ids[i], format(dep[i], "%Y-%m-%d"))))
   }
 
-  # --- location plausibility: deploy_lon + deploy_lat ----------------------------------------------
-  if (has("deploy_lon", "deploy_lat")) {
-    lon <- d[["deploy_lon"]]; lat <- d[["deploy_lat"]]
-    bad <- which((!is.na(lon) & abs(lon) > 180) | (!is.na(lat) & abs(lat) > 90))
+  # Geographic pairs are optional for partial constructor metadata. A supplied pair must be
+  # complete and finite; required roster positions must also be present.
+  for (prefix in c("deploy", "popup")) {
+    lon_role <- paste0(prefix, "_lon"); lat_role <- paste0(prefix, "_lat")
+    if (!any(c(lon_role, lat_role) %in% roles)) next
+    lon <- if (lon_role %in% roles) d[[lon_role]] else rep(NA_real_, nrow(d))
+    lat <- if (lat_role %in% roles) d[[lat_role]] else rep(NA_real_, nrow(d))
+    bad <- which((!is.na(lon) & (!is.finite(lon) | abs(lon) > 180)) |
+                 (!is.na(lat) & (!is.finite(lat) | abs(lat) > 90)) |
+                 is.nan(lon) | is.nan(lat))
     for (i in bad)
       iss <- rbind(iss, .issue(ids[i], "implausible_location", "error",
-        sprintf("%s: coordinates out of range (lon %s, lat %s)", ids[i], lon[i], lat[i])))
+        sprintf("%s: %s coordinates out of range or non-finite (lon %s, lat %s)", ids[i], prefix, lon[i], lat[i])))
+    for (i in which(xor(is.na(lon), is.na(lat))))
+      iss <- rbind(iss, .issue(ids[i], "incomplete_location", "error",
+        sprintf("%s: %s longitude and latitude must be supplied together", ids[i], prefix)))
+    if (prefix == "deploy" && require.deployment) {
+      for (i in which(is.na(lon) & is.na(lat)))
+        iss <- rbind(iss, .issue(ids[i], "missing_location", "error",
+          sprintf("%s: missing deployment coordinates", ids[i])))
+    }
   }
 
-  # --- recovery vs deployment: needs recovery_datetime + deploy_datetime ---------------------------
-  if (has("deploy_datetime", "recovery_datetime")) {
-    dep <- d[["deploy_datetime"]]; rec <- d[["recovery_datetime"]]
-    both <- which(!is.na(dep) & !is.na(rec))
-    for (i in both[rec[both] < dep[both]])
-      iss <- rbind(iss, .issue(ids[i], "recovery_before_deploy", "error",
-        sprintf("%s: recovery (%s) precedes deployment (%s)", ids[i],
-                format(rec[i], "%Y-%m-%d"), format(dep[i], "%Y-%m-%d"))))
+  for (r in intersect(c("deploy_datetime", "recovery_datetime", "popup_datetime", "data_start"), roles)) {
+    v <- as.numeric(d[[r]])
+    for (i in which(is.nan(v) | (!is.na(v) & !is.finite(v))))
+      iss <- rbind(iss, .issue(ids[i], "invalid_datetime", "error",
+        sprintf("%s: %s must be a finite POSIXct instant or NA", ids[i], r)))
+  }
+  for (r in intersect(c("recovery_datetime", "popup_datetime"), roles)) {
+    if (!"deploy_datetime" %in% roles) next
+    dep <- d[["deploy_datetime"]]; event <- d[[r]]
+    before <- which(is.finite(as.numeric(dep)) & is.finite(as.numeric(event)) & event < dep)
+    for (i in before)
+      iss <- rbind(iss, .issue(ids[i], sub("_datetime$", "_before_deploy", r), "error",
+        sprintf("%s: %s (%s) precedes deployment (%s)", ids[i], r,
+                format(event[i], "%Y-%m-%d"), format(dep[i], "%Y-%m-%d"))))
   }
 
   # --- package overlap: two deployments on one package at the same time ----------------------------

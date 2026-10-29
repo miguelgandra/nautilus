@@ -68,6 +68,7 @@ not accepted. Factors are stored as character values.
 For table updates, select traits with \code{metadataColumns(traits = c("sex", "length_cm"))}
 and optionally map \code{animal_id} and \code{deploy_site}. Column names within \code{traits} become field
 names within \code{biometrics}. Deployment IDs must be non-missing, non-empty, and unique.
+Matching keys use the same whitespace normalization as ingestion; case and leading zeros are preserved.
 Datasets without a matching row are retained unchanged and reported in a warning. They are
 also saved when \code{output.dir} is supplied.
 

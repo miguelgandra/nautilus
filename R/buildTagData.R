@@ -43,7 +43,15 @@
 #' object from [checkDeploymentMetadata()] can be passed directly, since its columns already use those
 #' names. Columns named in `traits` are carried through unchanged as biometric traits, for example
 #' length or sex. Anything not supplied stays missing; none of it is needed to run an accelerometer
-#' analysis.
+#' analysis. Supplied fields are scalar values. Numeric text and factor coordinate labels are converted
+#' to geographic values; coordinates must be finite and within longitude/latitude bounds, with both
+#' members of a position supplied together. Event times must be POSIXct, and recovery and pop-up times
+#' cannot precede deployment. Recovery and pop-up remain separate events in the stored metadata.
+#'
+#' All known deployment IDs must agree: the argument, every row in `ID`, metadata `id`/`ID`, and any
+#' stored tag identity. IDs are character keys with normalized whitespace; case and leading zeros are
+#' preserved. Missing or mixed row IDs are rejected even with an explicit `id`. Correct identities in
+#' the source before construction; this constructor does not relabel an existing deployment.
 #'
 #' ## Tags without a magnetometer or gyroscope
 #' A tag carrying only accelerometer channels and depth is fully usable. [processTagData()] derives
@@ -58,7 +66,8 @@
 #' @param data A data frame or data.table with one row per sample: a timestamp column - or `start` and
 #'   `sampling.rate` instead - and one or more sensor columns.
 #' @param id The deployment identifier. `NULL` (default) takes it from an `ID` column in `data`, or
-#'   from `metadata`. An error is raised if none is available, or if `data` mixes several animals.
+#'   from `metadata`. All supplied identities must agree. An error is raised if none is available,
+#'   if row IDs are missing or mixed, or if an existing identity conflicts with `id`.
 #' @param datetime.col Which column holds the timestamps (default `"datetime"`). Set it when your
 #'   table names that column something else; it is renamed on output so the rest of the pipeline sees
 #'   a consistent name.
@@ -186,22 +195,14 @@ buildTagData <- function(data,
   .validateInstants(dt$datetime)
   data.table::setorderv(dt, "datetime")                          # imported tags are time-sorted
 
-  # ---- deployment ID: argument > metadata > an existing ID column ----
+  # Validate every identity source before assigning the canonical deployment key.
+  if (is_nautilus_deployments(metadata) && isFALSE(attr(metadata, "nautilus.qc")$passed))
+    .abort("{.arg metadata} failed metadata QC; inspect {.code issues()} and rerun QC after correcting it.")
   md <- .asMetadataRow(metadata)
-  id <- id %||% .metaField(md, "id") %||% .metaField(md, "ID")
-  if (is.null(id) && "ID" %in% names(dt)) {
-    ids <- unique(stats::na.omit(dt$ID))
-    if (length(ids) > 1L) {
-      .abort(c("{.arg data} contains several IDs ({.val {as.character(ids)}}).",
-               "i" = "buildTagData() builds ONE deployment; split the data and call it per ID."))
-    }
-    if (length(ids) == 1L) id <- as.character(ids[1])
-  }
-  if (is.null(id) || is.na(id) || !nzchar(id)) {
-    .abort("No deployment {.arg id}: pass {.arg id}, an {.val ID} column, or an {.code id} in {.arg metadata}.")
-  }
-  id <- as.character(id)
-  dt[, ID := id]
+  id <- .resolveDeploymentId(if ("ID" %in% names(data)) data$ID else NULL,
+                             id = id, metadata = md,
+                             stored = .getMeta(data)$id %||% attr(data, "id", exact = TRUE))
+  data.table::set(dt, j = "ID", value = rep(id, nrow(dt)))
 
   # ---- sensors present + required.sensors gate ----
   # (bind to a local: cli mis-parses `{.val {.sensorChannels()}}` -- the inner `{.` reads as a style tag)

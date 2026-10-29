@@ -10,7 +10,7 @@
 # Metadata schema (attr(x, "nautilus")):
 #   $ id           character deployment ID
 #   $ animal_id    character animal ID (optional; distinct from the deployment)
-#   $ deployment   list(lon, lat, datetime, popup_lon, popup_lat, popup_datetime,
+#   $ deployment   list(lon, lat, datetime, recovery_datetime, popup_lon, popup_lat, popup_datetime,
 #                       magnetic_declination, attachment_site)
 #   $ tag          list(model, type, package_id, logger_id, paddle_wheel, axis_config)
 #   $ biometrics   list of passive animal traits (sex, length, species, ...); imported via metadataColumns(traits=)
@@ -42,6 +42,7 @@
     id           = NA_character_,
     animal_id    = NA_character_,                          # the ANIMAL; `id` is the DEPLOYMENT
     deployment   = list(lon = NA_real_, lat = NA_real_, datetime = as.POSIXct(NA),
+                        recovery_datetime = as.POSIXct(NA),
                         site = NA_character_,
                         popup_lon = NA_real_, popup_lat = NA_real_, popup_datetime = as.POSIXct(NA),
                         magnetic_declination = NA_real_, heading_reference = NA_character_,
@@ -516,7 +517,10 @@ summary.nautilus_tag <- function(object, ...) {
                              sampling.hz = NULL, clock = NULL) {
   meta <- .newNautilusMeta()
   meta$id <- as.character(id)
-  meta <- .applyDeploymentMetadata(meta, metadata, traits)
+  md <- .asMetadataRow(metadata)
+  .resolveDeploymentId(id = id, metadata = md)
+  if (!is.null(md)) md$id <- as.character(id)
+  meta <- .applyDeploymentMetadata(meta, .normalizeMetadataRow(md, traits), traits)
   meta$sensors$present  <- intersect(.sensorChannels(), names(data))
   meta$sensors$timezone <- .declaredTimeZone(data$datetime)
   if (is.na(meta$sensors$timezone)) meta$sensors$timezone <- .timeZoneSpec(timezone)$display
@@ -534,16 +538,21 @@ summary.nautilus_tag <- function(object, ...) {
 #' @keywords internal
 #' @noRd
 .asMetadataRow <- function(metadata) {
-  if (is.null(metadata)) return(NULL)
+  if (is.null(metadata) || (is.list(metadata) && !length(metadata))) return(NULL)
   if (is.data.frame(metadata)) {
-    if (nrow(metadata) != 1L) {
-      .abort(c("{.arg metadata} must be a single deployment row (got {nrow(metadata)}).",
-               "i" = "Subset it to one row before calling buildTagData()."))
-    }
-    return(as.list(metadata))
+    if (nrow(metadata) != 1L)
+      .abort("{.arg metadata} must be a single deployment row (got {nrow(metadata)}).")
+    metadata <- as.list(metadata)
   }
-  if (is.list(metadata)) return(metadata)
-  .abort("{.arg metadata} must be a 1-row data.frame, a nautilus_deployments row, or a named list.")
+  nms <- names(metadata)
+  if (!is.list(metadata) || is.null(nms) || anyNA(nms) || any(!nzchar(trimws(nms))) || anyDuplicated(nms))
+    .abort("{.arg metadata} must be a single row or a named list with unique field names.")
+  for (field in nms) {
+    v <- metadata[[field]]
+    if (!is.null(v) && (!is.atomic(v) || length(v) != 1L || !is.null(dim(v))))
+      .abort("Metadata field {.val {field}} must be a scalar value; vectors and nested objects are not supported.")
+  }
+  metadata[!vapply(metadata, is.null, logical(1))]
 }
 
 #' Pull a single scalar field from a flattened metadata row (NULL if absent/NA).
@@ -553,7 +562,6 @@ summary.nautilus_tag <- function(object, ...) {
   if (is.null(md) || !name %in% names(md)) return(NULL)
   v <- md[[name]]
   if (length(v) == 0L) return(NULL)
-  v <- v[[1]]
   if (length(v) == 1L && is.na(v)) return(NULL)
   v
 }
@@ -564,7 +572,7 @@ summary.nautilus_tag <- function(object, ...) {
 .applyDeploymentMetadata <- function(meta, md, traits) {
   if (is.null(md)) return(meta)
   chr <- function(x) if (is.null(x)) NULL else as.character(x)
-  num <- function(x) if (is.null(x)) NULL else as.numeric(x)
+  num <- function(x) if (is.null(x)) NULL else .asNumericSafe(x)
   # the ANIMAL, which is not the deployment: one shark can carry several tags across a season, and
   # `id` identifies the deployment. Kept at the top level rather than under `deployment`, because it is
   # a property of the animal that outlives any one attachment.
@@ -573,6 +581,7 @@ summary.nautilus_tag <- function(object, ...) {
   if (!is.null(v <- num(.metaField(md, "deploy_lon"))))       meta$deployment$lon <- v
   if (!is.null(v <- num(.metaField(md, "deploy_lat"))))       meta$deployment$lat <- v
   if (!is.null(v <- .metaField(md, "deploy_datetime")))       meta$deployment$datetime <- v
+  if (!is.null(v <- .metaField(md, "recovery_datetime")))     meta$deployment$recovery_datetime <- v
   if (!is.null(v <- chr(.metaField(md, "deploy_site"))))      meta$deployment$site <- v
   if (!is.null(v <- num(.metaField(md, "popup_lon"))))        meta$deployment$popup_lon <- v
   if (!is.null(v <- num(.metaField(md, "popup_lat"))))        meta$deployment$popup_lat <- v
@@ -582,7 +591,7 @@ summary.nautilus_tag <- function(object, ...) {
   # tag block
   if (!is.null(v <- chr(.metaField(md, "tag_model"))))        meta$tag$model <- v
   if (!is.null(v <- chr(.metaField(md, "tag_type"))))         meta$tag$type <- v
-  if (!is.null(v <- .metaField(md, "package_id")))            meta$tag$package_id <- v
+  if (!is.null(v <- chr(.metaField(md, "package_id"))))       meta$tag$package_id <- v
   if (!is.null(v <- chr(.metaField(md, "logger_id"))))        meta$tag$logger_id <- v
   if (!is.null(v <- .metaField(md, "paddle_wheel")))          meta$tag$paddle_wheel <- v
   if (!is.null(v <- chr(.metaField(md, "axis_config"))))      meta$tag$axis_config <- v

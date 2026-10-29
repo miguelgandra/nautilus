@@ -68,6 +68,17 @@ magnetometer and gyroscope), with optional integration of onboard camera video.
 
 ## Deployment metadata and import
 
+* Deployment identity is now checked across row IDs, constructor arguments, metadata aliases and stored
+  tag metadata. Explicit IDs no longer silently relabel existing data; mixed, missing and conflicting
+  row IDs fail construction. Character keys preserve case and leading zeros while normalizing whitespace.
+* Constructors, deployment QC and imports share metadata value normalization. Factor coordinates use
+  their labels; malformed numeric text, non-finite or out-of-range positions, incomplete coordinate pairs
+  and impossible event ordering are rejected at ingestion or reported by QC. Named metadata lists require
+  scalar values. Sensor-only construction still permits absent deployment metadata.
+* Imports consume the normalized values and recheck current metadata even with a saved QC stamp.
+  Recovery time is retained separately from pop-up time, survives saved objects and processing, and is
+  available through `summarizeTagData(metadata = "recovery_datetime")` (also included in `"all"`).
+
 * POSIXct timestamps and recording starts now preserve their absolute instants when the display
   timezone changes. This deliberately replaces the constructor's former implicit wall-clock
   reinterpretation. Use `buildTagData(time.mode = "clock")` for an explicit reinterpretation, with
