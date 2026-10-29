@@ -18,6 +18,45 @@ test_that("approved fixture comparison permits only tiny numeric roundoff", {
   }
 })
 
+test_that("approved fixture comparison handles equivalent attribute storage order", {
+  approved <- data.frame(pivot = c(.1, -.2))
+  rounded <- approved
+  rounded$pivot <- rounded$pivot + .Machine$double.eps
+  attributes(rounded) <- rev(attributes(rounded))
+  .expect_overlay_fixture(rounded, approved)
+})
+
+test_that("approved fixture comparison accepts only equivalent shared-edge markings", {
+  approved <- list(vertices = rbind(c(0,0,0), c(1,0,0), c(0,1,0), c(1,1,0)),
+    faces = list(c(1L,2L,3L), c(2L,4L,3L)), appearance = list(surface = list(
+      face = 1L, barycentric = matrix(c(0,.25,.75), nrow=1), kind = "spot", group = 0L)))
+  adjacent <- approved
+  adjacent$appearance$surface$face <- 2L
+  adjacent$appearance$surface$barycentric[1,] <- c(.25,0,.75)
+  .expect_overlay_fixture(adjacent, approved)
+  for (shift in c(1e-8, .25)) {
+    moved <- adjacent
+    moved$appearance$surface$barycentric[1,] <- c(.25+shift,0,.75-shift)
+    aligned <- .overlay_test_align_surface_edges(moved, approved)
+    expect_false(identical(.overlay_test_allow_roundoff(aligned, approved), approved))
+  }
+  changed <- adjacent
+  changed$faces[[2]] <- c(2L,3L,4L)
+  aligned <- .overlay_test_align_surface_edges(changed, approved)
+  expect_false(identical(.overlay_test_allow_roundoff(aligned, approved), approved))
+  changed <- adjacent
+  changed$appearance$surface$kind <- "eye"
+  aligned <- .overlay_test_align_surface_edges(changed, approved)
+  expect_false(identical(.overlay_test_allow_roundoff(aligned, approved), approved))
+  vertex <- approved
+  vertex$appearance$surface$barycentric[1,] <- c(0,1,0)
+  changed <- vertex
+  changed$appearance$surface$face <- 2L
+  changed$appearance$surface$barycentric <- matrix(c(1L,0L,0L),nrow=1)
+  aligned <- .overlay_test_align_surface_edges(changed, vertex)
+  expect_false(identical(.overlay_test_allow_roundoff(aligned, vertex), vertex))
+})
+
 test_that("approved fixture comparison keeps topology and structure exact", {
   approved <- list(vertices = matrix(c(0, 0.1, -0.2), nrow = 1),
                    faces = list(c(1L, 2L, 3L)), part = "body", optional = NULL)

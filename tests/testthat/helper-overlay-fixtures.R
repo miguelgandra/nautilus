@@ -5,8 +5,11 @@
 # libraries. Allow at most 1e-12 absolute roundoff in double values, while keeping
 # types, attributes, dimensions, topology, labels and non-finite values exact.
 .overlay_test_allow_roundoff <- function(actual, expected, tolerance = 1e-12) {
+  # R compares attributes as a set; their storage order can differ by R version.
+  a <- attributes(actual)
+  e <- attributes(expected)
   if (!identical(typeof(actual), typeof(expected)) ||
-      !identical(attributes(actual), attributes(expected)) || length(actual) != length(expected))
+      !identical(a[sort(names(a))], e[sort(names(e))]) || length(actual) != length(expected))
     return(actual)
   if (is.double(actual)) {
     close <- is.finite(actual) & is.finite(expected) & abs(actual - expected) <= tolerance
@@ -18,7 +21,40 @@
   actual
 }
 
+# A point exactly on a mesh edge can be assigned to either adjacent triangle.
+# Accept that choice only when its weights on global vertices are the same,
+# which also preserves the point under every vertex deformation. Mesh faces
+# themselves remain exact; this does not permit moving or reordering markings.
+.overlay_test_align_surface_edges <- function(actual, expected, tolerance = 1e-12) {
+  if (!is.list(actual) || !is.list(expected) || !identical(actual$faces, expected$faces))
+    return(actual)
+  a <- actual$appearance$surface
+  e <- expected$appearance$surface
+  if (is.null(a) || is.null(e) || !identical(typeof(a$face), typeof(e$face)) ||
+      !identical(typeof(a$barycentric), typeof(e$barycentric)) ||
+      length(a$face) != length(e$face) || !identical(dim(a$barycentric), dim(e$barycentric)))
+    return(actual)
+  if (any(!is.finite(a$face)) || any(a$face != as.integer(a$face)) ||
+      any(a$face < 1 | a$face > length(actual$faces)))
+    return(actual)
+  for (i in which(a$face != e$face)) {
+    av <- actual$faces[[a$face[i]]]
+    ev <- expected$faces[[e$face[i]]]
+    vertices <- unique(c(av, ev))
+    aw <- ew <- numeric(length(vertices))
+    aw[match(av, vertices)] <- a$barycentric[i, ]
+    ew[match(ev, vertices)] <- e$barycentric[i, ]
+    if (all(is.finite(c(aw, ew))) && all(abs(aw - ew) <= tolerance)) {
+      a$face[i] <- e$face[i]
+      a$barycentric[i, ] <- e$barycentric[i, ]
+    }
+  }
+  actual$appearance$surface <- a
+  actual
+}
+
 .expect_overlay_fixture <- function(actual, expected) {
+  actual <- .overlay_test_align_surface_edges(actual, expected)
   testthat::expect_identical(.overlay_test_allow_roundoff(actual, expected), expected)
 }
 
