@@ -243,7 +243,7 @@
 
 # filterVideoPeriod helpers ----
 
-#' Logical mask: which of `t` fall within ANY [starts, ends] interval.
+#' Logical mask: which of `t` fall within ANY `[starts, ends]` interval.
 #' @keywords internal
 #' @noRd
 .inAnyInterval <- function(t, starts, ends) {

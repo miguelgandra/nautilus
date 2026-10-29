@@ -226,14 +226,14 @@
   invisible(NULL)
 }
 
-#' `.log_subdetail()` for rows whose columns must line up.
-#'
-#' Same glyph and indent, so the two are interchangeable within a block, but routed through
-#' `cli_verbatim`: `cli_text`/`cli_bullets` normalise runs of whitespace for prose, which silently
-#' collapses any padding used to align values into a column. Verbatim also passes literal `{}` through
-#' untouched, so no escaping dance is needed.
-#' @keywords internal
-#' @noRd
+# `.log_subdetail()` for rows whose columns must line up.
+#
+# Same glyph and indent, so the two are interchangeable within a block, but routed through
+# `cli_verbatim`: `cli_text`/`cli_bullets` normalise runs of whitespace for prose, which silently
+# collapses any padding used to align values into a column. Verbatim also passes literal `{}` through
+# untouched, so no escaping dance is needed.
+# @keywords internal
+# @noRd
 #' A titled group inside a SUMMARY block: a blank line, then the heading in bold.
 #'
 #' Sections are what let a summary be scanned rather than read. The heading is deliberately plain text

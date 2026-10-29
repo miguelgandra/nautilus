@@ -224,14 +224,14 @@
 }
 
 
-#' Fetch a raster basemap (satellite/imagery tiles) covering [xlim] x [ylim], reprojected to lon/lat.
-#'
-#' Tiles arrive in Web Mercator (EPSG:3857); reprojecting to EPSG:4326 is what lets them co-register with
-#' the WGS84 degree-based drawing - the exact step the original OpenStreetMap basemap omitted. A network
-#' call, guarded and cached; returns a `terra` SpatRaster (with a `nautilus.credit` attribute) or NULL on
-#' a reported failure. Needs \pkg{maptiles} + \pkg{terra} + \pkg{sf}.
-#' @keywords internal
-#' @noRd
+# Fetch a raster basemap (satellite/imagery tiles) covering [xlim] x [ylim], reprojected to lon/lat.
+#
+# Tiles arrive in Web Mercator (EPSG:3857); reprojecting to EPSG:4326 is what lets them co-register with
+# the WGS84 degree-based drawing - the exact step the original OpenStreetMap basemap omitted. A network
+# call, guarded and cached; returns a `terra` SpatRaster (with a `nautilus.credit` attribute) or NULL on
+# a reported failure. Needs \pkg{maptiles} + \pkg{terra} + \pkg{sf}.
+# @keywords internal
+# @noRd
 #' Slippy-map tile indices for a lon/lat pair at zoom `z` (standard Web Mercator scheme).
 #' @keywords internal
 #' @noRd
@@ -865,14 +865,14 @@
 #####################################################################################
 ## Sourced from pals::jet
 
-#' Jet color palette
-#'
-#' @description This function generates a color palette using the Jet color scheme,
-#' sourced from palr::jet function. The colors in this palette are slightly darker
-#' (10%) than the original Jet palette.
-#' @note This function is intended for internal use within the 'nautilus' package.
-#' @keywords internal
-#' @noRd
+# Jet color palette
+#
+# @description This function generates a color palette using the Jet color scheme,
+# sourced from palr::jet function. The colors in this palette are slightly darker
+# (10%) than the original Jet palette.
+# @note This function is intended for internal use within the 'nautilus' package.
+# @keywords internal
+# @noRd
 
 
 

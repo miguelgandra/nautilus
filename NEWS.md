@@ -33,6 +33,11 @@
 * Primary exported functions have function-named source files. The exported
   `tailBeatColumn()` helper now lives with the tail-beat utilities, retaining its
   arguments, help page and behavior.
+* Sixteen control constructors and their shared coercion helper now live in
+  `controls.R`. Circling, dive-shape, wavelet, deployment-metadata and exclusion
+  helpers join the event, dive, tail-beat, metadata and pipeline modules respectively.
+  This reduces `R/` from 101 files to 80, with unchanged exports, calculations,
+  control defaults and 3D model data.
 * Model objects retain species identity, axes, named components and region maps.
   Development revisions, review records, fitting descriptions, reporting-only
   geometry/rig copies and the catalog's development-phase column are removed.

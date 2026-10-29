@@ -353,7 +353,7 @@ is_nautilus_tag <- function(x) inherits(x, "nautilus_tag")
 #' Upgrade a legacy / raw axis-mapping value to the structured axis-mapping metadata object
 #'
 #' Accepts the new structured list (returned unchanged), the historical `from/to` data.frame, `NA`, or
-#' `NULL`, and returns a structured object (see [.newAxisMappingMeta]). When the value is a data.frame
+#' `NULL`, and returns a structured object (see `.newAxisMappingMeta()`). When the value is a data.frame
 #' of mapping rows, the net signed-permutation matrices and handedness are derived per sensor family
 #' (best effort: families that are not clean permutations are recorded via `from_to`/`dropped` only).
 #' @keywords internal

@@ -635,7 +635,7 @@
 #'   the presence criterion, because a small peak (e.g. a walking/tail-beat cadence) can be prominent yet
 #'   NOT dominate the field or corrupt heading; only an oscillation that inflates the magnitude does.
 #' @param min.freq Lower bound of the paddle-frequency search (Hz), above the tail-beat harmonics. Default 3.
-#' @param cycles Rotations to average when recommending the window. @param window.bounds [min, max] window (s).
+#' @param cycles Rotations to average when recommending the window. @param window.bounds `[min, max]` window (s).
 #' @return list(present, freq, prominence, inflation, recommend.window, separation.ok).
 #' @keywords internal
 #' @noRd
@@ -756,17 +756,17 @@
 }
 
 
-#' Segment-aware Butterworth band-pass filter.
-#'
-#' Applies a zero-phase Butterworth band-pass independently within each maximal run of finite values,
-#' so the filter never rings across gaps. Runs shorter than `min.seg` (and NA values) are returned as
-#' NA. Used to isolate the tail-beat band before peak / instantaneous-frequency analysis.
-#' @param x Numeric signal. @param fs Sampling frequency (Hz). @param low,high Band edges (Hz).
-#' @param order Butterworth order (default 4). @param min.seg Minimum segment length (samples); default
-#'   `max(3*order+1, fs)`.
-#' @return A numeric vector the same length as `x` (NA in gaps / too-short segments).
-#' @keywords internal
-#' @noRd
+# Segment-aware Butterworth band-pass filter.
+#
+# Applies a zero-phase Butterworth band-pass independently within each maximal run of finite values,
+# so the filter never rings across gaps. Runs shorter than `min.seg` (and NA values) are returned as
+# NA. Used to isolate the tail-beat band before peak / instantaneous-frequency analysis.
+# @param x Numeric signal. @param fs Sampling frequency (Hz). @param low,high Band edges (Hz).
+# @param order Butterworth order (default 4). @param min.seg Minimum segment length (samples); default
+#   `max(3*order+1, fs)`.
+# @return A numeric vector the same length as `x` (NA in gaps / too-short segments).
+# @keywords internal
+# @noRd
 #' Design corner for a zero-phase (filtfilt) Butterworth so its -3 dB lands at `target` Hz.
 #'
 #' filtfilt runs the filter forwards and backwards, squaring the magnitude response, so the two-pass

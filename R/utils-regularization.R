@@ -8,8 +8,8 @@
 
 # Default review thresholds (dimensionless metrics generalise across sampling rates; the absolute
 # `large_gap_seconds` trigger is off by default). User overrides are merged on top.
-#' @keywords internal
-#' @noRd
+# @keywords internal
+# @noRd
 #' Estimate a channel's own sampling cadence, in grid rows per observation
 #'
 #' A tag may log a channel more slowly than the inertial grid it is being placed on - CEiiA writes

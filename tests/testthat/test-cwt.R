@@ -1,4 +1,4 @@
-# Tests for the Morlet CWT primitive (R/utils-cwt.R). Each pins a defect that is invisible without a
+# Tests for the Morlet CWT primitive (R/utils-tailbeats.R). Each pins a defect that is invisible without a
 # known ground truth, and that the WaveletComp-based implementation it replaces actually exhibited.
 
 .tone <- function(f0 = 1, fs = 20, dur = 300, amp = 1, noise = 0, seed = 1) {
