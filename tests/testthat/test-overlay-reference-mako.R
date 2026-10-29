@@ -42,7 +42,7 @@ test_that("mako full caudal blade follows the terminal rig and pectorals stay an
 test_that("mako appearance preserves approved geometry, pivots and rig", {
   approved<-readRDS(testthat::test_path("fixtures","approved-mako-geometry-v11.rds"))
   m<-overlaySpeciesModel("mako")
-  expect_identical(c(m[setdiff(names(approved),"components")],
+  .expect_overlay_fixture(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
   # Adjacent triangles within each trunk quad must not form a diagonal
   # countershade checkerboard. End caps are excluded from the quad sequence.
@@ -109,6 +109,6 @@ test_that("mako markings respect near-side visibility through full rolls", {
 test_that("approved mako v12 retains its reviewed appearance and geometry", {
   approved<-readRDS(testthat::test_path("fixtures","approved-mako-v12.rds"))
   m<-overlaySpeciesModel("mako")
-  expect_identical(c(m[setdiff(names(approved),"components")],
+  .expect_overlay_fixture(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
 })

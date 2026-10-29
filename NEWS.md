@@ -1,5 +1,14 @@
 # nautilus 0.2.0
 
+## Check portability
+
+* Orientation labels use ASCII Unicode escapes, retaining the same degree symbols in rendered output.
+* Approved model fixtures permit at most 1e-12 absolute floating-point roundoff across platforms;
+  topology, types, dimensions and labels remain exact, and approved fixture data are unchanged.
+  Gallery-axis checks use the same tight tolerance.
+* The paddle-speed extrapolation column is declared for data.table static checks, and CI checkout
+  uses the Node24 runtime.
+
 ## Production species models
 
 * The renderer now defaults to `"blue_shark"` and resolves all eleven approved

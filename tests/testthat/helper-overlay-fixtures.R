@@ -1,5 +1,27 @@
 # Construction-space geometry supports anatomical assertions without exposing
 # authoring transforms or development history in public model objects.
+
+# Trigonometric mesh construction varies by a few ulps between platform math
+# libraries. Allow at most 1e-12 absolute roundoff in double values, while keeping
+# types, attributes, dimensions, topology, labels and non-finite values exact.
+.overlay_test_allow_roundoff <- function(actual, expected, tolerance = 1e-12) {
+  if (!identical(typeof(actual), typeof(expected)) ||
+      !identical(attributes(actual), attributes(expected)) || length(actual) != length(expected))
+    return(actual)
+  if (is.double(actual)) {
+    close <- is.finite(actual) & is.finite(expected) & abs(actual - expected) <= tolerance
+    actual[close] <- expected[close]
+  } else if (is.list(actual)) {
+    for (i in seq_along(actual))
+      actual[i] <- list(.overlay_test_allow_roundoff(actual[[i]], expected[[i]], tolerance))
+  }
+  actual
+}
+
+.expect_overlay_fixture <- function(actual, expected) {
+  testthat::expect_identical(.overlay_test_allow_roundoff(actual, expected), expected)
+}
+
 .overlay_test_construction <- function(model) {
   spec <- nautilus:::.overlaySpeciesSpecs()[[model$name]]
   mesh <- nautilus:::.buildSpeciesMesh(spec)

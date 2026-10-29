@@ -56,7 +56,7 @@ test_that("marlin keeps bill and paired fins fixed and moves the whole caudal bl
 test_that("marlin appearance preserves approved geometry and the complete lateral rig", {
   approved <- readRDS(testthat::test_path("fixtures","approved-marlin-geometry-v21.rds"))
   m <- overlaySpeciesModel("marlin")
-  expect_identical(c(m[c("vertices","faces","part","rig","details")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   rgb <- m$appearance$face.rgb
   expect_identical(dim(rgb),c(696L,3L))
@@ -143,6 +143,6 @@ test_that("marlin far-side bars and eyes are occluded through turns and rolls", 
 test_that("approved marlin v22 preserves reviewed colour, markings and articulation", {
   approved <- readRDS(testthat::test_path("fixtures","approved-marlin-v22.rds"))
   m <- overlaySpeciesModel("marlin")
-  expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details","appearance")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

@@ -2,6 +2,37 @@
   c(a[2]*b[3] - a[3]*b[2], a[3]*b[1] - a[1]*b[3], a[1]*b[2] - a[2]*b[1])
 }
 
+test_that("approved fixture comparison permits only tiny numeric roundoff", {
+  approved <- list(vertices = matrix(c(0, 0.1, -0.2), nrow = 1),
+                   faces = list(c(1L, 2L, 3L)), part = "body", optional = NULL)
+  rounded <- approved
+  rounded$vertices[1, 2] <- rounded$vertices[1, 2] + .Machine$double.eps
+  .expect_overlay_fixture(rounded, approved)
+  changed <- approved
+  changed$vertices[1, 2] <- changed$vertices[1, 2] + 1e-8
+  expect_false(identical(.overlay_test_allow_roundoff(changed, approved), approved))
+  for (value in c(NA_real_, NaN, Inf, -Inf)) {
+    changed <- approved
+    changed$vertices[1, 2] <- value
+    expect_false(identical(.overlay_test_allow_roundoff(changed, approved), approved))
+  }
+})
+
+test_that("approved fixture comparison keeps topology and structure exact", {
+  approved <- list(vertices = matrix(c(0, 0.1, -0.2), nrow = 1),
+                   faces = list(c(1L, 2L, 3L)), part = "body", optional = NULL)
+  changes <- list(
+    function(x) { x$faces[[1]][2] <- 3L; x },
+    function(x) { x$faces[[1]] <- as.double(x$faces[[1]]); x },
+    function(x) { dim(x$vertices) <- c(3L, 1L); x },
+    function(x) { class(x$vertices) <- c("other", "matrix", "array"); x },
+    function(x) { names(x)[1] <- "other"; x },
+    function(x) { x$part <- "fin"; x },
+    function(x) { x$optional <- NULL; x$extra <- TRUE; x })
+  for (change in changes)
+    expect_false(identical(.overlay_test_allow_roundoff(change(approved), approved), approved))
+})
+
 test_that("the production catalog is explicit and keeps every mesh within budget", {
   catalog <- overlaySpeciesCatalog()
   expect_identical(catalog$model,
@@ -348,8 +379,8 @@ test_that("the orthographic gallery reuses one mesh with identical view scales",
   on.exit(unlink(path,recursive=TRUE),add=TRUE)
   result <- environment$previewModelLibrary(path,models="whale_shark")
   expect_length(limits,3L)
-  expect_identical(limits[[1]],limits[[2]])
-  expect_identical(limits[[1]],limits[[3]])
+  expect_equal(limits[[1]],limits[[2]],tolerance=1e-12)
+  expect_equal(limits[[1]],limits[[3]],tolerance=1e-12)
   expect_true(all(file.exists(c(result$images,result$parts))))
   expect_error(environment$previewModelLibrary(path,models="whale_shark"),"new folder")
   parts <- utils::read.csv(result$parts)

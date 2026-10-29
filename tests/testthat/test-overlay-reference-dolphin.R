@@ -56,7 +56,7 @@ test_that("dolphin keeps anchored pectorals and rigid whole flukes through verti
 test_that("dolphin appearance preserves the approved geometry and complete rig", {
   approved <- readRDS(testthat::test_path("fixtures","approved-dolphin-geometry-v19.rds"))
   m <- overlaySpeciesModel("dolphin")
-  expect_identical(c(m[c("vertices","faces","part","rig","details")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   rgb <- m$appearance$face.rgb
   expect_identical(dim(rgb),c(688L,3L))
@@ -143,6 +143,6 @@ test_that("dolphin eyes and facial lines respect body occlusion", {
 test_that("approved dolphin v20 preserves reviewed colour, markings and articulation", {
   approved <- readRDS(testthat::test_path("fixtures","approved-dolphin-v20.rds"))
   m <- overlaySpeciesModel("dolphin")
-  expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details","appearance")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

@@ -7,7 +7,7 @@ utils::globalVariables(c(
   "depth_baseline", "disp_e", "disp_n", "dive_id", "dive_phase", "gx", "gy", "gz", "heading",
   "heave", "horizontal_sum_in_window", "ID", "idx", "is_horizontal", "is_stable_horizontal",
   "jerk", "mx", "my", "mz", "obs_datetime", "odba", "paddle_freq",
-  "paddle_speed", "pitch", "pitch_rad", "pseudo_depth", "pseudo_error", "quality",
+  "paddle_speed", "paddle_speed_extrapolated", "pitch", "pitch_rad", "pseudo_depth", "pseudo_error", "quality",
   "roll", "speed_dr", "surge", "sway", "temp", "time_diff", "turning_angle", "vedba",
   "vertical_speed", "vertical_velocity", "vv_smooth"
 ))

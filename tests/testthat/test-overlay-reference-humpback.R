@@ -55,7 +55,7 @@ test_that("humpback keeps anchored pectorals and rigid whole flukes through vert
 test_that("humpback appearance preserves the approved geometry and complete rig", {
   approved <- readRDS(testthat::test_path("fixtures","approved-humpback-geometry-v17.rds"))
   m <- overlaySpeciesModel("whale")
-  expect_identical(c(m[c("vertices","faces","part","rig","details")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   expect_equal(range(m$appearance$belly),c(0,1))
   body <- which(m$metadata$face.region=="body")
@@ -124,6 +124,6 @@ test_that("humpback pleats and head markings respect body occlusion", {
 test_that("approved humpback v18 preserves reviewed appearance and articulation", {
   approved <- readRDS(testthat::test_path("fixtures","approved-humpback-v18.rds"))
   m <- overlaySpeciesModel("whale")
-  expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details","appearance")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })

@@ -56,7 +56,7 @@ test_that("manta surface refinement preserves the approved v7 geometry and rig",
   approved<-readRDS(testthat::test_path("fixtures","approved-manta-geometry-v7.rds"))
   m<-overlaySpeciesModel("manta")
   fields<-setdiff(names(approved),"components")
-  expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
+  .expect_overlay_fixture(c(m[fields],list(components=m$metadata$components)),approved)
   expect_identical(formals(renderOverlayVideo)$orientation.model,"blue_shark")
 })
 
@@ -121,5 +121,5 @@ test_that("approved v8 manta retains its reviewed appearance, geometry and motio
   approved<-readRDS(testthat::test_path("fixtures","approved-manta-v8.rds"))
   m<-overlaySpeciesModel("manta")
   fields<-setdiff(names(approved),"components")
-  expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
+  .expect_overlay_fixture(c(m[fields],list(components=m$metadata$components)),approved)
 })

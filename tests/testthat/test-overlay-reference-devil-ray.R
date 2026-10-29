@@ -43,7 +43,7 @@ test_that("devil ray surface refinement preserves the approved v9 geometry and r
   approved<-readRDS(testthat::test_path("fixtures","approved-devil-ray-geometry-v9.rds"))
   m<-overlaySpeciesModel("devil_ray")
   fields<-setdiff(names(approved),"components")
-  expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
+  .expect_overlay_fixture(c(m[fields],list(components=m$metadata$components)),approved)
   expect_identical(formals(renderOverlayVideo)$orientation.model,"blue_shark")
 })
 
@@ -111,5 +111,5 @@ test_that("approved v10 devil ray retains its reviewed appearance, geometry and 
   approved<-readRDS(testthat::test_path("fixtures","approved-devil-ray-v10.rds"))
   m<-overlaySpeciesModel("devil_ray")
   fields<-setdiff(names(approved),"components")
-  expect_identical(c(m[fields],list(components=m$metadata$components)),approved)
+  .expect_overlay_fixture(c(m[fields],list(components=m$metadata$components)),approved)
 })

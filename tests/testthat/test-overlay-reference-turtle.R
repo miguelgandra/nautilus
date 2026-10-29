@@ -55,7 +55,7 @@ test_that("turtle rigid stroke preserves each blade and leaves shell and hind pa
 test_that("turtle appearance leaves the approved v15 geometry and rigid rig identical", {
   approved <- readRDS(testthat::test_path("fixtures","approved-turtle-geometry-v15.rds"))
   m <- overlaySpeciesModel("turtle")
-  expect_identical(c(m[setdiff(names(approved),"components")],list(components=m$metadata$components)),approved)
+  .expect_overlay_fixture(c(m[setdiff(names(approved),"components")],list(components=m$metadata$components)),approved)
   expect_equal(range(m$appearance$belly),c(0,1))
   expect_identical(m$appearance$dorsal,"#68583b")
   body <- which(m$metadata$face.region=="body")
@@ -130,5 +130,5 @@ test_that("turtle markings respect shell occlusion through rolls", {
 test_that("approved turtle v16 retains reviewed appearance and articulation", {
   approved <- readRDS(testthat::test_path("fixtures","approved-turtle-v16.rds"))
   m <- overlaySpeciesModel("turtle")
-  expect_identical(c(m[setdiff(names(approved),"components")],list(components=m$metadata$components)),approved)
+  .expect_overlay_fixture(c(m[setdiff(names(approved),"components")],list(components=m$metadata$components)),approved)
 })

@@ -38,7 +38,7 @@ test_that("hammerhead head and pectorals stay anchored while whole tail rotates"
 test_that("hammerhead appearance preserves approved geometry, pivots and rig", {
   approved<-readRDS(testthat::test_path("fixtures","approved-hammerhead-geometry-v13.rds"))
   m<-overlaySpeciesModel("hammerhead")
-  expect_identical(c(m[setdiff(names(approved),"components")],
+  .expect_overlay_fixture(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
   # Adjacent triangles within each trunk quad must not form a diagonal
   # countershade checkerboard. End caps are excluded from the quad sequence.
@@ -107,6 +107,6 @@ test_that("hammerhead markings respect near-side visibility through full rolls",
 test_that("approved hammerhead v14 retains reviewed geometry and appearance", {
   approved<-readRDS(testthat::test_path("fixtures","approved-hammerhead-v14.rds"))
   m<-overlaySpeciesModel("hammerhead")
-  expect_identical(c(m[setdiff(names(approved),"components")],
+  .expect_overlay_fixture(c(m[setdiff(names(approved),"components")],
     list(components=m$metadata$components)),approved)
 })

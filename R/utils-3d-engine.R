@@ -1374,9 +1374,9 @@ overlaySpeciesCatalog <- function() {
             0.6
         else 0.65, col = theme$muted)
     values <- if (show.heading)
-        sprintf("H %s°   P %s°   R %s°", .formatOverlayValue(heading, 0), .formatOverlayValue(pitch,
+        sprintf("H %s\u00b0   P %s\u00b0   R %s\u00b0", .formatOverlayValue(heading, 0), .formatOverlayValue(pitch,
             0), .formatOverlayValue(roll, 0))
-    else sprintf("Roll %s°  Pitch %s°", .formatOverlayValue(roll, 0, signed = TRUE), .formatOverlayValue(pitch,
+    else sprintf("Roll %s\u00b0  Pitch %s\u00b0", .formatOverlayValue(roll, 0, signed = TRUE), .formatOverlayValue(pitch,
         0, signed = TRUE))
     graphics::text(0, if (animated)
         -1.29

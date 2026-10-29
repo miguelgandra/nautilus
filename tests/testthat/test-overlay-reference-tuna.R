@@ -50,7 +50,7 @@ test_that("yellowfin preserves rigid sickles and whole caudal blade under bounde
 test_that("yellowfin appearance preserves approved geometry and a bilateral quad palette", {
   approved <- readRDS(testthat::test_path("fixtures","approved-tuna-geometry-v23.rds"))
   m <- overlaySpeciesModel("tuna")
-  expect_identical(c(m[c("vertices","faces","part","rig","details")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
   rgb <- m$appearance$face.rgb
   expect_identical(dim(rgb),c(700L,3L))
@@ -119,6 +119,6 @@ test_that("yellowfin markings are hidden on the far side and remain finite throu
 test_that("approved tuna v24 preserves reviewed colour, markings and articulation", {
   approved <- readRDS(testthat::test_path("fixtures","approved-tuna-v24.rds"))
   m <- overlaySpeciesModel("tuna")
-  expect_identical(c(m[c("vertices","faces","part","rig","details","appearance")],
+  .expect_overlay_fixture(c(m[c("vertices","faces","part","rig","details","appearance")],
     list(components=m$metadata$components,authored.rig=.overlay_test_authored_rig(m))),approved)
 })
