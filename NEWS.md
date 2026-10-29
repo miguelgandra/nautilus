@@ -1,5 +1,18 @@
 # nautilus 0.2.0
 
+## Multiple vertical-velocity windows
+
+* `smoothingControl(depth = c(5, 2.5, 10))` calculates multiple local depth slopes in one
+  `processTagData()` run. The first window remains `vertical_velocity`, driving mounting corrections
+  and downstream defaults; additional columns use names such as `vertical_velocity_2.5s` and
+  `vertical_velocity_10s`. Scalar calls retain their existing columns and calculations.
+* All estimates share the scalar velocity post-mean, native corrected depth, edge/gap handling,
+  output binning and rounding. Other smoothing controls remain scalar. Multi-window vectors must
+  contain unique finite positive numbers; scalar `NULL` and zero retain the minimum slope stencil.
+* Processing records requested windows and nominal sample counts/spans by column. Cadence-limited
+  requests warn once per batch while retaining the requested columns. Reprocessing replaces stale
+  secondary velocity columns. Extra windows increase memory use and saved-file size.
+
 ## Check portability
 
 * Orientation labels use ASCII Unicode escapes, retaining the same degree symbols in rendered output.

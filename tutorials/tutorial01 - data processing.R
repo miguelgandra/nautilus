@@ -544,6 +544,9 @@ calibrateMagnetometer(data          = list.files("./data interim/04_oriented", f
 # Processing options are organised into small control objects, each governing a
 # specific aspect of the workflow. The most relevant options are illustrated
 # below.
+# For depth-rate sensitivity, depth = c(5, 2.5, 10) keeps the 5 s primary and adds
+# vertical_velocity_2.5s and vertical_velocity_10s. Other windows stay scalar;
+# all rates share vertical = 1. Only the primary rate drives mounting corrections.
 
 processTagData(
   data                  = list.files("./data interim/04_oriented", full.names = TRUE),

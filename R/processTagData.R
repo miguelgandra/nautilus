@@ -177,7 +177,7 @@
 #'     vertical excursions retain their true amplitude.}
 #'   \item{`vertical_velocity`}{Rate of change of depth (m/s), positive during descent and negative
 #'     during ascent. Estimated by centred local linear regression of corrected depth against actual
-#'     timestamps, using `smoothing$depth` (default 5 s), followed by the centred rolling mean in
+#'     timestamps, using the first `smoothing$depth` value (default 5 s), followed by the centred rolling mean in
 #'     `smoothing$vertical` (default 1 s). No preliminary depth smoother is applied.}
 #'   \item{`paddle_freq`}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
 #'     carrying a paddle wheel. A window is retained only when its dominant component is an interior
@@ -193,10 +193,22 @@
 #' intervals split segments; missing samples remain `NA`. Rate post-smoothing requires a full window
 #' and leaves incomplete edge windows `NA`. See [smoothingControl()] for window discretisation.
 #'
+#' Multiple depth windows can be calculated in one run, for example
+#' `smoothingControl(depth = c(5, 2.5, 10), vertical = 1)`. The first window produces the primary
+#' `vertical_velocity`; secondary columns are `vertical_velocity_2.5s` and `vertical_velocity_10s`.
+#' Decimal suffixes are syntactic R names and support `$` access without backticks. All core
+#' calculations, including pitch/roll mounting corrections and downstream default summaries, continue
+#' to use only the primary estimate. Secondary rates share corrected native depth and the scalar
+#' velocity post-smoother; they receive the same output binning and three-decimal rounding.
+#' Reprocessing replaces previously generated secondary velocity columns with the requested set.
+#'
 #' The same slope estimator is used by [checkTagMapping()], [detectDives()] and [diveMetrics()].
 #' Their results need not be identical: phase classification uses signed reference-relative depth,
 #' dive windows may adapt to duration and noise, and dive rates omit velocity post-smoothing.
-#' Processing history records `vertical_rate_estimator = "local_linear"` alongside both windows.
+#' Processing history records `vertical_rate_estimator = "local_linear"`. `depth_smoothing` remains
+#' the primary window and `vertical_smoothing` the shared rate post-mean. Named numeric vectors
+#' `vertical_rate_windows`, `vertical_rate_samples` and `vertical_rate_span_s` map every generated
+#' column to its requested window, nominal sample count and interior time span before edge truncation.
 #' This replaces the earlier central difference of boxcar-smoothed depth; reprocess source records
 #' consistently when combining old and new analyses.
 #'
@@ -365,7 +377,9 @@ processTagData <- function(data,
   static.window         <- smoothing$static
   orientation.smoothing <- smoothing$orientation
   dba.smoothing         <- smoothing$dba
-  depth.smoothing       <- smoothing$depth
+  depth.windows         <- smoothing$depth
+  depth.smoothing       <- if (is.null(depth.windows)) NULL else depth.windows[1L]
+  rate.cols             <- .depthRateColumns(depth.windows)
   vertical.smoothing    <- smoothing$vertical
 
 
@@ -488,6 +502,7 @@ processTagData <- function(data,
   uncalibrated_ids <- character(0)               # requested magnetometer that received ZERO correction (raw heading)
   dead_paddle_ids <- character(0)                # imported paddle channel was constant (dead sensor) and was dropped
   reprocessed_ids <- character(0)                # input already carried a processTagData step (accidental re-run)
+  rate_window_items <- character(0)             # requested windows indistinguishable/too short at native cadence
   skipped_ids <- character(0)   # deployments set aside for missing/unusable input
   partial_items <- character(0) # retained deployments lacking a stream needed for requested metrics
   scope_ids <- character(0)     # every deployment evaluated, including successful partial runs
@@ -1076,12 +1091,20 @@ processTagData <- function(data,
     }
 
     ############################################################################
-    # Apply depth smoothing if requested ######################################
-    ############################################################################
-
-    ############################################################################
     # Calculate vertical velocity #############################################
     ############################################################################
+
+    # Replace generated variants on reprocessing; do not retain rates from an older configuration.
+    old_rates <- grep("^vertical_velocity_[0-9]+(\\.[0-9]+)?s$", names(individual_data), value = TRUE)
+    if (length(old_rates)) individual_data[, (old_rates) := NULL]
+    rate.windows <- stats::setNames(depth.windows %||% NA_real_, rate.cols)
+    radius <- pmax(1, floor((depth.windows %||% 0) / (2 * (1 / sampling_freq))))
+    rate.samples <- stats::setNames(2 * radius + 1, rate.cols)
+    rate.spans <- stats::setNames(2 * radius / sampling_freq, rate.cols)
+    limited <- duplicated(radius) | duplicated(radius, fromLast = TRUE) |
+      (!is.na(rate.windows) & rate.windows > 0 & rate.windows < 2 / sampling_freq)
+    if (any(limited)) rate_window_items <- c(rate_window_items,
+      sprintf("%s at %g Hz: %s", id, sampling_freq, paste(rate.cols[limited], collapse = ", ")))
 
     # Fit directly to corrected depth with the same slope helper used by mapping and dive analysis.
     # Keep depth unsmoothed and derive the rate at native cadence before output downsampling.
@@ -1570,11 +1593,19 @@ processTagData <- function(data,
     # Downsample data ##########################################################
     ############################################################################
 
+    # Secondary rates share corrected native depth and the rate post-mean. Calculate them after
+    # orientation/calibration so only the first window influences the rest of the processing chain.
+    for (j in seq_along(depth.windows)[-1L]) {
+      data.table::set(individual_data, j = rate.cols[j],
+        value = .depthRate(individual_data$depth, as.numeric(individual_data$datetime), depth.windows[j],
+                           dt = 1 / sampling_freq, post_s = vertical.smoothing))
+    }
+
     # select columns to keep (raw channels that are absent for partial sensor sets,
     # e.g. no gyroscope/magnetometer/temperature, are dropped via the intersect below)
     metrics <- c("temp","depth","ax", "ay", "az", "gx", "gy", "gz", "mx", "my", "mz",
                  "accel","odba","vedba","jerk","roll", "pitch", "heading",
-                 "surge", "sway", "heave", "vertical_velocity", "turning_angle",
+                 "surge", "sway", "heave", rate.cols, "turning_angle",
                  "paddle_freq", "paddle_speed")          # paddle cols kept only when present (dropped by intersect below)
     metrics <- intersect(metrics, names(individual_data))
 
@@ -1703,7 +1734,7 @@ processTagData <- function(data,
       # 3 dp: measured noise floor of the stored series is 0.0018-0.0024 m/s, so 0.01 m/s was above it
       # and silenced sustained slow drift (<0.005 m/s, i.e. gliding / buoyancy regulation). 4 dp would
       # sit below the noise floor and store nothing but noise.
-      velocity = list(vars = "vertical_velocity", digits = 3)         # [m/s]
+      velocity = list(vars = rate.cols, digits = 3)                   # [m/s]
     )
 
     # apply rounding (only to columns that are present)
@@ -1767,6 +1798,9 @@ processTagData <- function(data,
                                 vertical_smoothing      = vertical.smoothing %||% NA_real_,
                                 depth_smoothing         = depth.smoothing %||% NA_real_,
                                 vertical_rate_estimator = "local_linear",
+                                vertical_rate_windows   = rate.windows,
+                                vertical_rate_samples   = rate.samples,
+                                vertical_rate_span_s    = rate.spans,
                                 pitch_offset_deg        = pitch_offset_deg %||% NA_real_,
                                 pitch_offset_r2         = pitch_offset_r2 %||% NA_real_,
                                 roll_offset_deg         = roll_offset_deg %||% NA_real_,
@@ -1876,6 +1910,10 @@ processTagData <- function(data,
   # is a warning, not an error, but it is almost always a mistake worth catching in a batch run.
   .warn_grouped("{length(reprocessed_ids)} deployment{?s} had already been processed and {?was/were} re-run.",
                 items = reprocessed_ids, style = "inline")
+
+  .warn_grouped("Vertical-velocity windows are limited by the sampling cadence.",
+                items = rate_window_items,
+                hints = "Requested columns are retained; inspect vertical_rate_samples and vertical_rate_span_s in the processing metadata.")
 
   # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering
   # failure must never discard the (expensive) processed data - warn and return it, don't abort the run.

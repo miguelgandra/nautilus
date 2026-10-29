@@ -302,6 +302,18 @@
        dynamic = list(x = ax - sx, y = ay - sy, z = az - sz))
 }
 
+#' Stable column names for the primary and secondary depth-rate windows.
+#' @keywords internal
+#' @noRd
+.depthRateColumns <- function(windows) {
+  if (length(windows) < 2L) return("vertical_velocity")
+  labels <- vapply(windows, function(w) format(w, trim = TRUE, scientific = FALSE,
+                                             digits = 15, decimal.mark = "."), character(1))
+  if (anyDuplicated(labels))
+    .abort("{.arg smoothing$depth} values are too close to yield distinct decimal column names.")
+  c("vertical_velocity", paste0("vertical_velocity_", labels[-1L], "s"))
+}
+
 #' Centred local least-squares depth rate, shared by processing, mapping and dive analysis.
 #'
 #' Fits z = intercept + rate * time directly to depth, without a preceding depth smoother. On a

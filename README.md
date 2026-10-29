@@ -206,6 +206,11 @@ Vertical velocity uses local linear depth slopes with a five-second default wind
 rate post-mean. Processing, axis mapping and dive analysis share the slope estimator; dive analysis
 retains its duration- and noise-dependent windows. Stored depth remains unsmoothed.
 
+Use `smoothingControl(depth = c(5, 2.5, 10))` to compare windows in one processing run. The first
+remains `vertical_velocity`; additional estimates appear as `vertical_velocity_2.5s` and
+`vertical_velocity_10s`. All share the one-second rate post-mean. Mounting corrections and downstream
+defaults continue to use the first estimate.
+
 The result is an analysis-ready dataset that carries its own description and a complete
 record of how it was made.
 

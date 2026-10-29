@@ -225,7 +225,7 @@ greater caution than the other orientation variables.
 vertical excursions retain their true amplitude.}
 \item{\code{vertical_velocity}}{Rate of change of depth (m/s), positive during descent and negative
 during ascent. Estimated by centred local linear regression of corrected depth against actual
-timestamps, using \code{smoothing$depth} (default 5 s), followed by the centred rolling mean in
+timestamps, using the first \code{smoothing$depth} value (default 5 s), followed by the centred rolling mean in
 \code{smoothing$vertical} (default 1 s). No preliminary depth smoother is applied.}
 \item{\code{paddle_freq}}{Paddle-wheel rotation frequency (Hz), estimated from the magnetometer on tags
 carrying a paddle wheel. A window is retained only when its dominant component is an interior
@@ -241,10 +241,22 @@ observations. Missing depth/time, non-increasing timestamps and gaps longer than
 intervals split segments; missing samples remain \code{NA}. Rate post-smoothing requires a full window
 and leaves incomplete edge windows \code{NA}. See \code{\link[=smoothingControl]{smoothingControl()}} for window discretisation.
 
+Multiple depth windows can be calculated in one run, for example
+\code{smoothingControl(depth = c(5, 2.5, 10), vertical = 1)}. The first window produces the primary
+\code{vertical_velocity}; secondary columns are \code{vertical_velocity_2.5s} and \code{vertical_velocity_10s}.
+Decimal suffixes are syntactic R names and support \code{$} access without backticks. All core
+calculations, including pitch/roll mounting corrections and downstream default summaries, continue
+to use only the primary estimate. Secondary rates share corrected native depth and the scalar
+velocity post-smoother; they receive the same output binning and three-decimal rounding.
+Reprocessing replaces previously generated secondary velocity columns with the requested set.
+
 The same slope estimator is used by \code{\link[=checkTagMapping]{checkTagMapping()}}, \code{\link[=detectDives]{detectDives()}} and \code{\link[=diveMetrics]{diveMetrics()}}.
 Their results need not be identical: phase classification uses signed reference-relative depth,
 dive windows may adapt to duration and noise, and dive rates omit velocity post-smoothing.
-Processing history records \code{vertical_rate_estimator = "local_linear"} alongside both windows.
+Processing history records \code{vertical_rate_estimator = "local_linear"}. \code{depth_smoothing} remains
+the primary window and \code{vertical_smoothing} the shared rate post-mean. Named numeric vectors
+\code{vertical_rate_windows}, \code{vertical_rate_samples} and \code{vertical_rate_span_s} map every generated
+column to its requested window, nominal sample count and interior time span before edge truncation.
 This replaces the earlier central difference of boxcar-smoothed depth; reprocess source records
 consistently when combining old and new analyses.
 }

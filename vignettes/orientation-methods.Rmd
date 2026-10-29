@@ -68,6 +68,11 @@ estimator serves axis mapping and dive analysis. Windows truncate at continuous-
 require three observations; missing data and timestamp gaps are not bridged. The rate post-mean
 requires complete windows, so its edge values remain missing. Stored depth is not smoothed.
 
+With `smoothingControl(depth = c(5, 2.5, 10))`, the primary five-second rate drives mounting
+corrections. Secondary `vertical_velocity_2.5s` and `vertical_velocity_10s` columns are provided for
+rate comparisons; orientation is not recalculated separately for them. All use the same scalar
+velocity post-mean. Changing the first window can change the mounting corrections.
+
 **Pitch** uses the Kawatsu method: regress pitch (in radians) on the smoothed vertical velocity
 and take the **intercept** - that is, the pitch the tag reports when the animal is not going up or
 down. A correctly-mounted tag reads zero there; a nose-down mounting reads its own offset. The

@@ -20,16 +20,23 @@ pitch/roll -- so this is not a cosmetic post-smoother: it defines what counts as
 -3 dB cutoff is the equivalent of this window (~\code{0.44 / dba} Hz; the default 2 s gives ~0.22 Hz).
 \code{NULL} disables the smoothing. Default 2.}
 
-\item{depth}{Centred local linear regression window (s) for vertical velocity. Default 5.
+\item{depth}{Centred local linear regression window(s), in seconds, for vertical velocity.
+Default 5. Supply a non-empty numeric vector of unique, finite, positive values to compare
+windows in one run. The first value is primary and produces \code{vertical_velocity}; subsequent
+values produce columns such as \code{vertical_velocity_10s} or \code{vertical_velocity_2.5s}.
+Whole seconds have integer suffixes; fractional seconds use a decimal dot, independent of locale.
+Names on the input vector are ignored. Other smoothing controls remain scalar.
 Slopes are fitted directly to corrected depth against actual timestamps, without a preceding
 depth smoother. The sample radius is the larger of one and the whole number of sampling
 intervals in half the requested window. \code{NULL} or zero selects the minimum three-point
-stencil. Fits truncate at segment edges and require at least three observations. Missing
+stencil when supplied alone; zero is not allowed in a multi-window vector.
+Fits truncate at segment edges and require at least three observations. Missing
 depth/time, non-increasing timestamps and gaps longer than 1.5 sampling intervals split
 segments. The stored \code{depth} channel remains drift-corrected and unsmoothed.}
 
 \item{vertical}{Centred rolling-mean window (s) applied to the fitted vertical velocity.
-Default 1; \code{NULL} or zero disables it. Applied independently within continuous segments;
+Default 1; \code{NULL} or zero disables it. This scalar setting is shared by all depth windows.
+Applied independently within continuous segments;
 incomplete windows at edges or next to missing rates remain \code{NA}.
 Paddle-wheel speed is not smoothed here: that window belongs to
 \code{\link{calculatePaddleSpeed}}, which turns the recorded paddle frequency into a speed.}
@@ -39,11 +46,26 @@ A validated \code{nautilus_smoothing} object for the \code{smoothing} argument o
 }
 \description{
 Groups the smoothing-window arguments of \code{\link{processTagData}} into one object, so the main
-call stays uncluttered. Each value is a window length in seconds. \code{NULL} disables optional
-post-smoothing; for \code{depth} it selects the minimum local slope window (see below).
+call stays uncluttered. Values are window lengths in seconds; only \code{depth} accepts multiple
+windows. \code{NULL} disables optional post-smoothing; for \code{depth} it selects the minimum local slope
+window (see below).
+}
+\details{
+Only the primary vertical velocity drives mounting-offset corrections and downstream functions
+that use \code{vertical_velocity}. Secondary columns are alternative depth-rate estimates; they do not
+represent separate orientation, calibration or track-processing runs. Each is computed from native
+corrected depth before output downsampling, with the same post-smoothing and gap/edge handling.
+
+Sampling cadence may make distinct requested windows resolve to the same sample stencil, or
+force a short window to the minimum three-point stencil. Processing warns once for affected
+deployments and retains all requested columns. Metadata records requested windows, column names,
+nominal sample counts and interior spans before edge truncation. Very close values that cannot
+produce distinct decimal column labels are rejected. Additional windows add numeric columns and
+increase memory use and saved-file size.
 }
 \examples{
 smoothingControl(depth = 15, dba = NULL)   # 15 s depth window; disable DBA post-smoothing
+smoothingControl(depth = c(5, 2.5, 10))    # primary 5 s; add 2.5 s and 10 s estimates
 }
 \seealso{
 \code{\link{processTagData}}, \code{\link{calibrationControl}}

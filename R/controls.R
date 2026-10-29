@@ -471,8 +471,9 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
 #'
 #' @description
 #' Groups the smoothing-window arguments of \code{\link{processTagData}} into one object, so the main
-#' call stays uncluttered. Each value is a window length in seconds. `NULL` disables optional
-#' post-smoothing; for `depth` it selects the minimum local slope window (see below).
+#' call stays uncluttered. Values are window lengths in seconds; only `depth` accepts multiple
+#' windows. `NULL` disables optional post-smoothing; for `depth` it selects the minimum local slope
+#' window (see below).
 #'
 #' @param static Window (s) setting the static/gravity separation: the acceleration is split into a
 #'   static (gravity/posture) and a dynamic (motion) part with a zero-phase Butterworth high-pass whose
@@ -484,26 +485,57 @@ orientationControl <- function(madgwick.beta = 0.02, correct.pitch = TRUE, corre
 #' @param dba Window (s) for VeDBA/ODBA smoothing, applied as a zero-phase Butterworth low-pass whose
 #'   -3 dB cutoff is the equivalent of this window (~`0.44 / dba` Hz; the default 2 s gives ~0.22 Hz).
 #'   `NULL` disables the smoothing. Default 2.
-#' @param depth Centred local linear regression window (s) for vertical velocity. Default 5.
+#' @param depth Centred local linear regression window(s), in seconds, for vertical velocity.
+#'   Default 5. Supply a non-empty numeric vector of unique, finite, positive values to compare
+#'   windows in one run. The first value is primary and produces `vertical_velocity`; subsequent
+#'   values produce columns such as `vertical_velocity_10s` or `vertical_velocity_2.5s`.
+#'   Whole seconds have integer suffixes; fractional seconds use a decimal dot, independent of locale.
+#'   Names on the input vector are ignored. Other smoothing controls remain scalar.
 #'   Slopes are fitted directly to corrected depth against actual timestamps, without a preceding
 #'   depth smoother. The sample radius is the larger of one and the whole number of sampling
 #'   intervals in half the requested window. `NULL` or zero selects the minimum three-point
-#'   stencil. Fits truncate at segment edges and require at least three observations. Missing
+#'   stencil when supplied alone; zero is not allowed in a multi-window vector.
+#'   Fits truncate at segment edges and require at least three observations. Missing
 #'   depth/time, non-increasing timestamps and gaps longer than 1.5 sampling intervals split
 #'   segments. The stored `depth` channel remains drift-corrected and unsmoothed.
 #' @param vertical Centred rolling-mean window (s) applied to the fitted vertical velocity.
-#'   Default 1; `NULL` or zero disables it. Applied independently within continuous segments;
+#'   Default 1; `NULL` or zero disables it. This scalar setting is shared by all depth windows.
+#'   Applied independently within continuous segments;
 #'   incomplete windows at edges or next to missing rates remain `NA`.
 #'   Paddle-wheel speed is not smoothed here: that window belongs to
 #'   \code{\link{calculatePaddleSpeed}}, which turns the recorded paddle frequency into a speed.
+#' @details
+#' Only the primary vertical velocity drives mounting-offset corrections and downstream functions
+#' that use `vertical_velocity`. Secondary columns are alternative depth-rate estimates; they do not
+#' represent separate orientation, calibration or track-processing runs. Each is computed from native
+#' corrected depth before output downsampling, with the same post-smoothing and gap/edge handling.
+#'
+#' Sampling cadence may make distinct requested windows resolve to the same sample stencil, or
+#' force a short window to the minimum three-point stencil. Processing warns once for affected
+#' deployments and retains all requested columns. Metadata records requested windows, column names,
+#' nominal sample counts and interior spans before edge truncation. Very close values that cannot
+#' produce distinct decimal column labels are rejected. Additional windows add numeric columns and
+#' increase memory use and saved-file size.
 #' @return A validated `nautilus_smoothing` object for the `smoothing` argument of \code{\link{processTagData}}.
 #' @seealso \code{\link{processTagData}}, \code{\link{calibrationControl}}
 #' @examples
 #' smoothingControl(depth = 15, dba = NULL)   # 15 s depth window; disable DBA post-smoothing
+#' smoothingControl(depth = c(5, 2.5, 10))    # primary 5 s; add 2.5 s and 10 s estimates
 #' @export
 smoothingControl <- function(static = 3, orientation = 1, dba = 2, depth = 5, vertical = 1) {
+  if (!is.null(depth)) {
+    if (!is.numeric(depth) || is.complex(depth) || is.object(depth) || !is.null(dim(depth)) ||
+        !length(depth) || any(!is.finite(depth)) || any(depth < 0) ||
+        (length(depth) > 1L && any(depth == 0))) {
+      .abort("{.arg smoothing$depth} must be a finite positive numeric vector, or a scalar zero or NULL for the minimum slope stencil.")
+    }
+    if (anyDuplicated(depth)) .abort("{.arg smoothing$depth} must contain unique window values.")
+    depth <- unname(depth)
+    .depthRateColumns(depth)                 # reject ambiguous decimal column labels before processing
+  }
   fields <- list(static = static, orientation = orientation, dba = dba, depth = depth, vertical = vertical)
-  for (nm in names(fields)) if (!is.null(fields[[nm]])) .assert_number(fields[[nm]], paste0("smoothing$", nm), min = 0)
+  for (nm in setdiff(names(fields), "depth"))
+    if (!is.null(fields[[nm]])) .assert_number(fields[[nm]], paste0("smoothing$", nm), min = 0)
   if (is.null(fields$static) || fields$static <= 0)
     .abort("{.arg smoothing$static} must be a positive number (the gravity-separation window cannot be disabled).")
   structure(fields, class = "nautilus_smoothing")

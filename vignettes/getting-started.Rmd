@@ -268,6 +268,21 @@ paddle-wheel rotation rate, applying the magnetometer calibration when it is tru
 tags <- processTagData(tags)
 ```
 
+For a vertical-speed sensitivity comparison, use the following call instead of the preceding one,
+starting from the same source tags. It requests several depth-slope windows in one run:
+
+```{r spine-process-windows}
+tags <- processTagData(tags, smoothing = smoothingControl(depth = c(5, 2.5, 10)))
+tags[[1]]$vertical_velocity        # primary 5-second window
+tags[[1]]$vertical_velocity_2.5s   # secondary 2.5-second window; no backticks needed
+tags[[1]]$vertical_velocity_10s    # secondary 10-second window
+```
+
+All estimates use native corrected depth
+and the same one-second rate post-mean. Only the first window drives mounting corrections and
+downstream defaults; other smoothing settings remain scalar. Extra columns increase memory and file
+size. Processing metadata records each requested window and its sample count/span at native cadence.
+
 The result is your analysis-ready `nautilus_tag`. Turning the recorded paddle-wheel
 rotation into a swimming speed is a separate step, `calculatePaddleSpeed()`, since it needs
 a calibration for the tag. From here you branch.
