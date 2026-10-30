@@ -24,7 +24,8 @@
 #' @param data A tag dataset, a list of tag datasets, a data frame containing multiple deployments
 #'   identified by an `ID` column, or a character vector of `.rds` file paths. The output of
 #'   [importTagData()] is recommended. When file paths are supplied, deployments are processed
-#'   sequentially, allowing large datasets to be processed without loading everything into memory. The
+#'   one deployment at a time per worker, allowing large datasets to be processed without loading
+#'   everything into memory. The
 #'   inertial axes must already be in the animal's body frame when acceleration is available; an
 #'   accelerometer-bearing deployment whose axis mapping has not been applied raises a warning, since
 #'   its orientation metrics may otherwise be wrong without appearing so.
@@ -75,13 +76,35 @@
 #'   `output.dir` is specified.
 #' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
 #'   `"gzip"`, `"bzip2"` or `"xz"`. Only used when `output.dir` is specified. See [base::saveRDS()].
-#' @param data.table.threads Number of threads available to \pkg{data.table}, or `NULL` (default) to
-#'   leave the current setting unchanged. More threads may improve speed at the cost of memory. See
-#'   `data.table::setDTthreads()`.
+#' @param data.table.threads Maximum data.table threads per R process. `NULL`
+#'   preserves the caller's setting in sequential mode and uses one thread per
+#'   worker in parallel mode. Explicit settings are restored on exit.
+#' @param n.cores Maximum number of R worker processes (default `1`, sequential).
+#'   Values greater than one opt into PSOCK processing across whole deployments;
+#'   the worker count is capped by the number of deployments. Requires the optional
+#'   packages `foreach`, `doSNOW`, and `parallelly`. Each worker uses one data.table
+#'   thread by default. An explicit worker/thread budget must fit the CPU allocation
+#'   reported by `parallelly::availableCores()`.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (header, per-deployment
 #'   outcome and summary), or `2`/`"detailed"` (default), which adds a log of each processing step.
 #'
 #' @details
+#' ## Parallel execution
+#'
+#' `n.cores = 1` uses immediate reporting and the existing graphics devices, with
+#' no worker pool or report buffering. Parallel runs keep deployment messages,
+#' warnings, results, and diagnostic pages in input order. Plot data are computed
+#' by workers; all drawing uses the same plotting functions in the parent process.
+#' Shared PDFs and cohort reports are written only by the parent.
+#'
+#' File paths with `return.data = FALSE` keep sensor data off the worker-result
+#' sockets. In-memory inputs and results require additional worker memory. Pending
+#' results and temporary plot files are bounded to windows of twice the worker
+#' count and are cleaned up on exit. File size or row count prioritises larger jobs
+#' within each window. Parallel file output requires unique deployment file names.
+#' Worker BLAS thread pools are limited to one; scheduler/OpenMP thread limits are
+#' respected. Use `n.cores = 1` when already distributing deployments externally.
+#'
 #' ## Processing steps
 #'
 #' For each deployment, the function:
@@ -355,7 +378,10 @@ processTagData <- function(data,
                            output.suffix = NULL,
                            compress = TRUE,
                            data.table.threads = NULL,
-                           verbose = "detailed") {
+                           verbose = "detailed",
+                           n.cores = 1L) {
+
+  .assert_count(n.cores, "n.cores", min = 1)
 
   # resolve the control objects, then unpack into the local names used throughout the body
   calibration <- .as_control(calibration, calibrationControl, "nautilus_calibration", "calibration")
@@ -392,10 +418,6 @@ processTagData <- function(data,
 
   # verbosity level (0 quiet / 1 normal / 2 detailed)
   lvl <- .verbosity(verbose)
-  # per-step detail line (level >= 2), routed through the shared cli logger (a `->` bullet) so the
-  # style matches the other workflow functions.
-  say <- function(...) .log_detail(lvl, ...)
-
   # silence data.table's internal progress messages for the duration of the run (restored on exit)
   old_dt_progress <- options(datatable.showProgress = FALSE)
   on.exit(options(old_dt_progress), add = TRUE)
@@ -450,14 +472,14 @@ processTagData <- function(data,
   }
 
 
-  # validate data.table threads if specified
+  # Validate explicit limits; unknown physical CPU counts do not invalidate a
+  # scalar request (the allocation-aware parallel budget is checked below).
   if (!is.null(data.table.threads)) {
+    .assert_count(data.table.threads, "data.table.threads", min = 1)
     n_cores <- parallel::detectCores()
-    if (!is.numeric(data.table.threads) || data.table.threads < 1 || data.table.threads > n_cores) {
+    if (is.finite(n_cores) && data.table.threads > n_cores)
       .abort("{.arg data.table.threads} must be a single number between 1 and {n_cores}.")
-    }
   }
-
 
   ##############################################################################
   # Initialize variables #######################################################
@@ -470,6 +492,9 @@ processTagData <- function(data,
   ids       <- rep(NA_character_, n_animals)          # per-slot deployment id (NA marks a skipped slot)
   if (isTRUE(plot) && n_animals > 1L)                            # active-device diagnostics flood for a batch
     warning("processTagData: plot = TRUE renders a page-set per deployment to the active device; for a batch, prefer plot.file = <one PDF>.", call. = FALSE)
+
+  execution <- .deploymentExecution(n.cores, n_animals, data.table.threads)
+  if (execution$workers > 1L) .checkDeploymentOutputs(data, is_filepaths, "ID", output.dir, output.suffix)
 
   # header
   hdr_bullets <- sprintf("Input: %d tag%s", n_animals, if (n_animals != 1) "s" else "")
@@ -486,7 +511,7 @@ processTagData <- function(data,
 
 
   # set data.table threads if specified
-  if (!is.null(data.table.threads)) {
+  if (execution$workers == 1L && !is.null(data.table.threads)) {
     original_threads <- data.table::getDTthreads()
     data.table::setDTthreads(threads = data.table.threads)
     on.exit(data.table::setDTthreads(threads = original_threads), add = TRUE)
@@ -509,11 +534,7 @@ processTagData <- function(data,
   # every skip also records WHY, for the shared exclusions log: the reason is already computed for the
   # console line, and discarding it is what left a dropped deployment unexplained in the summary
   skipped_rows <- list()
-  note_skip <- function(id, reason) {
-    scope_ids <<- c(scope_ids, as.character(id))
-    skipped_ids <<- c(skipped_ids, id)
-    skipped_rows[[length(skipped_rows) + 1L]] <<- .exclusionsRow(id, "processTagData", reason)
-  }
+
   nodecl_ids  <- character(0)   # heading kept as MAGNETIC (no position -> no declination available)
   # Orientation findings are ACCUMULATED and warned once per finding type at the end, never once per
   # deployment. Warning inside the loop scaled with the cohort: 10 rolled mounts meant 10 warnings, and
@@ -526,7 +547,203 @@ processTagData <- function(data,
   roll_resid_items   <- character(0)   # roll left over after a correction that did not take
   paddle_nyquist_items <- character(0) # frequency windows rejected because power was near Nyquist
 
-  for (i in seq_along(data)) {
+  config <- mget(c("burst.quantiles", "collect_diag", "compress", "correct.pitch.offset",
+    "correct.roll.offset", "dba.smoothing", "depth.control", "depth.smoothing", "depth.windows",
+    "downsample.to", "hard.iron.calibration", "heading.denoise", "heading.denoise.window", "is_filepaths",
+    "lvl", "madgwick.beta", "mount.roll.max", "n_animals", "orientation.algorithm", "orientation.smoothing",
+    "orientation.warning.threshold", "output.dir", "output.suffix", "paddle", "pitch.offset.min.r2",
+    "rate.cols", "required_cols", "return.data", "soft.iron.calibration", "static.window",
+    "use.stored.calibration", "vertical.smoothing"), envir = environment(), inherits = FALSE)
+  result_env <- environment()
+  accept <- function(result) {
+    .mergeDeploymentResult(result, result_env,
+                           append = c("unoriented_ids", "uncalibrated_ids", "dead_paddle_ids",
+                             "reprocessed_ids", "rate_window_items", "skipped_ids", "partial_items",
+                             "scope_ids", "skipped_rows", "nodecl_ids", "pitch_anom_items",
+                             "roll_mount_items", "roll_uncorr_items", "roll_resid_items",
+                             "paddle_nyquist_items", "diag_bundles"),
+                           sum = c("n_done", "tot_in", "tot_out", "tot_secs"), indexed = "ids")
+  }
+  .dispatchDeployments(data, config, ".processTagDeployment", accept, execution,
+                       draw = NULL)
+
+  # ORDERING-GUARD warning (fires at any verbosity): computed orientation is only valid on axis-mapped
+  # data. Emitted once with the affected ids rather than once per deployment.
+  .warn_grouped("{length(unoriented_ids)} deployment{?s} {?was/were} processed without an applied axis mapping.",
+                items = unoriented_ids, style = "inline")
+
+  # zero-correction warning: a requested magnetometer received NO hard/soft-iron correction (neither a
+  # trusted stored fit nor a coverage-passing inline estimate). Heading is then computed from a raw field
+  # still carrying the tag's hard-iron offset - the dominant source of dead-reckoning drift. Loud by default.
+  .warn_grouped("{length(uncalibrated_ids)} deployment{?s} {?has/have} no magnetometer calibration.",
+                items = uncalibrated_ids, style = "inline")
+
+  # one consolidated notice for every deployment whose imported paddle channel turned out to be constant.
+  # Warned rather than logged because dropping an imported channel changes the data, and consolidated
+  # rather than per-deployment so a large batch does not drown in identical messages.
+  .warn_grouped("{length(dead_paddle_ids)} deployment{?s} had a constant paddle channel, now set to NA.",
+                items = dead_paddle_ids, style = "inline")
+
+  # one consolidated notice for every deployment that had already been through processTagData - the common
+  # cause is pointing the function at an already-processed output folder. Re-running is idempotent, so this
+  # is a warning, not an error, but it is almost always a mistake worth catching in a batch run.
+  .warn_grouped("{length(reprocessed_ids)} deployment{?s} had already been processed and {?was/were} re-run.",
+                items = reprocessed_ids, style = "inline")
+
+  .warn_grouped("Vertical-velocity windows are limited by the sampling cadence.",
+                items = rate_window_items,
+                hints = "Requested columns are retained; inspect vertical_rate_samples and vertical_rate_span_s in the processing metadata.")
+
+  # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering
+  # failure must never discard the (expensive) processed data - warn and return it, don't abort the run.
+  if (collect_diag && length(diag_bundles))
+    tryCatch(.renderProcessingDiagnostic(diag_bundles, plot = plot, plot.file = plot.file),
+             error = function(e) warning("processTagData: diagnostic rendering failed (", conditionMessage(e),
+                                         "); returning the processed data anyway.", call. = FALSE))
+
+
+  ##############################################################################
+  # Return processed data ######################################################
+  ##############################################################################
+
+  # final summary
+  # A magnetic heading looks exactly like a geographic one - same column, same units, same range - so the
+  # only thing standing between it and a silently rotated track is this warning plus the recorded
+  # `heading_reference`. Name the deployments at any verbosity.
+  # ---- end-of-run warnings: ONE per finding type, never one per deployment -------------------------
+  # Every group has the same two-line shape - a headline that says what happened and how many, then the
+  # affected ids inline with the value that differs. The explanations that used to be repeated here for
+  # every group live in the per-deployment verbose block (which states them where they happened) and in
+  # the Diagnostics section of this function's documentation.
+  .warn_grouped("{length(pitch_anom_items)} deployment{?s} show{?s/} a potential pitch anomaly (median pitch).",
+                items = pitch_anom_items, style = "inline")
+
+  .warn_grouped("{length(roll_uncorr_items)} deployment{?s} {?has/have} an unusual mounting roll, NOT corrected (offset).",
+                items = roll_uncorr_items, style = "inline")
+
+  .warn_grouped("{length(roll_mount_items)} deployment{?s} {?has/have} an unusual mounting roll, corrected (offset).",
+                items = roll_mount_items, style = "inline")
+
+  .warn_grouped("{length(roll_resid_items)} deployment{?s} {?has/have} a roll residual after correction (median roll).",
+                items = roll_resid_items, style = "inline")
+
+  .warn_grouped("Paddle-frequency power reached the Nyquist guard in {length(paddle_nyquist_items)} deployment{?s}.",
+                items = paddle_nyquist_items, style = "inline")
+
+  .warn_grouped("{length(nodecl_ids)} deployment{?s} {?has/have} a magnetic heading (no position for the declination).",
+                items = nodecl_ids, style = "inline")
+
+  # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
+  # large batch is how a cohort quietly shrinks between pipeline steps.
+  .warn_grouped("{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
+                items = skipped_ids, style = "inline")
+
+  .warn_grouped("{length(partial_items)} deployment{?s} {?was/were} processed with unavailable sensor streams.",
+                items = partial_items, style = "inline")
+
+  # Refresh only this stage's rows for deployments evaluated by the current call.
+  excl <- .exclusionsBind(skipped_rows)
+  .exclusionsWrite(excl, exclusions.file, "processTagData", scope.ids = scope_ids)
+
+  if (lvl >= 1L) {
+    .log_summary(lvl)
+    .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")
+    # scale of the batch. Stored rows are quoted against the INPUT rows because downsample.to (1 Hz by
+    # default) makes the two differ by one to two orders of magnitude - without the comparison the drop
+    # reads as data loss rather than the intended reduction.
+    if (n_done > 0)
+      .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_out),
+                 " (from ", .formatLargeNumber(tot_in), " input) \u00b7 duration: ", .fmt_duration(tot_secs))
+    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
+    .log_runtime(lvl, start.time)
+  }
+
+  # return the processed data (named by ID) or, when return.data = FALSE, the written .rds paths.
+  # `keep` drops skipped slots (their id stays NA), keeping data_list / saved / ids index-aligned.
+  keep <- !is.na(ids)
+  out <- .collectOutput(data_list[keep], saved[keep], return.data, ids[keep])
+  # the same rows the log carries, for a caller working in memory rather than through files
+  if (!is.null(out) && nrow(excl)) attr(out, "nautilus.exclusions") <- excl
+  # Returning `out` bare would strip the invisibility .collectOutput() set on the paths branch, so a
+  # top-level call printed the whole wall of file paths. Re-apply it; the data branch stays visible.
+  if (isTRUE(return.data)) out else invisible(out)
+
+}
+
+#######################################################################################################
+#######################################################################################################
+#######################################################################################################
+
+
+# One deployment uses the same calculations in sequential and PSOCK execution.
+# The sequential caller renders immediately; workers collect reporting/plot data.
+.processTagDeployment <- function(job, config, collect.plots = FALSE) {
+  burst.quantiles <- config$burst.quantiles
+  collect_diag <- config$collect_diag
+  compress <- config$compress
+  correct.pitch.offset <- config$correct.pitch.offset
+  correct.roll.offset <- config$correct.roll.offset
+  dba.smoothing <- config$dba.smoothing
+  depth.control <- config$depth.control
+  depth.smoothing <- config$depth.smoothing
+  depth.windows <- config$depth.windows
+  downsample.to <- config$downsample.to
+  hard.iron.calibration <- config$hard.iron.calibration
+  heading.denoise <- config$heading.denoise
+  heading.denoise.window <- config$heading.denoise.window
+  is_filepaths <- config$is_filepaths
+  lvl <- config$lvl
+  madgwick.beta <- config$madgwick.beta
+  mount.roll.max <- config$mount.roll.max
+  n_animals <- config$n_animals
+  orientation.algorithm <- config$orientation.algorithm
+  orientation.smoothing <- config$orientation.smoothing
+  orientation.warning.threshold <- config$orientation.warning.threshold
+  output.dir <- config$output.dir
+  output.suffix <- config$output.suffix
+  paddle <- config$paddle
+  pitch.offset.min.r2 <- config$pitch.offset.min.r2
+  rate.cols <- config$rate.cols
+  required_cols <- config$required_cols
+  return.data <- config$return.data
+  soft.iron.calibration <- config$soft.iron.calibration
+  static.window <- config$static.window
+  use.stored.calibration <- config$use.stored.calibration
+  vertical.smoothing <- config$vertical.smoothing
+  i <- job$index
+  data <- if (is_filepaths) rep("", n_animals) else vector("list", n_animals)
+  if (is_filepaths) data[i] <- job$value else data[i] <- list(job$value)
+  if (!is.null(job$name)) names(data)[i] <- job$name
+  data_list <- saved <- vector("list", n_animals)
+  unoriented_ids <- character(0)
+  uncalibrated_ids <- character(0)
+  dead_paddle_ids <- character(0)
+  reprocessed_ids <- character(0)
+  rate_window_items <- character(0)
+  skipped_ids <- character(0)
+  partial_items <- character(0)
+  scope_ids <- character(0)
+  skipped_rows <- list()
+  nodecl_ids <- character(0)
+  pitch_anom_items <- character(0)
+  roll_mount_items <- character(0)
+  roll_uncorr_items <- character(0)
+  roll_resid_items <- character(0)
+  paddle_nyquist_items <- character(0)
+  diag_bundles <- list()
+  n_done <- 0L
+  tot_in <- 0
+  tot_out <- 0
+  tot_secs <- 0
+  ids <- rep(NA_character_, n_animals)
+  say <- function(...) .log_detail(lvl, ...)
+  note_skip <- function(id, reason) {
+    scope_ids <<- c(scope_ids, as.character(id))
+    skipped_ids <<- c(skipped_ids, id)
+    skipped_rows[[length(skipped_rows) + 1L]] <<- .exclusionsRow(id, "processTagData", reason)
+  }
+  for (i in job$index) {
 
     ############################################################################
     # load data for the current individual if using file paths #################
@@ -684,7 +901,7 @@ processTagData <- function(data,
 
       # tag identity FIRST (it names the deployment and contexts everything below), then the re-processing
       # alert immediately under it. The findings block (input, calibration, ...) is emitted after the work.
-      if (!is.null(attrs_line)) cli::cli_text("{cli::symbol$bullet} {attrs_line}")
+      if (!is.null(attrs_line)) .log_tag_attributes(lvl, attrs_line)
       if (already_processed)
         say("! dataset already processed (re-running is usually unintended)")
     }
@@ -1887,111 +2104,11 @@ processTagData <- function(data,
     rm(individual_data)
     rm(processed_data)
   }
-
-  # ORDERING-GUARD warning (fires at any verbosity): computed orientation is only valid on axis-mapped
-  # data. Emitted once with the affected ids rather than once per deployment.
-  .warn_grouped("{length(unoriented_ids)} deployment{?s} {?was/were} processed without an applied axis mapping.",
-                items = unoriented_ids, style = "inline")
-
-  # zero-correction warning: a requested magnetometer received NO hard/soft-iron correction (neither a
-  # trusted stored fit nor a coverage-passing inline estimate). Heading is then computed from a raw field
-  # still carrying the tag's hard-iron offset - the dominant source of dead-reckoning drift. Loud by default.
-  .warn_grouped("{length(uncalibrated_ids)} deployment{?s} {?has/have} no magnetometer calibration.",
-                items = uncalibrated_ids, style = "inline")
-
-  # one consolidated notice for every deployment whose imported paddle channel turned out to be constant.
-  # Warned rather than logged because dropping an imported channel changes the data, and consolidated
-  # rather than per-deployment so a large batch does not drown in identical messages.
-  .warn_grouped("{length(dead_paddle_ids)} deployment{?s} had a constant paddle channel, now set to NA.",
-                items = dead_paddle_ids, style = "inline")
-
-  # one consolidated notice for every deployment that had already been through processTagData - the common
-  # cause is pointing the function at an already-processed output folder. Re-running is idempotent, so this
-  # is a warning, not an error, but it is almost always a mistake worth catching in a batch run.
-  .warn_grouped("{length(reprocessed_ids)} deployment{?s} had already been processed and {?was/were} re-run.",
-                items = reprocessed_ids, style = "inline")
-
-  .warn_grouped("Vertical-velocity windows are limited by the sampling cadence.",
-                items = rate_window_items,
-                hints = "Requested columns are retained; inspect vertical_rate_samples and vertical_rate_span_s in the processing metadata.")
-
-  # render the opt-in per-deployment diagnostic PDF (correction QC) from the gathered bundles. A rendering
-  # failure must never discard the (expensive) processed data - warn and return it, don't abort the run.
-  if (collect_diag && length(diag_bundles))
-    tryCatch(.renderProcessingDiagnostic(diag_bundles, plot = plot, plot.file = plot.file),
-             error = function(e) warning("processTagData: diagnostic rendering failed (", conditionMessage(e),
-                                         "); returning the processed data anyway.", call. = FALSE))
-
-
-  ##############################################################################
-  # Return processed data ######################################################
-  ##############################################################################
-
-  # final summary
-  # A magnetic heading looks exactly like a geographic one - same column, same units, same range - so the
-  # only thing standing between it and a silently rotated track is this warning plus the recorded
-  # `heading_reference`. Name the deployments at any verbosity.
-  # ---- end-of-run warnings: ONE per finding type, never one per deployment -------------------------
-  # Every group has the same two-line shape - a headline that says what happened and how many, then the
-  # affected ids inline with the value that differs. The explanations that used to be repeated here for
-  # every group live in the per-deployment verbose block (which states them where they happened) and in
-  # the Diagnostics section of this function's documentation.
-  .warn_grouped("{length(pitch_anom_items)} deployment{?s} show{?s/} a potential pitch anomaly (median pitch).",
-                items = pitch_anom_items, style = "inline")
-
-  .warn_grouped("{length(roll_uncorr_items)} deployment{?s} {?has/have} an unusual mounting roll, NOT corrected (offset).",
-                items = roll_uncorr_items, style = "inline")
-
-  .warn_grouped("{length(roll_mount_items)} deployment{?s} {?has/have} an unusual mounting roll, corrected (offset).",
-                items = roll_mount_items, style = "inline")
-
-  .warn_grouped("{length(roll_resid_items)} deployment{?s} {?has/have} a roll residual after correction (median roll).",
-                items = roll_resid_items, style = "inline")
-
-  .warn_grouped("Paddle-frequency power reached the Nyquist guard in {length(paddle_nyquist_items)} deployment{?s}.",
-                items = paddle_nyquist_items, style = "inline")
-
-  .warn_grouped("{length(nodecl_ids)} deployment{?s} {?has/have} a magnetic heading (no position for the declination).",
-                items = nodecl_ids, style = "inline")
-
-  # Deployments set aside for missing/unusable input are announced at ANY verbosity: a silent skip in a
-  # large batch is how a cohort quietly shrinks between pipeline steps.
-  .warn_grouped("{length(skipped_ids)} deployment{?s} {?was/were} skipped for missing or unusable input.",
-                items = skipped_ids, style = "inline")
-
-  .warn_grouped("{length(partial_items)} deployment{?s} {?was/were} processed with unavailable sensor streams.",
-                items = partial_items, style = "inline")
-
-  # Refresh only this stage's rows for deployments evaluated by the current call.
-  excl <- .exclusionsBind(skipped_rows)
-  .exclusionsWrite(excl, exclusions.file, "processTagData", scope.ids = scope_ids)
-
-  if (lvl >= 1L) {
-    .log_summary(lvl)
-    .log_done(lvl, n_done, " of ", n_animals, " tag", if (n_animals != 1) "s", " processed")
-    # scale of the batch. Stored rows are quoted against the INPUT rows because downsample.to (1 Hz by
-    # default) makes the two differ by one to two orders of magnitude - without the comparison the drop
-    # reads as data loss rather than the intended reduction.
-    if (n_done > 0)
-      .log_arrow(lvl, "total rows: ", .formatLargeNumber(tot_out),
-                 " (from ", .formatLargeNumber(tot_in), " input) \u00b7 duration: ", .fmt_duration(tot_secs))
-    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
-    if (!is.null(exclusions.file)) .log_arrow(lvl, "exclusions: ", exclusions.file)
-    .log_runtime(lvl, start.time)
-  }
-
-  # return the processed data (named by ID) or, when return.data = FALSE, the written .rds paths.
-  # `keep` drops skipped slots (their id stays NA), keeping data_list / saved / ids index-aligned.
-  keep <- !is.na(ids)
-  out <- .collectOutput(data_list[keep], saved[keep], return.data, ids[keep])
-  # the same rows the log carries, for a caller working in memory rather than through files
-  if (!is.null(out) && nrow(excl)) attr(out, "nautilus.exclusions") <- excl
-  # Returning `out` bare would strip the invisibility .collectOutput() set on the paths branch, so a
-  # top-level call printed the whole wall of file paths. Re-apply it; the data branch stays visible.
-  if (isTRUE(return.data)) out else invisible(out)
-
+  list(index = i, value = data_list[[i]], saved = saved[[i]], id = ids[i],
+       state = mget(c("unoriented_ids", "uncalibrated_ids", "dead_paddle_ids", "reprocessed_ids",
+         "rate_window_items", "skipped_ids", "partial_items", "scope_ids", "skipped_rows", "nodecl_ids",
+         "pitch_anom_items", "roll_mount_items", "roll_uncorr_items", "roll_resid_items",
+         "paddle_nyquist_items", "diag_bundles", "n_done", "tot_in", "tot_out", "tot_secs"), envir =
+         environment(), inherits = FALSE),
+       plots = list())
 }
-
-#######################################################################################################
-#######################################################################################################
-#######################################################################################################

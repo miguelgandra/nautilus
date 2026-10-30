@@ -19,8 +19,8 @@
 #'
 #' @param data A `nautilus_tag` object, a list of tag datasets, a data frame containing multiple
 #'   individuals identified by `id.col`, or a character vector of `.rds` file paths. File paths are
-#'   processed sequentially, allowing large collections to be analysed without loading them all into
-#'   memory. The output of [processTagData()] is recommended.
+#'   read one deployment at a time per worker, allowing large collections to be analysed without
+#'   loading them all into memory. The output of [processTagData()] is recommended.
 #' @param method One or both estimation methods, `"peaks"` and `"wavelet"` (default both). Where both
 #'   are given, the first is the primary method and the second a cross-check.
 #' @param id.col Column identifying individuals (default `"ID"`).
@@ -67,10 +67,35 @@
 #'   processing run or avoid overwriting an earlier one. Only used when `output.dir` is specified.
 #' @param compress Compression used when saving `.rds` files: `TRUE` (default, gzip), `FALSE`, or one of
 #'   `"gzip"`, `"bzip2"` or `"xz"`. See [base::saveRDS()].
+#' @param data.table.threads Maximum data.table threads per R process. `NULL`
+#'   preserves the caller's setting in sequential mode and uses one thread per
+#'   parallel worker. Explicit settings are restored on exit.
+#' @param n.cores Maximum number of R worker processes (default `1`, sequential).
+#'   Values greater than one opt into PSOCK processing across whole deployments;
+#'   the worker count is capped by the number of deployments. Requires the optional
+#'   packages `foreach`, `doSNOW`, and `parallelly`. Each worker uses one data.table
+#'   thread by default. An explicit worker/thread budget must fit the CPU allocation
+#'   reported by `parallelly::availableCores()`.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
 #'   (default), which adds per-deployment diagnostics.
 #'
 #' @details
+#' ## Parallel execution
+#'
+#' `n.cores = 1` uses immediate reporting and the existing graphics devices, with
+#' no worker pool or report buffering. Parallel runs keep deployment messages,
+#' warnings, results, and diagnostic pages in input order. Plot data are computed
+#' by workers; all drawing uses the same plotting functions in the parent process.
+#' Shared PDFs and cohort reports are written only by the parent.
+#'
+#' File paths with `return.data = FALSE` keep sensor data off the worker-result
+#' sockets. In-memory inputs and results require additional worker memory. Pending
+#' results and temporary plot files are bounded to windows of twice the worker
+#' count and are cleaned up on exit. File size or row count prioritises larger jobs
+#' within each window. Parallel file output requires unique deployment file names.
+#' Worker BLAS thread pools are limited to one; scheduler/OpenMP thread limits are
+#' respected. Use `n.cores = 1` when already distributing deployments externally.
+#'
 #' ## Estimation methods
 #'
 #' \describe{
@@ -254,11 +279,15 @@ calculateTailBeats <- function(data,
                                output.dir = NULL,
                                output.suffix = NULL,
                                compress = TRUE,
-                               verbose = "detailed") {
+                               verbose = "detailed",
+                               n.cores = 1L,
+                               data.table.threads = NULL) {
 
   ##############################################################################
   # Initial checks and setup ###################################################
   ##############################################################################
+
+  .assert_count(n.cores, "n.cores", min = 1)
 
   # start the timer
   start.time <- Sys.time()
@@ -418,6 +447,9 @@ calculateTailBeats <- function(data,
   # calculate number of animals
   n_animals <- length(data)
 
+  execution <- .deploymentExecution(n.cores, n_animals, data.table.threads)
+  if (execution$workers > 1L) .checkDeploymentOutputs(data, is_filepaths, id.col, output.dir, output.suffix, keep.empty = TRUE)
+
   # header
   hdr_bullets <- sprintf("Input: %d tag%s", n_animals, if (n_animals != 1) "s" else "")
   if (!is.null(output.dir)) hdr_bullets <- c(hdr_bullets, paste0("Output: ", output.dir))
@@ -436,6 +468,15 @@ calculateTailBeats <- function(data,
                 else "Bandpass: none",
                 if (smooth.window > 0) sprintf("Smoothing: %g s moving average", smooth.window) else "Smoothing: none",
                 if (is.null(min.amplitude)) "Swimming: not classified (no min.amplitude)"))
+
+  if (!is.null(data.table.threads)) {
+    .assert_count(data.table.threads, "data.table.threads", min = 1)
+    if (execution$workers == 1L) {
+      original_threads <- data.table::getDTthreads()
+      data.table::setDTthreads(data.table.threads)
+      on.exit(data.table::setDTthreads(original_threads), add = TRUE)
+    }
+  }
 
   # graphics setup (active device for `plot`, single multi-page PDF for `plot.file`)
   caller_dev <- grDevices::dev.cur()
@@ -552,8 +593,154 @@ calculateTailBeats <- function(data,
   # Perform Continuous Wavelet Transform (CWT) #################################
   ##############################################################################
 
-  # process each individual (sequentially)
-  for (i in seq_along(data)) {
+  # The sequential executor renders immediately; PSOCK jobs report to the parent.
+  config <- mget(c("agreement.abs.tol.Hz", "agreement.rel.tol", "bandpass.filter", "compress", "datetime.col",
+    "draw_devices", "filter.high.freq", "filter.low.freq", "filter.order", "id.col", "is_filepaths", "lvl",
+    "max.freq.Hz", "max.interp.gap", "method", "methods", "min.amplitude", "min.freq.Hz", "min.periodicity",
+    "motion.col", "n_animals", "output.dir", "output.suffix", "plot.diagnostic", "plot.wavelet",
+    "return.data", "ridge.prominence", "smooth.window"), envir = environment(), inherits = FALSE)
+  result_env <- environment()
+  accept <- function(result) {
+    .mergeDeploymentResult(result, result_env,
+                           append = c("towed_ids", "disagree_items", "harmonic_items"),
+                           indexed = c("co_id", "co_axis", "co_reason", "co_harm", "co_freq", "co_freq2",
+                             "co_diff", "co_agree", "co_swim", "co_edge", "co_unres"))
+  }
+  draw <- function(plots) {
+    for (panel in plots) for (device in draw_devices) {
+      grDevices::dev.set(device)
+      if (panel$kind == "peaks") .drawTailBeatsPeaks(panel$data) else .drawTailBeatsCWT(panel$data)
+    }
+  }
+  .dispatchDeployments(data, config, ".tailBeatDeployment", accept, execution,
+                       draw = draw)
+
+  # End-of-run caveats. All fire regardless of verbosity (they are warnings) and each is raised ONCE for
+  # the whole batch: the diagnosis and the recommendation are identical for every affected deployment, so
+  # repeating them per tag only floods the console - and past 50 warnings R starts discarding them. They
+  # are ordered by how directly they undermine the number that was reported: an axis chosen without
+  # corroboration, then a frequency that may be double the true one, then a band that may be misplaced,
+  # then the standing tow caveat.
+
+  # (1) No cross-axis corroboration: the pick rests on in-band power alone.
+  .warn_grouped(
+    "Candidate motion axes disagree on their dominant frequency in {length(disagree_items)} deployment{?s}.",
+    items = disagree_items,
+    hints = c("The axis with the most in-band power was chosen, but no other axis corroborates it, so the estimate may reflect an artefact (e.g. tag wobble) rather than locomotion.",
+              "Compare the per-axis frequencies below against the species' expected range before using these values."))
+
+  # (2) Possible 2f-harmonic pick. The alternative axis differs per deployment, so it is named in the
+  # bullet and the hint stays generic - the ambiguity itself cannot be resolved from the signal.
+  .warn_grouped(
+    "The selected axis may be a 2f harmonic in {length(harmonic_items)} deployment{?s}.",
+    items = harmonic_items,
+    hints = c("Another axis peaks near half the chosen frequency; for an animal that beats on a single axis (a laterally-swimming fish) that axis is likely the true tail-beat axis.",
+              "Re-run with {.arg motion.col} set to the alternative named below to compare."))
+
+  # (3) Band-edge pile-up. Here the per-deployment magnitude does carry information (a tag at 60% is a
+  # different problem from one at 6%), so each affected deployment gets a bullet, worst first.
+  edge_hit <- which(!is.na(co_edge) & co_edge > 0.05)
+  if (length(edge_hit)) {
+    edge_hit <- edge_hit[order(co_edge[edge_hit], decreasing = TRUE)]
+    .warn_grouped(
+      "Tail-beat estimates in {length(edge_hit)} deployment{?s} pile up against the frequency band limits ({.val {min.freq.Hz}}-{.val {max.freq.Hz}} Hz).",
+      items = sprintf("%s: %.1f%% of estimates at a band edge", co_id[edge_hit], 100 * co_edge[edge_hit]),
+      hints = c("A pile-up at an edge suggests the true frequency lies outside the searched range.",
+                "Widen the band via {.arg min.freq.Hz} / {.arg max.freq.Hz}, or check {.arg motion.col} and the species' expected range."))
+  }
+
+  # (4) Tow-pendulum caveat. Unlike the others there is no per-deployment detail to report - the caveat is
+  # the same sentence for every towed tag - so the IDs are named only when being towed distinguishes a
+  # SUBSET of the batch. When every deployment is towed the list identifies nothing and is dropped.
+  if (length(towed_ids)) {
+    subject <- if (n_animals == 1L) "Deployment {.val {towed_ids}} is towed"
+               else if (length(towed_ids) == n_animals) "All {n_animals} deployments are towed"
+               else "{length(towed_ids)} of {n_animals} deployments are towed ({.val {towed_ids}})"
+    cli::cli_warn(c(
+      paste0(subject, ": a tow-pendulum oscillation can dominate the lateral (sway/yaw) axis and bias the reported tail-beat frequency."),
+      "i" = "Treat these frequencies as estimates and cross-check against the other motion axes where available."))
+  }
+
+
+  ############################################################################
+  # Return processed data ####################################################
+  ############################################################################
+
+  # final summary: the outcome tally and a cohort roll-up of the results, then the output/runtime footer
+  if (lvl >= 1L) {
+    .log_summary(lvl)
+    .reportTailBeatCohort(lvl, n_animals, co_freq, co_freq2, co_axis, co_reason, co_harm,
+                          co_agree, co_diff, co_swim, co_edge, methods)
+    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
+    if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
+    .log_runtime(lvl, start.time)
+  }
+
+
+  # return the processed data in memory, or the paths of the files written
+  ids <- sapply(data_list, function(x) unique(x[[id.col]])[1])
+  .collectOutput(data_list, saved, return.data, ids)
+
+}
+
+
+# One deployment uses the same calculations in sequential and PSOCK execution.
+# The sequential caller renders immediately; workers collect reporting/plot data.
+.tailBeatDeployment <- function(job, config, collect.plots = FALSE) {
+  agreement.abs.tol.Hz <- config$agreement.abs.tol.Hz
+  agreement.rel.tol <- config$agreement.rel.tol
+  bandpass.filter <- config$bandpass.filter
+  compress <- config$compress
+  datetime.col <- config$datetime.col
+  draw_devices <- config$draw_devices
+  filter.high.freq <- config$filter.high.freq
+  filter.low.freq <- config$filter.low.freq
+  filter.order <- config$filter.order
+  id.col <- config$id.col
+  is_filepaths <- config$is_filepaths
+  lvl <- config$lvl
+  max.freq.Hz <- config$max.freq.Hz
+  max.interp.gap <- config$max.interp.gap
+  method <- config$method
+  methods <- config$methods
+  min.amplitude <- config$min.amplitude
+  min.freq.Hz <- config$min.freq.Hz
+  min.periodicity <- config$min.periodicity
+  motion.col <- config$motion.col
+  n_animals <- config$n_animals
+  output.dir <- config$output.dir
+  output.suffix <- config$output.suffix
+  plot.diagnostic <- config$plot.diagnostic
+  plot.wavelet <- config$plot.wavelet
+  return.data <- config$return.data
+  ridge.prominence <- config$ridge.prominence
+  smooth.window <- config$smooth.window
+  i <- job$index
+  data <- if (is_filepaths) rep("", n_animals) else vector("list", n_animals)
+  if (is_filepaths) data[i] <- job$value else data[i] <- list(job$value)
+  if (!is.null(job$name)) names(data)[i] <- job$name
+  data_list <- saved <- vector("list", n_animals)
+  towed_ids <- disagree_items <- harmonic_items <- character(0)
+  co_id <- rep(NA_character_, n_animals)
+  co_axis <- rep(NA_character_, n_animals)
+  co_reason <- rep(NA_character_, n_animals)
+  co_harm <- rep(NA_character_, n_animals)
+  co_freq <- rep(NA_real_, n_animals)
+  co_freq2 <- rep(NA_real_, n_animals)
+  co_diff <- rep(NA_real_, n_animals)
+  co_agree <- rep(NA_real_, n_animals)
+  co_swim <- rep(NA_real_, n_animals)
+  co_edge <- rep(NA_real_, n_animals)
+  co_unres <- rep(NA_real_, n_animals)
+  plots <- list()
+  plot.collector <- NULL
+  if (collect.plots) {
+    draw_devices <- integer(0)
+    plot.collector <- function(kind, data) {
+      plots[[length(plots) + 1L]] <<- list(kind = kind, data = data)
+    }
+  }
+  for (i in job$index) {
 
     ############################################################################
     # load data for the current individual if using file paths #################
@@ -695,7 +882,7 @@ calculateTailBeats <- function(data,
         filter.low = filter.low.freq, filter.high = filter.high.freq, filter.order = filter.order,
         min.amplitude = min.amplitude, smooth.window = smooth.window,
         min.periodicity = min.periodicity, suffix = method,
-        draw.devices = draw_devices, lvl = lvl)
+        draw.devices = draw_devices, lvl = lvl, plot.collector = plot.collector)
     } else {
       data_list[[i]] <- .runCWT(
         dt = individual_data, animal_id = id, id.col = id.col, datetime.col = datetime.col, motion.col = axis,
@@ -704,7 +891,7 @@ calculateTailBeats <- function(data,
         min.amplitude = min.amplitude, smooth.window = smooth.window, max.interp.gap = max.interp.gap,
         ridge.prominence = ridge.prominence,
         plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
-        fs = fs_i, suffix = method, draw.devices = draw_devices, lvl = lvl)
+        fs = fs_i, suffix = method, draw.devices = draw_devices, lvl = lvl, plot.collector = plot.collector)
     }
     col_hz  <- paste0("tbf_hz_", method)          # this deployment's primary columns, named per backend
     col_amp <- paste0("tbf_amplitude_", method)
@@ -731,7 +918,7 @@ calculateTailBeats <- function(data,
                   bandpass = bandpass.filter, filter.low = filter.low.freq, filter.high = filter.high.freq,
                   filter.order = filter.order, min.amplitude = min.amplitude,
                   smooth.window = smooth.window, min.periodicity = min.periodicity,
-                  suffix = methods[2], draw.devices = draw_devices, lvl = 0L)
+                  suffix = methods[2], draw.devices = draw_devices, lvl = 0L, plot.collector = plot.collector)
       else
         .runCWT(dt = alt_dt, animal_id = id, id.col = id.col,
                 datetime.col = datetime.col, motion.col = axis, min.freq.Hz = min.freq.Hz,
@@ -741,7 +928,7 @@ calculateTailBeats <- function(data,
                 smooth.window = smooth.window, max.interp.gap = max.interp.gap,
                 ridge.prominence = ridge.prominence,
                 plot.wavelet = plot.wavelet, plot.diagnostic = plot.diagnostic,
-                fs = fs_i, suffix = methods[2], draw.devices = draw_devices, lvl = 0L)
+                fs = fs_i, suffix = methods[2], draw.devices = draw_devices, lvl = 0L, plot.collector = plot.collector)
       alt_edge <- attr(alt, "tb_ridge_edge", exact = TRUE)
       alt_unres <- attr(alt, "tb_unresolved", exact = TRUE)
       # Both backends' estimates travel under their own names, including the cross-check's amplitude,
@@ -888,71 +1075,12 @@ calculateTailBeats <- function(data,
     }
     .log_gap(lvl)
   }
-
-  # End-of-run caveats. All fire regardless of verbosity (they are warnings) and each is raised ONCE for
-  # the whole batch: the diagnosis and the recommendation are identical for every affected deployment, so
-  # repeating them per tag only floods the console - and past 50 warnings R starts discarding them. They
-  # are ordered by how directly they undermine the number that was reported: an axis chosen without
-  # corroboration, then a frequency that may be double the true one, then a band that may be misplaced,
-  # then the standing tow caveat.
-
-  # (1) No cross-axis corroboration: the pick rests on in-band power alone.
-  .warn_grouped(
-    "Candidate motion axes disagree on their dominant frequency in {length(disagree_items)} deployment{?s}.",
-    items = disagree_items,
-    hints = c("The axis with the most in-band power was chosen, but no other axis corroborates it, so the estimate may reflect an artefact (e.g. tag wobble) rather than locomotion.",
-              "Compare the per-axis frequencies below against the species' expected range before using these values."))
-
-  # (2) Possible 2f-harmonic pick. The alternative axis differs per deployment, so it is named in the
-  # bullet and the hint stays generic - the ambiguity itself cannot be resolved from the signal.
-  .warn_grouped(
-    "The selected axis may be a 2f harmonic in {length(harmonic_items)} deployment{?s}.",
-    items = harmonic_items,
-    hints = c("Another axis peaks near half the chosen frequency; for an animal that beats on a single axis (a laterally-swimming fish) that axis is likely the true tail-beat axis.",
-              "Re-run with {.arg motion.col} set to the alternative named below to compare."))
-
-  # (3) Band-edge pile-up. Here the per-deployment magnitude does carry information (a tag at 60% is a
-  # different problem from one at 6%), so each affected deployment gets a bullet, worst first.
-  edge_hit <- which(!is.na(co_edge) & co_edge > 0.05)
-  if (length(edge_hit)) {
-    edge_hit <- edge_hit[order(co_edge[edge_hit], decreasing = TRUE)]
-    .warn_grouped(
-      "Tail-beat estimates in {length(edge_hit)} deployment{?s} pile up against the frequency band limits ({.val {min.freq.Hz}}-{.val {max.freq.Hz}} Hz).",
-      items = sprintf("%s: %.1f%% of estimates at a band edge", co_id[edge_hit], 100 * co_edge[edge_hit]),
-      hints = c("A pile-up at an edge suggests the true frequency lies outside the searched range.",
-                "Widen the band via {.arg min.freq.Hz} / {.arg max.freq.Hz}, or check {.arg motion.col} and the species' expected range."))
-  }
-
-  # (4) Tow-pendulum caveat. Unlike the others there is no per-deployment detail to report - the caveat is
-  # the same sentence for every towed tag - so the IDs are named only when being towed distinguishes a
-  # SUBSET of the batch. When every deployment is towed the list identifies nothing and is dropped.
-  if (length(towed_ids)) {
-    subject <- if (n_animals == 1L) "Deployment {.val {towed_ids}} is towed"
-               else if (length(towed_ids) == n_animals) "All {n_animals} deployments are towed"
-               else "{length(towed_ids)} of {n_animals} deployments are towed ({.val {towed_ids}})"
-    cli::cli_warn(c(
-      paste0(subject, ": a tow-pendulum oscillation can dominate the lateral (sway/yaw) axis and bias the reported tail-beat frequency."),
-      "i" = "Treat these frequencies as estimates and cross-check against the other motion axes where available."))
-  }
-
-
-  ############################################################################
-  # Return processed data ####################################################
-  ############################################################################
-
-  # final summary: the outcome tally and a cohort roll-up of the results, then the output/runtime footer
-  if (lvl >= 1L) {
-    .log_summary(lvl)
-    .reportTailBeatCohort(lvl, n_animals, co_freq, co_freq2, co_axis, co_reason, co_harm,
-                          co_agree, co_diff, co_swim, co_edge, methods)
-    if (!is.null(output.dir)) .log_arrow(lvl, "output: ", output.dir)
-    if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
-    .log_runtime(lvl, start.time)
-  }
-
-
-  # return the processed data in memory, or the paths of the files written
-  ids <- sapply(data_list, function(x) unique(x[[id.col]])[1])
-  .collectOutput(data_list, saved, return.data, ids)
-
+  list(index = i, value = if (return.data) data_list[[i]] else NULL,
+       saved = saved[[i]], id = co_id[i],
+       state = c(mget(c("towed_ids", "disagree_items", "harmonic_items"),
+                       envir = environment(), inherits = FALSE),
+                 lapply(mget(c("co_id", "co_axis", "co_reason", "co_harm", "co_freq", "co_freq2", "co_diff",
+                   "co_agree", "co_swim", "co_edge", "co_unres"),
+                             envir = environment(), inherits = FALSE), `[`, i)),
+       plots = plots)
 }

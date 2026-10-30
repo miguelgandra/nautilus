@@ -211,6 +211,14 @@ remains `vertical_velocity`; additional estimates appear as `vertical_velocity_2
 `vertical_velocity_10s`. All share the one-second rate post-mean. Mounting corrections and downstream
 defaults continue to use the first estimate.
 
+For larger batches, `processTagData(..., n.cores = 4)` and
+`calculateTailBeats(..., n.cores = 4)` opt into processing whole deployments in parallel.
+The default `n.cores = 1` retains immediate sequential reporting. Parallel workers use one
+data.table thread each unless specified; the joint budget must fit the available CPU allocation.
+Install `foreach`, `doSNOW`, and `parallelly` for parallel execution. Messages, results, and
+plots retain input order, and all graphics are drawn by the parent on the same devices.
+For large file-backed batches, use `return.data = FALSE` with `output.dir` to limit memory use.
+
 The result is an analysis-ready dataset that carries its own description and a complete
 record of how it was made.
 

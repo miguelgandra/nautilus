@@ -22,14 +22,16 @@ processTagData(
   output.suffix = NULL,
   compress = TRUE,
   data.table.threads = NULL,
-  verbose = "detailed"
+  verbose = "detailed",
+  n.cores = 1L
 )
 }
 \arguments{
 \item{data}{A tag dataset, a list of tag datasets, a data frame containing multiple deployments
 identified by an \code{ID} column, or a character vector of \code{.rds} file paths. The output of
 \code{\link[=importTagData]{importTagData()}} is recommended. When file paths are supplied, deployments are processed
-sequentially, allowing large datasets to be processed without loading everything into memory. The
+one deployment at a time per worker, allowing large datasets to be processed without loading
+everything into memory. The
 inertial axes must already be in the animal's body frame when acceleration is available; an
 accelerometer-bearing deployment whose axis mapping has not been applied raises a warning, since
 its orientation metrics may otherwise be wrong without appearing so.}
@@ -96,12 +98,19 @@ before \code{.rds}, to label a processing run or avoid overwriting an earlier on
 \item{compress}{Compression used when saving \code{.rds} files: \code{TRUE} (default, gzip), \code{FALSE}, or one of
 \code{"gzip"}, \code{"bzip2"} or \code{"xz"}. Only used when \code{output.dir} is specified. See \code{\link[base:saveRDS]{base::saveRDS()}}.}
 
-\item{data.table.threads}{Number of threads available to \pkg{data.table}, or \code{NULL} (default) to
-leave the current setting unchanged. More threads may improve speed at the cost of memory. See
-\code{data.table::setDTthreads()}.}
+\item{data.table.threads}{Maximum data.table threads per R process. \code{NULL}
+preserves the caller's setting in sequential mode and uses one thread per
+worker in parallel mode. Explicit settings are restored on exit.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header, per-deployment
 outcome and summary), or \code{2}/\code{"detailed"} (default), which adds a log of each processing step.}
+
+\item{n.cores}{Maximum number of R worker processes (default \code{1}, sequential).
+Values greater than one opt into PSOCK processing across whole deployments;
+the worker count is capped by the number of deployments. Requires the optional
+packages \code{foreach}, \code{doSNOW}, and \code{parallelly}. Each worker uses one data.table
+thread by default. An explicit worker/thread budget must fit the CPU allocation
+reported by \code{parallelly::availableCores()}.}
 }
 \value{
 If \code{return.data = TRUE}, a named list containing one processed dataset per successfully
@@ -127,6 +136,23 @@ metadata, providing a reproducible processing history. Corrections that cannot b
 from a deployment are not applied, and are recorded as such rather than silently assumed.
 }
 \details{
+\subsection{Parallel execution}{
+
+\code{n.cores = 1} uses immediate reporting and the existing graphics devices, with
+no worker pool or report buffering. Parallel runs keep deployment messages,
+warnings, results, and diagnostic pages in input order. Plot data are computed
+by workers; all drawing uses the same plotting functions in the parent process.
+Shared PDFs and cohort reports are written only by the parent.
+
+File paths with \code{return.data = FALSE} keep sensor data off the worker-result
+sockets. In-memory inputs and results require additional worker memory. Pending
+results and temporary plot files are bounded to windows of twice the worker
+count and are cleaned up on exit. File size or row count prioritises larger jobs
+within each window. Parallel file output requires unique deployment file names.
+Worker BLAS thread pools are limited to one; scheduler/OpenMP thread limits are
+respected. Use \code{n.cores = 1} when already distributing deployments externally.
+}
+
 \subsection{Processing steps}{
 
 For each deployment, the function:

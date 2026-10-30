@@ -34,6 +34,7 @@
 #' @keywords internal
 #' @noRd
 .log_h1 <- function(lvl, title) {
+  if (.captureDeploymentLog(".log_h1", c(list(lvl = lvl), list(title = title)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_rule(left = "{.strong {title}}", right = "nautilus")
   invisible(NULL)
 }
@@ -43,6 +44,7 @@
 #' @keywords internal
 #' @noRd
 .log_h2 <- function(lvl, title, min_level = 2L) {
+  if (.captureDeploymentLog(".log_h2", c(list(lvl = lvl), list(title = title), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl >= min_level) cli::cli_rule(left = "{.strong {title}}")
   invisible(NULL)
 }
@@ -51,6 +53,7 @@
 #' @keywords internal
 #' @noRd
 .log_gap <- function(lvl, min_level = 2L) {
+  if (.captureDeploymentLog(".log_gap", c(list(lvl = lvl), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl >= min_level) cli::cli_text("")
   invisible(NULL)
 }
@@ -61,6 +64,7 @@
 #' @keywords internal
 #' @noRd
 .log_frame <- function(lvl, min_level = 1L) {
+  if (.captureDeploymentLog(".log_frame", c(list(lvl = lvl), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   bar <- strrep(if (cli::is_utf8_output()) "\u2550" else "=", cli::console_width())
   cli::cli_text("{bar}")
@@ -72,6 +76,7 @@
 #' @keywords internal
 #' @noRd
 .log_runtime <- function(lvl, start, min_level = 1L) {
+  if (.captureDeploymentLog(".log_runtime", c(list(lvl = lvl), list(start = start), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   sw <- if (cli::is_utf8_output()) "\u23f1" else cli::symbol$bullet
   rt <- .fmt_elapsed(start)
@@ -91,6 +96,7 @@
 #' @keywords internal
 #' @noRd
 .log_header <- function(lvl, title, intro, bullets = NULL, arrow = NULL, sub = NULL, close = TRUE) {
+  if (.captureDeploymentLog(".log_header", c(list(lvl = lvl), list(title = title), list(intro = intro), list(bullets = bullets), list(arrow = arrow), list(sub = sub), list(close = close)), lvl, 1L)) return(invisible(NULL))
   if (lvl < 1L) return(invisible(NULL))
   .log_frame(lvl)
   .log_h1(lvl, title)
@@ -114,6 +120,7 @@
 #' @keywords internal
 #' @noRd
 .log_header_close <- function(lvl) {
+  if (.captureDeploymentLog(".log_header_close", c(list(lvl = lvl)), lvl, 1L)) return(invisible(NULL))
   if (lvl < 1L) return(invisible(NULL))
   cli::cli_text("")                                       # blank: body -> bottom frame
   .log_frame(lvl)
@@ -127,6 +134,7 @@
 #' @keywords internal
 #' @noRd
 .log_summary <- function(lvl) {
+  if (.captureDeploymentLog(".log_summary", c(list(lvl = lvl)), lvl, 1L)) return(invisible(NULL))
   if (lvl < 1L) return(invisible(NULL))
   cli::cli_text("")
   .log_h2(lvl, "SUMMARY", min_level = 1L)
@@ -137,6 +145,7 @@
 #' @keywords internal
 #' @noRd
 .log_info <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_info", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_alert_info("{paste0(...)}")
   invisible(NULL)
 }
@@ -145,6 +154,7 @@
 #' @keywords internal
 #' @noRd
 .log_ok <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_ok", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_alert_success("{paste0(...)}")
   invisible(NULL)
 }
@@ -178,6 +188,7 @@
 #' @keywords internal
 #' @noRd
 .log_skip <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_skip", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_alert_warning("{paste0(...)}")
   invisible(NULL)
 }
@@ -187,6 +198,7 @@
 #' @keywords internal
 #' @noRd
 .log_attention <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_attention", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_alert_warning("{paste0(...)}")
   invisible(NULL)
 }
@@ -195,6 +207,7 @@
 #' @keywords internal
 #' @noRd
 .log_detail <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_detail", c(list(lvl = lvl), list(...)), lvl, 2L)) return(invisible(NULL))
   if (lvl >= 2L) cli::cli_alert("{paste0(...)}")   # bullet; wrap so literal { } in the text are NOT glue
   invisible(NULL)
 }
@@ -206,6 +219,7 @@
 #' @keywords internal
 #' @noRd
 .log_subdetail <- function(lvl, ..., min_level = 2L) {
+  if (.captureDeploymentLog(".log_subdetail", c(list(lvl = lvl), list(...), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   txt <- paste0("\u21b3 ", paste0(...))
   cli::cli_bullets(stats::setNames("{txt}", " "))   # blank-name bullet = indent, no marker; {txt} keeps literal braces literal
@@ -220,6 +234,7 @@
 #' @keywords internal
 #' @noRd
 .log_issue_detail <- function(lvl, ..., min_level = 1L) {
+  if (.captureDeploymentLog(".log_issue_detail", c(list(lvl = lvl), list(...), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   txt <- paste0(cli::symbol$arrow_right, " ", paste0(...))
   cli::cli_bullets(stats::setNames("{txt}", " "))
@@ -245,6 +260,7 @@
 #' @keywords internal
 #' @noRd
 .log_section <- function(lvl, title, min_level = 1L) {
+  if (.captureDeploymentLog(".log_section", c(list(lvl = lvl), list(title = title), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   cli::cli_text("")
   cli::cli_text("{.strong {title}}")
@@ -263,6 +279,7 @@
 #' @keywords internal
 #' @noRd
 .log_rows <- function(lvl, rows, symbols = cli::symbol$bullet, min_level = 1L) {
+  if (.captureDeploymentLog(".log_rows", c(list(lvl = lvl), list(rows = rows), list(symbols = symbols), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level || !length(rows)) return(invisible(NULL))
   labs <- paste0(names(rows), ":")
   pad  <- formatC(labs, width = -max(nchar(labs)))
@@ -285,6 +302,7 @@
 #' @keywords internal
 #' @noRd
 .log_table <- function(lvl, df, min_level = 1L) {
+  if (.captureDeploymentLog(".log_table", c(list(lvl = lvl), list(df = df), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level || !NROW(df)) return(invisible(NULL))
   # the first column names the row and reads left-aligned; the rest are counts and line up on the right
   cells <- lapply(seq_along(df), function(j)
@@ -307,6 +325,7 @@
 #' @keywords internal
 #' @noRd
 .log_block <- function(lvl, text, min_level = 1L) {
+  if (.captureDeploymentLog(".log_block", c(list(lvl = lvl), list(text = text), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   width <- max(40L, min(getOption("width", 80L), 100L) - 4L)
   for (ln in strwrap(text, width = width)) cli::cli_verbatim(paste0("  ", ln))
@@ -324,6 +343,7 @@
 #' @keywords internal
 #' @noRd
 .log_note <- function(lvl, text, min_level = 1L) {
+  if (.captureDeploymentLog(".log_note", c(list(lvl = lvl), list(text = text), list(min_level = min_level)), lvl, min_level)) return(invisible(NULL))
   if (lvl < min_level) return(invisible(NULL))
   width <- max(40L, min(getOption("width", 80L), 100L) - 6L)
   ln <- strwrap(text, width = width)
@@ -333,6 +353,7 @@
 }
 
 .log_subdetail_aligned <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_subdetail_aligned", c(list(lvl = lvl), list(...)), lvl, 2L)) return(invisible(NULL))
   if (lvl < 2L) return(invisible(NULL))
   cli::cli_verbatim(paste0("  \u21b3 ", paste0(...)))
   invisible(NULL)
@@ -342,6 +363,7 @@
 #' @keywords internal
 #' @noRd
 .log_done <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_done", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_alert_success("{.strong {paste0(...)}}")
   invisible(NULL)
 }
@@ -350,6 +372,7 @@
 #' @keywords internal
 #' @noRd
 .log_arrow <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_arrow", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_text("{cli::symbol$arrow_right} {paste0(...)}")
   invisible(NULL)
 }
@@ -362,6 +385,7 @@
 #' @keywords internal
 #' @noRd
 .log_arrow_aligned <- function(lvl, ...) {
+  if (.captureDeploymentLog(".log_arrow_aligned", c(list(lvl = lvl), list(...)), lvl, 1L)) return(invisible(NULL))
   if (lvl >= 1L) cli::cli_verbatim(paste0(cli::symbol$arrow_right, " ", paste0(...)))
   invisible(NULL)
 }
@@ -512,4 +536,11 @@
   } else {
     as.character(n)
   }
+}
+
+
+.log_tag_attributes <- function(lvl, attrs_line) {
+  if (.captureDeploymentLog(".log_tag_attributes", c(list(lvl = lvl), list(attrs_line = attrs_line)), lvl, 2L)) return(invisible(NULL))
+  if (lvl >= 2L) cli::cli_text("{cli::symbol$bullet} {attrs_line}")
+  invisible(NULL)
 }

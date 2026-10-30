@@ -1,5 +1,18 @@
 # nautilus 0.2.0
 
+## Optional deployment parallelism
+
+* `processTagData()` and `calculateTailBeats()` accept `n.cores`, defaulting to `1`.
+  Opt-in PSOCK workers process whole deployments using `foreach`, `doSNOW`, and `parallelly`.
+* Workers default to one data.table thread, with the joint process/thread budget checked against
+  the available CPU allocation. Explicit thread limits, foreach registration and worker resources
+  are restored on exit. Sequential calls retain immediate legacy reporting.
+* Parallel messages and results retain input order. All diagnostic and active-device drawing stays
+  in the parent using the existing plotting routines, including wavelet spectra and method order.
+  Bounded scheduling windows limit pending results and temporary plot data.
+* `calculateTailBeats()` also accepts `data.table.threads`. File-backed batches with
+  `return.data = FALSE` avoid returning large sensor tables through worker sockets.
+
 ## Multiple vertical-velocity windows
 
 * `smoothingControl(depth = c(5, 2.5, 10))` calculates multiple local depth slopes in one

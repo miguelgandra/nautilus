@@ -31,14 +31,16 @@ calculateTailBeats(
   output.dir = NULL,
   output.suffix = NULL,
   compress = TRUE,
-  verbose = "detailed"
+  verbose = "detailed",
+  n.cores = 1L,
+  data.table.threads = NULL
 )
 }
 \arguments{
 \item{data}{A \code{nautilus_tag} object, a list of tag datasets, a data frame containing multiple
 individuals identified by \code{id.col}, or a character vector of \code{.rds} file paths. File paths are
-processed sequentially, allowing large collections to be analysed without loading them all into
-memory. The output of \code{\link[=processTagData]{processTagData()}} is recommended.}
+read one deployment at a time per worker, allowing large collections to be analysed without
+loading them all into memory. The output of \code{\link[=processTagData]{processTagData()}} is recommended.}
 
 \item{method}{One or both estimation methods, \code{"peaks"} and \code{"wavelet"} (default both). Where both
 are given, the first is the primary method and the second a cross-check.}
@@ -111,6 +113,17 @@ processing run or avoid overwriting an earlier one. Only used when \code{output.
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
 (default), which adds per-deployment diagnostics.}
+
+\item{n.cores}{Maximum number of R worker processes (default \code{1}, sequential).
+Values greater than one opt into PSOCK processing across whole deployments;
+the worker count is capped by the number of deployments. Requires the optional
+packages \code{foreach}, \code{doSNOW}, and \code{parallelly}. Each worker uses one data.table
+thread by default. An explicit worker/thread budget must fit the CPU allocation
+reported by \code{parallelly::availableCores()}.}
+
+\item{data.table.threads}{Maximum data.table threads per R process. \code{NULL}
+preserves the caller's setting in sequential mode and uses one thread per
+parallel worker. Explicit settings are restored on exit.}
 }
 \value{
 When \code{return.data = TRUE}, the input data with the tail-beat columns added. Which columns
@@ -151,6 +164,23 @@ or more candidate motion channels and, where several are supplied, selects the m
 separately for each deployment.
 }
 \details{
+\subsection{Parallel execution}{
+
+\code{n.cores = 1} uses immediate reporting and the existing graphics devices, with
+no worker pool or report buffering. Parallel runs keep deployment messages,
+warnings, results, and diagnostic pages in input order. Plot data are computed
+by workers; all drawing uses the same plotting functions in the parent process.
+Shared PDFs and cohort reports are written only by the parent.
+
+File paths with \code{return.data = FALSE} keep sensor data off the worker-result
+sockets. In-memory inputs and results require additional worker memory. Pending
+results and temporary plot files are bounded to windows of twice the worker
+count and are cleaned up on exit. File size or row count prioritises larger jobs
+within each window. Parallel file output requires unique deployment file names.
+Worker BLAS thread pools are limited to one; scheduler/OpenMP thread limits are
+respected. Use \code{n.cores = 1} when already distributing deployments externally.
+}
+
 \subsection{Estimation methods}{
 
 \describe{

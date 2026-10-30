@@ -526,7 +526,7 @@
 .runPeaks <- function(dt, animal_id, datetime.col, motion.col, fs, min.freq, max.freq,
                       bandpass, filter.low, filter.high, filter.order, min.amplitude, smooth.window,
                       min.periodicity = 0.15, suffix = "peaks",
-                      draw.devices = integer(0), lvl = 1L) {
+                      draw.devices = integer(0), lvl = 1L, plot.collector = NULL) {
 
   if (!data.table::is.data.table(dt)) dt <- data.table::as.data.table(dt)
 
@@ -576,13 +576,14 @@
   data.table::set(dt, j = "tbf_swimming", value = g$swimming)
 
   # diagnostic panel (one page per requested device)
-  if (length(draw.devices) > 0) {
+  if (length(draw.devices) > 0 || !is.null(plot.collector)) {
     # the activity flag comes from .classifyActivity, not the detector: .tailBeatsPeaks does not return one
     # when the behavioural call moved out of it, which left every page titled "NA% swimming"
     pd <- list(id = animal_id, t = dt[[datetime.col]], bandpassed = r$bandpassed,
                beats = r$beats, tbf = tbf, amplitude = amp, swimming = g$swimming,
                axis = motion.col, fs = fs)
-    for (dv in draw.devices) { grDevices::dev.set(dv); .drawTailBeatsPeaks(pd) }
+    if (!is.null(plot.collector)) plot.collector("peaks", pd)
+    else for (dv in draw.devices) { grDevices::dev.set(dv); .drawTailBeatsPeaks(pd) }
   }
 
   # saving is handled by the calculateTailBeats() driver (after QC metadata is appended)
@@ -956,7 +957,7 @@ tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
                     min.freq.Hz, max.freq.Hz, bandpass.filter, filter.low.freq,
                     filter.high.freq, filter.order, min.amplitude, smooth.window, max.interp.gap,
                     plot.wavelet, plot.diagnostic, fs = NULL, suffix = "wavelet",
-                    draw.devices = integer(0), lvl = 1L) {
+                    draw.devices = integer(0), lvl = 1L, plot.collector = NULL) {
 
   # `fs` is normally supplied by the driver, which has already resolved it from the deployment's
   # metadata. It matters when this runs as the cross-check, where the input carries only the two columns
@@ -983,7 +984,7 @@ tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
   bp <- if (bandpass.filter) .bandpassSegments(motion, fs, filter.low.freq, filter.high.freq, filter.order)
         else motion - mean(motion, na.rm = TRUE)
 
-  want_spec <- isTRUE(plot.wavelet) && length(draw.devices) > 0
+  want_spec <- isTRUE(plot.wavelet) && (length(draw.devices) > 0 || !is.null(plot.collector))
   r <- .cwtRidge(bp, fs, min.freq.Hz, max.freq.Hz, prominence = ridge.prominence, spectrogram = want_spec)
 
   # Band-placement QC travels on the UNMASKED ridge. An out-of-band beat leaks through the filter and
@@ -1036,12 +1037,13 @@ tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
   data.table::set(dt, j = paste0("tbf_amplitude_", suffix), value = amp)
   data.table::set(dt, j = "tbf_swimming", value = g$swimming)
 
-  if (length(draw.devices) > 0) {
+  if (length(draw.devices) > 0 || !is.null(plot.collector)) {
     pd <- list(id = animal_id, t = dt[[datetime.col]], fs = fs, bandpassed = bp,
                freq = freq, amp = amp, spec = r$meta$spectrogram,
                min.freq = min.freq.Hz, max.freq = max.freq.Hz,
                show.spec = isTRUE(plot.wavelet), show.diag = isTRUE(plot.diagnostic))
-    for (d in draw.devices) { grDevices::dev.set(d); .drawTailBeatsCWT(pd) }
+    if (!is.null(plot.collector)) plot.collector("wavelet", pd)
+    else for (d in draw.devices) { grDevices::dev.set(d); .drawTailBeatsCWT(pd) }
   }
 
   dt

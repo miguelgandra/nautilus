@@ -28,6 +28,8 @@ Imports:
 	oce,
 	signal
 Suggests:
+	pkgload,
+	parallelly,
 	foreach,
 	doSNOW,
 	randomForest,

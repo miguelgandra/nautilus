@@ -334,7 +334,7 @@ test_that("arguments removed with the WaveletComp engine are rejected, not silen
   skip_if_not_installed("signal")
   d <- list(A01 = .sway())
   for (a in list(list(max.rows.per.batch = 1e4), list(ridge.only = FALSE),
-                 list(power.ratio.threshold = 3), list(n.cores = 2))) {
+                 list(power.ratio.threshold = 3))) {
     expect_error(do.call(calculateTailBeats,
                          c(list(d, motion.col = "sway", verbose = FALSE), a)), "unused argument")
   }

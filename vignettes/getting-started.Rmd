@@ -268,6 +268,14 @@ paddle-wheel rotation rate, applying the magnetometer calibration when it is tru
 tags <- processTagData(tags)
 ```
 
+For a large deployment batch, add `n.cores = 4` to opt into PSOCK workers. Both
+`processTagData()` and `calculateTailBeats()` support this option; `n.cores = 1` remains the
+default and preserves immediate sequential reporting. Parallel execution requires `foreach`,
+`doSNOW`, and `parallelly`. Workers use one data.table thread by default and the combined
+worker/thread budget must fit the available CPU allocation. Results, messages, and diagnostic
+pages retain input order; all plotting remains in the parent process. File paths plus
+`return.data = FALSE` and `output.dir` avoid holding the full output batch in memory.
+
 For a vertical-speed sensitivity comparison, use the following call instead of the preceding one,
 starting from the same source tags. It requests several depth-slope windows in one run:
 
