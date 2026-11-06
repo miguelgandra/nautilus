@@ -24,7 +24,8 @@ importTagData(
   import.sidecar = TRUE,
   alignment = alignmentControl(),
   verbose = "detailed",
-  ambiguous = c("error", "earliest", "latest")
+  ambiguous = c("error", "earliest", "latest"),
+  clock.corrections = NULL
 )
 }
 \arguments{
@@ -92,8 +93,8 @@ as provenance (default \code{TRUE}). Sidecars may describe the device clock, the
 and calibration constants already applied by the exporter. See Details.}
 
 \item{alignment}{Control object from \code{\link[=alignmentControl]{alignmentControl()}} specifying how the archival tag clock is
-aligned with paired Wildlife Computers data. Use \code{alignmentControl(method = "none")} to retain the
-original clocks.}
+aligned with paired Wildlife Computers data. Use \code{alignmentControl(method = "none")} to leave the
+paired tag's clock unaligned. Explicit sensor-clock corrections still apply.}
 
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"}, or \code{2}/\code{"detailed"}
 (default), which reports deployment-level diagnostics.}
@@ -101,6 +102,11 @@ original clocks.}
 \item{ambiguous}{Policy for repeated civil times at a DST transition: \code{"error"} (default),
 \code{"earliest"}, or \code{"latest"}. Nonexistent times always fail the deployment's import. Prefer explicit
 per-row offsets for a recording spanning both occurrences of a repeated hour.}
+
+\item{clock.corrections}{Optional data frame with columns \code{ID} and \code{clock_correction_s}, giving
+seconds to add to each deployment's parsed sensor timestamps. Optional \code{clock_correction_source}
+records the evidence and defaults to \code{"manual"}. Default \code{NULL} applies no correction. Camera
+timestamps require a separate, explicit call to \code{\link[=getVideoMetadata]{getVideoMetadata()}} with its own correction table.}
 }
 \value{
 When \code{return.data = TRUE}, a named list of \code{nautilus_tag} objects, one per successfully
@@ -219,6 +225,34 @@ camera clock used by video file names or overlays rather than the exported senso
 source causes observations to be shifted silently.
 }
 
+\subsection{Explicit sensor-clock corrections}{
+
+Use \code{clock.corrections} for a known constant device-clock error, after selecting the correct source
+\code{timezone}. For example, \code{clock_correction_s = 12 * 3600} repairs a clock that was twelve hours slow.
+This adds elapsed seconds after parsing, before ancillary alignment, span calculation and subsequent
+deployment trimming or analysis. It preserves the display zone, so \code{timezone = "UTC"} remains UTC.
+Sample values, order and intervals are unchanged. Reader-owned streams on the sensor clock, such as
+Little Leonardo camera-on flags, receive the same shift. Independently clocked WC streams enter the
+existing alignment procedure against the corrected sensor reference.
+
+Correction IDs must match deployment-folder basenames exactly; duplicate or unmatched IDs and
+non-finite offsets are errors before sensor files are read. Subset a study-wide table for a partial
+import. Unlisted deployments, zero offsets and empty tables apply no correction.
+
+Source-clock interpretation and sidecar declarations are preserved, as are independent field
+deployment, recovery and pop-up dates. Recording spans describe the corrected timestamps.
+\code{meta$sensors$clock_correction} and the import processing record retain the applied seconds, source
+and original/corrected span endpoints. Original parsed times are recoverable by subtracting the
+recorded seconds. Each call reads source files afresh, so corrections cannot accumulate across
+imports; internal application also refuses an already-corrected reader result. Corrections made
+outside the package without provenance cannot be detected. When adopting this option, remove any
+equivalent post-import repair and regenerate downstream stages.
+
+Sensor and camera corrections are independent. Pass a correction table separately to
+\code{\link[=getVideoMetadata]{getVideoMetadata()}} when both clocks need repair; a sensor correction never changes external video
+timestamps or creates a video correction automatically.
+}
+
 \subsection{Custom column mappings}{
 
 Non-standard exports can be imported through \code{import.mapping}, a data frame with one row per channel
@@ -329,6 +363,14 @@ subset_tags <- importTagData(data.folders = selected_folders,
 tags <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
                       metadata = meta,
                       format = "auto")
+
+# Repair a documented slow sensor clock while retaining UTC representation and field dates.
+correction <- data.frame(ID = "PIN_CAM_30", clock_correction_s = 12 * 3600,
+                         clock_correction_source = "field, light and video audit")
+tags <- importTagData(data.folders = "./tags/PIN_CAM_30", metadata = meta,
+                      timezone = "UTC", clock.corrections = correction)
+# If the camera has the same error, correct it explicitly too.
+videos <- getVideoMetadata("./videos/PIN_CAM_30", clock.corrections = correction)
 
 # A collection too large to hold in memory: write each deployment to disk and pass the paths on.
 files <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),

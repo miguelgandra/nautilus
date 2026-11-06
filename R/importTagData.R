@@ -36,6 +36,10 @@
 #' @param ambiguous Policy for repeated civil times at a DST transition: `"error"` (default),
 #'   `"earliest"`, or `"latest"`. Nonexistent times always fail the deployment's import. Prefer explicit
 #'   per-row offsets for a recording spanning both occurrences of a repeated hour.
+#' @param clock.corrections Optional data frame with columns `ID` and `clock_correction_s`, giving
+#'   seconds to add to each deployment's parsed sensor timestamps. Optional `clock_correction_source`
+#'   records the evidence and defaults to `"manual"`. Default `NULL` applies no correction. Camera
+#'   timestamps require a separate, explicit call to [getVideoMetadata()] with its own correction table.
 #' @param import.mapping Optional data frame defining a custom mapping between source-column names and
 #'   standardised \pkg{nautilus} sensor channels, or `NULL` (default) to use the built-in
 #'   format-specific mappings. See Details for the required columns and accepted values.
@@ -72,8 +76,8 @@
 #'   as provenance (default `TRUE`). Sidecars may describe the device clock, the sensor logging period,
 #'   and calibration constants already applied by the exporter. See Details.
 #' @param alignment Control object from [alignmentControl()] specifying how the archival tag clock is
-#'   aligned with paired Wildlife Computers data. Use `alignmentControl(method = "none")` to retain the
-#'   original clocks.
+#'   aligned with paired Wildlife Computers data. Use `alignmentControl(method = "none")` to leave the
+#'   paired tag's clock unaligned. Explicit sensor-clock corrections still apply.
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"`, or `2`/`"detailed"`
 #'   (default), which reports deployment-level diagnostics.
 #'
@@ -161,6 +165,33 @@
 #' `timezone` and retained as provenance. A `[device]` UTC offset is kept separate: it may describe the
 #' camera clock used by video file names or overlays rather than the exported sensor timestamps. Neither
 #' source causes observations to be shifted silently.
+#'
+#' ## Explicit sensor-clock corrections
+#'
+#' Use `clock.corrections` for a known constant device-clock error, after selecting the correct source
+#' `timezone`. For example, `clock_correction_s = 12 * 3600` repairs a clock that was twelve hours slow.
+#' This adds elapsed seconds after parsing, before ancillary alignment, span calculation and subsequent
+#' deployment trimming or analysis. It preserves the display zone, so `timezone = "UTC"` remains UTC.
+#' Sample values, order and intervals are unchanged. Reader-owned streams on the sensor clock, such as
+#' Little Leonardo camera-on flags, receive the same shift. Independently clocked WC streams enter the
+#' existing alignment procedure against the corrected sensor reference.
+#'
+#' Correction IDs must match deployment-folder basenames exactly; duplicate or unmatched IDs and
+#' non-finite offsets are errors before sensor files are read. Subset a study-wide table for a partial
+#' import. Unlisted deployments, zero offsets and empty tables apply no correction.
+#'
+#' Source-clock interpretation and sidecar declarations are preserved, as are independent field
+#' deployment, recovery and pop-up dates. Recording spans describe the corrected timestamps.
+#' `meta$sensors$clock_correction` and the import processing record retain the applied seconds, source
+#' and original/corrected span endpoints. Original parsed times are recoverable by subtracting the
+#' recorded seconds. Each call reads source files afresh, so corrections cannot accumulate across
+#' imports; internal application also refuses an already-corrected reader result. Corrections made
+#' outside the package without provenance cannot be detected. When adopting this option, remove any
+#' equivalent post-import repair and regenerate downstream stages.
+#'
+#' Sensor and camera corrections are independent. Pass a correction table separately to
+#' [getVideoMetadata()] when both clocks need repair; a sensor correction never changes external video
+#' timestamps or creates a video correction automatically.
 #'
 #' ## Custom column mappings
 #'
@@ -276,6 +307,14 @@
 #'                       metadata = meta,
 #'                       format = "auto")
 #'
+#' # Repair a documented slow sensor clock while retaining UTC representation and field dates.
+#' correction <- data.frame(ID = "PIN_CAM_30", clock_correction_s = 12 * 3600,
+#'                          clock_correction_source = "field, light and video audit")
+#' tags <- importTagData(data.folders = "./tags/PIN_CAM_30", metadata = meta,
+#'                       timezone = "UTC", clock.corrections = correction)
+#' # If the camera has the same error, correct it explicitly too.
+#' videos <- getVideoMetadata("./videos/PIN_CAM_30", clock.corrections = correction)
+#'
 #' # A collection too large to hold in memory: write each deployment to disk and pass the paths on.
 #' files <- importTagData(data.folders = list.dirs("./tags", recursive = FALSE),
 #'                        metadata = meta,
@@ -302,7 +341,8 @@ importTagData <- function(data.folders,
                           import.sidecar = TRUE,
                           alignment = alignmentControl(),
                           verbose = "detailed",
-                          ambiguous = c("error", "earliest", "latest")) {
+                          ambiguous = c("error", "earliest", "latest"),
+                          clock.corrections = NULL) {
 
   ambiguous <- match.arg(ambiguous)
 
@@ -396,6 +436,12 @@ importTagData <- function(data.folders,
   if (length(missing_folders) > 0) {
     .abort(c("Some {.arg data.folders} paths do not exist:", "x" = "{.path {missing_folders}}"))
   }
+
+  clock.corrections <- .validateClockCorrections(clock.corrections)
+  unmatched <- setdiff(clock.corrections$ID, basename(data.folders))
+  if (length(unmatched))
+    .abort(c("Some {.arg clock.corrections} IDs do not match the supplied deployment folders: {.val {unmatched}}.",
+             "i" = "Correction IDs must exactly match {.code basename(data.folders)}."))
 
   # subdirectories and output folder (fail-fast: output.dir must already exist)
   .assert_string(sensor.subdirectory, "sensor.subdirectory")
@@ -856,6 +902,9 @@ importTagData <- function(data.folders,
       next
     }
 
+    # Parsed primary-clock timestamps must be corrected before reporting, WC alignment or metadata
+    # assembly. Readers' source-clock/sidecar provenance and independent field dates stay untouched.
+    res <- .applySensorClockCorrection(res, clock.corrections[clock.corrections$ID == id, , drop = FALSE])
     sensor_data       <- res$data
     file_mapping      <- res$mapping
     selected_cols     <- res$selected_cols
@@ -920,6 +969,9 @@ importTagData <- function(data.folders,
       cli::cli_text("{attrs_line}")            # pass as data, never re-parsed as a cli template
       # per-file assembly decisions, printed after the tag attributes and before the sensor details
       .reportAssembly(res$assembly, lvl)
+      if (!is.null(res$clock_correction))
+        .log_detail(lvl, sprintf("sensor clock: %+g s", res$clock_correction$clock_correction_s),
+                    " (", res$clock_correction$clock_correction_source, ")")
       chans <- intersect(.sensorChannels(), names(sensor_data))
       .log_detail(lvl, "sensors: ", paste(chans, collapse = ", "))
       # temperature reliability, injected directly under the sensors row (punchy, not a wrapped warning)
@@ -1101,10 +1153,13 @@ importTagData <- function(data.folders,
     # flag -> meta$ancillary$video). These belong to the primary logger, not a co-deployed device, and
     # are carried through verbatim; file-based video (CATS/CEiiA) stays with the video subsystem.
     for (nm in names(reader_ancillary)) meta$ancillary[[nm]] <- reader_ancillary[[nm]]
-    meta <- .appendProcessing(meta, "importTagData",
-                              directory = data.folders[i],
-                              imported_columns = selected_cols,
-                              timezone = meta$sensors$timezone, clock = res$clock)
+    import_params <- list(directory = data.folders[i], imported_columns = selected_cols,
+                          timezone = meta$sensors$timezone, clock = res$clock)
+    if (!is.null(res$clock_correction)) {
+      meta$sensors$clock_correction <- res$clock_correction
+      import_params$clock_correction <- res$clock_correction
+    }
+    meta <- do.call(.appendProcessing, c(list(meta = meta, step = "importTagData"), import_params))
     sensor_data <- new_nautilus_tag(sensor_data, meta)
 
 

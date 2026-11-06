@@ -1,5 +1,13 @@
 # nautilus 0.2.0
 
+## Explicit sensor-clock correction
+
+* `importTagData(clock.corrections = ...)` accepts the same deployment ID, seconds-to-add and optional
+  source columns as video corrections. The default applies no correction.
+* Sensor timestamps and reader-owned streams are shifted before WC clock alignment. Source-clock
+  provenance and independent field dates are retained; recording spans and import history record the
+  correction. Camera timestamps still require explicit `getVideoMetadata(clock.corrections = ...)`.
+
 ## Optional deployment parallelism
 
 * `processTagData()` and `calculateTailBeats()` accept `n.cores`, defaulting to `1`.

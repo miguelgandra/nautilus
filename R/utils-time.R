@@ -143,6 +143,76 @@
     explicit_offsets = unique(suffix[has_offset]), reinterpretation = NULL))
 }
 
+#' Validate the correction-table schema shared by sensor and video import
+#' @keywords internal
+#' @noRd
+.validateClockCorrections <- function(corrections) {
+  empty <- data.frame(ID = character(0), clock_correction_s = numeric(0),
+                      clock_correction_source = character(0), stringsAsFactors = FALSE)
+  if (is.null(corrections)) return(empty)
+  if (!is.data.frame(corrections))
+    .abort("{.arg clock.corrections} must be a data frame, or {.code NULL}.")
+  .assert_columns(corrections, c("ID", "clock_correction_s"), "clock.corrections")
+  if (!nrow(corrections)) return(empty)
+
+  ids <- as.character(corrections$ID)
+  if (anyNA(ids) || any(!nzchar(trimws(ids))))
+    .abort("{.field ID} in {.arg clock.corrections} must contain non-missing deployment identifiers.")
+  duplicate_ids <- unique(ids[duplicated(ids)])
+  if (length(duplicate_ids))
+    .abort("{.arg clock.corrections} has more than one row for deployment{?s} {.val {duplicate_ids}}.")
+  shifts <- corrections$clock_correction_s
+  if (!is.numeric(shifts) || any(!is.finite(shifts)))
+    .abort("{.field clock_correction_s} in {.arg clock.corrections} must contain finite numeric seconds.")
+
+  if ("clock_correction_source" %in% names(corrections)) {
+    source <- corrections$clock_correction_source
+    if (is.factor(source)) source <- as.character(source)
+    if (!is.character(source))
+      .abort("{.field clock_correction_source} in {.arg clock.corrections} must be character.")
+    source[is.na(source) | !nzchar(trimws(source))] <- "manual"
+  } else source <- rep("manual", length(ids))
+
+  data.frame(ID = ids, clock_correction_s = as.numeric(shifts),
+             clock_correction_source = source, stringsAsFactors = FALSE)
+}
+
+#' Shift a fresh reader result and its primary-logger streams before external alignment
+#'
+#' `correction` is zero or one row of an already-validated table. Only reader-owned streams share
+#' this clock; independently clocked WC streams and external video metadata are not passed here.
+#' @keywords internal
+#' @noRd
+.applySensorClockCorrection <- function(res, correction) {
+  if (!nrow(correction) || correction$clock_correction_s == 0) return(res)
+  if (!is.null(res$clock_correction))
+    .abort("Sensor clock correction already applied to deployment {.val {correction$ID}}. Refusing to apply another correction.")
+
+  shift <- correction$clock_correction_s
+  times <- res$data$datetime
+  .validateInstants(times)
+  corrected <- times + shift
+  .validateInstants(corrected)
+  ancillary <- lapply(res$ancillary, function(stream) {
+    .validateInstants(stream$data$datetime)
+    shifted <- stream$data$datetime + shift
+    .validateInstants(shifted)
+    stream$data <- data.table::copy(stream$data)
+    stream$data[["datetime"]] <- shifted
+    stream
+  })
+
+  # Copy only corrected deployments. Failures and reapplication never mutate the reader's input.
+  res$data <- data.table::copy(res$data)
+  data.table::set(res$data, j = "datetime", value = corrected)
+  if (!is.null(res$ancillary)) res$ancillary <- ancillary
+  res$clock_correction <- list(
+    clock_correction_s = shift, clock_correction_source = correction$clock_correction_source,
+    original_first = min(times), original_last = max(times),
+    corrected_first = min(corrected), corrected_last = max(corrected))
+  res
+}
+
 # Additional shared time helpers
 
 #' Seconds-since-epoch for a user-supplied time column, or `NULL` if it is not a time at all.

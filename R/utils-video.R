@@ -126,46 +126,15 @@
 #' @noRd
 
 .validateVideoClockCorrections <- function(corrections, video.ids = NULL) {
-  empty <- data.frame(ID = character(0), clock_correction_s = numeric(0),
-                      clock_correction_source = character(0), stringsAsFactors = FALSE)
-  if (is.null(corrections)) return(empty)
-  if (!is.data.frame(corrections))
-    .abort("{.arg clock.corrections} must be a data frame, or {.code NULL}.")
-
-  .assert_columns(corrections, c("ID", "clock_correction_s"), "clock.corrections")
-  if (!nrow(corrections)) return(empty)
-
-  ids <- as.character(corrections$ID)
-  bad_ids <- is.na(ids) | !nzchar(ids)
-  if (any(bad_ids))
-    .abort("{.field ID} in {.arg clock.corrections} must contain non-missing deployment identifiers.")
-  duplicate_ids <- unique(ids[duplicated(ids)])
-  if (length(duplicate_ids))
-    .abort("{.arg clock.corrections} has more than one row for deployment{?s} {.val {duplicate_ids}}.")
-
-  shifts <- corrections$clock_correction_s
-  if (!is.numeric(shifts) || any(!is.finite(shifts)))
-    .abort("{.field clock_correction_s} in {.arg clock.corrections} must contain finite numeric seconds.")
-
-  if ("clock_correction_source" %in% names(corrections)) {
-    source <- corrections$clock_correction_source
-    if (is.factor(source)) source <- as.character(source)
-    if (!is.character(source))
-      .abort("{.field clock_correction_source} in {.arg clock.corrections} must be character.")
-    source[is.na(source) | !nzchar(source)] <- "manual"
-  } else {
-    source <- rep("manual", length(ids))
-  }
-
+  corrections <- .validateClockCorrections(corrections)
   if (!is.null(video.ids)) {
-    unmatched <- setdiff(ids, as.character(video.ids))
+    unmatched <- setdiff(corrections$ID, as.character(video.ids))
     if (length(unmatched))
       .abort(c("Some {.arg clock.corrections} IDs do not match the supplied video folders: {.val {unmatched}}.",
                "i" = "Correction IDs must exactly match the resolved deployment IDs ({.arg video.folders} names when supplied, otherwise folder basenames)."))
   }
 
-  data.frame(ID = ids, clock_correction_s = as.numeric(shifts),
-             clock_correction_source = source, stringsAsFactors = FALSE)
+  corrections
 }
 
 
