@@ -12,6 +12,8 @@
     if (!requireNamespace(pkg, quietly = TRUE))
       .abort("Parallel deployment processing requires {.pkg {pkg}}; install it or use {.code n.cores = 1}.")
   }
+  if (utils::packageVersion("parallelly") < "1.45.1")
+    .abort("Parallel deployment processing requires {.pkg parallelly} >= 1.45.1; update it or use {.code n.cores = 1}.")
   available <- as.integer(parallelly::availableCores())
   threads <- threads %||% 1L
   if (as.double(workers) * threads > available)
@@ -136,10 +138,12 @@
     }
   }, add = TRUE)
   do.call(Sys.setenv, as.list(env))
-  cl <- parallel::makePSOCKcluster(workers,
+  # snow/doSNOW dispatches on SOCKnode; its transport does not support the
+  # SOCK0node produced by parallelly's native-endian shortcut.
+  cl <- parallelly::makeClusterPSOCK(workers, useXDR = TRUE,
       outfile = if (.Platform$OS.type == "windows") "nul:" else "/dev/null")
   ready <- FALSE
-  on.exit(if (!ready) try(parallel::stopCluster(cl), silent = TRUE), add = TRUE)
+  on.exit(if (!ready) .stopDeploymentCluster(cl, terminate = TRUE), add = TRUE)
   init <- function(libpaths, package.path, threads, report.options) {
     .libPaths(libpaths)
     if (!file.exists(file.path(package.path, "Meta", "package.rds"))) {
@@ -156,6 +160,18 @@
   cl
 }
 
+
+# A normal shutdown asks idle workers to exit. On cancellation/error they may
+# still be computing, so signal only this owned pool before closing its sockets.
+# RichSOCKnode process identities avoid leaving busy workers behind after Esc.
+.stopDeploymentCluster <- function(cl, terminate = FALSE) {
+  suspendInterrupts({
+    if (terminate) try(parallelly::killNode(cl), silent = TRUE)
+    try(parallel::stopCluster(cl), silent = TRUE)
+  })
+  invisible(NULL)
+}
+
 .dispatchDeployments <- function(data, config, kernel, accept, execution, draw = NULL) {
   compute <- get(kernel, envir = asNamespace("nautilus"))
   if (execution$workers == 1L) {
@@ -164,9 +180,9 @@
   }
   scratch <- tempfile("nautilus-parallel-")
   dir.create(scratch)
-  cl <- NULL
+  cl <- NULL; complete <- FALSE
   on.exit({
-    if (!is.null(cl)) try(parallel::stopCluster(cl), silent = TRUE)
+    if (!is.null(cl)) .stopDeploymentCluster(cl, terminate = !complete)
     unlink(scratch, recursive = TRUE)
   }, add = TRUE)
   opts <- options()
@@ -191,13 +207,18 @@
   }, add = TRUE)
   doSNOW::registerDoSNOW(cl)
   `%dopar%` <- foreach::`%dopar%`
-  pb <- if (cli::is_dynamic_tty())
-    .log_progress_start(config$lvl, length(data), "Deployments", min.level = 1L) else NULL
+  pb <- if (cli::is_dynamic_tty() && config$lvl >= 1L)
+    cli::cli_progress_bar("Deployments", total = length(data),
+      format = "{cli::pb_name} {cli::pb_current}/{cli::pb_total} complete | {cli::pb_status} | ETA: {cli::pb_eta}",
+      status = "starting", .envir = environment()) else NULL
   on.exit(.log_progress_done(pb), add = TRUE)
   finished <- 0L
   progress <- function(n, tag) {
     finished <<- finished + 1L
-    if (!is.null(pb)) cli::cli_progress_update(id = pb, set = finished)
+    completed <<- c(completed, tag)
+    active <- min(length(jobs), execution$workers + n) - length(completed)
+    status <- if (active > 0L) sprintf("%d running; reports in input order", active) else "collecting plots/results"
+    if (!is.null(pb)) cli::cli_progress_update(id = pb, set = finished, status = status)
   }
   report.options <- opts
   # Bound pending full results/plot files without giving up dynamic scheduling
@@ -232,6 +253,7 @@
       }
       count + 1L
     }
+    completed <- integer()
     job <- NULL # foreach iteration binding
     foreach::foreach(job = jobs, .combine = combine, .init = 0L, .inorder = FALSE,
                      .options.snow = list(progress = progress, preschedule = FALSE),
@@ -247,5 +269,6 @@
       unlink(path)
     }
   }
+  complete <- TRUE
   invisible(NULL)
 }

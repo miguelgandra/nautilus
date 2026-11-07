@@ -117,7 +117,7 @@ processing run or avoid overwriting an earlier one. Only used when \code{output.
 \item{n.cores}{Maximum number of R worker processes (default \code{1}, sequential).
 Values greater than one opt into PSOCK processing across whole deployments;
 the worker count is capped by the number of deployments. Requires the optional
-packages \code{foreach}, \code{doSNOW}, and \code{parallelly}. Each worker uses one data.table
+packages \code{foreach}, \code{doSNOW}, and \code{parallelly} (>= 1.45.1). Each worker uses one data.table
 thread by default. An explicit worker/thread budget must fit the CPU allocation
 reported by \code{parallelly::availableCores()}.}
 
@@ -170,7 +170,10 @@ separately for each deployment.
 no worker pool or report buffering. Parallel runs keep deployment messages,
 warnings, results, and diagnostic pages in input order. Plot data are computed
 by workers; all drawing uses the same plotting functions in the parent process.
-Shared PDFs and cohort reports are written only by the parent.
+Shared PDFs and cohort reports are written only by the parent. The interactive
+progress bar counts completed jobs; a slow deployment can delay the next
+input-ordered report and the next bounded scheduling window. Cancellation
+terminates this call's busy workers.
 
 File paths with \code{return.data = FALSE} keep sensor data off the worker-result
 sockets. In-memory inputs and results require additional worker memory. Pending

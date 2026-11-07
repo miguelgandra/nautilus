@@ -1,5 +1,20 @@
 # nautilus 0.2.0
 
+## Tail-beat performance and worker cancellation
+
+* Tail-beat backends skip unused Hilbert-envelope transforms when swimming
+  classification is disabled. This avoids extremely slow prime-length FFTs on
+  long recordings without changing frequencies, amplitudes, flags or plots.
+
+* Long, band-edge-dominated wavelet records use native rolling background medians
+  when available, preserving the exact running-median and endpoint rules. Older
+  data.table versions retain the reference calculation.
+* Cancelled or failed parallel runs terminate their owned busy workers, preventing
+  computations and file writes from continuing after cancellation.
+* Interactive parallel progress distinguishes completed deployments from running
+  jobs and states that reports retain input order. Bounded scheduling windows
+  still wait for their slowest deployments before admitting the next window.
+
 ## Explicit sensor-clock correction
 
 * `importTagData(clock.corrections = ...)` accepts the same deployment ID, seconds-to-add and optional

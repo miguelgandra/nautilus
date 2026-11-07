@@ -541,7 +541,11 @@
 
   # swimming/gliding is only classified against a caller-supplied reference; see .classifyActivity for
   # why it is not inferred from the signal alone. Shared with the wavelet method.
-  g <- .classifyActivity(r$bandpassed, fs, min.amplitude = min.amplitude)
+  # Only swimming is consumed here. With no classification threshold its value
+  # is known without the unused envelope summary: a multi-million-point prime
+  # length can make the Hilbert FFT extremely slow.
+  g <- if (is.null(min.amplitude)) list(swimming = rep(NA, length(r$bandpassed))) else
+    .classifyActivity(r$bandpassed, fs, min.amplitude = min.amplitude)
 
   # No per-method console lines here. The analysis band is fixed config shown once in the header; the beat
   # count is a diagnostic kept in the data, not the log (a genuine no-signal case still surfaces as the
@@ -1023,7 +1027,9 @@ tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
   # same activity classifier as the peak method, so the two agree on what "swimming" means (and, by
   # default, both leave it unclassified -- see .classifyActivity). The outcome is reported once by the
   # driver as the merged "swimming:" line, not here.
-  g <- .classifyActivity(bp, fs, min.amplitude = min.amplitude)
+  # No envelope is needed when the caller has left swimming unclassified.
+  g <- if (is.null(min.amplitude)) list(swimming = rep(NA, length(bp))) else
+    .classifyActivity(bp, fs, min.amplitude = min.amplitude)
 
   # null the frequency on not-swimming rows only when classification actually ran (see .runPeaks)
   glide <- !is.na(g$swimming) & !g$swimming
@@ -1284,6 +1290,14 @@ tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
   if (k < 3L) return(B[at])
   k2 <- (k - 1L) %/% 2L
 
+  # Edge-dominated records otherwise call runmed()/smoothEnds() once per time
+  # sample. Use the native rolling median in recent data.table versions, keeping
+  # Tukey's end treatment exactly. Small/narrow/non-finite inputs and older
+  # data.table versions retain the reference implementation below.
+  if (nb >= 2L * k && p >= 128L &&
+      "frollmedian" %in% getNamespaceExports("data.table") && all(is.finite(B)))
+    return(.cwtNativeBackground(B, k, rows))
+
   out <- numeric(p)
   interior <- rows > k2 & rows <= nb - k2
   # Interior rows, grouped by the row wanted so each group is one vectorised sort over its columns.
@@ -1294,6 +1308,44 @@ tailBeatColumn <- function(x, quantity = c("hz", "amplitude"), method = NULL) {
   }
   # End rows keep runmed, so smoothEnds' reshaping is reproduced rather than reimplemented
   for (j in which(!interior)) out[j] <- stats::runmed(B[, j], k, endrule = "median")[rows[j]]
+  out
+}
+
+# Native medians over column-major storage; discard windows crossing columns.
+# Reconstruct runmed(endrule = "keep"), then evaluate just the smoothEnds rows
+# needed at the ridge. The extrapolated endpoint uses the same arithmetic/order
+# as stats::smoothEnds(), including its three-point median rule.
+.cwtNativeBackground <- function(B, k, rows) {
+  nb <- nrow(B); p <- ncol(B); half <- (k - 1L) %/% 2L
+  rolling <- getExportedValue("data.table", "frollmedian")
+  Y <- matrix(rolling(as.vector(B), k, align = "center"), nrow = nb)
+  ends <- c(seq_len(half), seq.int(nb - half + 1L, nb))
+  Y[ends, ] <- B[ends, , drop = FALSE]
+  out <- Y[cbind(rows, seq_len(p))]
+  col_median <- function(M) {
+    nr <- nrow(M)
+    rolling(as.vector(M), nr, align = "center")[seq.int((nr + 1L) %/% 2L, length(M), by = nr)]
+  }
+  for (right in c(FALSE, TRUE)) {
+    rr <- if (right) nb + 1L - rows else rows
+    yy <- if (right) Y[nb:1L, , drop = FALSE] else Y
+    for (r in unique(rr[rr > 1L & rr <= half])) {
+      cols <- which(rr == r)
+      out[cols] <- col_median(yy[seq_len(2L * r - 1L), cols, drop = FALSE])
+    }
+    cols <- which(rr == 1L)
+    if (length(cols)) {
+      a <- yy[1L, cols]
+      b <- if (half >= 2L) col_median(yy[1:3, cols, drop = FALSE]) else yy[2L, cols]
+      third <- if (half >= 3L) col_median(yy[1:5, cols, drop = FALSE]) else yy[3L, cols]
+      third <- b - 2L * (third - b)
+      med <- b
+      lower <- a < b & third < b; upper <- a >= b & third > b
+      med[lower] <- ifelse(a[lower] >= third[lower], a[lower], third[lower])
+      med[upper] <- ifelse(a[upper] <= third[upper], a[upper], third[upper])
+      out[cols] <- med
+    }
+  }
   out
 }
 

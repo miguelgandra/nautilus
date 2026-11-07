@@ -29,7 +29,7 @@ Imports:
 	signal
 Suggests:
 	pkgload,
-	parallelly,
+	parallelly (>= 1.45.1),
 	foreach,
 	doSNOW,
 	randomForest,
