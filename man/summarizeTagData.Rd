@@ -13,7 +13,8 @@ summarizeTagData(
   exclusions = NULL,
   error.stat = "sd",
   tbf.method = NULL,
-  verbose = "detailed"
+  verbose = "detailed",
+  video.window = "deployment"
 )
 }
 \arguments{
@@ -26,8 +27,8 @@ after \code{\link[=calculateTailBeats]{calculateTailBeats()}}, is expected.}
 \code{size}, carrying an \code{ID} column. Several rows for one ID are collapsed by joining the distinct
 values with \code{"/"}; for a numeric covariate that means conflicting values become \code{NA}, with a
 warning, so supply one value per ID. Fields already held in the tag metadata are filled
-automatically and need not be repeated here. For total video duration use \code{video.metadata}, which
-totals the per-file table for you. Default \code{NULL}.}
+automatically and need not be repeated here. Supply \code{video.metadata} to report video duration.
+Default \code{NULL}.}
 
 \item{deployments}{Optional \code{nautilus_deployments} object from \code{\link[=checkDeploymentMetadata]{checkDeploymentMetadata()}}. When
 supplied, the summary is completed into the full study roster: every deployment gets a row, and
@@ -49,12 +50,12 @@ recorded different traits can still be combined. Recovery time is available as
 here can also group the rendered table, via
 \code{\link[=format.nautilus_summary]{format}(x, group.by = )}.}
 
-\item{video.metadata}{Optional table from \code{\link[=getVideoMetadata]{getVideoMetadata()}}, one row per video file with \code{ID} and
-\code{duration} in seconds. Adds \code{video_duration_h}, the total footage per deployment. A deployment with
-no entry gets \code{NA}, never \code{0}: \code{\link[=getVideoMetadata]{getVideoMetadata()}} omits folders holding no video, so absence
-means no footage was found, which is a different claim from a camera that ran for zero hours. This
-is total footage and routinely exceeds the retained record, since a camera started on deck films
-either side of the deployment. Default \code{NULL}.}
+\item{video.metadata}{Optional table from \code{\link[=getVideoMetadata]{getVideoMetadata()}}, one row per clip with \code{ID}.
+The default \code{video.window = "deployment"} requires \code{start} and \code{end} on the same time base as
+the sensor data. Supply \code{POSIXct} instants or UTC timestamps from a CSV export
+(\verb{YYYY-MM-DD HH:MM:SS}, with optional fractional seconds). A date without a time is interpreted
+as midnight UTC. \code{video.window = "raw"} requires numeric \code{duration} in seconds.
+Adds \code{video_duration_h}. Default \code{NULL}.}
 
 \item{exclusions}{Optional deployment-exclusion log: the path to the shared \code{exclusions.csv}, or the
 table itself. Written by every stage that can drop a deployment (\code{\link[=importTagData]{importTagData()}},
@@ -79,6 +80,15 @@ from the other method raises an error. See \code{\link[=tailBeatColumn]{tailBeat
 \item{verbose}{How much detail to print: \code{0}/\code{"quiet"}, \code{1}/\code{"normal"} (header and summary), or
 \code{2}/\code{"detailed"} (default), which adds per-metric coverage across the processed deployments and a
 progress bar while the tags are read.}
+
+\item{video.window}{Which video duration to report. \code{"deployment"} (default) clips video to
+\code{record_start} and \code{record_end} from the processed data. To use the
+on-animal window, supply data trimmed by \code{\link[=filterDeploymentData]{filterDeploymentData()}}. Overlapping clips are counted
+once and gaps between clips are excluded. With valid clip timing and a processed record, no
+overlap gives \code{0}. Rows with no clips give \code{NA}. In deployment mode, rows with no processed
+record also give \code{NA}.
+Missing or invalid clip timing also gives \code{NA} for the affected deployment and raises a warning.
+Set \code{"raw"} to sum the full file durations.}
 }
 \value{
 A \code{nautilus_summary} data frame, one row per deployment. Columns are grouped so the table
@@ -176,6 +186,9 @@ summary <- summarizeTagData(list.files("./tailbeats", full.names = TRUE),
                             deployments = deployments,
                             extra.metadata = animal_metadata[, c("ID", "sex", "size")],
                             exclusions = "./data interim/exclusions.csv")
+
+# Video coverage within the processed, on-animal record.
+summary <- summarizeTagData(tag, video.metadata = video_metadata)
 
 # A formatted table for a report, grouped by sex.
 format(summary, style = "report", group.by = "sex")

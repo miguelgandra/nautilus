@@ -1104,46 +1104,90 @@ print.nautilus_summary <- function(x, ...) {
 #' Validate a `video.metadata` table (the getVideoMetadata() contract this function relies on).
 #' @keywords internal
 #' @noRd
-.assert_video_metadata <- function(v) {
+.assert_video_metadata <- function(v, video.window) {
   if (is.null(v)) return(invisible(NULL))
   if (!is.data.frame(v))
     .abort("{.arg video.metadata} must be a data frame as returned by {.fn getVideoMetadata}.")
-  miss <- setdiff(c("ID", "duration"), names(v))
+  fields <- if (video.window == "raw") "duration" else c("start", "end")
+  miss <- setdiff(c("ID", fields), names(v))
   if (length(miss))
     .abort(c("{.arg video.metadata} is missing the column{?s} {.field {miss}}.",
              "i" = "Pass the table {.fn getVideoMetadata} returns, unaggregated."))
-  if (!is.numeric(v[["duration"]]))
-    .abort("{.field duration} in {.arg video.metadata} must be numeric (seconds).")
+  if (video.window == "raw") {
+    if (!is.numeric(v[["duration"]]))
+      .abort("{.field duration} in {.arg video.metadata} must be numeric (seconds).")
+  } else {
+    for (field in fields) {
+      x <- v[[field]]
+      # read.csv() types a column containing only missing timestamps as logical.
+      if (!inherits(x, "POSIXct") && !is.character(x) && !(is.logical(x) && all(is.na(x))))
+        .abort("{.field {field}} in {.arg video.metadata} must be POSIXct or UTC timestamp text.")
+    }
+  }
   invisible(NULL)
 }
 
-#' Total recorded video per deployment, in hours.
-#'
-#' getVideoMetadata() returns one row per FILE, so the totalling belongs here rather than in the
-#' caller's script: handed the raw table, the generic covariate join would collapse the several
-#' durations of one deployment into the string "403.4/404.1/404.7" and then turn it into NA.
-#'
-#' NA, never 0, for a deployment with no entry. A folder holding no video is dropped by
-#' getVideoMetadata() entirely, so absence in this table means "no footage was found", which is not the
-#' same claim as "the camera ran for zero hours", and only one of those is safe to average.
-#'
-#' This is TOTAL footage, which routinely exceeds the retained record window - a camera started on deck
-#' keeps recording either side of the deployment (measured on PIN_CAM_06: 0.90 h of video against a
-#' 0.54 h overlap). It answers "how much video is there", not "how much video covers analysed data".
+#' Attach raw file durations or video coverage within the processed record, in hours.
 #' @keywords internal
 #' @noRd
-.attachVideoDuration <- function(tbl, video.metadata) {
+.attachVideoDuration <- function(tbl, video.metadata, video.window) {
   if (is.null(video.metadata) || !nrow(tbl)) return(tbl)
-  v <- as.data.frame(video.metadata)
-  ids <- as.character(v[["ID"]])
-  secs <- .asNumericSafe(v[["duration"]])
-  ok <- !is.na(ids) & is.finite(secs)
-  tot <- if (any(ok)) tapply(secs[ok], ids[ok], sum) else numeric(0)
-  tbl$video_duration_h <- unname(as.numeric(tot[match(tbl$id, names(tot))]) / 3600)
-  if (!any(tbl$id %in% names(tot)))
+  ids <- as.character(video.metadata[["ID"]])
+  if (video.window == "raw") {
+    secs <- .asNumericSafe(video.metadata[["duration"]])
+    ok <- !is.na(ids) & is.finite(secs)
+    total <- if (any(ok)) tapply(secs[ok], ids[ok], sum) else numeric(0)
+    tbl$video_duration_h <- unname(as.numeric(total[match(tbl$id, names(total))]) / 3600)
+    found <- names(total)
+  } else {
+    tbl$video_duration_h <- .videoCoverageHours(tbl, video.metadata, ids)
+    found <- ids
+  }
+  if (!any(tbl$id %in% found))
     warning("summarizeTagData: no 'video.metadata' ID matches any deployment - video_duration_h is all NA (check the ID values).",
             call. = FALSE)
   tbl
+}
+
+#' Measure the union of the video clips clipped to each processed record window.
+#' @keywords internal
+#' @noRd
+.videoCoverageHours <- function(tbl, video.metadata, ids) {
+  clips <- split(seq_along(ids), ids)
+  group <- match(tbl$id, names(clips))
+  from <- as.numeric(tbl$record_start)
+  to <- as.numeric(tbl$record_end)
+  has_window <- !is.na(group) & is.finite(from) & is.finite(to) & to >= from
+
+  start <- .videoTimestampSeconds(video.metadata[["start"]])
+  end <- .videoTimestampSeconds(video.metadata[["end"]])
+  invalid <- !is.finite(start) | !is.finite(end) | end < start
+  invalid_ids <- intersect(tbl$id[has_window], ids[invalid])
+  .warn_grouped("summarizeTagData() set {.field video_duration_h} to NA for missing or invalid clip timestamps.",
+                invalid_ids, style = "inline")
+
+  hours <- rep(NA_real_, nrow(tbl))
+  for (i in which(has_window & !tbl$id %in% invalid_ids)) {
+    rows <- clips[[group[i]]]
+    windows <- .mergeTimeIntervals(pmax(start[rows], from[i]), pmin(end[rows], to[i]))
+    hours[i] <- sum(windows$end - windows$start) / 3600
+  }
+  hours
+}
+
+#' Read video timestamps without truncating fractional seconds or ignoring trailing text.
+#' @keywords internal
+#' @noRd
+.videoTimestampSeconds <- function(x) {
+  if (!is.character(x)) return(as.numeric(x))
+  x <- trimws(x)
+  date <- "[0-9]{4}-[0-9]{2}-[0-9]{2}"
+  date_only <- grepl(paste0("^", date, "$"), x)
+  # write.csv() can emit a date alone for a column of midnight instants.
+  if (any(date_only)) x[date_only] <- paste(x[date_only], "00:00:00")
+  clock <- " ([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9](\\.[0-9]+)?"
+  x[!grepl(paste0("^", date, clock, "$"), x)] <- NA_character_
+  as.numeric(as.POSIXct(x, format = "%Y-%m-%d %H:%M:%OS", tz = "UTC"))
 }
 
 #' Fill the record window of a deployment that filterDeploymentData() detected and then rejected.

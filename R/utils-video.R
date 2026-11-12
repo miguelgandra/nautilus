@@ -210,23 +210,39 @@
 
 # Video interval selection, playback and review-frame helpers.
 
-# filterVideoPeriod helpers ----
+# Video interval helpers ----
+
+#' Merge overlapping or touching intervals and return their boundaries in epoch seconds.
+#' @keywords internal
+#' @noRd
+.mergeTimeIntervals <- function(start, end) {
+  start <- as.numeric(start)
+  end <- as.numeric(end)
+  valid <- is.finite(start) & is.finite(end) & start <= end
+  if (!any(valid)) return(list(start = numeric(0), end = numeric(0)))
+
+  start <- start[valid]
+  end <- end[valid]
+  ordered <- order(start, end)
+  start <- start[ordered]
+  # A nested interval cannot shorten the current union, so use the furthest end so far.
+  end <- cummax(end[ordered])
+  first <- which(c(TRUE, start[-1L] > end[-length(end)]))
+  last <- c(first[-1L] - 1L, length(end))
+  list(start = start[first], end = end[last])
+}
 
 #' Logical mask: which of `t` fall within ANY `[starts, ends]` interval.
 #' @keywords internal
 #' @noRd
 .inAnyInterval <- function(t, starts, ends) {
   # Union windows once, then binary-search samples instead of scanning a high-rate record per event.
-  m <- logical(length(t)); a <- as.numeric(starts); b <- as.numeric(ends)
-  good <- is.finite(a) & is.finite(b) & a <= b
-  if (!any(good)) return(m)
-  a <- a[good]; b <- b[good]; ord <- order(a, b); a <- a[ord]; b <- cummax(b[ord])
-  begin <- c(TRUE, a[-1] > b[-length(b)])
-  finish <- c(which(begin)[-1] - 1L, length(b))
-  b <- b[finish]; a <- a[begin]
+  m <- logical(length(t))
+  windows <- .mergeTimeIntervals(starts, ends)
+  if (!length(windows$start)) return(m)
   time <- as.numeric(t); valid <- is.finite(time)
-  k <- findInterval(time[valid], a)
-  m[valid] <- k > 0L & time[valid] <= b[pmax(1L, k)]
+  k <- findInterval(time[valid], windows$start)
+  m[valid] <- k > 0L & time[valid] <= windows$end[pmax(1L, k)]
   m[!valid] <- NA
   m
 }

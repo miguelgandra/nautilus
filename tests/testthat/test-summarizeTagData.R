@@ -704,19 +704,59 @@ test_that("a rejected window reaches the summary through the exclusions table", 
   expect_error(.run(list(A = .mkMeta("A")), exclusions = "no-such-file.csv"), "does not exist")
 })
 
-test_that("video.metadata totals the per-file table, and absence is NA rather than zero", {
+test_that("raw video duration totals the per-file table and reports absent video as NA", {
   vm <- data.frame(ID = c("A", "A", "A"), duration = c(1200.5, 402.2, 421.0), stringsAsFactors = FALSE)
-  s <- .run(list(A = .mkMeta("A"), B = .mkMeta("B")), video.metadata = vm)
+  s <- .run(list(A = .mkMeta("A"), B = .mkMeta("B")), video.metadata = vm, video.window = "raw")
   expect_equal(s$video_duration_h[s$id == "A"], sum(vm$duration) / 3600)
   expect_true(is.na(s$video_duration_h[s$id == "B"]))          # no footage found is not zero hours
   expect_false("video_duration_h" %in% names(.run(list(A = .mkMeta("A")))))
 
-  expect_error(.run(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "A")), "missing the column")
-  expect_error(.run(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "A", duration = "x")),
-               "must be numeric")
+  expect_error(.run(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "A"),
+                    video.window = "raw"), "missing the column")
+  expect_error(.run(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "A", duration = "x"),
+                    video.window = "raw"), "must be numeric")
   expect_warning(summarizeTagData(list(A = .mkMeta("A")), video.metadata = data.frame(ID = "ZZ", duration = 10),
-                                  verbose = FALSE),
+                                  video.window = "raw", verbose = FALSE),
                  "no 'video.metadata' ID matches")
+})
+
+test_that("video duration clips and merges intervals within the processed record by default", {
+  t0 <- as.POSIXct("2020-01-01 00:00:00", tz = "UTC")
+  video <- data.frame(
+    ID = c(rep("A", 12), "B", "SHORT"),
+    start = t0 + c(28.5, -5, 5, 6, 10, 20, 29, 30, 32, -10, 15, 5, 40, 1),
+    end = t0 + c(34, 4.25, 12, 8, 15, 25, 35, 32, 36, 0, 17, 12, 50, 5)
+  )
+  video$duration <- as.numeric(difftime(video$end, video$start, units = "secs"))
+  tags <- list(A = .mk("A", n = 31), B = .mk("B", n = 31), C = .mk("C", n = 31))
+  roster <- .mkRoster(c("A", "B", "C", "SHORT"))
+  ex <- data.frame(id = "SHORT", reason = "deployment too short",
+                   window_start = t0, window_end = t0 + 10, window_hours = 10 / 3600)
+
+  clipped <- .run(tags, deployments = roster, exclusions = ex, video.metadata = video)
+  expect_equal(clipped$video_duration_h * 3600, c(22.75, 0, NA, NA))
+  expect_equal(clipped$record_duration_h * 3600, c(30, 30, 30, 10))
+
+  raw <- .run(tags, deployments = roster, video.metadata = video, video.window = "raw")
+  expect_equal(raw$video_duration_h * 3600, c(sum(video$duration[video$ID == "A"]), 10, NA, 4))
+})
+
+test_that("deployment video duration accepts UTC CSV times and reports unknown clip timing", {
+  video <- data.frame(ID = c("A", "B", "B", "C", "D"),
+                      start = c("2020-01-01", "2020-01-01", NA,
+                                "2020-01-01 00:00:00 UTC+01", "2020-01-01 00:00:02"),
+                      end = rep("2020-01-01 00:00:01.25", 5))
+  tags <- lapply(c("A", "B", "C", "D"), .mk)
+  result <- .warns(summarizeTagData(tags, video.metadata = video, video.window = "deployment",
+                                    verbose = FALSE))
+  expect_equal(result$result$video_duration_h * 3600, c(1.25, NA, NA, NA))
+  expect_length(result$warnings, 1L)
+  expect_match(result$warnings, "missing or invalid clip timestamps")
+  expect_match(result$warnings, "B, C, D")
+
+  expect_error(.run(tags, video.metadata = data.frame(ID = "A", duration = 1),
+                    video.window = "deployment"), "missing the columns")
+  expect_error(.run(tags, video.window = "invalid"), "video.window")
 })
 
 
@@ -734,7 +774,7 @@ test_that("columns are seated in declared blocks, whatever order they were produ
                    window_end = as.POSIXct("2020-02-01 10:06", tz = "UTC"),
                    window_hours = 0.1, stringsAsFactors = FALSE)
   s <- .run(list(A = .mkMeta("A")), deployments = ros, exclusions = ex,
-            video.metadata = data.frame(ID = "A", duration = 3600),
+            video.metadata = data.frame(ID = "A", duration = 3600), video.window = "raw",
             extra.metadata = data.frame(ID = "A", maturity = "adult", stringsAsFactors = FALSE))
   n <- names(s)
   expect_equal(n[1:2], c("id", "animal_id"))                       # deployment, then animal

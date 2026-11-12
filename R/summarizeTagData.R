@@ -25,8 +25,8 @@
 #'   `size`, carrying an `ID` column. Several rows for one ID are collapsed by joining the distinct
 #'   values with `"/"`; for a numeric covariate that means conflicting values become `NA`, with a
 #'   warning, so supply one value per ID. Fields already held in the tag metadata are filled
-#'   automatically and need not be repeated here. For total video duration use `video.metadata`, which
-#'   totals the per-file table for you. Default `NULL`.
+#'   automatically and need not be repeated here. Supply `video.metadata` to report video duration.
+#'   Default `NULL`.
 #' @param deployments Optional `nautilus_deployments` object from [checkDeploymentMetadata()]. When
 #'   supplied, the summary is completed into the full study roster: every deployment gets a row, and
 #'   `status` marks each `"included"` (processed data present) or `"excluded"` (in the roster but absent
@@ -45,12 +45,12 @@
 #'   `recovery_datetime` when mapped at ingestion; older tags report it as missing. A field requested
 #'   here can also group the rendered table, via
 #'   \code{\link[=format.nautilus_summary]{format}(x, group.by = )}.
-#' @param video.metadata Optional table from [getVideoMetadata()], one row per video file with `ID` and
-#'   `duration` in seconds. Adds `video_duration_h`, the total footage per deployment. A deployment with
-#'   no entry gets `NA`, never `0`: [getVideoMetadata()] omits folders holding no video, so absence
-#'   means no footage was found, which is a different claim from a camera that ran for zero hours. This
-#'   is total footage and routinely exceeds the retained record, since a camera started on deck films
-#'   either side of the deployment. Default `NULL`.
+#' @param video.metadata Optional table from [getVideoMetadata()], one row per clip with `ID`.
+#'   The default `video.window = "deployment"` requires `start` and `end` on the same time base as
+#'   the sensor data. Supply `POSIXct` instants or UTC timestamps from a CSV export
+#'   (`YYYY-MM-DD HH:MM:SS`, with optional fractional seconds). A date without a time is interpreted
+#'   as midnight UTC. `video.window = "raw"` requires numeric `duration` in seconds.
+#'   Adds `video_duration_h`. Default `NULL`.
 #' @param exclusions Optional deployment-exclusion log: the path to the shared `exclusions.csv`, or the
 #'   table itself. Written by every stage that can drop a deployment ([importTagData()],
 #'   [filterDeploymentData()], [regularizeTimeSeries()], [applyAxisMapping()] and [processTagData()]),
@@ -71,6 +71,14 @@
 #' @param verbose How much detail to print: `0`/`"quiet"`, `1`/`"normal"` (header and summary), or
 #'   `2`/`"detailed"` (default), which adds per-metric coverage across the processed deployments and a
 #'   progress bar while the tags are read.
+#' @param video.window Which video duration to report. `"deployment"` (default) clips video to
+#'   `record_start` and `record_end` from the processed data. To use the
+#'   on-animal window, supply data trimmed by [filterDeploymentData()]. Overlapping clips are counted
+#'   once and gaps between clips are excluded. With valid clip timing and a processed record, no
+#'   overlap gives `0`. Rows with no clips give `NA`. In deployment mode, rows with no processed
+#'   record also give `NA`.
+#'   Missing or invalid clip timing also gives `NA` for the affected deployment and raises a warning.
+#'   Set `"raw"` to sum the full file durations.
 #'
 #' @return A `nautilus_summary` data frame, one row per deployment. Columns are grouped so the table
 #'   reads as a narrative - which deployment, on which animal, with which tag, put out where and when,
@@ -157,6 +165,9 @@
 #'                             extra.metadata = animal_metadata[, c("ID", "sex", "size")],
 #'                             exclusions = "./data interim/exclusions.csv")
 #'
+#' # Video coverage within the processed, on-animal record.
+#' summary <- summarizeTagData(tag, video.metadata = video_metadata)
+#'
 #' # A formatted table for a report, grouped by sex.
 #' format(summary, style = "report", group.by = "sex")
 #' }
@@ -169,12 +180,14 @@ summarizeTagData <- function(data,
                              exclusions = NULL,
                              error.stat = "sd",
                              tbf.method = NULL,
-                             verbose = "detailed") {
+                             verbose = "detailed",
+                             video.window = "deployment") {
 
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
   error.stat <- tolower(error.stat)
   .assert_choice(error.stat, "error.stat", c("sd", "se"))
+  .assert_choice(video.window, "video.window", c("deployment", "raw"))
   .assert_string(tbf.method, "tbf.method", null_ok = TRUE)
   if (!is.null(tbf.method)) .assert_choice(tbf.method, "tbf.method", .tbBackends())
   if (!is.null(deployments)) {
@@ -188,7 +201,7 @@ summarizeTagData <- function(data,
   # resolve input: a list of processed datasets, a single aggregated data.frame (split by ID), or a
   # character vector of .rds file paths (loaded lazily) - consistent with the rest of the pipeline.
   meta_req <- .summaryResolveMetadata(metadata)
-  .assert_video_metadata(video.metadata)
+  .assert_video_metadata(video.metadata, video.window)
   r <- .resolveInput(data, id.col = "ID")
 
   .log_header(lvl, "summarizeTagData", "Summarising the deployments",
@@ -217,7 +230,8 @@ summarizeTagData <- function(data,
   # and status "excluded" (works on an empty summary too, so an all-excluded roster is still produced).
   # Done BEFORE the covariate join so external covariates attach to every row.
   if (!is.null(deployments)) summary_table <- .completeRoster(summary_table, deployments, meta_req)
-  summary_table <- .attachVideoDuration(summary_table, video.metadata)
+  # Use only the processed record for clipped coverage. The exclusion log can add rejected windows.
+  summary_table <- .attachVideoDuration(summary_table, video.metadata, video.window)
   summary_table <- .attachExclusions(summary_table, exclusions)
 
   # optional join of EXTERNAL per-animal covariates (those not already in the tag metadata)
