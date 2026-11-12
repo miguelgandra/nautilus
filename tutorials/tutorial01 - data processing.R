@@ -774,13 +774,13 @@ plotDepthProfiles(data             = list.files("./data interim/06_tailbeats", f
 
 # plotDistributions() visualises the distribution of selected metrics across
 # deployments, helping reveal among-individual variation and differences that
-# summary statistics alone may obscure. The underlying distribution summaries
-# are also returned invisibly for further analysis.
+# summary statistics alone may obscure. The cohort density weights each deployment
+# equally. The returned list contains deployment and population summary tables.
 
 dist_summary <- plotDistributions(data      = list.files("./data interim/06_tailbeats", full.names = TRUE),
                                   metrics   = c("tbf_hz_wavelet", "paddle_speed"),
                                   order.by  = "id",
-                                  min.n     = 30,         # ignore deployments with too few samples for a metric
+                                  min.n     = 30,         # show a median tick and count below this threshold
                                   plot      = FALSE,
                                   plot.file = "./plots/metric-distributions.pdf")
 

@@ -33,8 +33,8 @@ test_that("a factor metric no longer becomes its level codes in plotDistribution
                   sp = factor(sample(c("100", "200", "300"), n, TRUE)), stringsAsFactors = FALSE)
   s <- suppressWarnings(suppressMessages(
     plotDistributions(list(A = a), metrics = "sp", plot = FALSE, plot.file = pf, verbose = FALSE)))
-  expect_gt(s$median[1], 50)                                    # was 2 (a level code), should be ~200
-  expect_lte(s$max[1], 300)
+  expect_gt(s$deployments$median[1], 50)                        # was 2 (a level code), should be ~200
+  expect_lte(s$deployments$max[1], 300)
 })
 
 test_that(".downsampleForPlot keeps a numeric-valued factor column and bins a Date correctly", {
@@ -119,7 +119,7 @@ test_that("plotDistributions rejects a metric nobody carries and a colour that i
     s <- suppressMessages(plotDistributions(list(A = a), metrics = c("vedba", "odbaa"), plot = FALSE,
                                             plot.file = pf, verbose = FALSE)),
     "No data for")
-  expect_equal(unique(s$metric), "vedba")            # the usable metric is still plotted, alone
+  expect_equal(s$population$metric, "vedba")         # the usable metric is still plotted, alone
 
   # dropping a metric must not leave order.metric pointing at it
   expect_warning(
@@ -127,7 +127,7 @@ test_that("plotDistributions rejects a metric nobody carries and a colour that i
                                              order.metric = "odbaa", order.by = "median",
                                              plot = FALSE, plot.file = pf, verbose = FALSE)),
     "No data for")
-  expect_equal(unique(s2$metric), "vedba")
+  expect_equal(s2$population$metric, "vedba")
 
   # Fill colours used to come from a plotter-level `colors` argument that was type-checked but never
   # value-checked, so a typo reached grDevices mid-render as a bare "invalid color name" naming neither

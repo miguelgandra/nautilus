@@ -339,9 +339,8 @@ tad_summary <- plotTimeAtDepth(data      = dive_files,
 ## 6.4 Distributions of the dive metrics themselves ------------------------------------------------
 
 # plotDistributions() works on any per-row table, so it takes the per-dive table as readily as the
-# per-sample one: a stack of per-deployment violins over a pooled population strip, showing the shape
-# a mean would hide. Multimodal dive depths are common and ecologically meaningful - two modes often
-# mean two behaviours.
+# per-sample one. The default view pairs deployment violins with a cohort strip that weights each
+# deployment equally. Use view = "population" for a standalone cohort density.
 
 dive_dist <- plotDistributions(data      = dives_analysable,
                                metrics   = c("max_depth_m", "duration_s", "inter_dive_s"),

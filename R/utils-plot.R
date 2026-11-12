@@ -1263,40 +1263,79 @@
   grDevices::rgb(v[1], v[2], v[3], maxColorValue = 255)
 }
 
-#' Upper-trimmed x-axis limits for a metric's pooled samples (robust to long tails).
+#' Cumulative sums using pairwise addition to limit roundoff on long deployments.
 #' @keywords internal
 #' @noRd
-.distXlim <- function(pooled, trim) {
-  if (!length(pooled)) return(c(0, 1))
-  lo <- min(pooled, na.rm = TRUE)
-  hi <- if (trim >= 1) max(pooled, na.rm = TRUE) else stats::quantile(pooled, trim, na.rm = TRUE, names = FALSE)
-  if (!is.finite(lo) || !is.finite(hi) || hi <= lo) hi <- lo + 1
-  c(lo, hi)
+.distCumulativeWeights <- function(weights) {
+  n <- length(weights)
+  if (n < 2L) return(weights)
+  odd <- seq.int(1L, n - 1L, by = 2L)
+  even <- odd + 1L
+  pairs <- .distCumulativeWeights(weights[odd] + weights[even])
+  cumulative <- numeric(n)
+  cumulative[even] <- pairs
+  cumulative[odd] <- c(0, pairs[-length(pairs)]) + weights[odd]
+  if (n %% 2L) cumulative[n] <- pairs[length(pairs)] + weights[n]
+  cumulative
 }
 
-#' Named vector of population reference values ("median"/"mean") for a metric's pooled samples.
+#' Quantiles of a weighted empirical distribution, averaging across exact CDF boundaries.
 #' @keywords internal
 #' @noRd
-.distReferences <- function(pooled, which) {
-  out <- numeric(0)
-  if (!length(pooled)) return(out)
-  if ("median" %in% which) out["median"] <- stats::median(pooled, na.rm = TRUE)
-  if ("mean"   %in% which) out["mean"]   <- mean(pooled, na.rm = TRUE)
-  out
+.distWeightedQuantile <- function(x, weights, probs) {
+  ord <- order(x, method = "radix")
+  x <- x[ord]
+  cdf <- .distCumulativeWeights(weights[ord])
+  cdf <- cdf / cdf[length(cdf)]
+  tolerance <- 32 * .Machine$double.eps
+  i <- findInterval(probs - tolerance, cdf) + 1L
+  at_boundary <- abs(cdf[i] - probs) <= tolerance & i < length(x)
+  q <- x[i]
+  q[at_boundary] <- x[i[at_boundary]] / 2 + x[i[at_boundary] + 1L] / 2
+  q[probs == 1] <- x[length(x)]
+  q
+}
+
+#' Cohort summary and plot geometry for a metric with at least one finite row.
+#' @keywords internal
+#' @noRd
+.distPopulation <- function(values, metric, weighting, trim, reference, draw.density) {
+  n <- lengths(values)
+  n <- n[n > 0L]
+  x <- unlist(values, use.names = FALSE)
+  weights <- if (weighting == "deployment") rep.int((1 / length(n)) / n, n)
+             else rep.int(1 / length(x), length(x))
+  q <- .distWeightedQuantile(x, weights, c(.05, .25, .5, .75, .95, trim))
+  bounds <- range(x)
+  constant <- bounds[1] == bounds[2]
+  mu <- if (constant) bounds[1] else stats::weighted.mean(x, weights)
+  scale <- max(abs(bounds - mu))
+  spread <- if (constant) 0 else scale * sqrt(sum(weights * ((x - mu) / scale)^2))
+  summary <- data.frame(metric = metric, weighting = weighting, n_deployments = length(n),
+                        n = length(x), mean = mu, median = q[3], sd = spread, q05 = q[1],
+                        q25 = q[2], q75 = q[4], q95 = q[5], min = bounds[1], max = bounds[2],
+                        stringsAsFactors = FALSE)
+
+  # If the quantile clips the axis to a single value, show the observed range.
+  xlim <- if (q[6] > bounds[1]) c(bounds[1], q[6]) else bounds
+  if (constant) xlim <- bounds + c(-1, 1) * max(1, abs(mu) * 0.05)
+  density <- NULL
+  if (draw.density && !constant) {
+    # A fixed fraction of weighted spread leaves the smoothing unchanged when
+    # all rows in a deployment are replicated.
+    scales <- c(spread, (q[4] - q[2]) / 1.349)
+    bw <- 0.25 * min(scales[scales > 0])
+    pad <- 0.04 * diff(xlim)
+    density <- stats::density(x, weights = weights, bw = bw, n = 512,
+                              from = xlim[1] - pad, to = xlim[2] + pad)
+  }
+  list(summary = summary, xlim = xlim, refs = unlist(summary[reference]), density = density)
 }
 
 #' Colours for the reference lines.
 #' @keywords internal
 #' @noRd
 .distRefStyle <- function() list(median = list(col = "#2C5F8A", lty = 2), mean = list(col = "#B03A2E", lty = 3))
-
-#' Kernel density for the pooled marginal, spanning a slightly padded x-window.
-#' @keywords internal
-#' @noRd
-.distDensity <- function(x, xlim) {
-  pad <- 0.04 * diff(xlim)
-  stats::density(x, n = 512, from = xlim[1] - pad, to = xlim[2] + pad, na.rm = TRUE)
-}
 
 #' Restrict a density estimate to an x-window (so a violin ends cleanly at the axis, not beyond it).
 #' @keywords internal
@@ -1307,15 +1346,16 @@
   list(x = d$x[keep], y = d$y[keep])
 }
 
-#' PDF device size (inches) for M metric columns x ny deployment rows. The height budgets a fixed
-#' marginal strip (~0.95 in, matching the layout's lcm(2.4)), the violin-row chrome (x-axis), and a
-#' per-deployment row height.
+#' PDF device size (inches) for M metric columns and ny deployment rows.
 #' @keywords internal
 #' @noRd
-.distDeviceSize <- function(M, ny, show.marginal, cex) {
-  marg_in <- if (show.marginal) 0.95 else 0
+.distDeviceSize <- function(M, ny, view, cex) {
+  height <- switch(view,
+                   stacked = 1.9 + max(0.65, 0.19 * ny),
+                   population = 3.35,
+                   deployments = 1.4 + max(0.65, 0.19 * ny))
   list(width  = max(5, 3.8 * M + 1.5) * max(1, cex * 0.9),
-       height = (marg_in + 0.95 + 0.19 * ny) * max(1, cex * 0.9))
+       height = height * max(1, cex * 0.9))
 }
 
 #' Draw one reference line into the current panel (vertical, styled by kind).
@@ -1339,25 +1379,36 @@
   if (length(gx)) graphics::abline(v = gx, col = theme$grid, lwd = 0.5)
 }
 
-#' Top-row panel: the pooled population density strip for one metric.
+#' Draw a cohort metric as a full panel or a strip above the deployment rows.
 #' @keywords internal
 #' @noRd
-.drawMarginalPanel <- function(g, label, fill, mar, cex, first, theme) {
+.drawPopulationPanel <- function(g, label, fill, mar, cex, first, theme, population.only, total) {
   graphics::par(mar = mar)
-  d <- g$marginal
+  d <- g$density
   ymax <- if (is.null(d)) 1 else max(d$y) * 1.08
   plot(NA, xlim = g$xlim, ylim = c(0, ymax), axes = FALSE, xaxs = "i", yaxs = "i", xlab = "", ylab = "")
   .distPanelBackground(g$xlim, theme)                                    # subtle fill + grid, behind the data
   if (!is.null(d)) {
     xx <- c(d$x[1], d$x, d$x[length(d$x)]); yy <- c(0, d$y, 0)
     graphics::polygon(xx, yy, col = grDevices::adjustcolor(fill, 0.55), border = .distDarken(fill), lwd = 1.4)
+    if (first || population.only) {
+      graphics::axis(2, at = pretty(c(0, ymax), n = 3), las = 1, cex.axis = cex * 0.7, tcl = -0.25)
+      graphics::mtext("Density", side = 2, line = if (population.only) 2.9 else 2.3, cex = cex * 0.7)
+    }
   }
   .distRefLines(g$refs, cex)
-  if (first) {
-    graphics::axis(2, at = pretty(c(0, ymax), n = 2), las = 1, cex.axis = cex * 0.7, tcl = -0.25)
-    graphics::mtext("Density", side = 2, line = 2.3, cex = cex * 0.7)
+  if (is.null(d)) graphics::points(g$summary$median, 0.5, pch = 19, col = .distDarken(fill), cex = cex)
+  if (population.only) {
+    graphics::axis(1, at = pretty(g$xlim, n = 5), cex.axis = cex * 0.85, tcl = -0.3)
+    caption <- sprintf("%d/%d deployments | Equal %s weight", g$summary$n_deployments, total,
+                       g$summary$weighting)
+    caption.cex <- cex * 0.75
+    caption.width <- graphics::strwidth(caption, units = "inches", cex = caption.cex)
+    caption.cex <- caption.cex * min(1, graphics::par("pin")[1] / caption.width)
+    graphics::mtext(caption, side = 3, line = 0.35, cex = caption.cex)
   }
-  graphics::mtext(label, side = 3, line = 0.5, font = 2, cex = cex * 0.92)   # column title
+  graphics::mtext(label, side = 3, line = if (population.only) 1.55 else 0.5,
+                  cex = cex * 0.92, font = 2)
   graphics::box()                                                # full border around the panel
 }
 
@@ -1374,12 +1425,20 @@
   for (r in seq_len(ny)) {
     y0 <- ny - r + 1
     x <- vals[[ord_ids[r]]]
-    if (length(x) < min.n) next
+    n <- length(x)
+    if (!n) next
+    mid <- stats::median(x)
+    if (n < min.n || min(x) == max(x)) {
+      graphics::segments(mid, y0 - 0.2, mid, y0 + 0.2, col = theme$ink, lwd = 0.9)
+      graphics::text(mid, y0, labels = paste0("n=", n), cex = cex * 0.65, col = theme$ink,
+                     pos = if (mid <= mean(g$xlim)) 4 else 2)
+      next
+    }
     d <- stats::density(x, n = 512, na.rm = TRUE)                 # natural support: the violin ends at
     d <- .clampDensity(d, g$xlim)                                 # this deployment's own range (clipped to xlim)
     hw <- 0.44 * d$y / max(d$y)                                   # per-row normalised half-width
     graphics::polygon(c(d$x, rev(d$x)), c(y0 + hw, rev(y0 - hw)), col = fill_t, border = .distDarken(fill), lwd = 0.7)
-    graphics::segments(stats::median(x), y0 - 0.34, stats::median(x), y0 + 0.34, col = theme$ink, lwd = 0.9)  # median tick
+    graphics::segments(mid, y0 - 0.34, mid, y0 + 0.34, col = theme$ink, lwd = 0.9)  # median tick
   }
   .distRefLines(g$refs, cex)
   graphics::axis(1, at = pretty(g$xlim, n = 5), cex.axis = cex * 0.85, tcl = -0.3)

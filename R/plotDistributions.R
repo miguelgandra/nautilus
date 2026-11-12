@@ -2,81 +2,103 @@
 # Plot per-individual distributions of kinematic / effort metrics #####################################
 #######################################################################################################
 
-#' Plot per-individual distributions of kinematic and effort metrics
+#' Plot cohort and per-deployment distributions of kinematic and effort metrics
 #'
 #' @description
 #' A mean tail-beat frequency, or a mean swimming speed, describes a cohort badly. These quantities are
 #' typically multimodal and long-tailed - an animal alternates between gaits, and rare bursts sit far
 #' from the middle - so one number per deployment can hide the very structure the analysis is about.
 #'
-#' This function shows the whole shape instead. Each metric becomes a column holding a stack of
-#' per-deployment violins, a pooled population strip across the top, and a reference line at the
-#' population median. Where [summarizeTagData()] returns a number per deployment, this returns the
-#' distribution behind it - and, invisibly, a tidy per-deployment summary of that distribution
-#' alongside the plot.
+#' Each metric has its own panel. The default view pairs a cohort density strip with a stack of
+#' per-deployment violins. The population view shows the same cohort density in a full panel, and
+#' the deployments view shows the violins with cohort reference lines.
 #'
-#' Like the other workflow functions, `data` accepts the package's canonical input forms - a character
-#' vector of `.rds` paths, a single `nautilus_tag` / data.frame, or a list of them - and the deployment
-#' id is read from each object's metadata.
+#' A single table is split by `id.col`. For lists and files, deployment IDs come from tag metadata
+#' when available, with list names, file basenames, or input positions as fallbacks. Each input
+#' in a list or file vector must have a unique deployment ID.
 #'
 #' @param data Processed data: a character vector of `.rds` file paths, a single `nautilus_tag` /
 #'   data.frame, or a list of them (see [processTagData()]).
 #' @param metrics Character vector of metric columns to plot (one panel each), in order. `NULL` (default)
-#'   auto-selects the kinematic / effort metrics present in the data
+#'   auto-selects the kinematic / effort metrics present in the first deployment
 #'   (whichever `tbf_hz_*` backends ran, `paddle_speed`, `speed`, `vedba`, `odba`, `vertical_velocity`).
 #' @param labels Named character vector mapping a metric to its axis label. Any metric not named here
 #'   falls back to a built-in label (e.g. `"Tail-beat frequency (Hz)"`) or the column name.
+#' @param view Plot layout. `"stacked"` (default) draws cohort density strips above the deployment
+#'   violins, `"population"` draws full cohort density panels, and `"deployments"` draws the
+#'   deployment violins. All views use the same cohort reference values.
+#' @param population.weight How to weight the observed rows for each cohort metric. `"deployment"`
+#'   (default) gives equal total weight to each deployment with finite values for that metric.
+#'   `"row"` gives equal weight to each finite row across deployments.
 #' @param order.by How to order deployments down the y-axis (one order, shared by every panel):
 #'   `"id"` (default, alphabetical), `"input"` (as supplied), or `"median"` (by the median of
-#'   `order.metric`).
+#'   `order.metric`). Used in views with deployment rows.
 #' @param order.metric Metric whose per-deployment median drives `order.by = "median"`. `NULL` (default)
-#'   uses the first metric. Ignored otherwise.
+#'   uses the first metric. Applies when sorting deployment rows by their medians.
 #' @param reference Population reference line(s) drawn per panel: any of `"median"` (default) and
 #'   `"mean"`, or `NULL` for none.
-#' @param show.marginal Logical. Draw the pooled population-density strip above each panel. Default `TRUE`.
-#' @param trim Numeric in (0, 1]. Upper quantile of the pooled data used for the x-axis limit, so long
-#'   right tails do not compress the bulk. Default `0.995`; set `1` for the full range.
-#' @param min.n Integer. Minimum finite samples a deployment needs for a violin to be drawn; below it the
-#'   row is left blank (but still summarised). Default `30`.
+#' @param trim Numeric in (0, 1]. Weighted upper cohort quantile used for the x-axis limit.
+#'   Default `0.995`. Use `1` for the full range. If trimming would leave a single x value, the
+#'   full range is shown. Summaries and density estimates use all finite rows.
+#' @param min.n Integer. Minimum finite rows for a deployment violin. Default `30`. A deployment
+#'   below this threshold or with a constant metric is shown with a median tick and count when it
+#'   has data. The threshold only controls how deployment rows are drawn.
 #' @param theme A [plotTheme()] object, or a list of overrides, controlling the visual style.
-#' @param plot Logical. If `TRUE` (default), draw to the active graphics device.
+#' @param plot Logical. If `TRUE` (default), draw to the active graphics device. Set `FALSE` with
+#'   `plot.file = NULL` to compute the summaries alone.
 #' @param plot.file Character. Path to a PDF to draw into (independent of `plot`; set either or both).
 #'   The function manages the device itself. Default `NULL`.
 #' @param id.col Character. Name of the deployment id column. Default `"ID"`.
-#' @param verbose Verbosity: `FALSE`/`0`/"quiet" (silent), `TRUE`/`1`/"normal" (header + summary), or
-#'   `2`/"detailed" (default): additionally reports per-metric drawn/sample counts and shows a live
-#'   progress bar while the tags are read (cli auto-hides it for fast runs).
+#' @param verbose Verbosity. Use `FALSE`/`0`/"quiet" for silence or `TRUE`/`1`/"normal" for a
+#'   header and summary. The default `2`/"detailed" also reports the deployments and rows
+#'   contributing to each metric and shows a loading progress bar for longer runs.
 #'
-#' @return Invisibly, a tidy data frame with one row per deployment and metric and columns `id`,
-#'   `metric`, `n`, `mean`, `median`, `sd`, `q05`, `q25`, `q75`, `q95`, `min`, `max` (called mainly for
-#'   the side-effect plot). Deployments lacking a metric appear with `n = 0` and `NA` statistics.
+#' @details A deployment's share is divided evenly among its finite rows. The cohort density uses
+#'   a Gaussian kernel and a bandwidth set to one quarter of the smaller positive value of the
+#'   weighted standard deviation and the weighted IQR divided by 1.349. A constant cohort metric
+#'   is shown as a point. Cohort quantiles use the weighted empirical CDF, with the midpoint
+#'   between adjacent values when the probability falls exactly on a boundary.
+#'
+#' @return Invisibly, a list with two data frames, independent of `view`.
+#'   - `deployments` has one row per deployment and metric, with columns `id`, `metric`, `n`,
+#'     `mean`, `median`, `sd`, `q05`, `q25`, `q75`, `q95`, `min`, `max`. Deployments lacking a
+#'     metric appear with `n = 0` and `NA` statistics.
+#'   - `population` has one row per metric, with columns `metric`, `weighting`, `n_deployments`,
+#'     `n`, `mean`, `median`, `sd`, `q05`, `q25`, `q75`, `q95`, `min`, `max`. `n_deployments`
+#'     counts contributing deployments, `n` counts their finite rows, and `sd` is the weighted
+#'     population standard deviation.
 #'
 #' @seealso [plotDives()], [plotTimeAtDepth()], [summarizeTagData()],
 #'   [calculateTailBeats()], [processTagData()]
 #' @examples
 #' \dontrun{
 #' # Compare tail-beat frequency and swimming speed across the cohort, into a PDF
-#' plotDistributions(list.files("./processed", full.names = TRUE),
+#' tags <- list.files("./processed", pattern = "\\.rds$", full.names = TRUE)
+#' plotDistributions(tags,
 #'                   metrics = c("tbf_hz_peaks", "paddle_speed"),
 #'                   plot = FALSE, plot.file = "./plots/distributions.pdf")
+#'
+#' # Draw just the cohort distribution with equal deployment weights
+#' plotDistributions(tags, metrics = "paddle_speed", view = "population")
 #' }
 #' @export
 
 plotDistributions <- function(data,
-                              metrics       = NULL,
-                              labels        = NULL,
-                              order.by      = c("id", "input", "median"),
-                              order.metric  = NULL,
-                              reference     = "median",
-                              show.marginal = TRUE,
-                              trim          = 0.995,
-                              min.n         = 30,
+                              metrics           = NULL,
+                              labels            = NULL,
+                              view              = c("stacked", "population", "deployments"),
+                              population.weight = c("deployment", "row"),
+                              order.by          = c("id", "input", "median"),
+                              order.metric      = NULL,
+                              reference         = "median",
+                              trim              = 0.995,
+                              min.n             = 30,
 
-                              plot          = TRUE,
-                              plot.file     = NULL,
-                              theme         = plotTheme(),
-                              id.col        = "ID",
-                              verbose       = "detailed") {
+                              plot              = TRUE,
+                              plot.file         = NULL,
+                              theme             = plotTheme(),
+                              id.col            = "ID",
+                              verbose           = "detailed") {
 
   start.time <- Sys.time()
   lvl <- .verbosity(verbose)
@@ -85,20 +107,25 @@ plotDistributions <- function(data,
   # Validate arguments #########################################################
   ##############################################################################
 
+  view <- match.arg(view)
+  population.weight <- match.arg(population.weight)
   order.by <- match.arg(order.by)
   reference <- if (is.null(reference)) character(0) else match.arg(reference, c("median", "mean"), several.ok = TRUE)
-  .assert_flag(show.marginal, "show.marginal"); .assert_flag(plot, "plot")
-  .assert_number(trim, "trim", min = 0); if (trim > 1) .abort("{.arg trim} must be in (0, 1].")
+  .assert_flag(plot, "plot")
+  .assert_number(trim, "trim", min = 0, max = 1)
+  if (trim == 0) .abort("{.arg trim} must be in (0, 1].")
   .assert_count(min.n, "min.n", min = 1)
   theme <- .as_control(theme, plotTheme, "nautilus_theme", "theme")
   .assert_string(id.col, "id.col"); .assert_string(order.metric, "order.metric", null_ok = TRUE)
   .assert_writable_file(plot.file, "plot.file", ext = "pdf")     # fail-fast: parent dir must exist
-  if (!is.null(metrics) && (!is.character(metrics) || !length(metrics)))
-    .abort("{.arg metrics} must be a non-empty character vector of column names, or {.code NULL}.")
+  if (!is.null(metrics) && (!is.character(metrics) || !length(metrics) || anyNA(metrics) ||
+                           any(!nzchar(metrics)) || anyDuplicated(metrics)))
+    .abort("{.arg metrics} must be a non-empty character vector of unique column names, or {.code NULL}.")
   if (!is.null(labels) && (!is.character(labels) || is.null(names(labels))))
     .abort("{.arg labels} must be a NAMED character vector (metric -> label).")
-  if (!plot && is.null(plot.file))
-    .abort(c("Nothing to plot.", "i" = "Set {.arg plot = TRUE} or provide a {.arg plot.file}."))
+  render <- plot || !is.null(plot.file)
+  population.only <- view == "population"
+  stacked <- view == "stacked"
 
   # This figure was tuned at cex = 1.15 before the theme existed. Folding that base in here means
   # theme$cex = 1 reproduces the tuned layout exactly and scales from there, rather than silently
@@ -111,14 +138,14 @@ plotDistributions <- function(data,
   # Resolve which metrics to plot (auto-detect from the first-seen columns) ####
   ##############################################################################
 
-  first_cols <- names(data.table::as.data.table(src$get(1)))
   if (is.null(metrics)) {
+    first_cols <- names(src$get(1))
     metrics <- intersect(.distAutoMetrics(first_cols), first_cols)
     if (!length(metrics))
       .abort(c("No kinematic / effort metrics found to plot.",
                "i" = "Provide {.arg metrics} explicitly (available numeric columns include {.val {utils::head(setdiff(first_cols, c(id.col, 'datetime')), 8)}})."))
   }
-  if (!is.null(order.metric) && !order.metric %in% metrics)
+  if (!population.only && order.by == "median" && !is.null(order.metric) && !order.metric %in% metrics)
     .abort("{.arg order.metric} ({.val {order.metric}}) must be one of {.arg metrics}: {.val {metrics}}.")
 
   metric_labels <- vapply(metrics, function(m) .distLabel(m, labels), character(1))
@@ -136,13 +163,17 @@ plotDistributions <- function(data,
 
   values  <- stats::setNames(vector("list", length(metrics)), metrics)   # metric -> named list (id -> numeric)
   summary_rows <- list()
-  ids <- character(0)
+  ids <- character(src$n)
   pb <- .log_progress_start(lvl, src$n, "Loading")                       # live bar at detailed verbosity (lvl >= 2)
   for (i in seq_len(src$n)) {
     .log_progress_step(pb)
     dt <- data.table::as.data.table(src$get(i))
-    id <- as.character(.getMeta(dt)$id %||% src$ids[i])
-    ids <- c(ids, id)
+    id <- if (is.data.frame(data)) src$ids[i] else as.character(.getMeta(dt)$id)
+    if (length(id) != 1L || is.na(id) || !nzchar(id)) id <- src$ids[i]
+    if (is.na(id) || !nzchar(id)) id <- as.character(i)
+    if (id %in% ids)
+      .abort("Duplicate deployment ID {.val {id}}. Supply one input per deployment.")
+    ids[i] <- id
     for (m in metrics) {
       # shared coercion contract: a FACTOR metric used to become its level codes, which silently
       # replaced the measurements (and inverted the cohort order under order.by = "median")
@@ -173,36 +204,24 @@ plotDistributions <- function(data,
   }
 
   ##############################################################################
-  # Deployment order (shared across panels), geometry, densities ###############
+  # Cohort summaries and geometry ##############################################
   ##############################################################################
 
-  ord_ids <- .distOrder(ids, order.by, values[[order.metric %||% metrics[1]]])
-  ny <- length(ord_ids)
-
-  # per-metric geometry: pooled samples -> x-limits, reference values, and the pooled marginal density
-  geom <- lapply(metrics, function(m) {
-    pooled <- unlist(values[[m]], use.names = FALSE)
-    xlim <- .distXlim(pooled, trim)
-    refs <- .distReferences(pooled, reference)
-    marg <- if (show.marginal && length(pooled) >= min.n) .distDensity(pooled, xlim) else NULL
-    list(pooled_n = length(pooled), xlim = xlim, refs = refs, marginal = marg)
-  })
-  names(geom) <- metrics
-
-  n_drawn <- vapply(metrics, function(m) sum(vapply(ord_ids, function(id) length(values[[m]][[id]]) >= min.n, logical(1))), integer(1))
+  geom <- lapply(metrics, function(m) .distPopulation(values[[m]], m, population.weight, trim,
+                                                     reference, render && view != "deployments"))
+  population <- do.call(rbind, lapply(geom, "[[", "summary"))
 
   ##############################################################################
   # Draw #######################################################################
   ##############################################################################
 
   M <- length(metrics)
-  dims <- .distDeviceSize(M, ny, show.marginal, cex)
 
   draw <- function(to.file = FALSE, unicode = TRUE) {
-    lay <- if (show.marginal) matrix(c(seq_len(M), M + seq_len(M)), nrow = 2, byrow = TRUE) else matrix(seq_len(M), nrow = 1)
+    lay <- matrix(seq_len(if (stacked) 2 * M else M), ncol = M, byrow = TRUE)
     # fixed-height marginal strip (absolute cm), so it never collapses under its title margin when there
     # are few deployments; the violin row takes the remaining height.
-    left1 <- max(4.5, 0.55 * max(nchar(ord_ids)) * cex)          # room for the id labels in the first column
+    left1 <- if (population.only) 4.5 else max(4.5, 0.55 * max(nchar(ord_ids)) * cex)
 
     # Every panel must end up the SAME size, whatever metrics are drawn. The first column carries the
     # deployment labels in its own left margin, so with equal cells its plot region is narrower than
@@ -212,7 +231,7 @@ plotDistributions <- function(data,
     # it holds (0.83 for a 2x2), and margins are measured in lines of that scaled text - so the
     # inches-per-line needed to size the gutter is only knowable once the layout exists. Reading
     # par("csi") beforehand returns the unscaled 0.2 and over-widens the first column by a fifth.
-    heights <- if (show.marginal) c(graphics::lcm(2.4), 1) else 1
+    heights <- if (stacked) c(graphics::lcm(2.4), 1) else 1
     graphics::par(oma = c(0, 0, 0, 0), mgp = c(3, 0.7, 0))       # before layout, so the region is known
     graphics::layout(lay, heights = heights)                     # establishes the per-figure cex
     lh <- graphics::par("csi")                                   # true inches per margin line
@@ -220,29 +239,31 @@ plotDistributions <- function(data,
     # goes to whatever device is already open, which is rarely dims$width. Sizing the correction from
     # the intended width instead scales it by the ratio of the two and under-corrects.
     avail <- graphics::par("din")[1] - sum(graphics::par("omi")[c(2, 4)])
-    gut   <- (left1 - 0.8) * lh                                  # the first column's extra margin, in inches
+    gut   <- if (population.only) 0 else (left1 - 0.8) * lh       # first column's extra margin, in inches
     panel <- (avail - gut) / M                                   # the width every panel cell then shares
     # layout() allocates `widths` proportionally, so passing inches that sum to the figure width makes
     # the allocation literal.
     graphics::layout(lay, widths = c(panel + gut, rep(panel, M - 1L)), heights = heights)
-    # top row: pooled marginal densities
-    if (show.marginal) for (j in seq_len(M)) {
-      m <- metrics[j]
-      .drawMarginalPanel(geom[[m]], metric_labels[j], metric_cols[j],
-                         mar = c(0.4, if (j == 1) left1 else 0.8, 2.7, 1.2), cex = cex, first = (j == 1),
-                         theme = theme)
+    if (stacked || population.only) for (j in seq_len(M)) {
+      left <- if (population.only || j == 1L) left1 else 0.8
+      mar <- if (population.only) c(3, left, 3.2, 1.2) else c(0.4, left, 2.7, 1.2)
+      .drawPopulationPanel(geom[[j]], metric_labels[j], metric_cols[j], mar, cex, j == 1L,
+                           theme, population.only, length(ids))
     }
-    # bottom row: per-deployment violins
-    for (j in seq_len(M)) {
-      m <- metrics[j]
-      .drawViolinPanel(values[[m]], ord_ids, geom[[m]], metric_cols[j], min.n,
-                       mar = c(4, if (j == 1) left1 else 0.8, 0.4, 1.2), cex = cex,
-                       first = (j == 1), title = if (show.marginal) NULL else metric_labels[j],
+    if (!population.only) for (j in seq_len(M)) {
+      top <- if (stacked) 0.4 else 2.3
+      .drawViolinPanel(values[[metrics[j]]], ord_ids, geom[[j]], metric_cols[j], min.n,
+                       mar = c(4, if (j == 1) left1 else 0.8, top, 1.2), cex = cex,
+                       first = (j == 1), title = if (stacked) NULL else metric_labels[j],
                        theme = theme)
     }
   }
 
-  .renderToDevices(draw, plot = plot, plot.file = plot.file, width = dims$width, height = dims$height)
+  if (render) {
+    ord_ids <- if (population.only) character(0) else .distOrder(ids, order.by, values[[order.metric %||% metrics[1]]])
+    dims <- .distDeviceSize(M, length(ord_ids), view, cex)
+    .renderToDevices(draw, plot = plot, plot.file = plot.file, width = dims$width, height = dims$height)
+  }
 
   ##############################################################################
   # Summary ####################################################################
@@ -251,12 +272,12 @@ plotDistributions <- function(data,
   if (lvl >= 1L) {
     .log_summary(lvl)
     for (j in seq_len(M))
-      .log_detail(lvl, sprintf("%s: %d/%d deployment%s drawn (%s samples)", metrics[j], n_drawn[j], ny,
-                               if (ny != 1) "s" else "", format(geom[[metrics[j]]]$pooled_n, big.mark = ",")))
-    .log_done(lvl, M, " metric", if (M != 1) "s", " across ", ny, " deployment", if (ny != 1) "s", " plotted")
+      .log_detail(lvl, sprintf("%s: %d/%d deployments contributing (%s rows)", metrics[j],
+                               population$n_deployments[j], length(ids), format(population$n[j], big.mark = ",")))
+    .log_done(lvl, M, " metric", if (M != 1) "s", " summarised with equal ", population.weight, " weights")
     if (!is.null(plot.file)) .log_arrow(lvl, "plots: ", plot.file)
     .log_runtime(lvl, start.time)
   }
 
-  invisible(summary)
+  invisible(list(deployments = summary, population = population))
 }

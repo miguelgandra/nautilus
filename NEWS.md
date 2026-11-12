@@ -1,5 +1,14 @@
 # nautilus 0.2.0
 
+## Cohort distributions
+
+* `plotDistributions()` gives each contributing deployment equal weight by
+  default. Use `population.weight = "row"` for equal weight per recorded row.
+  The cohort density, reference lines and upper trim quantile share the weights.
+* Use `view` to select stacked, population-only or deployment-only panels.
+  All three views return `deployments` and `population` summary tables.
+  Set `plot = FALSE` to retrieve the tables directly.
+
 ## Tail-beat performance and worker cancellation
 
 * Tail-beat backends skip unused Hilbert-envelope transforms when swimming

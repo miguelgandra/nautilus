@@ -22,16 +22,23 @@
 
 test_that("returns a tidy per-deployment x metric summary with the canonical schema", {
   out <- .to_pdf(.cohort(), metrics = c("tbf_hz_peaks", "paddle_speed"))
-  s <- out$res
+  expect_named(out$res, c("deployments", "population"))
+  s <- out$res$deployments
   expect_s3_class(s, "data.frame")
   expect_named(s, c("id", "metric", "n", "mean", "median", "sd", "q05", "q25", "q75", "q95", "min", "max"))
   expect_equal(nrow(s), 3L * 2L)                               # 3 deployments x 2 metrics (rectangular)
   expect_setequal(unique(s$metric), c("tbf_hz_peaks", "paddle_speed"))
+  p <- out$res$population
+  expect_named(p, c("metric", "weighting", "n_deployments", "n", "mean", "median", "sd",
+                    "q05", "q25", "q75", "q95", "min", "max"))
+  expect_equal(p$metric, c("tbf_hz_peaks", "paddle_speed"))
+  expect_equal(p$n_deployments, c(3L, 2L))
+  expect_equal(p$n, c(1500L, 1000L))
   expect_true(out$size > 0)                                    # a PDF was written
 })
 
 test_that("a deployment missing a metric appears as an n = 0 row with NA statistics", {
-  s <- .to_pdf(.cohort(), metrics = c("tbf_hz_peaks", "paddle_speed"))$res
+  s <- .to_pdf(.cohort(), metrics = c("tbf_hz_peaks", "paddle_speed"))$res$deployments
   gap <- s[s$id == "A02" & s$metric == "paddle_speed", ]
   expect_equal(gap$n, 0L)
   expect_true(is.na(gap$median) && is.na(gap$mean))
@@ -42,7 +49,7 @@ test_that("a deployment missing a metric appears as an n = 0 row with NA statist
 
 test_that("the summary statistics match a direct computation", {
   co <- .cohort()
-  s <- .to_pdf(co, metrics = "tbf_hz_peaks")$res
+  s <- .to_pdf(co, metrics = "tbf_hz_peaks")$res$deployments
   x <- co$A03$tbf_hz_peaks
   row <- s[s$id == "A03", ]
   expect_equal(row$median, stats::median(x), tolerance = 1e-8)
@@ -51,14 +58,14 @@ test_that("the summary statistics match a direct computation", {
 })
 
 test_that("metrics = NULL auto-detects the kinematic/effort columns present", {
-  s <- .to_pdf(.cohort())$res                                  # no `metrics` -> auto
+  s <- .to_pdf(.cohort())$res$deployments
   expect_setequal(unique(s$metric), c("tbf_hz_peaks", "paddle_speed", "vedba"))
 })
 
 test_that("order.by controls deployment order without changing the summary rows", {
   co <- .cohort()
-  s_id  <- .to_pdf(co, metrics = "tbf_hz_peaks", order.by = "id")$res
-  s_med <- .to_pdf(co, metrics = "tbf_hz_peaks", order.by = "median")$res
+  s_id  <- .to_pdf(co, metrics = "tbf_hz_peaks", order.by = "id")$res$deployments
+  s_med <- .to_pdf(co, metrics = "tbf_hz_peaks", order.by = "median")$res$deployments
   expect_setequal(s_id$id, s_med$id)                           # same content
   # .distOrder: median-descending puts the highest-median deployment first
   vals <- list(A01 = 1:10, A02 = 101:110, A03 = 51:60)
@@ -67,11 +74,98 @@ test_that("order.by controls deployment order without changing the summary rows"
   expect_equal(nautilus:::.distOrder(c("A03", "A01"), "input", vals), c("A03", "A01"))
 })
 
-test_that("marginal / reference toggles and a single deployment render without error", {
+test_that("all views render and return the same summaries", {
   co <- .cohort()
-  expect_no_error(.to_pdf(co, metrics = "vedba", show.marginal = FALSE, reference = NULL))
-  expect_no_error(.to_pdf(co, metrics = "tbf_hz_peaks", reference = c("median", "mean")))
-  expect_no_error(.to_pdf(co[1], metrics = "tbf_hz_peaks"))          # single deployment (no 'margins too large')
+  summaries <- plotDistributions(co, plot = FALSE, verbose = FALSE)
+  for (view in c("stacked", "population", "deployments")) {
+    out <- .to_pdf(co, view = view, reference = c("median", "mean"))
+    expect_gt(out$size, 1000)
+    expect_identical(out$res, summaries)
+  }
+  expect_no_error(.to_pdf(co[1], metrics = "tbf_hz_peaks", reference = NULL))
+})
+
+test_that("cohort weights are computed per metric from finite rows", {
+  co <- list(A = data.frame(ID = "A", speed = c(0, 2, NA)),
+             B = data.frame(ID = "B", speed = c(rep(10, 8), Inf)),
+             C = data.frame(ID = "C", speed = NA_real_))
+  equal <- plotDistributions(co, plot = FALSE, verbose = FALSE)$population
+  rows <- plotDistributions(co, population.weight = "row", plot = FALSE, verbose = FALSE)$population
+  expect_equal(equal$weighting, "deployment")
+  expect_equal(equal$n_deployments, 2L)
+  expect_equal(equal$n, 10L)
+  expect_equal(equal$mean, 5.5)
+  expect_equal(equal$median, 6)  # midpoint at the 50/50 split
+  expect_equal(equal$sd, sqrt(20.75))
+  expect_equal(equal$q25, 1)
+  expect_equal(rows$weighting, "row")
+  expect_equal(rows$mean, 8.2)
+  expect_equal(rows$median, 10)
+
+  # A long run of small weights must still land on the exact 50/50 boundary.
+  co <- list(A = data.frame(ID = "A", speed = 0),
+             B = data.frame(ID = "B", speed = rep(10, 100000)))
+  expect_equal(plotDistributions(co, plot = FALSE, verbose = FALSE)$population$median, 5)
+})
+
+test_that("cohort curves, references and trim are invariant to deployment replication", {
+  co <- list(A = data.frame(ID = "A", speed = c(0, 2)),
+             B = data.frame(ID = "B", speed = rep(10, 8)))
+  population <- NULL
+  violins <- 0L
+  draw.population <- nautilus:::.drawPopulationPanel
+  draw.violins <- nautilus:::.drawViolinPanel
+  testthat::local_mocked_bindings(
+    .drawPopulationPanel = function(g, ...) {
+      population <<- g
+      draw.population(g, ...)
+    },
+    .drawViolinPanel = function(...) {
+      violins <<- violins + 1L
+      draw.violins(...)
+    },
+    .package = "nautilus"
+  )
+  .to_pdf(co, view = "stacked", trim = 0.45, reference = c("median", "mean"))
+  expect_equal(violins, 1L)
+  stacked <- population
+  expect_equal(stacked$xlim, c(0, 2))
+  expect_equal(stacked$refs, c(median = 6, mean = 5.5))
+
+  co$A <- co$A[rep(seq_len(nrow(co$A)), 20), ]
+  .to_pdf(co, view = "population", trim = 0.45, reference = c("median", "mean"), min.n = 100)
+  expect_equal(violins, 1L)
+  expect_equal(population$xlim, stacked$xlim)
+  expect_equal(population$refs, stacked$refs)
+  expect_equal(population$density$bw, stacked$density$bw)
+  expect_equal(population$density$x, stacked$density$x)
+  expect_equal(population$density$y, stacked$density$y)
+  statistics <- c("mean", "median", "sd", "q05", "q25", "q75", "q95", "min", "max")
+  expect_equal(population$summary[statistics], stacked$summary[statistics])
+
+  population <- NULL
+  .to_pdf(co, view = "deployments")
+  expect_null(population)
+  expect_equal(violins, 2L)
+})
+
+test_that("singleton and constant metrics render in cohort and deployment panels", {
+  co <- list(A = data.frame(ID = "A", speed = 0.5, vedba = 0),
+             B = data.frame(ID = "B", speed = NA_real_, vedba = rep(0, 40)))
+  out <- .to_pdf(co, min.n = 1)
+  expect_equal(out$res$population$sd, c(0, 0))
+  expect_equal(out$res$population$n, c(1L, 41L))
+  expect_gt(out$size, 1000)
+  expect_no_error(.to_pdf(co, view = "population"))
+})
+
+test_that("resolved deployment IDs are unique and respect id.col for a combined table", {
+  co <- data.frame(ID = "animal", tag = c("A", "B"), speed = c(0, 2))
+  s <- plotDistributions(co, id.col = "tag", plot = FALSE, verbose = FALSE)
+  expect_equal(s$deployments$id, c("A", "B"))
+  expect_equal(s$population$n_deployments, 2L)
+  expect_error(plotDistributions(list(A = co[1, ], B = co[2, ]), plot = FALSE, verbose = FALSE),
+               "Duplicate deployment ID")
 })
 
 test_that("plot.file writes a PDF and leaves no device open", {
@@ -94,17 +188,16 @@ test_that("argument validation aborts clearly", {
   co <- .cohort()
   expect_error(plotDistributions(co, metrics = "tbf_hz_peaks", trim = 1.5, plot = FALSE, plot.file = tempfile(fileext = ".pdf")),
                "trim", ignore.case = TRUE)
-  expect_error(plotDistributions(co, metrics = "tbf_hz_peaks", plot = FALSE, verbose = FALSE), "Nothing to plot", ignore.case = TRUE)
-  expect_error(plotDistributions(co, metrics = "nope_col", order.metric = "other", plot = FALSE,
+  expect_error(plotDistributions(co, trim = 0, plot = FALSE, verbose = FALSE), "trim")
+  expect_error(plotDistributions(co, view = "bogus", plot = FALSE, verbose = FALSE), "stacked")
+  expect_error(plotDistributions(co, population.weight = "bogus", plot = FALSE, verbose = FALSE), "deployment")
+  expect_error(plotDistributions(co, metrics = "nope_col", order.by = "median", order.metric = "other", plot = FALSE,
                                  plot.file = tempfile(fileext = ".pdf")), "order.metric", ignore.case = TRUE)
 })
 
-test_that(".distSummaryRow and .distXlim handle empty input", {
+test_that(".distSummaryRow handles empty input", {
   r <- nautilus:::.distSummaryRow("X", "m", numeric(0))
   expect_equal(r$n, 0L); expect_true(is.na(r$median))
-  expect_equal(nautilus:::.distXlim(numeric(0), 0.99), c(0, 1))
-  xl <- nautilus:::.distXlim(c(1:100, 1000), 0.95)             # upper trim clips the outlier
-  expect_lt(xl[2], 1000)
 })
 
 
@@ -236,10 +329,10 @@ test_that("every metric panel gets exactly the same width, whatever the metrics"
 
 test_that("the default canvas is wide enough not to look vertically stretched", {
   # one metric over a modest cohort should be wider than it is tall
-  d1 <- nautilus:::.distDeviceSize(1, 8, TRUE, 1)
+  d1 <- nautilus:::.distDeviceSize(1, 8, "stacked", 1)
   expect_gt(d1$width, d1$height)
   # and each added metric widens it substantially
-  d2 <- nautilus:::.distDeviceSize(2, 8, TRUE, 1)
+  d2 <- nautilus:::.distDeviceSize(2, 8, "stacked", 1)
   expect_gt(d2$width - d1$width, 3)
   expect_identical(d1$height, d2$height)          # height depends on the cohort, not the metric count
 })

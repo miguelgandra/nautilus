@@ -2,16 +2,17 @@
 % Please edit documentation in R/plotDistributions.R
 \name{plotDistributions}
 \alias{plotDistributions}
-\title{Plot per-individual distributions of kinematic and effort metrics}
+\title{Plot cohort and per-deployment distributions of kinematic and effort metrics}
 \usage{
 plotDistributions(
   data,
   metrics = NULL,
   labels = NULL,
+  view = c("stacked", "population", "deployments"),
+  population.weight = c("deployment", "row"),
   order.by = c("id", "input", "median"),
   order.metric = NULL,
   reference = "median",
-  show.marginal = TRUE,
   trim = 0.995,
   min.n = 30,
   plot = TRUE,
@@ -26,31 +27,40 @@ plotDistributions(
 data.frame, or a list of them (see \code{\link[=processTagData]{processTagData()}}).}
 
 \item{metrics}{Character vector of metric columns to plot (one panel each), in order. \code{NULL} (default)
-auto-selects the kinematic / effort metrics present in the data
+auto-selects the kinematic / effort metrics present in the first deployment
 (whichever \verb{tbf_hz_*} backends ran, \code{paddle_speed}, \code{speed}, \code{vedba}, \code{odba}, \code{vertical_velocity}).}
 
 \item{labels}{Named character vector mapping a metric to its axis label. Any metric not named here
 falls back to a built-in label (e.g. \code{"Tail-beat frequency (Hz)"}) or the column name.}
 
+\item{view}{Plot layout. \code{"stacked"} (default) draws cohort density strips above the deployment
+violins, \code{"population"} draws full cohort density panels, and \code{"deployments"} draws the
+deployment violins. All views use the same cohort reference values.}
+
+\item{population.weight}{How to weight the observed rows for each cohort metric. \code{"deployment"}
+(default) gives equal total weight to each deployment with finite values for that metric.
+\code{"row"} gives equal weight to each finite row across deployments.}
+
 \item{order.by}{How to order deployments down the y-axis (one order, shared by every panel):
 \code{"id"} (default, alphabetical), \code{"input"} (as supplied), or \code{"median"} (by the median of
-\code{order.metric}).}
+\code{order.metric}). Used in views with deployment rows.}
 
 \item{order.metric}{Metric whose per-deployment median drives \code{order.by = "median"}. \code{NULL} (default)
-uses the first metric. Ignored otherwise.}
+uses the first metric. Applies when sorting deployment rows by their medians.}
 
 \item{reference}{Population reference line(s) drawn per panel: any of \code{"median"} (default) and
 \code{"mean"}, or \code{NULL} for none.}
 
-\item{show.marginal}{Logical. Draw the pooled population-density strip above each panel. Default \code{TRUE}.}
+\item{trim}{Numeric in (0, 1]. Weighted upper cohort quantile used for the x-axis limit.
+Default \code{0.995}. Use \code{1} for the full range. If trimming would leave a single x value, the
+full range is shown. Summaries and density estimates use all finite rows.}
 
-\item{trim}{Numeric in (0, 1]. Upper quantile of the pooled data used for the x-axis limit, so long
-right tails do not compress the bulk. Default \code{0.995}; set \code{1} for the full range.}
+\item{min.n}{Integer. Minimum finite rows for a deployment violin. Default \code{30}. A deployment
+below this threshold or with a constant metric is shown with a median tick and count when it
+has data. The threshold only controls how deployment rows are drawn.}
 
-\item{min.n}{Integer. Minimum finite samples a deployment needs for a violin to be drawn; below it the
-row is left blank (but still summarised). Default \code{30}.}
-
-\item{plot}{Logical. If \code{TRUE} (default), draw to the active graphics device.}
+\item{plot}{Logical. If \code{TRUE} (default), draw to the active graphics device. Set \code{FALSE} with
+\code{plot.file = NULL} to compute the summaries alone.}
 
 \item{plot.file}{Character. Path to a PDF to draw into (independent of \code{plot}; set either or both).
 The function manages the device itself. Default \code{NULL}.}
@@ -59,36 +69,52 @@ The function manages the device itself. Default \code{NULL}.}
 
 \item{id.col}{Character. Name of the deployment id column. Default \code{"ID"}.}
 
-\item{verbose}{Verbosity: \code{FALSE}/\code{0}/"quiet" (silent), \code{TRUE}/\code{1}/"normal" (header + summary), or
-\code{2}/"detailed" (default): additionally reports per-metric drawn/sample counts and shows a live
-progress bar while the tags are read (cli auto-hides it for fast runs).}
+\item{verbose}{Verbosity. Use \code{FALSE}/\code{0}/"quiet" for silence or \code{TRUE}/\code{1}/"normal" for a
+header and summary. The default \code{2}/"detailed" also reports the deployments and rows
+contributing to each metric and shows a loading progress bar for longer runs.}
 }
 \value{
-Invisibly, a tidy data frame with one row per deployment and metric and columns \code{id},
-\code{metric}, \code{n}, \code{mean}, \code{median}, \code{sd}, \code{q05}, \code{q25}, \code{q75}, \code{q95}, \code{min}, \code{max} (called mainly for
-the side-effect plot). Deployments lacking a metric appear with \code{n = 0} and \code{NA} statistics.
+Invisibly, a list with two data frames, independent of \code{view}.
+\itemize{
+\item \code{deployments} has one row per deployment and metric, with columns \code{id}, \code{metric}, \code{n},
+\code{mean}, \code{median}, \code{sd}, \code{q05}, \code{q25}, \code{q75}, \code{q95}, \code{min}, \code{max}. Deployments lacking a
+metric appear with \code{n = 0} and \code{NA} statistics.
+\item \code{population} has one row per metric, with columns \code{metric}, \code{weighting}, \code{n_deployments},
+\code{n}, \code{mean}, \code{median}, \code{sd}, \code{q05}, \code{q25}, \code{q75}, \code{q95}, \code{min}, \code{max}. \code{n_deployments}
+counts contributing deployments, \code{n} counts their finite rows, and \code{sd} is the weighted
+population standard deviation.
+}
 }
 \description{
 A mean tail-beat frequency, or a mean swimming speed, describes a cohort badly. These quantities are
 typically multimodal and long-tailed - an animal alternates between gaits, and rare bursts sit far
 from the middle - so one number per deployment can hide the very structure the analysis is about.
 
-This function shows the whole shape instead. Each metric becomes a column holding a stack of
-per-deployment violins, a pooled population strip across the top, and a reference line at the
-population median. Where \code{\link[=summarizeTagData]{summarizeTagData()}} returns a number per deployment, this returns the
-distribution behind it - and, invisibly, a tidy per-deployment summary of that distribution
-alongside the plot.
+Each metric has its own panel. The default view pairs a cohort density strip with a stack of
+per-deployment violins. The population view shows the same cohort density in a full panel, and
+the deployments view shows the violins with cohort reference lines.
 
-Like the other workflow functions, \code{data} accepts the package's canonical input forms - a character
-vector of \code{.rds} paths, a single \code{nautilus_tag} / data.frame, or a list of them - and the deployment
-id is read from each object's metadata.
+A single table is split by \code{id.col}. For lists and files, deployment IDs come from tag metadata
+when available, with list names, file basenames, or input positions as fallbacks. Each input
+in a list or file vector must have a unique deployment ID.
+}
+\details{
+A deployment's share is divided evenly among its finite rows. The cohort density uses
+a Gaussian kernel and a bandwidth set to one quarter of the smaller positive value of the
+weighted standard deviation and the weighted IQR divided by 1.349. A constant cohort metric
+is shown as a point. Cohort quantiles use the weighted empirical CDF, with the midpoint
+between adjacent values when the probability falls exactly on a boundary.
 }
 \examples{
 \dontrun{
 # Compare tail-beat frequency and swimming speed across the cohort, into a PDF
-plotDistributions(list.files("./processed", full.names = TRUE),
+tags <- list.files("./processed", pattern = "\\\\.rds$", full.names = TRUE)
+plotDistributions(tags,
                   metrics = c("tbf_hz_peaks", "paddle_speed"),
                   plot = FALSE, plot.file = "./plots/distributions.pdf")
+
+# Draw just the cohort distribution with equal deployment weights
+plotDistributions(tags, metrics = "paddle_speed", view = "population")
 }
 }
 \seealso{
